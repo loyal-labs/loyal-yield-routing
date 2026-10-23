@@ -34,11 +34,8 @@ POST /api/smart-accounts/yield-optimization/autodeposit/setup/confirm
 GET /api/smart-accounts/yield-optimization/autodeposit/sweeps/execute
 POST /api/smart-accounts/yield-optimization/autodeposit/sweeps/execute
 POST /api/smart-accounts/yield-optimization/autodeposit/toggle/confirm
-POST /api/smart-accounts/yield-optimization/cross-mint/delete/readiness
-POST /api/smart-accounts/yield-optimization/cross-mint/toggle
 POST /api/smart-accounts/yield-optimization/deposits/confirm
 * /api/smart-accounts/yield-optimization/deposits/prepare
-POST /api/smart-accounts/yield-optimization/policies/confirm
 POST /api/smart-accounts/yield-optimization/realtime/token
 POST /api/smart-accounts/yield-optimization/withdrawals/cleanup/confirm
 POST /api/smart-accounts/yield-optimization/withdrawals/cleanup/prepare

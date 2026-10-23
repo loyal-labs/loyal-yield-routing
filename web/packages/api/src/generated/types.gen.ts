@@ -20,6 +20,27 @@ export type ActivityItem = {
     timestamp: string;
 };
 
+export type CrossMintDeleteReadinessRequest = {
+    expectedGeneration?: string;
+};
+
+export type CrossMintDeleteReadinessResponse = {
+    expectedGeneration: string;
+    policies: Array<string> | null;
+    status: string;
+};
+
+export type CrossMintToggleRequest = {
+    enabled?: boolean;
+    expectedGeneration?: string;
+};
+
+export type CrossMintToggleResponse = {
+    enabled: boolean;
+    generation: string;
+    status: string;
+};
+
 export type DepositWireAccountKey = {
     isSigner: boolean;
     isWritable: boolean;
@@ -104,6 +125,41 @@ export type EarnMaxSummary = {
 export type EarnMaxSummaryResponse = {
     config: EarnMaxConfig;
     summary: EarnMaxSummary;
+};
+
+export type EarnPolicyConfirmPolicy = {
+    account: string;
+    id: string;
+    seed: string;
+    vaultIndex: number;
+    vaultPubkey: string;
+};
+
+export type EarnPolicyConfirmRequest = {
+    cluster?: string;
+    confirmedSlot?: string;
+    delegatedSigner?: string;
+    liquidityMint?: string;
+    market?: string;
+    policyAccount?: string;
+    policyId?: string;
+    policySeed?: string;
+    policySignature?: string;
+    settings?: string;
+    setupPolicyAccount?: string;
+    setupPolicyConfirmedSlot?: string;
+    setupPolicyId?: string;
+    setupPolicySeed?: string;
+    setupPolicySignature?: string;
+    stage?: 'route_policy' | 'setup_policy';
+    targetReserve?: string;
+    vaultIndex?: number;
+    vaultPubkey?: string;
+    walletAddress?: string;
+};
+
+export type EarnPolicyConfirmResponse = {
+    policy: EarnPolicyConfirmPolicy;
 };
 
 export type EarnPolicyPersistence = {
@@ -1618,6 +1674,98 @@ export type PostEarnSessionResponses = {
 
 export type PostEarnSessionResponse = PostEarnSessionResponses[keyof PostEarnSessionResponses];
 
+export type PostEarnCrossMintDeleteReadinessData = {
+    body?: CrossMintDeleteReadinessRequest;
+    headers?: {
+        Authorization?: string;
+        Cookie?: string;
+        'X-Forwarded-Host'?: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/smart-accounts/yield-optimization/cross-mint/delete/readiness';
+};
+
+export type PostEarnCrossMintDeleteReadinessErrors = {
+    /**
+     * Bad Request
+     */
+    400: RouteError;
+    /**
+     * Unauthorized
+     */
+    401: RouteError;
+    /**
+     * Not Found
+     */
+    404: RouteError;
+    /**
+     * Conflict
+     */
+    409: RouteError;
+    /**
+     * Service Unavailable
+     */
+    503: RouteError;
+};
+
+export type PostEarnCrossMintDeleteReadinessError = PostEarnCrossMintDeleteReadinessErrors[keyof PostEarnCrossMintDeleteReadinessErrors];
+
+export type PostEarnCrossMintDeleteReadinessResponses = {
+    /**
+     * OK
+     */
+    200: CrossMintDeleteReadinessResponse;
+};
+
+export type PostEarnCrossMintDeleteReadinessResponse = PostEarnCrossMintDeleteReadinessResponses[keyof PostEarnCrossMintDeleteReadinessResponses];
+
+export type PostEarnCrossMintToggleData = {
+    body?: CrossMintToggleRequest;
+    headers?: {
+        Authorization?: string;
+        Cookie?: string;
+        'X-Forwarded-Host'?: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/smart-accounts/yield-optimization/cross-mint/toggle';
+};
+
+export type PostEarnCrossMintToggleErrors = {
+    /**
+     * Bad Request
+     */
+    400: RouteError;
+    /**
+     * Unauthorized
+     */
+    401: RouteError;
+    /**
+     * Not Found
+     */
+    404: RouteError;
+    /**
+     * Conflict
+     */
+    409: RouteError;
+    /**
+     * Service Unavailable
+     */
+    503: RouteError;
+};
+
+export type PostEarnCrossMintToggleError = PostEarnCrossMintToggleErrors[keyof PostEarnCrossMintToggleErrors];
+
+export type PostEarnCrossMintToggleResponses = {
+    /**
+     * OK
+     */
+    200: CrossMintToggleResponse;
+};
+
+export type PostEarnCrossMintToggleResponse = PostEarnCrossMintToggleResponses[keyof PostEarnCrossMintToggleResponses];
+
 export type GetEarnStateData = {
     body?: never;
     headers?: {
@@ -1691,6 +1839,48 @@ export type GetEarnEarningsResponses = {
 };
 
 export type GetEarnEarningsResponse = GetEarnEarningsResponses[keyof GetEarnEarningsResponses];
+
+export type PostEarnPoliciesConfirmData = {
+    body?: EarnPolicyConfirmRequest;
+    headers?: {
+        Authorization?: string;
+        Cookie?: string;
+        'X-Forwarded-Host'?: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/smart-accounts/yield-optimization/policies/confirm';
+};
+
+export type PostEarnPoliciesConfirmErrors = {
+    /**
+     * Bad Request
+     */
+    400: RouteError;
+    /**
+     * Unauthorized
+     */
+    401: RouteError;
+    /**
+     * Forbidden
+     */
+    403: RouteError;
+    /**
+     * Service Unavailable
+     */
+    503: RouteError;
+};
+
+export type PostEarnPoliciesConfirmError = PostEarnPoliciesConfirmErrors[keyof PostEarnPoliciesConfirmErrors];
+
+export type PostEarnPoliciesConfirmResponses = {
+    /**
+     * OK
+     */
+    200: EarnPolicyConfirmResponse;
+};
+
+export type PostEarnPoliciesConfirmResponse = PostEarnPoliciesConfirmResponses[keyof PostEarnPoliciesConfirmResponses];
 
 export type PostEarnPoliciesPrepareData = {
     body?: never;
