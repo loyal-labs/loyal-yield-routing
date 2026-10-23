@@ -10,7 +10,7 @@
       "channel": "preview",
       "environment": "preview",
       "env": {
-        "EXPO_PUBLIC_API_BASE_URL": "https://solana-telegram-transactions.vercel.app",
+        "EXPO_PUBLIC_API_BASE_URL": "https://next.askloyal.com",
         "EXPO_PUBLIC_SOLANA_ENV": "mainnet",
         "EXPO_PUBLIC_ONESIGNAL_APP_ID": "6c7083a8-8707-4359-abad-e14ca436a9e9",
         "EXPO_PUBLIC_PRIVY_APP_ID": "cmtk2021b021a0djsux7jokdr",
@@ -27,7 +27,7 @@
       "channel": "development",
       "env": {
         "APP_VARIANT": "development",
-        "EXPO_PUBLIC_API_BASE_URL": "https://solana-telegram-transactions.vercel.app",
+        "EXPO_PUBLIC_API_BASE_URL": "https://next.askloyal.com",
         "EXPO_PUBLIC_SOLANA_ENV": "mainnet",
         "EXPO_PUBLIC_ONESIGNAL_APP_ID": "6c7083a8-8707-4359-abad-e14ca436a9e9",
         "EXPO_PUBLIC_PRIVY_APP_ID": "cmtk2021b021a0djsux7jokdr",
@@ -40,7 +40,7 @@
       "environment": "production",
       "env": {
         "PLAY_STORE_BUILD": "true",
-        "EXPO_PUBLIC_API_BASE_URL": "https://solana-telegram-transactions.vercel.app",
+        "EXPO_PUBLIC_API_BASE_URL": "https://next.askloyal.com",
         "EXPO_PUBLIC_SOLANA_ENV": "mainnet",
         "EXPO_PUBLIC_ONESIGNAL_APP_ID": "6c7083a8-8707-4359-abad-e14ca436a9e9",
         "EXPO_PUBLIC_PRIVY_APP_ID": "cmtk2021b021a0djsux7jokdr",
@@ -55,7 +55,7 @@
       "channel": "production",
       "environment": "production",
       "env": {
-        "EXPO_PUBLIC_API_BASE_URL": "https://solana-telegram-transactions.vercel.app",
+        "EXPO_PUBLIC_API_BASE_URL": "https://next.askloyal.com",
         "EXPO_PUBLIC_SOLANA_ENV": "mainnet",
         "EXPO_PUBLIC_ONESIGNAL_APP_ID": "6c7083a8-8707-4359-abad-e14ca436a9e9",
         "EXPO_PUBLIC_PRIVY_APP_ID": "cmtk2021b021a0djsux7jokdr",
@@ -71,7 +71,7 @@
       "environment": "production",
       "env": {
         "DAPP_STORE_BUILD": "true",
-        "EXPO_PUBLIC_API_BASE_URL": "https://solana-telegram-transactions.vercel.app",
+        "EXPO_PUBLIC_API_BASE_URL": "https://next.askloyal.com",
         "EXPO_PUBLIC_SOLANA_ENV": "mainnet",
         "EXPO_PUBLIC_ONESIGNAL_APP_ID": "6c7083a8-8707-4359-abad-e14ca436a9e9",
         "EXPO_PUBLIC_PRIVY_APP_ID": "cmtk2021b021a0djsux7jokdr",
@@ -102,7 +102,7 @@
       "channel": "development",
       "env": {
         "APP_VARIANT": "development",
-        "EXPO_PUBLIC_API_BASE_URL": "https://solana-telegram-transactions.vercel.app",
+        "EXPO_PUBLIC_API_BASE_URL": "https://next.askloyal.com",
         "EXPO_PUBLIC_SOLANA_ENV": "mainnet",
         "EXPO_PUBLIC_ONESIGNAL_APP_ID": "6c7083a8-8707-4359-abad-e14ca436a9e9",
         "EXPO_PUBLIC_PRIVY_APP_ID": "cmtk2021b021a0djsux7jokdr",

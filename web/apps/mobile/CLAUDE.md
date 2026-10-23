@@ -72,6 +72,19 @@ Privy (`@privy-io/expo`) is the identity layer; `src/components/wallet/PrivyProv
 
 # recurred: 0
 
+### Local wallet upgrades and recovery
+
+Legacy biometric login uses `wallet_biometric_password`, a SecureStore record
+protected by biometric authentication. Keep it through PIN unlocks and native
+module failures. Remove it only after the hardware-wrapped biometric key has
+been persisted and verified to open to the same wallet. Checking the enabled
+flag must not read the protected PIN or trigger an authentication prompt.
+
+Canceled or failed hardware reads are retryable; only an explicitly invalidated
+key opens recovery. Recovery reuses the import screen without resetting the
+wallet, rejects a different wallet's key before any storage writes, and clears
+old biometric credentials only after the replacement wallet has been stored.
+
 ### Key Conventions
 
 - **Path alias**: `@/*` maps to `./src/*` (configured in `tsconfig.json` and `jest.config.js`)
@@ -96,7 +109,10 @@ EXPO_PUBLIC_SOLANA_ENV=mainnet
 ```
 
 - `EXPO_PUBLIC_API_BASE_URL` selects loyal-web, the one API server for content,
-  Earn and push; its fallback is `https://next.askloyal.com`.
+  Earn and push; its fallback and every EAS build profile use
+  `https://next.askloyal.com`. This selects loyal-web, including its proxy for
+  routes still owned by Next. Profile edits take effect in subsequent builds;
+  they do not change installed apps or publish an OTA update.
 - `EXPO_PUBLIC_GRID_AUTH_BASE_URL` selects the passkey auth domain; its fallback
   is `https://auth.askloyal.com`.
 - `EXPO_PUBLIC_SOLANA_ENV` selects the Solana cluster.

@@ -41,6 +41,13 @@ export class WalletKeyUnavailableError extends Error {
   }
 }
 
+export class WalletKeyReadError extends Error {
+  constructor() {
+    super("Could not access your wallet key. Please try unlocking again.");
+    this.name = "WalletKeyReadError";
+  }
+}
+
 export class PinLockedError extends Error {
   remainingMs: number;
   constructor(remainingMs: number) {
@@ -148,9 +155,14 @@ export function generateKeypairInMemory(): Keypair {
 export async function importKeypair(
   secretKey: Uint8Array,
   pin: string,
+  expectedPublicKey?: string,
 ): Promise<Keypair> {
   const keypair = Keypair.fromSecretKey(secretKey);
+  if (expectedPublicKey && keypair.publicKey.toBase58() !== expectedPublicKey) {
+    throw new Error("This secret key belongs to a different wallet. Use this wallet's secret key.");
+  }
   await storeKeypair(keypair, pin);
+  if (expectedPublicKey) await resetAttempts();
   return keypair;
 }
 
@@ -165,7 +177,12 @@ export async function loadKeypair(pin: string): Promise<Keypair | null> {
     : null;
   const pinBlob = opened?.ok ? opened.plaintext : legacy;
   if (!pinBlob) {
-    if (wrapped) throw new WalletKeyUnavailableError();
+    if (wrapped) {
+      if (opened && !opened.ok && opened.reason === "invalidated") {
+        throw new WalletKeyUnavailableError();
+      }
+      throw new WalletKeyReadError();
+    }
     return null;
   }
 
