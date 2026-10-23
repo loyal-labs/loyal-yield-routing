@@ -48,6 +48,20 @@ func refundPrepareFailed(err error) error {
 // instruction's whole data is this one tag byte.
 const subscriptionsRevokeDelegationTag = byte(3)
 
+// buildRecurringDelegationRefundOperation is prepareRecurringDelegationRefund
+// (earn-policy-refund.server.ts:197-214): one revoke instruction the wallet
+// signs and pays, wrapped as the whole prepared operation.
+func buildRecurringDelegationRefundOperation(feePayer, delegation solana.PublicKey) squads.Instruction {
+	return squads.Instruction{
+		ProgramID: txreadsSubscriptionsProgramKey,
+		Accounts: []solana.AccountMeta{
+			{PublicKey: feePayer, IsSigner: true, IsWritable: true},
+			{PublicKey: delegation, IsWritable: true},
+		},
+		Data: []byte{subscriptionsRevokeDelegationTag},
+	}
+}
+
 // prepareRecurringDelegationRefundKind ports the kind "recurring_delegation"
 // branch (earn-policy-refund.server.ts:384-437): the merged delegation list
 // from the scan state, then one revoke instruction the wallet signs and pays.
@@ -96,17 +110,10 @@ func (h earnRoutes) prepareRecurringDelegationRefundKind(ctx context.Context, ac
 		return nil, earnError(http.StatusConflict, "delegation_protected", reason)
 	}
 
-	// createSubscriptionRevokeDelegationInstruction
-	// (earn-policy-refund.server.ts:183-195): keys [authority s+w, delegation
-	// w], data [3], the Subscriptions program.
-	revoke := squads.Instruction{
-		ProgramID: txreadsSubscriptionsProgramKey,
-		Accounts: []solana.AccountMeta{
-			{PublicKey: account.Wallet, IsSigner: true, IsWritable: true},
-			{PublicKey: delegation, IsWritable: true},
-		},
-		Data: []byte{subscriptionsRevokeDelegationTag},
-	}
+	// createSubscriptionRevokeDelegationInstruction folded into
+	// prepareRecurringDelegationRefund (earn-policy-refund.server.ts:183-214):
+	// keys [authority s+w, delegation w], data [3], the Subscriptions program.
+	revoke := buildRecurringDelegationRefundOperation(account.Wallet, delegation)
 
 	return &refundPrepareOutput{Body: EarnPolicyRefundPrepareResponse{
 		PreparedRecurringDelegationRefund: &WirePreparedEarnRecurringDelegationRefund{
