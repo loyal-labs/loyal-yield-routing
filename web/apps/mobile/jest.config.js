@@ -10,6 +10,8 @@ module.exports = {
       "<rootDir>/../../packages/smart-account-vaults/src/index",
     "^@loyal-labs/solana-rpc$": "<rootDir>/../../packages/solana-rpc/src/index",
     "^@loyal-labs/actions$": "<rootDir>/../../packages/loyal-actions/src/index",
+    "^@loyal-labs/actions/constants$":
+      "<rootDir>/../../packages/loyal-actions/src/constants",
     "^@loyal-labs/loyal-smart-accounts$":
       "<rootDir>/../../packages/loyal-smart-accounts/src/index",
     "^@loyal-labs/loyal-smart-accounts-core$":

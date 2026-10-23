@@ -52,21 +52,6 @@ import { acquireWithdrawSubmitLock } from "./withdraw-submit-lock";
 
 const usdcLogo = require("../../../assets/images/earn/usdc.png");
 
-// Per-market display for a withdrawal source, matching the web withdraw picker
-// ("OnRe Market reserve" / "Idle vault USDC") and the Positions sheet — the
-// backend only sends the generic "USDC reserve"/"Idle USDC" label plus the
-// market pubkey, so the market name + venue badge are resolved on the client.
-function sourceLabel(source: EarnWithdrawSourceInfo): string {
-  const { marketName, mintSymbol } = resolveEarnPositionDisplay({
-    market: source.market,
-    liquidityMint: source.liquidityMint,
-  });
-  if (source.type === "idle") {
-    return `Idle vault ${mintSymbol}`;
-  }
-  return `${marketName} · ${mintSymbol} reserve`;
-}
-
 function SourceIcon({
   source,
   tokenSize = 32,
@@ -514,7 +499,7 @@ export function WithdrawSheet({
                       {earnMax
                         ? "from RWA Loop · USDC"
                         : selectedSource
-                        ? sourceLabel(selectedSource)
+                        ? selectedSource.label
                         : "Available"}
                     </Text>
                   )}
@@ -595,7 +580,7 @@ export function WithdrawSheet({
             .map((source) => {
               const isSelected = source.id === selectedSourceId;
               const isDust = sourceBalanceUsd(source) < EARN_WITHDRAW_SOURCE_DUST_USD;
-              const label = sourceLabel(source);
+              const { label } = source;
               return (
                 <Pressable
                   key={source.id}
