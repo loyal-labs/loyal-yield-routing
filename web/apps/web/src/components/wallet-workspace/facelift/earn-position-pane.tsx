@@ -198,13 +198,10 @@ export function EarnPositionPane({
                 <InfoTooltip text="Your balance grows at the current APY" />
               </div>
               {(() => {
-                // Same display EarnGrowingBalance renders (its NumberFlow
-                // timings are zeroed anyway), with pop-in digits; mobile font
-                // clamp mirrors its ≤760px media query.
                 const balance = splitEarnBalanceDisplay(data.earnBalanceUsd);
                 return (
                   <p
-                    className="whitespace-nowrap font-semibold text-[40px] leading-[46px] [font-variant-numeric:tabular-nums] max-[760px]:text-[clamp(30px,9.5vw,40px)] max-[760px]:leading-[1.08]"
+                    className="earn-growing-balance-type whitespace-nowrap"
                     style={{
                       color: isBalanceHidden
                         ? "var(--tertiary)"

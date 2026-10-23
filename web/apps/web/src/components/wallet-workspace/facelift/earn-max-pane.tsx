@@ -19,7 +19,6 @@ import {
 } from "@/components/wallet-sidebar/earn-detail-view";
 import {
   ScrambledPopDigits,
-  ScrambleText,
   useBalanceVisibility,
 } from "@/components/wallet-workspace/facelift/balance-visibility";
 import { readCssDurationMs } from "@/components/wallet-workspace/facelift/css-duration";
@@ -46,7 +45,10 @@ import {
   isEarnMaxWithdrawishAction,
   OperationRow,
 } from "@/components/wallet-workspace/facelift/earn-max-transaction-detail";
-import { GroupHeader } from "@/components/wallet-workspace/facelift/earn-activity-card";
+import {
+  EarnPositionRow,
+  GroupHeader,
+} from "@/components/wallet-workspace/facelift/earn-activity-card";
 import {
   EarnedBarsChart,
   type EarnedChartBar,
@@ -438,32 +440,10 @@ function EarnMaxActivityCard({
       <div className="flex w-full flex-col px-2 pb-2">
         {tab === "Positions" ? (
           view.balanceUsd > 0 ? (
-            // Same row contract as the Earn Positions tab: 60px cell, amount
-            // under the label, Withdraw pill on the delayed hover reveal.
             <StaggerReveal className="flex w-full flex-col">
               <StaggerLine index={0}>
-                <div className="group t-hover flex w-full items-center rounded-2xl px-4 hover:bg-accent">
-                  <div className="flex items-center py-2 pr-3">
-                    <EarnMaxDualIcon />
-                  </div>
-                  <div className="flex h-[60px] min-w-0 flex-1 flex-col gap-0.5 py-[9px]">
-                    <span className="whitespace-nowrap text-[13px] text-muted-foreground leading-4">
-                      {EARN_MAX_STRATEGY_NAME} USDC
-                    </span>
-                    <p className="whitespace-nowrap font-semibold text-[20px] text-foreground leading-6">
-                      <ScrambleText
-                        isHidden={isBalanceHidden}
-                        text={balance.balanceWhole}
-                      />
-                      <span className="text-tertiary">
-                        <ScrambleText
-                          isHidden={isBalanceHidden}
-                          text={balance.balanceFraction}
-                        />
-                      </span>
-                    </p>
-                  </div>
-                  <div className="pointer-events-none flex pl-3 opacity-0 transition-opacity duration-150 group-hover:pointer-events-auto group-hover:opacity-100 group-hover:delay-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100">
+                <EarnPositionRow
+                  action={
                     <PendingWithdrawalTooltip pending={!!withdrawal && withdrawal.status !== "claimed"}>
                       <SmallPill
                         disabled={view.isBusy || (!!withdrawal && withdrawal.status !== "claimed")}
@@ -472,8 +452,14 @@ function EarnMaxActivityCard({
                         variant="light"
                       />
                     </PendingWithdrawalTooltip>
-                  </div>
-                </div>
+                  }
+                  actionWrapClassName="pointer-events-none flex pl-3 opacity-0 transition-opacity duration-150 group-hover:pointer-events-auto group-hover:opacity-100 group-hover:delay-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100"
+                  amountFraction={balance.balanceFraction}
+                  amountWhole={balance.balanceWhole}
+                  icon={<EarnMaxDualIcon />}
+                  isHidden={isBalanceHidden}
+                  label={`${EARN_MAX_STRATEGY_NAME} USDC`}
+                />
               </StaggerLine>
             </StaggerReveal>
           ) : (

@@ -342,6 +342,34 @@ function CompoundMarketImage({ src }: { src: string }) {
   );
 }
 
+export type EarnCompoundIconSlot =
+  | { kind: "kamino" }
+  | { kind: "market"; src: string }
+  | { kind: "usdc" };
+
+export function resolveEarnCompoundIconSlots({
+  backSrc = null,
+  frontSrc = null,
+  isWithdraw = false,
+}: {
+  backSrc?: string | null;
+  frontSrc?: string | null;
+  isWithdraw?: boolean;
+}): { back: EarnCompoundIconSlot; front: EarnCompoundIconSlot } {
+  return {
+    back: backSrc
+      ? { kind: "market", src: backSrc }
+      : isWithdraw
+      ? { kind: "kamino" }
+      : { kind: "usdc" },
+    front: frontSrc
+      ? { kind: "market", src: frontSrc }
+      : isWithdraw
+      ? { kind: "usdc" }
+      : { kind: "kamino" },
+  };
+}
+
 function CompoundIcon({
   backSrc = null,
   frontSrc = null,
@@ -351,20 +379,27 @@ function CompoundIcon({
   frontSrc?: string | null;
   isWithdraw?: boolean;
 }) {
-  const back = backSrc ? (
-    <CompoundMarketImage src={backSrc} />
-  ) : isWithdraw ? (
-    <CompoundKaminoImage />
-  ) : (
-    <CompoundUsdcImage />
-  );
-  const front = frontSrc ? (
-    <CompoundMarketImage src={frontSrc} />
-  ) : isWithdraw ? (
-    <CompoundUsdcImage />
-  ) : (
-    <CompoundKaminoImage />
-  );
+  const { back: backSlot, front: frontSlot } = resolveEarnCompoundIconSlots({
+    backSrc,
+    frontSrc,
+    isWithdraw,
+  });
+  const back =
+    backSlot.kind === "market" ? (
+      <CompoundMarketImage src={backSlot.src} />
+    ) : backSlot.kind === "kamino" ? (
+      <CompoundKaminoImage />
+    ) : (
+      <CompoundUsdcImage />
+    );
+  const front =
+    frontSlot.kind === "market" ? (
+      <CompoundMarketImage src={frontSlot.src} />
+    ) : frontSlot.kind === "kamino" ? (
+      <CompoundKaminoImage />
+    ) : (
+      <CompoundUsdcImage />
+    );
   return (
     <span
       aria-hidden="true"
@@ -737,6 +772,41 @@ export function getAutodepositProgressButtonLabel(
   }
 }
 
+export function getEarnSweepProgressPhase(
+  progress: EarnAutodepositProgress | undefined
+): {
+  isActive: boolean;
+  isComplete: boolean;
+  isRetryable: boolean;
+} {
+  return {
+    isActive: Boolean(
+      progress &&
+        ["requesting", "requested", "selected", "pull_confirmed"].includes(
+          progress.state
+        )
+    ),
+    isComplete: progress?.state === "completed",
+    isRetryable: Boolean(
+      progress && ["failed", "released", "canceled"].includes(progress.state)
+    ),
+  };
+}
+
+export function getEarnSweepDelegationWindow(
+  executeNowAvailableAtMs: number | null,
+  nowMs: number
+): { availableInLabel: string | null; isWaitingForDelegation: boolean } {
+  const availableInLabel =
+    executeNowAvailableAtMs === null
+      ? null
+      : formatLoadedScheduledSweepAvailableIn(executeNowAvailableAtMs, nowMs);
+  return {
+    availableInLabel,
+    isWaitingForDelegation: availableInLabel !== null,
+  };
+}
+
 function ScheduledTransactionRow({
   displayTimeZone,
   isAwaitingExecution = false,
@@ -765,16 +835,11 @@ function ScheduledTransactionRow({
   );
   const progressLabel = getAutodepositProgressLabel(progress);
   const progressButtonLabel = getAutodepositProgressButtonLabel(progress);
-  const isProgressActive = Boolean(
-    progress &&
-      ["requesting", "requested", "selected", "pull_confirmed"].includes(
-        progress.state
-      )
-  );
-  const isProgressComplete = progress?.state === "completed";
-  const isProgressRetryable = Boolean(
-    progress && ["failed", "released", "canceled"].includes(progress.state)
-  );
+  const {
+    isActive: isProgressActive,
+    isComplete: isProgressComplete,
+    isRetryable: isProgressRetryable,
+  } = getEarnSweepProgressPhase(progress);
   const timeLabel =
     progressLabel ??
     (isRetryable
@@ -786,11 +851,8 @@ function ScheduledTransactionRow({
     "executeNowAvailableAt" in sweep
       ? getLoadedScheduledSweepExecuteNowAvailableAtMs(sweep)
       : null;
-  const availableInLabel =
-    executeNowAvailableAtMs === null
-      ? null
-      : formatLoadedScheduledSweepAvailableIn(executeNowAvailableAtMs, nowMs);
-  const isWaitingForDelegation = availableInLabel !== null;
+  const { availableInLabel, isWaitingForDelegation } =
+    getEarnSweepDelegationWindow(executeNowAvailableAtMs, nowMs);
   const isButtonDisabled =
     isPending ||
     isExecuting ||
