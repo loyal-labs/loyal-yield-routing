@@ -12,6 +12,7 @@ import {
 import Image from "next/image";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { SOL_FEE_RESERVE } from "@/components/wallet-workspace/facelift/action-screens";
 import { usePublicEnv } from "@/contexts/public-env-context";
 import { useSend } from "@/hooks/use-send";
 import { openTrackedLink, trackWalletSendPressed } from "@/lib/core/analytics";
@@ -23,7 +24,6 @@ const font = "var(--font-geist-sans), sans-serif";
 const secondary = "rgba(60, 60, 67, 0.6)";
 const red = "#F9363C";
 const VAULT_RENT_EXEMPT_CUSHION_SOL = 0.001;
-const WALLET_FEE_RESERVE_SOL = 0.00005;
 
 export function isValidSolanaAddress(value: string): boolean {
   return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(value);
@@ -896,7 +896,7 @@ export function SendContent({
       if (token.symbol.toUpperCase() === "SOL") {
         const reserve = vaultContext
           ? VAULT_RENT_EXEMPT_CUSHION_SOL
-          : WALLET_FEE_RESERVE_SOL;
+          : SOL_FEE_RESERVE;
         if (token.balance - val < reserve) {
           val = Math.max(0, token.balance - reserve);
         }

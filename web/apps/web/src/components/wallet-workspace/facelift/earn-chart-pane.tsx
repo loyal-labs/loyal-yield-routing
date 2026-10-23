@@ -28,7 +28,6 @@ import type { EarnForecastApy } from "@/lib/kamino/earn-forecast.shared";
 
 const ASSET_BASE = "/wallet-workspace/facelift";
 const CHART_TABS = ["Forecast", "APY", "Earned"] as const;
-const FORECAST_PRINCIPAL_USD = 6000;
 
 export type ChartTab = (typeof CHART_TABS)[number];
 
@@ -55,12 +54,10 @@ function ChartBody({
 }) {
   const { isBalanceHidden } = useBalanceVisibility();
   const isNarrowViewport = useIsNarrowViewport();
-  // Same source the old workspace feeds the forecast: the live position
-  // balance once one exists, the marketing principal otherwise.
   const forecastPrincipal =
     earnData.hasPosition && earnData.earnBalanceUsd > 0
       ? earnData.earnBalanceUsd
-      : FORECAST_PRINCIPAL_USD;
+      : null;
   return (
     <div className="flex min-h-0 w-full flex-1 flex-col px-6 pt-2 pb-6">
       {activeTab === "Earned" ? (
@@ -70,6 +67,11 @@ function ChartBody({
           apyDataRevealed={isApyLoaded}
           axisTickCount={isExpanded && !isNarrowViewport ? 8 : 2}
           rangeId="30D"
+        />
+      ) : forecastPrincipal === null ? (
+        <div
+          className="flex min-h-0 flex-1 items-center justify-center text-muted-foreground"
+          role="status"
         />
       ) : !apy || apy.availability === "unavailable" ? (
         <div

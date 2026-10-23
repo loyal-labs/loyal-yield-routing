@@ -16,7 +16,7 @@ import {
   TOKEN_SEARCH_DEBOUNCE_MS,
   TOKEN_SEARCH_MIN_LENGTH,
 } from "@/components/wallet-sidebar/token-select-view";
-import type { SwapToken } from "@/components/wallet-sidebar/types";
+import { LOYL_TOKEN, type SwapToken } from "@/components/wallet-sidebar/types";
 import {
   ActionErrorBody,
   ActionProcessingBody,
@@ -626,6 +626,45 @@ function toSelectorToken(
     price: token.price,
     symbol: token.symbol,
   };
+}
+
+export function buildSwapTargetTokens({
+  derivedTokens,
+  earnEligibleMints,
+  earnProductAssets,
+  popularTokens,
+}: {
+  derivedTokens: SwapToken[];
+  earnEligibleMints: ReadonlySet<string>;
+  earnProductAssets: readonly { mint: string; symbol: string }[];
+  popularTokens: SwapToken[];
+}): SwapToken[] {
+  const heldMints = new Set(
+    derivedTokens.map((token) => token.mint).filter(Boolean)
+  );
+  const listedMints = new Set([
+    ...heldMints,
+    ...popularTokens.map((token) => token.mint),
+  ]);
+  const missingEarnStables = earnProductAssets
+    .filter((asset) => !listedMints.has(asset.mint))
+    .map((asset) => ({
+      balance: 0,
+      icon: getTokenIconUrl(asset.symbol),
+      mint: asset.mint,
+      price: 1,
+      symbol: asset.symbol,
+    }));
+  const rank = (token: SwapToken) =>
+    token.mint === LOYL_TOKEN.mint
+      ? 0
+      : token.mint && earnEligibleMints.has(token.mint)
+      ? 1
+      : 2;
+
+  return [...derivedTokens, ...missingEarnStables].sort(
+    (a, b) => rank(a) - rank(b)
+  );
 }
 
 export function SwapTokenSelectPane({

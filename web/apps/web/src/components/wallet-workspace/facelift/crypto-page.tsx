@@ -22,7 +22,7 @@ import {
   type CryptoRowActions,
 } from "@/components/wallet-workspace/facelift/crypto-pane";
 import { deriveSwapTokens, selectSwapToken } from "@/components/wallet-sidebar/swap-tokens";
-import { isEscapeGuardedTarget } from "@/components/wallet-workspace/facelift/keyboard";
+import { useEscapePage } from "@/components/wallet-workspace/facelift/escape-owner";
 import {
   MiddlePaneSlide,
   PaneReveal,
@@ -30,6 +30,7 @@ import {
 import {
   SendPane,
   SendRecipientPane,
+  useSendFormActive,
   useSendRecentRecipients,
 } from "@/components/wallet-workspace/facelift/send-pane";
 import {
@@ -37,10 +38,12 @@ import {
   SheetReveal,
 } from "@/components/wallet-workspace/facelift/sheet-reveal";
 import {
+  buildSwapTargetTokens,
   SwapPane,
   SwapTokenSelectPane,
 } from "@/components/wallet-workspace/facelift/swap-pane";
 import { TokenDetailPane } from "@/components/wallet-workspace/facelift/token-detail-pane";
+import { useAbandonActionsOnNavigate } from "@/components/wallet-workspace/facelift/use-abandon-actions-on-navigate";
 import { useStablecoinsUsd } from "@/components/wallet-workspace/facelift/use-stablecoins-usd";
 import {
   type ShieldedRow,
@@ -54,7 +57,6 @@ import {
   splitUsdBalance,
   useWalletDesktopData,
 } from "@/hooks/use-wallet-desktop-data";
-import { getTokenIconUrl } from "@/lib/token-icon";
 import {
   getStablecoinMintSetForSolanaEnv,
   isStablecoinMint,
@@ -172,14 +174,12 @@ export function CryptoPage({
     sendSelectRef.current = sendSelect;
   }
   const overlaySendSelect = sendSelect ?? sendSelectRef.current;
-  // Mirrors SendPane's step: selectors hide once a submit starts.
-  const [isSendFormActive, setIsSendFormActive] = useState(true);
-  const handleSendFormActiveChange = useCallback((isFormActive: boolean) => {
-    setIsSendFormActive(isFormActive);
-    if (!isFormActive) {
-      setSendSelect(null);
-    }
-  }, []);
+  const closeSendSelect = useCallback(() => setSendSelect(null), []);
+  const {
+    handleFormActiveChange: handleSendFormActiveChange,
+    isFormActive: isSendFormActive,
+    reopenForm: reopenSendForm,
+  } = useSendFormActive(closeSendSelect);
   const { recents: sendRecents, recordSend: recordSendRecent } =
     useSendRecentRecipients(data.walletAddress);
 
@@ -218,38 +218,16 @@ export function CryptoPage({
     () => new Set(earnProductAssets.map((asset) => asset.mint)),
     [earnProductAssets]
   );
-  // Receive-side picker list: held tokens plus Earn stables nothing else lists.
-  // Trending tokens are no longer inlined here — the selector renders them as
-  // its own "Trending" section and would otherwise list them twice. They still
-  // count as listed, so a trending Earn stable is not synthesized below.
-  const swapTargetTokens = useMemo<SwapToken[]>(() => {
-    const heldMints = new Set(
-      derivedTokens.map((token) => token.mint).filter(Boolean)
-    );
-    const listedMints = new Set([
-      ...heldMints,
-      ...popularTokens.map((token) => token.mint),
-    ]);
-    const missingEarnStables = earnProductAssets
-      .filter((asset) => !listedMints.has(asset.mint))
-      .map((asset) => ({
-        balance: 0,
-        icon: getTokenIconUrl(asset.symbol),
-        mint: asset.mint,
-        price: 1,
-        symbol: asset.symbol,
-      }));
-    const rank = (token: SwapToken) =>
-      token.mint === LOYL_TOKEN.mint
-        ? 0
-        : token.mint && earnEligibleMints.has(token.mint)
-        ? 1
-        : 2;
-
-    return [...derivedTokens, ...missingEarnStables].sort(
-      (a, b) => rank(a) - rank(b)
-    );
-  }, [derivedTokens, earnEligibleMints, earnProductAssets, popularTokens]);
+  const swapTargetTokens = useMemo<SwapToken[]>(
+    () =>
+      buildSwapTargetTokens({
+        derivedTokens,
+        earnEligibleMints,
+        earnProductAssets,
+        popularTokens,
+      }),
+    [derivedTokens, earnEligibleMints, earnProductAssets, popularTokens]
+  );
 
   const prevHadTokensRef = useRef(false);
   useEffect(() => {
@@ -283,11 +261,11 @@ export function CryptoPage({
       }
       setSendRecipient(null);
       setSendSelect(null);
-      setIsSendFormActive(true);
+      reopenSendForm();
       setIsUnshieldOpen(false);
       openAction({ type: "sendPanel" });
     },
-    [openAction]
+    [openAction, reopenSendForm]
   );
 
   const swapFromTokenRef = useRef(swapFromToken);
@@ -325,49 +303,29 @@ export function CryptoPage({
   );
   const closeUnshield = useCallback(() => setIsUnshieldOpen(false), []);
 
-  // Sidebar navigation abandons any in-progress action screen — the same rule
-  // the shell applies to Earn's deposit/withdraw/autodeposit views.
-  useEffect(() => {
+  useAbandonActionsOnNavigate(navigationNonce, () => {
     setViewStack([]);
     setSendSelect(null);
     closeSwap();
     closeUnshield();
-  }, [closeSwap, closeUnshield, navigationNonce]);
+  });
 
-  // Esc backs out of the open Send/Swap flow (the shell owns Esc for
-  // Earn's action screens). An open selector pane closes first; the next
-  // press leaves the flow. Skipped while an input is focused.
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (
-        event.key !== "Escape" ||
-        isEscapeGuardedTarget(event.target) ||
-        (viewStack.length === 0 && !isSwapOpen && !isUnshieldOpen)
-      ) {
+  useEscapePage(
+    viewStack.length > 0 || isSwapOpen || isUnshieldOpen,
+    () => {
+      if (sendSelect !== null) {
+        setSendSelect(null);
         return;
       }
-      // Overlays (info sheets) preventDefault their own Esc; checked after
-      // dispatch so listener registration order can't matter.
-      queueMicrotask(() => {
-        if (event.defaultPrevented) {
-          return;
-        }
-        if (sendSelect !== null) {
-          setSendSelect(null);
-          return;
-        }
-        if (swapSelectSide !== null) {
-          setSwapSelectSide(null);
-          return;
-        }
-        setViewStack([]);
-        closeSwap();
-        closeUnshield();
-      });
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  });
+      if (swapSelectSide !== null) {
+        setSwapSelectSide(null);
+        return;
+      }
+      setViewStack([]);
+      closeSwap();
+      closeUnshield();
+    }
+  );
 
   const handleSwapTokenSelect = useCallback(
     (side: "from" | "to", token: SwapToken) => {
