@@ -20,6 +20,51 @@ export type ActivityItem = {
     timestamp: string;
 };
 
+export type DepositWireAccountKey = {
+    isSigner: boolean;
+    isWritable: boolean;
+    pubkey: string;
+};
+
+export type DepositWireInstruction = {
+    dataBase64: string;
+    keys: Array<DepositWireAccountKey> | null;
+    programId: string;
+};
+
+export type DepositWireLookupTableAccount = {
+    key: string;
+    state: DepositWireLookupTableState;
+};
+
+export type DepositWireLookupTableState = {
+    addresses: Array<string> | null;
+    authority: string | null;
+    deactivationSlot: string;
+    lastExtendedSlot: number;
+    lastExtendedSlotStartIndex: number;
+};
+
+export type DepositWirePreparedOperation = {
+    instructions: Array<DepositWireInstruction> | null;
+    lookupTableAccounts: Array<DepositWireLookupTableAccount> | null;
+    operation: string;
+    payer: string;
+    programId: string;
+    requiresConfirmation: boolean;
+    simulationDiagnostics?: DepositWireSimulationDiagnostics;
+};
+
+export type DepositWireSimulationDiagnostics = {
+    includedPolicyAccounts: Array<string> | null;
+    kind: string;
+    policyAccount: string;
+    policySeed: string;
+    policyStage: string;
+    programId: string;
+    settingsPda: string;
+};
+
 export type EarnMaxActivity = {
     operations: Array<ActivityItem>;
     performance: Array<PerformancePoint>;
@@ -61,6 +106,210 @@ export type EarnMaxSummaryResponse = {
     summary: EarnMaxSummary;
 };
 
+export type EarnPolicyPersistence = {
+    cluster: string;
+    delegatedSigner: string;
+    kaminoLiquidityMints: Array<string> | null;
+    kaminoMarkets: Array<string> | null;
+    liquidityMint: string;
+    market: string;
+    policyAccount: string;
+    policyId: string;
+    policySeed: string;
+    riskProfile: string;
+    routeModes: Array<string> | null;
+    settings: string;
+    setupPolicyAccount: string;
+    setupPolicyId: string;
+    setupPolicySeed: string;
+    stableMints: Array<string> | null;
+    swapLanes: Array<EarnPolicySwapLanePersistence> | null;
+    targetReserve: string;
+    threshold: number;
+    universePreset: string;
+    vaultIndex: number;
+    vaultPubkey: string;
+    walletAddress: string;
+};
+
+export type EarnPolicyPrepareResponse = {
+    preparedPolicy: EarnPolicyPrepareWire;
+};
+
+export type EarnPolicyPrepareWire = {
+    finalizePrepared?: DepositWirePreparedOperation;
+    persistence: EarnPolicyPersistence;
+    policy: EarnPolicySeedRef;
+    prepared: DepositWirePreparedOperation;
+    setupPolicy: EarnSetupPolicyRef;
+    targetReserve: EarnPolicyTargetReserve;
+    vault: EarnPolicyVaultRef;
+};
+
+export type EarnPolicyRefundPrepareResponse = {
+    preparedVaultRefund?: PreparedEarnVaultRefund;
+};
+
+export type EarnPolicyRefundRecurringDelegation = {
+    account: string;
+    active: boolean;
+    amountPerPeriodRaw: string | null;
+    amountPulledRaw: string | null;
+    authority: string | null;
+    blockedReason: string | null;
+    canRefund: boolean;
+    delegatee: string | null;
+    delegator: string | null;
+    exists: boolean;
+    expiryTimestamp: string | null;
+    lamports: number | null;
+    lifecycleStatus: string;
+    mint: string | null;
+    policyAccount: string | null;
+    protected: boolean;
+    scheduledSweepCount: number;
+    source: string;
+    status: string;
+    targetActive: boolean;
+    targetId: string | null;
+    usage: string;
+};
+
+export type EarnPolicyRefundScanPolicy = {
+    account: string;
+    accountIndex: number | null;
+    activeAutodeposit: boolean;
+    activeManagedVault: boolean;
+    blockedReason: string | null;
+    canRefund: boolean;
+    dbPresent: boolean;
+    lamports: number | null;
+    recurringDelegations: Array<EarnPolicyRefundRecurringDelegation> | null;
+    referencedByActivePosition: boolean;
+    seed: string;
+    state: string;
+};
+
+export type EarnPolicyRefundScanResponse = {
+    policies: Array<EarnPolicyRefundScanPolicy> | null;
+    recurringDelegations: Array<EarnPolicyRefundRecurringDelegation> | null;
+    settingsPda: string;
+    vault: EarnPolicyRefundVaultEntry;
+    vaultIndex: number;
+    vaultPubkey: string;
+};
+
+export type EarnPolicyRefundVaultEntry = {
+    account: string;
+    blockedReason: string | null;
+    canRefund: boolean;
+    lamports: number;
+    tokenAccounts: Array<EarnVaultRefundTokenAccount> | null;
+    totalRefundableLamports: number;
+};
+
+export type EarnPolicySeedRef = {
+    account: string;
+    id: string;
+    seed: string;
+};
+
+export type EarnPolicySwapLanePersistence = {
+    actionAccount: string;
+    instructionConstraintIndexes: string;
+    lane: string;
+};
+
+export type EarnPolicyTargetReserve = {
+    liquidityMint: string;
+    liquidityTokenProgram: string;
+    market: string;
+    obligation: string;
+    reserve: string;
+};
+
+export type EarnPolicyVaultRef = {
+    accountIndex: number;
+    pubkey: string;
+};
+
+export type EarnPosition = {
+    currentHolding: EarnPositionCurrentHolding;
+    currentSupplyApyBps: string | null;
+    currentTotalAmountRaw: string;
+    currentTotalNominalUsdMicros: string;
+    display: EarnPositionDisplay;
+    holdings: Array<EarnPositionHolding> | null;
+    id: string;
+    initialHolding: EarnPositionInitialHolding;
+    principalAmountRaw: string;
+    status: string;
+};
+
+export type EarnPositionCurrentHolding = {
+    amountRaw: string;
+    liquidityMint: string;
+    market: string | null;
+    observedAt: string;
+    observedSlot: string;
+    provenance: EarnPositionProvenance;
+    reserve: string;
+};
+
+export type EarnPositionDisplay = {
+    label: string;
+    marketName: string;
+    mintSymbol: string;
+};
+
+export type EarnPositionHolding = {
+    amountRaw: string;
+    kind: string;
+    label: string;
+    liquidityMint: string;
+    market: string | null;
+    marketName: string;
+    observedAt: string;
+    observedSlot: string;
+    provenance: EarnPositionProvenance;
+    reserve: string | null;
+    sourceId: string;
+    supplyApyBps: string | null;
+    tokenProgramId: string;
+};
+
+export type EarnPositionInitialHolding = {
+    liquidityMint: string;
+    market: string | null;
+    reserve: string;
+    supplyApyBps: string | null;
+};
+
+export type EarnPositionProvenance = {
+    lastHoldingEventId?: string;
+    lastRebalanceDecisionId?: string;
+    owner?: string;
+    snapshotId?: string;
+    source?: string;
+    sourceCommitment?: string;
+    tokenAccount?: string;
+};
+
+export type EarnPositionReconcileRequest = {
+    force: boolean | null;
+};
+
+export type EarnPositionReconcileResponse = {
+    lastReconciledAt: string | null;
+    lastReconciledSlot: string | null;
+    positionId: string | null;
+    status: string;
+};
+
+export type EarnPositionResponse = {
+    position: EarnPosition;
+};
+
 export type EarnPublicStats = {
     aumDeltaVsPriorWeekUsd: number | null;
     aumSeries: Array<EarnStatsPoint> | null;
@@ -79,6 +328,13 @@ export type EarnSessionRequest = {
 export type EarnSessionResponse = {
     expiresAt: string;
     token: string;
+};
+
+export type EarnSetupPolicyRef = {
+    account: string;
+    id: string;
+    initObligationInstructionConstraintIndex: number;
+    seed: string;
 };
 
 export type EarnStateAutodeposit = {
@@ -273,6 +529,247 @@ export type EarnStatsPoint = {
     value: number;
 };
 
+export type EarnTransactionAccount = {
+    icon: string | null;
+    label: string;
+};
+
+export type EarnTransactionsResponse = {
+    transactions: Array<SerializedEarnTransaction> | null;
+};
+
+export type EarnVaultRefundEntry = {
+    account: string;
+    blockedReason: string | null;
+    canRefund: boolean;
+    lamports: number;
+    tokenAccounts: Array<EarnVaultRefundTokenAccount> | null;
+    totalRefundableLamports: number;
+};
+
+export type EarnVaultRefundTokenAccount = {
+    account: string;
+    amountRaw: string;
+    isUsdc: boolean;
+    lamports: number;
+    mint: string;
+};
+
+export type EarnWithdrawAccountingReserve = {
+    liquidityMint: string;
+    market: string;
+    obligation: string;
+    reserve: string;
+};
+
+export type EarnWithdrawExecutionReserve = {
+    liquidityMint: string;
+    market: string;
+    reserve: string;
+};
+
+export type EarnWithdrawLegacySource = {
+    amountRaw?: string;
+    id: string;
+    liquidityMint?: string;
+    market?: string;
+    mint?: string;
+    reserve?: string;
+    tokenAccount?: string;
+    type: 'reserve' | 'idle';
+};
+
+export type EarnWithdrawPersistence = {
+    accountingReserve?: string;
+    autodepositClose?: unknown;
+    cluster: string;
+    delegatedSigner: string;
+    executionReserve?: string;
+    isFinalStep?: boolean;
+    kaminoWithdrawAmountRaw?: string;
+    liquidityMint: string;
+    market?: string;
+    mode: string;
+    policyAccount: string;
+    policyId: string;
+    policySeed: string;
+    requestedWithdrawAmountRaw: string;
+    reserveWithdrawals?: Array<EarnWithdrawReserveMetadata> | null;
+    settings: string;
+    setupPolicyAccount?: string;
+    setupPolicyId?: string;
+    setupPolicySeed?: string;
+    sourceAmountRaw: string;
+    sourceId: string;
+    sourceMetadata: EarnWithdrawSourceMetadata;
+    sourceMint: string;
+    sourceTokenAccount?: string;
+    sourceType: string;
+    stepCount?: number;
+    stepIndex?: number;
+    targetReserve: string;
+    vaultCollateralCleanupIncluded: boolean;
+    vaultIndex: number;
+    vaultPubkey: string;
+    vaultUsdcRemainderRaw: string;
+    walletAddress: string;
+    walletTransferAmountRaw: string;
+    withdrawnAmountRaw: string;
+};
+
+export type EarnWithdrawPolicyRef = {
+    account: string;
+    id: string;
+    sameMintInstructionConstraintIndexes: string;
+    seed: string;
+    withdrawInstructionConstraintIndex: number;
+};
+
+export type EarnWithdrawPrepareRequest = {
+    /**
+     * Unsigned integer string, or "max"
+     */
+    amountRaw: string;
+    mode?: 'partial' | 'full';
+    source?: EarnWithdrawLegacySource;
+    sourceId?: string;
+};
+
+export type EarnWithdrawPrepareResponse = {
+    preparedWithdraw: EarnWithdrawPrepareWire;
+};
+
+export type EarnWithdrawPrepareWire = {
+    amountRaw: string;
+    autodepositClosePrepared: EarnWithdrawPrepareWireAutodepositClosePreparedStruct;
+    mode: string;
+    persistence: EarnWithdrawPersistence;
+    policy: EarnWithdrawPolicyRef;
+    prepared: DepositWirePreparedOperation;
+    setupPolicy?: EarnWithdrawSetupPolicyRef;
+    targetReserve: EarnPolicyTargetReserve;
+    vault: EarnWithdrawVault;
+    withdrawSteps: Array<EarnWithdrawStepWire> | null;
+};
+
+export type EarnWithdrawPrepareWireAutodepositClosePreparedStruct = {
+    [key: string]: never;
+};
+
+export type EarnWithdrawReserveMetadata = {
+    accountingReserve: string;
+    collateralAta: string;
+    executionMarket: string;
+    executionReserve: string;
+    kaminoWithdrawAmountRaw: string;
+    liquidityMint: string;
+    market: string;
+    reserve: string;
+    withdrawnAmountRaw: string;
+};
+
+export type EarnWithdrawSetupPolicyRef = {
+    account: string;
+    id: string;
+    seed: string;
+};
+
+export type EarnWithdrawSourceMetadata = {
+    liquidityMint?: string;
+    market?: string;
+    mint?: string;
+    reserve?: string;
+    tokenAccount?: string;
+};
+
+export type EarnWithdrawStepWire = {
+    accountingReserve: EarnWithdrawAccountingReserve;
+    amountRaw: string;
+    collateralAta: string | null;
+    executionReserve: EarnWithdrawExecutionReserve;
+    mode: string;
+    persistence: EarnWithdrawPersistence;
+    prepared: DepositWirePreparedOperation;
+    reserveWithdrawals: Array<EarnWithdrawReserveMetadata> | null;
+    stepCount: number;
+    stepIndex: number;
+};
+
+export type EarnWithdrawVault = {
+    accountIndex: number;
+    collateralAta: string | null;
+    pubkey: string;
+    usdcAta: string;
+};
+
+export type EarningsBar = {
+    apyBps: number | null;
+    avgPrincipalUsd: number;
+    earnedUsd: number;
+    endAt: string;
+    isCurrent: boolean;
+    label: string;
+    principalAmountRaw: string;
+    principalUsd: number;
+    startAt: string;
+};
+
+export type EarningsCoverage = {
+    currentReserveSampleAgeMs: number | null;
+    eventCount: number;
+    gappedReserves: Array<string> | null;
+    maxSampleGapMs: number | null;
+    missingReserves: Array<string> | null;
+    reserveCount: number;
+    sampleCount: number;
+    sampledReserveCount: number;
+    staleReserves: Array<string> | null;
+};
+
+export type EarningsError = {
+    error: EarningsUnavailableDetail;
+    freshness: string;
+    outcome: string;
+};
+
+export type EarningsRange = {
+    bars: Array<EarningsBar> | null;
+    currentApyBps: number | null;
+    lastDepositAt: string | null;
+    lifetimeEarnedUsd: number;
+    principalAmountRaw: string;
+    principalUsd: number;
+    rangeEarnedUsd: number;
+    sinceLastDepositEarnedUsd: number;
+    todayEarnedUsd: number;
+};
+
+export type EarningsRangeSet = {
+    coverage: EarningsCoverage;
+    freshness: string;
+    generatedAt: string;
+    historyRevision: string;
+    outcome: string;
+    principalMatchesHistory: boolean;
+    ranges: EarningsRanges;
+    snapshotAgeMs: number | null;
+    sourcePrincipalAmountRaw: string;
+    staleReason: string | null;
+};
+
+export type EarningsRanges = {
+    '1Y': EarningsRange;
+    '30D': EarningsRange;
+    '7D': EarningsRange;
+    ALL: EarningsRange;
+};
+
+export type EarningsUnavailableDetail = {
+    code: string;
+    detailCode?: string;
+    message: string;
+};
+
 export type ErrorDetail = {
     /**
      * Where the error occurred, e.g. 'body.items[3].tags' or 'path.thing-id'
@@ -436,6 +933,14 @@ export type PolicyBinding = {
     seed: string;
 };
 
+export type PreparedEarnVaultRefund = {
+    estimatedRefundLamports: number;
+    prepared: WirePreparedOperation;
+    settingsPda: string;
+    vault: EarnVaultRefundEntry;
+    vaultIndex: number;
+};
+
 export type PrivyAuthUser = {
     authMethod: string;
     displayAddress: string;
@@ -470,8 +975,31 @@ export type PushTokenSaved = {
     success: boolean;
 };
 
+export type RefundPrepareRequest = {
+    kind?: 'policy' | 'recurring_delegation' | 'vault';
+    policyAccount?: string;
+    recurringDelegation?: string;
+};
+
 export type RouteError = {
     error: EarnMaxErrorDetail;
+};
+
+export type SerializedEarnTransaction = {
+    amount: string;
+    confirmedAt: string;
+    confirmedSlot: string;
+    dateGroup: string;
+    destination: EarnTransactionAccount;
+    eventType: string;
+    id: string;
+    kind: string;
+    liquidityMint: string | null;
+    rawAmount: string;
+    signature: string;
+    sortTimestamp: string;
+    source: EarnTransactionAccount;
+    timestamp: string;
 };
 
 export type SummariesResponse = {
@@ -502,6 +1030,40 @@ export type SummaryTopic = {
     id: string;
     sources: Array<string>;
     title: string;
+};
+
+export type WireAddressLookupTable = {
+    key: string;
+    state: WireAddressLookupTableStateStruct;
+};
+
+export type WireAddressLookupTableStateStruct = {
+    addresses: Array<string> | null;
+    authority: string | null;
+    deactivationSlot: string;
+    lastExtendedSlot: number;
+    lastExtendedSlotStartIndex: number;
+};
+
+export type WirePreparedInstruction = {
+    dataBase64: string;
+    keys: Array<WirePreparedInstructionKey> | null;
+    programId: string;
+};
+
+export type WirePreparedInstructionKey = {
+    isSigner: boolean;
+    isWritable: boolean;
+    pubkey: string;
+};
+
+export type WirePreparedOperation = {
+    instructions: Array<WirePreparedInstruction> | null;
+    lookupTableAccounts: Array<WireAddressLookupTable> | null;
+    operation: string;
+    payer: string;
+    programId: string;
+    requiresConfirmation: boolean;
 };
 
 export type WithdrawalView = {
@@ -989,6 +1551,40 @@ export type GetEarnMaxSummaryResponses = {
 
 export type GetEarnMaxSummaryResponse = GetEarnMaxSummaryResponses[keyof GetEarnMaxSummaryResponses];
 
+export type GetEarnTransactionsData = {
+    body?: never;
+    headers?: {
+        Authorization?: string;
+        Cookie?: string;
+        'X-Forwarded-Host'?: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/smart-accounts/earn-transactions';
+};
+
+export type GetEarnTransactionsErrors = {
+    /**
+     * Unauthorized
+     */
+    401: RouteError;
+    /**
+     * Service Unavailable
+     */
+    503: RouteError;
+};
+
+export type GetEarnTransactionsError = GetEarnTransactionsErrors[keyof GetEarnTransactionsErrors];
+
+export type GetEarnTransactionsResponses = {
+    /**
+     * OK
+     */
+    200: EarnTransactionsResponse;
+};
+
+export type GetEarnTransactionsResponse = GetEarnTransactionsResponses[keyof GetEarnTransactionsResponses];
+
 export type PostEarnSessionData = {
     body?: EarnSessionRequest;
     path?: never;
@@ -1059,6 +1655,286 @@ export type GetEarnStateResponses = {
 };
 
 export type GetEarnStateResponse = GetEarnStateResponses[keyof GetEarnStateResponses];
+
+export type GetEarnEarningsData = {
+    body?: never;
+    headers?: {
+        Authorization?: string;
+        Cookie?: string;
+        'X-Forwarded-Host'?: string;
+    };
+    path?: never;
+    query?: {
+        timezone?: string;
+    };
+    url: '/api/smart-accounts/yield-optimization/earnings';
+};
+
+export type GetEarnEarningsErrors = {
+    /**
+     * Unauthorized
+     */
+    401: RouteError;
+    /**
+     * Service Unavailable
+     */
+    503: EarningsError;
+};
+
+export type GetEarnEarningsError = GetEarnEarningsErrors[keyof GetEarnEarningsErrors];
+
+export type GetEarnEarningsResponses = {
+    /**
+     * OK
+     */
+    200: EarningsRangeSet;
+};
+
+export type GetEarnEarningsResponse = GetEarnEarningsResponses[keyof GetEarnEarningsResponses];
+
+export type PostEarnPoliciesPrepareData = {
+    body?: never;
+    headers?: {
+        Authorization?: string;
+        Cookie?: string;
+        'X-Forwarded-Host'?: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/smart-accounts/yield-optimization/policies/prepare';
+};
+
+export type PostEarnPoliciesPrepareErrors = {
+    /**
+     * Unauthorized
+     */
+    401: RouteError;
+    /**
+     * Conflict
+     */
+    409: RouteError;
+    /**
+     * Internal Server Error
+     */
+    500: RouteError;
+};
+
+export type PostEarnPoliciesPrepareError = PostEarnPoliciesPrepareErrors[keyof PostEarnPoliciesPrepareErrors];
+
+export type PostEarnPoliciesPrepareResponses = {
+    /**
+     * OK
+     */
+    200: EarnPolicyPrepareResponse;
+};
+
+export type PostEarnPoliciesPrepareResponse = PostEarnPoliciesPrepareResponses[keyof PostEarnPoliciesPrepareResponses];
+
+export type PostEarnPolicyRefundsPrepareData = {
+    body?: RefundPrepareRequest;
+    headers?: {
+        Authorization?: string;
+        Cookie?: string;
+        'X-Forwarded-Host'?: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/smart-accounts/yield-optimization/policy-refunds/prepare';
+};
+
+export type PostEarnPolicyRefundsPrepareErrors = {
+    /**
+     * Bad Request
+     */
+    400: RouteError;
+    /**
+     * Unauthorized
+     */
+    401: RouteError;
+    /**
+     * Conflict
+     */
+    409: RouteError;
+    /**
+     * Internal Server Error
+     */
+    500: RouteError;
+    /**
+     * Service Unavailable
+     */
+    503: RouteError;
+};
+
+export type PostEarnPolicyRefundsPrepareError = PostEarnPolicyRefundsPrepareErrors[keyof PostEarnPolicyRefundsPrepareErrors];
+
+export type PostEarnPolicyRefundsPrepareResponses = {
+    /**
+     * OK
+     */
+    200: EarnPolicyRefundPrepareResponse;
+};
+
+export type PostEarnPolicyRefundsPrepareResponse = PostEarnPolicyRefundsPrepareResponses[keyof PostEarnPolicyRefundsPrepareResponses];
+
+export type ScanEarnPolicyRefundsData = {
+    body?: never;
+    headers?: {
+        Authorization?: string;
+        Cookie?: string;
+        'X-Forwarded-Host'?: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/smart-accounts/yield-optimization/policy-refunds/scan';
+};
+
+export type ScanEarnPolicyRefundsErrors = {
+    /**
+     * Unauthorized
+     */
+    401: RouteError;
+    /**
+     * Conflict
+     */
+    409: RouteError;
+    /**
+     * Internal Server Error
+     */
+    500: RouteError;
+};
+
+export type ScanEarnPolicyRefundsError = ScanEarnPolicyRefundsErrors[keyof ScanEarnPolicyRefundsErrors];
+
+export type ScanEarnPolicyRefundsResponses = {
+    /**
+     * OK
+     */
+    200: EarnPolicyRefundScanResponse;
+};
+
+export type ScanEarnPolicyRefundsResponse = ScanEarnPolicyRefundsResponses[keyof ScanEarnPolicyRefundsResponses];
+
+export type GetEarnPositionData = {
+    body?: never;
+    headers?: {
+        Authorization?: string;
+        Cookie?: string;
+        'X-Forwarded-Host'?: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/smart-accounts/yield-optimization/position';
+};
+
+export type GetEarnPositionErrors = {
+    /**
+     * Unauthorized
+     */
+    401: RouteError;
+    /**
+     * Conflict
+     */
+    409: RouteError;
+    /**
+     * Service Unavailable
+     */
+    503: RouteError;
+};
+
+export type GetEarnPositionError = GetEarnPositionErrors[keyof GetEarnPositionErrors];
+
+export type GetEarnPositionResponses = {
+    /**
+     * OK
+     */
+    200: EarnPositionResponse;
+};
+
+export type GetEarnPositionResponse = GetEarnPositionResponses[keyof GetEarnPositionResponses];
+
+export type PostEarnPositionReconcileData = {
+    body?: EarnPositionReconcileRequest;
+    headers?: {
+        Authorization?: string;
+        Cookie?: string;
+        'X-Forwarded-Host'?: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/smart-accounts/yield-optimization/position/reconcile';
+};
+
+export type PostEarnPositionReconcileErrors = {
+    /**
+     * Unauthorized
+     */
+    401: RouteError;
+    /**
+     * Conflict
+     */
+    409: RouteError;
+    /**
+     * Internal Server Error
+     */
+    500: RouteError;
+};
+
+export type PostEarnPositionReconcileError = PostEarnPositionReconcileErrors[keyof PostEarnPositionReconcileErrors];
+
+export type PostEarnPositionReconcileResponses = {
+    /**
+     * OK
+     */
+    200: EarnPositionReconcileResponse;
+};
+
+export type PostEarnPositionReconcileResponse = PostEarnPositionReconcileResponses[keyof PostEarnPositionReconcileResponses];
+
+export type PostEarnWithdrawalsPrepareData = {
+    body?: EarnWithdrawPrepareRequest;
+    headers?: {
+        Authorization?: string;
+        Cookie?: string;
+        'X-Forwarded-Host'?: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/smart-accounts/yield-optimization/withdrawals/prepare';
+};
+
+export type PostEarnWithdrawalsPrepareErrors = {
+    /**
+     * Bad Request
+     */
+    400: RouteError;
+    /**
+     * Unauthorized
+     */
+    401: RouteError;
+    /**
+     * Conflict
+     */
+    409: RouteError;
+    /**
+     * Internal Server Error
+     */
+    500: RouteError;
+    /**
+     * Service Unavailable
+     */
+    503: RouteError;
+};
+
+export type PostEarnWithdrawalsPrepareError = PostEarnWithdrawalsPrepareErrors[keyof PostEarnWithdrawalsPrepareErrors];
+
+export type PostEarnWithdrawalsPrepareResponses = {
+    /**
+     * OK
+     */
+    200: EarnWithdrawPrepareResponse;
+};
+
+export type PostEarnWithdrawalsPrepareResponse = PostEarnWithdrawalsPrepareResponses[keyof PostEarnWithdrawalsPrepareResponses];
 
 export type GetSummariesData = {
     body?: never;
