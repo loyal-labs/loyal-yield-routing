@@ -162,9 +162,9 @@ func (h earnRoutes) recordAutodepositSetupIntent(ctx context.Context, in autodep
 	}
 
 	row := h.YieldDB.QueryRow(ctx, `INSERT INTO loyal_yield.balance_sweep_targets (
-		active, authority, balance_sweep_policy_id, chain_observation_slot, chain_status, cluster,
+		desired_active, authority, balance_sweep_policy_id, chain_observation_slot, chain_status, cluster,
 		delegated_signers, first_seen_at, last_seen_at, last_seen_signature, last_seen_slot,
-		lifecycle_status, max_amount_per_period, period_length_seconds,
+		max_amount_per_period, period_length_seconds,
 		policy_account, policy_confirmed_slot, policy_seed, policy_signature,
 		recurring_delegation, recurring_delegation_confirmed_slot,
 		recurring_delegation_expiry_timestamp, recurring_delegation_nonce, recurring_delegation_signature,
@@ -174,7 +174,7 @@ func (h earnRoutes) recordAutodepositSetupIntent(ctx context.Context, in autodep
 	) VALUES (
 		true, $1, NULL, 0, 'pending', $2,
 		ARRAY[$3::text], $4, $4, $5, 0,
-		'pending', $6, $7,
+		$6, $7,
 		$8, NULL, $9, NULL,
 		$10, NULL,
 		$11, $12, NULL,
@@ -183,7 +183,7 @@ func (h earnRoutes) recordAutodepositSetupIntent(ctx context.Context, in autodep
 		$21, $22, $23
 	)
 	ON CONFLICT (policy_account) DO UPDATE SET
-		active = true,
+		desired_active = true,
 		max_amount_per_period = EXCLUDED.max_amount_per_period,
 		period_length_seconds = EXCLUDED.period_length_seconds,
 		recurring_delegation_expiry_timestamp = EXCLUDED.recurring_delegation_expiry_timestamp,
