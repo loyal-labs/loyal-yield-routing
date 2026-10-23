@@ -36,6 +36,22 @@ JavaScript (no Metro connection required). It uses `com.loyal.app.dev`, remote
 development signing credentials, and its own update channel; it does not publish
 to the dApp Store or update the production channel.
 
+Android 0.6.0 releases use the existing `production` profile for the Play Store
+AAB (`com.askloyal.app`) and `dapp-store` for the APK (`com.loyal.app`). Pass
+`--auto-submit` with the Play Store build to reuse the existing submission
+configuration; the previous release was submitted to the internal testing track.
+The dApp Store profile produces an APK file without a store submission.
+
+These profiles and `dapp-store-development` pin Bun 1.3.11. The mobile
+`eas-build-pre-install` hook installs the parent `web/` workspace with its frozen
+lockfile so shared packages resolve in the monorepo before the mobile install.
+The mirror generator removes this monorepo-only hook from the standalone mobile
+mirror, where EAS installs the app's dependencies directly. The source hook also
+skips the parent install when no parent workspace lockfile exists.
+Production uses the app-version runtime, now 0.6.0. Development retains the
+`0.5.0-hardware-wallet-v1` runtime used by dev build 11 and its biometric OTA;
+change it when the development native module set changes.
+
 ## Architecture
 
 ### Directory Structure
@@ -72,6 +88,25 @@ Privy (`@privy-io/expo`) is the identity layer; `src/components/wallet/PrivyProv
 
 # recurred: 0
 
+### Local wallet upgrades and recovery
+
+Legacy biometric login uses `wallet_biometric_password`, a SecureStore record
+protected by biometric authentication. Keep it through PIN unlocks and native
+module failures. Remove it only after a subsequent hardware biometric unlock
+opens the persisted key to the same wallet. Checking the enabled flag must not
+read the protected PIN or trigger an authentication prompt.
+
+Enabling biometrics requests one approval: Android authenticates encryption,
+while iOS encrypts with the public key and authenticates one verification
+decrypt. Verify the stored wrapped bytes match before enabling; do not add
+immediate verification decrypts on Android, which each open another prompt.
+Keep the existing per-operation native authentication requirements unchanged.
+
+Canceled or failed hardware reads are retryable; only an explicitly invalidated
+key opens recovery. Recovery reuses the import screen without resetting the
+wallet, rejects a different wallet's key before any storage writes, and clears
+old biometric credentials only after the replacement wallet has been stored.
+
 ### Key Conventions
 
 - **Path alias**: `@/*` maps to `./src/*` (configured in `tsconfig.json` and `jest.config.js`)
@@ -96,7 +131,10 @@ EXPO_PUBLIC_SOLANA_ENV=mainnet
 ```
 
 - `EXPO_PUBLIC_API_BASE_URL` selects loyal-web, the one API server for content,
-  Earn and push; its fallback is `https://next.askloyal.com`.
+  Earn and push; its fallback and every EAS build profile use
+  `https://next.askloyal.com`. This selects loyal-web, including its proxy for
+  routes still owned by Next. Profile edits take effect in subsequent builds;
+  they do not change installed apps or publish an OTA update.
 - `EXPO_PUBLIC_GRID_AUTH_BASE_URL` selects the passkey auth domain; its fallback
   is `https://auth.askloyal.com`.
 - `EXPO_PUBLIC_SOLANA_ENV` selects the Solana cluster.

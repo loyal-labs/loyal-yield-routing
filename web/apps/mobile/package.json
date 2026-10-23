@@ -10,7 +10,8 @@
     "lint": "expo lint",
     "test": "jest",
     "verify:withdraw-latency:e2e": "bun run scripts/verify-withdraw-latency-e2e.ts",
-    "verify:insufficient-sol:e2e": "bun run scripts/verify-withdraw-latency-e2e.ts --insufficient-sol"
+    "verify:insufficient-sol:e2e": "bun run scripts/verify-withdraw-latency-e2e.ts --insufficient-sol",
+    "eas-build-pre-install": "if [ -f ../../bun.lock ]; then bun install --cwd ../.. --frozen-lockfile; fi"
   },
   "dependencies": {
     "@coral-xyz/anchor": "^0.32.1",
