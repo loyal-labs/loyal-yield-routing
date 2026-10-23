@@ -29,6 +29,10 @@ import {
   ScrambleText,
   useBalanceVisibility,
 } from "@/components/wallet-workspace/facelift/balance-visibility";
+import {
+  PANE_CLIP,
+  PANE_CLIP_MOBILE_ONLY,
+} from "@/components/wallet-workspace/facelift/pane-clip";
 import { PaneReveal } from "@/components/wallet-workspace/facelift/pane-transitions";
 import { TextSwap } from "@/components/wallet-workspace/facelift/text-swap";
 import { ThemedIcon } from "@/components/wallet-workspace/facelift/themed-icon";
@@ -353,14 +357,11 @@ export function SwapPane({
       : null);
 
   return (
-    /* The result screens unclip the pane on desktop so their dog can drop
-        into the shell's 8px gap and sit flush with the viewport bottom (same
-        escape the earn empty pane uses); the form keeps the clip. */
     <section
       className={`flex h-full w-full min-w-0 flex-1 flex-col rounded-3xl bg-card max-[795px]:rounded-none ${
         step === "success" || step === "error"
-          ? "max-[795px]:overflow-clip"
-          : "overflow-clip"
+          ? PANE_CLIP_MOBILE_ONLY
+          : PANE_CLIP
       }`}
     >
       <header className="flex w-full shrink-0 items-center p-2">
