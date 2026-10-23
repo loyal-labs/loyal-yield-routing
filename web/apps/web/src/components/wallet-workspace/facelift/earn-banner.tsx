@@ -14,8 +14,6 @@ function bannerAsset(file: string): string {
   return `${ASSET_BASE}/${file}?${EARN_BANNER_ASSET_VERSION_QUERY}=${ASSET_VERSION}`;
 }
 
-// Same autoplay clock as the mobile home carousel; the story pill fill reads
-// it too, so the bar always lands exactly when the banner rolls.
 const ROLL_INTERVAL_MS = 4000;
 
 const COLLAPSE_GENERATION = "1";

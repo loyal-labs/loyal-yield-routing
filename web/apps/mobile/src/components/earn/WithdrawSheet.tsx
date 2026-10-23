@@ -163,8 +163,6 @@ export function WithdrawSheet({
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null);
-  // MAX means "empty this source". The 2-decimal input can't hold the exact
-  // balance (5.939), so we display a floored value but submit the exact amount.
   const [maxSelected, setMaxSelected] = useState(false);
 
   const { sheetHeight, snapPoints } = useFixedSheetLayout(

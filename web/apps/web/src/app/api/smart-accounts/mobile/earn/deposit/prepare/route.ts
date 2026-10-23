@@ -12,14 +12,10 @@ import type { SolanaEnv } from "@loyal-labs/solana-rpc";
 import { Connection, PublicKey } from "@solana/web3.js";
 import { NextResponse } from "next/server";
 
-import { getOrCreateCurrentUser } from "@/features/chat/server/app-user";
 import { authenticateMobileWalletRequest } from "@/features/identity/server/mobile-wallet-auth";
 import { WalletAuthError } from "@/features/identity/server/wallet-auth-errors";
-import {
-  ensureWalletUserSmartAccountTraced,
-  findReadyCurrentUserSmartAccount,
-  isSmartAccountProvisioningError,
-} from "@/features/smart-accounts/server/service";
+import { resolveFundedSmartAccount } from "@/features/smart-accounts/server/funded-smart-account.server";
+import { isSmartAccountProvisioningError } from "@/features/smart-accounts/server/service";
 import { getServerEnv } from "@/lib/core/config/server";
 import { resolveLoyalWebSolanaEnvFromEnv } from "@/lib/core/config/solana-env-override";
 import { getServerSolanaEndpoints } from "@/lib/solana/rpc-endpoints.server";
@@ -80,29 +76,6 @@ function getConnection(cluster: SolanaEnv): Connection {
   return connection;
 }
 
-// Sum the selected mint across the wallet's token accounts (parsed RPC; no
-// spl-token dependency, mirroring the frontend asset provider).
-async function getWalletMintBalanceRaw(
-  connection: Connection,
-  owner: PublicKey,
-  mint: PublicKey
-): Promise<bigint> {
-  const { value } = await connection.getParsedTokenAccountsByOwner(owner, {
-    mint,
-  });
-  let total = BigInt(0);
-  for (const entry of value) {
-    const parsed = entry.account.data.parsed as
-      | { info?: { tokenAmount?: { amount?: unknown } } }
-      | undefined;
-    const amount = parsed?.info?.tokenAmount?.amount;
-    if (typeof amount === "string") {
-      total += BigInt(amount);
-    }
-  }
-  return total;
-}
-
 export async function POST(request: Request) {
   let body: unknown;
   try {
@@ -156,51 +129,25 @@ export async function POST(request: Request) {
   // product mint, which defaults those to USDC.
   mint = productMint.mint.toBase58();
 
-  // Resolve (provisioning if needed) the canonical smart account for this
-  // wallet — the same account the web flow uses, so Earn is one position
-  // everywhere. `ensureWalletUserSmartAccount` is idempotent: an account
-  // created on web is reused at no cost. The *first-ever* provisioning is
-  // sponsored (Loyal pays rent), so gate it behind real funds — the wallet must
-  // already hold the selected mint it is depositing. This makes free-account spam
-  // economically infeasible (each new account needs a distinct funded wallet)
-  // without depending on the captcha or external rate-limit infra.
   let settingsPda: string;
   let smartAccountAddress: string;
   try {
-    const user = await getOrCreateCurrentUser({
-      provider: "solana",
-      authMethod: "wallet",
-      subjectAddress: walletAddress,
+    const gate = await resolveFundedSmartAccount({
+      connection,
       walletAddress,
+      mint: productMint.mint,
+      amountRaw,
+      request,
     });
-    const existing = await findReadyCurrentUserSmartAccount({
-      userId: user.id,
-      walletAddress,
-    });
-    if (existing) {
-      settingsPda = existing.settingsPda;
-      smartAccountAddress = existing.smartAccountAddress;
-    } else {
-      const mintBalanceRaw = await getWalletMintBalanceRaw(
-        connection,
-        new PublicKey(walletAddress),
-        productMint.mint
+    if (gate.outcome === "insufficient_balance") {
+      return jsonError(
+        402,
+        "insufficient_balance",
+        "Wallet must hold the selected mint before its Earn account can be created."
       );
-      if (mintBalanceRaw < amountRaw) {
-        return jsonError(
-          402,
-          "insufficient_balance",
-          "Wallet must hold the selected mint before its Earn account can be created."
-        );
-      }
-      const ensured = await ensureWalletUserSmartAccountTraced({
-        userId: user.id,
-        walletAddress,
-        request,
-      });
-      settingsPda = ensured.smartAccount.settingsPda;
-      smartAccountAddress = ensured.smartAccount.smartAccountAddress;
     }
+    settingsPda = gate.settingsPda;
+    smartAccountAddress = gate.smartAccountAddress;
   } catch (error) {
     if (isSmartAccountProvisioningError(error)) {
       return jsonError(error.status, error.code, error.message);
