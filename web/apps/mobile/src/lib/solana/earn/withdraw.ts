@@ -1,12 +1,13 @@
-import { normalizeLoyalCluster } from "@loyal-labs/actions";
+import type { EarnCleanupConfirmRequest } from "@loyal-labs/api";
 import {
-  createSmartAccountVaultsClient,
+  hydratePreparedEarnUsdcAutodepositClose,
   hydratePreparedEarnUsdcWithdraw,
-  type SmartAccountEarnUsdcCleanupInput,
+  hydratePreparedOperation,
   type SmartAccountPreparedEarnUsdcWithdraw,
+  type WirePreparedLoyalSmartAccountsOperation,
+  type WireSmartAccountPreparedEarnUsdcAutodepositClose,
   type WireSmartAccountPreparedEarnUsdcWithdraw,
 } from "@loyal-labs/smart-account-vaults";
-import { PublicKey } from "@solana/web3.js";
 
 import { getConnection } from "@/lib/solana/rpc/connection";
 import { assertSolForFees } from "@/lib/wallet/insufficient-sol-error";
@@ -24,14 +25,11 @@ import {
   confirmEarnWithdraw,
   confirmEarnWithdrawCleanup,
   EarnApiError,
-  type EarnWithdrawCleanupPrepareContext,
   type EarnWithdrawConfirmBody,
-  fetchEarnWithdrawCleanupPrepareContext,
   prepareEarnWithdraw,
-  type EarnAuthFields,
+  prepareEarnWithdrawCleanup,
   type EarnWithdrawMode,
 } from "./earn-api";
-import { signEarnAuth, withEarnAuth } from "./earn-auth";
 import { ensureEarnSession } from "./earn-session";
 import {
   signAndSendPreparedOperations,
@@ -64,50 +62,15 @@ type EarnWithdrawSendResult = EarnWithdrawResult & {
   withdrawalConfirmedSlots: string[];
 };
 
-function hydrateEarnWithdrawCleanupInput(
-  context: EarnWithdrawCleanupPrepareContext,
-  walletAddress: PublicKey,
-): SmartAccountEarnUsdcCleanupInput {
-  const wire = context.cleanupInput;
-  return {
-    cluster: normalizeLoyalCluster(context.cluster),
-    feePayer: walletAddress,
-    policySigner: new PublicKey(wire.policySigner),
-    vaultTokenAccounts: wire.vaultTokenAccounts.map((account) => ({
-      address: new PublicKey(account.address),
-      amountRaw: BigInt(account.amountRaw),
-      decimals: account.decimals,
-      mint: new PublicKey(account.mint),
-      tokenProgramId: new PublicKey(account.tokenProgramId),
-    })),
-    settingsPda: new PublicKey(context.settingsPda),
-    walletAddress,
-    yieldRoutingPolicy: {
-      account: new PublicKey(wire.yieldRoutingPolicy.account),
-      seed: BigInt(wire.yieldRoutingPolicy.seed),
-      ...(wire.yieldRoutingPolicy.setupPolicy
-        ? {
-            setupPolicy: {
-              account: new PublicKey(
-                wire.yieldRoutingPolicy.setupPolicy.account,
-              ),
-              seed: BigInt(wire.yieldRoutingPolicy.setupPolicy.seed),
-            },
-          }
-        : {}),
-    },
-  };
-}
-
 const WITHDRAW_NETWORK_MESSAGE =
   "We couldn't reach the network to prepare the withdrawal. Your funds are safe — check your connection and try again.";
 
-const RETRYABLE_CLEANUP_CONTEXT_CODES = new Set([
-  "context_failed",
-  "resolve_failed",
+const RETRYABLE_CLEANUP_PREPARE_CODES = new Set([
+  "full_withdrawal_projection_pending",
+  "full_exit_verification_retryable",
 ]);
-const CLEANUP_CONTEXT_ATTEMPTS = 8;
-const CLEANUP_CONTEXT_RETRY_DELAY_MS = 2_500;
+const CLEANUP_PREPARE_ATTEMPTS = 8;
+const CLEANUP_PREPARE_RETRY_DELAY_MS = 2_500;
 
 // The cleanup confirm 503s (`full_exit_verification_retryable`) while the
 // backend's RPC catches up to the cleanup slot for its zero proof. A dropped
@@ -146,31 +109,6 @@ async function retryEarnApiCall<T>(args: {
     }
   }
   throw lastError;
-}
-
-async function fetchCleanupContextWithRetry(args: {
-  signer: Signer;
-  prepareAuth: EarnAuthFields;
-  minContextSlot: string;
-  flowId: string;
-}): Promise<EarnWithdrawCleanupPrepareContext> {
-  return retryEarnApiCall({
-    attempts: CLEANUP_CONTEXT_ATTEMPTS,
-    delayMs: CLEANUP_CONTEXT_RETRY_DELAY_MS,
-    retryableCodes: RETRYABLE_CLEANUP_CONTEXT_CODES,
-    run: () =>
-      withEarnAuth(
-        args.signer,
-        args.prepareAuth,
-        "earn-withdraw-prepare",
-        (auth) =>
-          fetchEarnWithdrawCleanupPrepareContext({
-            auth,
-            flowId: args.flowId,
-            minContextSlot: args.minContextSlot,
-          }),
-      ),
-  });
 }
 
 function withdrawConfirmBody(args: {
@@ -403,42 +341,48 @@ async function runEarnWithdraw(
     };
   }
 
+  const walletAddress = args.signer.publicKey.toBase58();
   const minContextSlot = withdrawResult.withdrawalConfirmedSlots.reduce(
     (latest, slot) => (BigInt(slot) > BigInt(latest) ? slot : latest),
   );
   let cleanupSignature: string | undefined;
   try {
-    const prepareAuth = await signEarnAuth(
-      args.signer,
-      "earn-withdraw-prepare",
-    );
-    const cleanupContext = await fetchCleanupContextWithRetry({
-      flowId: flow.flowId,
-      signer: args.signer,
-      prepareAuth,
-      minContextSlot,
+    const { preparedCleanup: wireCleanup } = await retryEarnApiCall({
+      attempts: CLEANUP_PREPARE_ATTEMPTS,
+      delayMs: CLEANUP_PREPARE_RETRY_DELAY_MS,
+      retryableCodes: RETRYABLE_CLEANUP_PREPARE_CODES,
+      run: () =>
+        prepareEarnWithdrawCleanup({
+          flowId: flow.flowId,
+          minContextSlot,
+          walletAddress,
+        }),
     });
     flow.observe("full_exit_verify");
-    const cleanupClient = createSmartAccountVaultsClient({
-      connection: getConnection(),
-      programId: new PublicKey(cleanupContext.programId),
-    });
-    const preparedCleanup = await withConnectionRetry(
-      "device cleanup prepare",
-      WITHDRAW_NETWORK_MESSAGE,
-      () =>
-        cleanupClient.prepareEarnUsdcCleanup(
-          hydrateEarnWithdrawCleanupInput(
-            cleanupContext,
-            args.signer.publicKey,
-          ),
-        ),
-    );
     flow.observe("cleanup_prepare", { cleanupRequired: true });
+    let autodepositCloseSignature: string | undefined;
+    let autodepositCloseConfirmedSlot: string | undefined;
+    if (wireCleanup.autodepositClosePrepared) {
+      const [closeResult] = await signAndSendPreparedOperations({
+        connection: getConnection(),
+        signer: args.signer,
+        operations: [
+          hydratePreparedEarnUsdcAutodepositClose(
+            wireCleanup.autodepositClosePrepared as unknown as WireSmartAccountPreparedEarnUsdcAutodepositClose,
+          ).prepared,
+        ],
+      });
+      autodepositCloseSignature = closeResult?.signature;
+      autodepositCloseConfirmedSlot = closeResult?.confirmedSlot;
+    }
     const [cleanupResult] = await signAndSendPreparedOperations({
       connection: getConnection(),
       signer: args.signer,
-      operations: [preparedCleanup.prepared],
+      operations: [
+        hydratePreparedOperation(
+          wireCleanup.prepared as unknown as WirePreparedLoyalSmartAccountsOperation,
+        ),
+      ],
     });
     flow.observe("cleanup_wallet_submit_confirm", {
       chainState: "confirmed",
@@ -446,23 +390,20 @@ async function runEarnWithdraw(
     });
     cleanupSignature = cleanupResult?.signature;
     if (cleanupResult) {
+      const confirmBody: EarnCleanupConfirmRequest = {
+        autodepositCloseConfirmedSlot,
+        autodepositCloseSignature,
+        cleanupSignature: cleanupResult.signature,
+        confirmedSlot: cleanupResult.confirmedSlot,
+        preparedCleanup: wireCleanup,
+      };
       try {
         await retryEarnApiCall({
           attempts: CLEANUP_CONFIRM_ATTEMPTS,
           delayMs: CLEANUP_CONFIRM_RETRY_DELAY_MS,
           retryableCodes: RETRYABLE_CLEANUP_CONFIRM_CODES,
           run: () =>
-            withEarnAuth(
-              args.signer,
-              prepareAuth,
-              "earn-withdraw-confirm",
-              (auth) =>
-                confirmEarnWithdrawCleanup({
-                  auth,
-                  cleanupSignature: cleanupResult.signature,
-                  confirmedSlot: cleanupResult.confirmedSlot,
-                }),
-            ),
+            confirmEarnWithdrawCleanup({ body: confirmBody, walletAddress }),
         });
         flow.observe("cleanup_backend_confirm", {
           chainState: "confirmed",

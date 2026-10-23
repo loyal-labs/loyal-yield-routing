@@ -7,11 +7,7 @@ jest.mock("rpc-websockets", () => ({
   WebSocket: jest.fn(),
 }));
 
-const prepareEarnUsdcCleanup = jest.fn();
-const createSmartAccountVaultsClient = jest.fn(() => ({
-  prepareEarnUsdcCleanup,
-}));
-const fetchEarnWithdrawCleanupPrepareContext = jest.fn();
+const prepareEarnWithdrawCleanup = jest.fn();
 const confirmEarnWithdraw = jest.fn();
 const confirmEarnWithdrawCleanup = jest.fn();
 const signAndSendPreparedOperations = jest.fn();
@@ -47,8 +43,9 @@ jest.mock(
 jest.mock(
   "@loyal-labs/smart-account-vaults",
   () => ({
-    createSmartAccountVaultsClient,
+    hydratePreparedEarnUsdcAutodepositClose: (wire: unknown) => wire,
     hydratePreparedEarnUsdcWithdraw: (wire: unknown) => wire,
+    hydratePreparedOperation: (wire: unknown) => wire,
   }),
   { virtual: true },
 );
@@ -82,24 +79,8 @@ jest.mock("../earn-api", () => ({
   confirmEarnWithdrawCleanup,
   earnNetworkError: (message: string, detail?: string) =>
     new MockEarnApiError(message, undefined, undefined, detail),
-  fetchEarnWithdrawCleanupPrepareContext,
+  prepareEarnWithdrawCleanup,
   prepareEarnWithdraw,
-}));
-
-jest.mock("../earn-auth", () => ({
-  signEarnAuth: jest.fn(async () => ({
-    issuedAt: "2026-07-10T00:00:00.000Z",
-    signature: "auth-signature",
-    walletAddress: PublicKey.default.toBase58(),
-  })),
-  withEarnAuth: jest.fn(
-    async (
-      _signer: unknown,
-      auth: unknown,
-      _purpose: unknown,
-      call: (value: unknown) => unknown,
-    ) => call(auth),
-  ),
 }));
 
 jest.mock("../send-prepared", () => ({
@@ -143,30 +124,11 @@ describe("executeEarnWithdraw", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     prepareEarnWithdraw.mockResolvedValue({ preparedWithdraw });
-    fetchEarnWithdrawCleanupPrepareContext.mockResolvedValue({
-      cleanupInput: {
-        policySigner: address,
-        vaultTokenAccounts: [
-          {
-            address,
-            amountRaw: "7",
-            decimals: 6,
-            mint: address,
-            tokenProgramId: address,
-          },
-        ],
-        yieldRoutingPolicy: {
-          account: address,
-          seed: "1",
-          setupPolicy: null,
-        },
+    prepareEarnWithdrawCleanup.mockResolvedValue({
+      preparedCleanup: {
+        autodepositClosePrepared: null,
+        prepared: cleanupOperation,
       },
-      cluster: "mainnet-beta",
-      programId: address,
-      settingsPda: address,
-    });
-    prepareEarnUsdcCleanup.mockResolvedValue({
-      prepared: cleanupOperation,
     });
     // clearAllMocks does not drain queued mockResolvedValueOnce values; reset
     // so tests that send only the withdraw don't leak a stale cleanup entry.
@@ -193,22 +155,15 @@ describe("executeEarnWithdraw", () => {
     );
     expect(confirmEarnWithdraw).toHaveBeenCalledTimes(1);
     expect(confirmEarnWithdrawCleanup).toHaveBeenCalledWith({
-      auth: expect.objectContaining({
-        signature: "auth-signature",
-        walletAddress: address,
+      body: expect.objectContaining({
+        cleanupSignature: "cleanup-signature",
+        confirmedSlot: "102",
       }),
-      cleanupSignature: "cleanup-signature",
-      confirmedSlot: "102",
+      walletAddress: address,
     });
-    expect(fetchEarnWithdrawCleanupPrepareContext).toHaveBeenCalledTimes(1);
-    expect(fetchEarnWithdrawCleanupPrepareContext).toHaveBeenCalledWith(
+    expect(prepareEarnWithdrawCleanup).toHaveBeenCalledTimes(1);
+    expect(prepareEarnWithdrawCleanup).toHaveBeenCalledWith(
       expect.objectContaining({ minContextSlot: "101" }),
-    );
-    expect(prepareEarnUsdcCleanup).toHaveBeenCalledWith(
-      expect.objectContaining({
-        vaultTokenAccounts: [expect.objectContaining({ amountRaw: BigInt(7) })],
-        walletAddress: PublicKey.default,
-      }),
     );
     expect(signAndSendPreparedOperations).toHaveBeenCalledTimes(2);
     expect(signAndSendPreparedOperations.mock.calls[1]?.[0]).toMatchObject({
@@ -224,7 +179,7 @@ describe("executeEarnWithdraw", () => {
     const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
     // Code-less EarnApiError = terminal (e.g. backend without the endpoint):
     // no retry, and the landed withdrawal must still resolve as a success.
-    fetchEarnWithdrawCleanupPrepareContext.mockRejectedValue(
+    prepareEarnWithdrawCleanup.mockRejectedValue(
       new MockEarnApiError("Failed to prepare Earn account cleanup."),
     );
 
@@ -235,7 +190,7 @@ describe("executeEarnWithdraw", () => {
       sourceId: "source-1",
     });
 
-    expect(fetchEarnWithdrawCleanupPrepareContext).toHaveBeenCalledTimes(1);
+    expect(prepareEarnWithdrawCleanup).toHaveBeenCalledTimes(1);
     expect(signAndSendPreparedOperations).toHaveBeenCalledTimes(1);
     expect(confirmEarnWithdraw).toHaveBeenCalledTimes(1);
     expect(result).toEqual({
@@ -285,9 +240,9 @@ describe("executeEarnWithdraw", () => {
     warn.mockRestore();
   });
 
-  test("retries the cleanup context while the backend RPC catches up", async () => {
-    fetchEarnWithdrawCleanupPrepareContext.mockRejectedValueOnce(
-      new MockEarnApiError("Minimum context slot not reached", "context_failed"),
+  test("retries the cleanup prepare while the backend RPC catches up", async () => {
+    prepareEarnWithdrawCleanup.mockRejectedValueOnce(
+      new MockEarnApiError("Minimum context slot not reached", "full_withdrawal_projection_pending"),
     );
 
     const result = await executeEarnWithdraw({
@@ -297,7 +252,7 @@ describe("executeEarnWithdraw", () => {
       sourceId: "source-1",
     });
 
-    expect(fetchEarnWithdrawCleanupPrepareContext).toHaveBeenCalledTimes(2);
+    expect(prepareEarnWithdrawCleanup).toHaveBeenCalledTimes(2);
     expect(result).toEqual({
       cleanupSignature: "cleanup-signature",
       withdrawalSignatures: ["withdraw-signature"],
@@ -306,7 +261,7 @@ describe("executeEarnWithdraw", () => {
 
   test("does not retry cleanup after the user rejects a wallet prompt", async () => {
     const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
-    fetchEarnWithdrawCleanupPrepareContext.mockRejectedValueOnce(
+    prepareEarnWithdrawCleanup.mockRejectedValueOnce(
       new WalletRejectedError(),
     );
 
@@ -317,7 +272,7 @@ describe("executeEarnWithdraw", () => {
       sourceId: "source-1",
     });
 
-    expect(fetchEarnWithdrawCleanupPrepareContext).toHaveBeenCalledTimes(1);
+    expect(prepareEarnWithdrawCleanup).toHaveBeenCalledTimes(1);
     expect(signAndSendPreparedOperations).toHaveBeenCalledTimes(1);
     expect(result).toEqual({
       withdrawalSignatures: ["withdraw-signature"],
@@ -333,8 +288,7 @@ describe("executeEarnWithdraw", () => {
       sourceId: "source-1",
     });
 
-    expect(fetchEarnWithdrawCleanupPrepareContext).not.toHaveBeenCalled();
-    expect(prepareEarnUsdcCleanup).not.toHaveBeenCalled();
+    expect(prepareEarnWithdrawCleanup).not.toHaveBeenCalled();
     expect(signAndSendPreparedOperations).toHaveBeenCalledTimes(1);
     expect(result).toEqual({
       withdrawalSignatures: ["withdraw-signature"],
