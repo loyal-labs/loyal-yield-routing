@@ -8,6 +8,7 @@ export type Get = {
   "/api/smart-accounts/earn-max/activity": Types.EarnMaxActivity;
   "/api/smart-accounts/earn-max/invite": Types.InviteStatus;
   "/api/smart-accounts/earn-max/summary": Types.EarnMaxSummaryResponse;
+  "/api/smart-accounts/yield-optimization/earn-state": Types.EarnStateResponse;
   "/api/summaries": Types.SummariesResponse;
 };
 

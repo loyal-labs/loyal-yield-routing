@@ -39,7 +39,6 @@ POST /api/smart-accounts/yield-optimization/cross-mint/delete/readiness
 POST /api/smart-accounts/yield-optimization/cross-mint/toggle
 POST /api/smart-accounts/yield-optimization/deposits/confirm
 * /api/smart-accounts/yield-optimization/deposits/prepare
-GET /api/smart-accounts/yield-optimization/earn-state
 * /api/smart-accounts/yield-optimization/earnings
 POST /api/smart-accounts/yield-optimization/policies/confirm
 POST /api/smart-accounts/yield-optimization/policies/prepare

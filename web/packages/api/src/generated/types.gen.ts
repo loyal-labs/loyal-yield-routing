@@ -81,6 +81,192 @@ export type EarnSessionResponse = {
     token: string;
 };
 
+export type EarnStateAutodeposit = {
+    active: boolean;
+    amountPerPeriodRaw: string;
+    balanceSweepPolicyId: string | null;
+    cluster: string | null;
+    delegatedSigner: string | null;
+    depositedThisPeriodRaw: string;
+    expiryTimestamp: string | null;
+    lastSeenSignature: string;
+    lastSeenSlot: string;
+    lifecycleStatus: string;
+    nonce: string | null;
+    periodLengthSeconds: string | null;
+    policyAccount: string;
+    policyConfirmedSlot: string | null;
+    policySeed: string;
+    policySignature: string | null;
+    recurringDelegation: string | null;
+    recurringDelegationConfirmedSlot: string | null;
+    recurringDelegationSignature: string | null;
+    scheduledSweeps: Array<EarnStateScheduledSweep> | null;
+    startTimestamp: string;
+    status: string;
+    subscriptionAuthority: string | null;
+    subscriptionDelegatee: string;
+    vaultUsdcAta: string;
+    walletBalanceFloorRaw: string | null;
+    walletUsdcAta: string;
+};
+
+export type EarnStateAutoswap = {
+    boundPolicies: Array<EarnStateBoundPolicy> | null;
+    dailySourceMintSpendingCap: string;
+    enabled: boolean;
+    generation: string;
+    maxSlippageBps: number;
+    policies: Array<EarnStateAutoswapPolicy> | null;
+    status: string;
+};
+
+export type EarnStateAutoswapIndex = {
+    policies: Array<EarnStateAutoswapIndexPolicy> | null;
+    state: string;
+};
+
+export type EarnStateAutoswapIndexPolicy = {
+    account: string;
+    dailySourceMintSpendingCap: string;
+    delegatedSigner: string;
+    lastSeenSignature: string;
+    lastSeenSlot: string;
+    maxSlippageBps: number;
+    seed: string;
+    sourceCommitment: string;
+    sourceShard: string;
+};
+
+export type EarnStateAutoswapPolicy = {
+    account: string;
+    lastSeenSignature: string;
+    lastSeenSlot: string;
+    seed: string;
+    sourceShard: string;
+};
+
+export type EarnStateBoundPolicy = {
+    account: string;
+    seed: string;
+    sourceShard: string;
+};
+
+export type EarnStateCurrentHolding = {
+    amountRaw: string;
+    liquidityMint: string;
+    market: string | null;
+    observedAt: string;
+    observedSlot: string;
+    provenance: EarnStateProvenance;
+    reserve: string;
+};
+
+export type EarnStateInitialHolding = {
+    liquidityMint: string;
+    market: string | null;
+    reserve: string;
+    supplyApyBps: string | null;
+};
+
+export type EarnStateOnboarding = {
+    depositConfirmedSlot?: string;
+    depositSignature?: string;
+    lastErrorCode?: string;
+    nextStep: string;
+    policy?: EarnStateOnboardingPolicy;
+    setupPolicy?: EarnStateOnboardingPolicy;
+    status?: string;
+    updatedAt?: string;
+};
+
+export type EarnStateOnboardingPolicy = {
+    account: string;
+    id: string;
+    lastSeenSignature: string | null;
+    lastSeenSlot: string | null;
+    seed: string;
+};
+
+export type EarnStatePolicy = {
+    account: string;
+    delegatedSigners: Array<string> | null;
+    id: string;
+    kaminoLiquidityMints: Array<string> | null;
+    kaminoMarkets: Array<string> | null;
+    lastSeenSignature: string;
+    lastSeenSlot: string;
+    riskProfile: string | null;
+    routeModes: Array<string> | null;
+    seed: string;
+    setupPolicy: EarnStateSetupPolicy;
+    stableMints: Array<string> | null;
+    universePreset: string | null;
+    vaultIndex: number;
+    vaultPubkey: string;
+};
+
+export type EarnStatePosition = {
+    currentHolding: EarnStateCurrentHolding;
+    currentTotalAmountRaw: string;
+    currentTotalNominalUsdMicros: string;
+    id: string;
+    initialHolding: EarnStateInitialHolding;
+    principalAmountRaw: string;
+    status: string;
+};
+
+export type EarnStateProvenance = {
+    lastHoldingEventId: string | null;
+    lastRebalanceDecisionId: string | null;
+};
+
+export type EarnStateResponse = {
+    autodeposit: EarnStateAutodeposit;
+    autoswap: EarnStateAutoswap;
+    autoswapAvailable: boolean;
+    autoswapIndex: EarnStateAutoswapIndex;
+    canonicalVaultPubkey: string;
+    loadErrors: {
+        [key: string]: boolean;
+    };
+    onboarding: EarnStateOnboarding;
+    policy: EarnStatePolicy;
+    policySignerPublicKey: string;
+    position: EarnStatePosition;
+    programId: string;
+    settingsPda: string;
+    vault: EarnStateVault;
+};
+
+export type EarnStateScheduledSweep = {
+    classification: string;
+    confidence: string;
+    eligibleAfter: string;
+    executeNowAvailableAt: string | null;
+    id: string;
+    lotCount: number;
+    originalAmountRaw: string;
+    reason: string;
+    remainingAmountRaw: string;
+    slotId: string;
+    status: string;
+};
+
+export type EarnStateSetupPolicy = {
+    account: string;
+    delegatedSigners: Array<string> | null;
+    id: string;
+    lastSeenSignature: string;
+    lastSeenSlot: string;
+    seed: string;
+};
+
+export type EarnStateVault = {
+    accountIndex: number;
+    pubkey: string;
+};
+
 export type EarnStatsPoint = {
     label: string;
     periodLabel: string;
@@ -835,6 +1021,44 @@ export type PostEarnSessionResponses = {
 };
 
 export type PostEarnSessionResponse = PostEarnSessionResponses[keyof PostEarnSessionResponses];
+
+export type GetEarnStateData = {
+    body?: never;
+    headers?: {
+        Authorization?: string;
+        Cookie?: string;
+        'X-Forwarded-Host'?: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/smart-accounts/yield-optimization/earn-state';
+};
+
+export type GetEarnStateErrors = {
+    /**
+     * Unauthorized
+     */
+    401: RouteError;
+    /**
+     * Conflict
+     */
+    409: RouteError;
+    /**
+     * Service Unavailable
+     */
+    503: RouteError;
+};
+
+export type GetEarnStateError = GetEarnStateErrors[keyof GetEarnStateErrors];
+
+export type GetEarnStateResponses = {
+    /**
+     * OK
+     */
+    200: EarnStateResponse;
+};
+
+export type GetEarnStateResponse = GetEarnStateResponses[keyof GetEarnStateResponses];
 
 export type GetSummariesData = {
     body?: never;
