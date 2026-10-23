@@ -36,6 +36,19 @@ JavaScript (no Metro connection required). It uses `com.loyal.app.dev`, remote
 development signing credentials, and its own update channel; it does not publish
 to the dApp Store or update the production channel.
 
+Android 0.6.0 releases use the existing `production` profile for the Play Store
+AAB (`com.askloyal.app`) and `dapp-store` for the APK (`com.loyal.app`). Pass
+`--auto-submit` with the Play Store build to reuse the existing submission
+configuration; the previous release was submitted to the internal testing track.
+The dApp Store profile produces an APK file without a store submission.
+
+These profiles and `dapp-store-development` pin Bun 1.3.11. The mobile
+`eas-build-pre-install` hook installs the parent `web/` workspace with its frozen
+lockfile so shared packages resolve in the monorepo before the mobile install.
+Production uses the app-version runtime, now 0.6.0. Development retains the
+`0.5.0-hardware-wallet-v1` runtime used by dev build 11 and its biometric OTA;
+change it when the development native module set changes.
+
 ## Architecture
 
 ### Directory Structure
