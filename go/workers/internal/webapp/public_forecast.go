@@ -77,7 +77,7 @@ type forecastUnavailableError struct {
 	status  int
 }
 
-func (e *forecastUnavailableError) Error() string   { return e.Message }
+func (e *forecastUnavailableError) Error() string  { return e.Message }
 func (e *forecastUnavailableError) GetStatus() int { return e.status }
 
 func (h earnRoutes) registerForecast(api huma.API) {
@@ -91,7 +91,7 @@ func (h earnRoutes) registerForecast(api huma.API) {
 }
 
 func (h earnRoutes) earnForecastSummary(ctx context.Context, _ *forecastRequest) (*forecastOutput, error) {
-	forecast := h.mediumFeeAwareEarnForecast(ctx, time.Now())
+	forecast := h.mediumFeeAwareEarnForecast(ctx, yieldForecastDeps(h.YieldDB), time.Now())
 	if forecast == nil {
 		return nil, &forecastUnavailableError{Message: "Earn APY is not measured yet", status: http.StatusServiceUnavailable}
 	}
@@ -194,8 +194,7 @@ func yieldForecastDeps(pool *pgxpool.Pool) forecastDeps {
 
 // realizedEarnForecast ports getRealizedEarnForecastFromDependencies
 // (earn-forecast.server.ts:133-181).
-func (h earnRoutes) realizedEarnForecast(ctx context.Context, now time.Time) (*forecastResult, error) {
-	deps := yieldForecastDeps(h.YieldDB)
+func (h earnRoutes) realizedEarnForecast(ctx context.Context, deps forecastDeps, now time.Time) (*forecastResult, error) {
 	cluster := string(h.Cluster.Loyal())
 	nowMS := now.UnixMilli()
 	sinceMS := nowMS - forecastSeriesWindowMS - forecastRealizedWindowMS - forecastPreWindowLookback
@@ -241,10 +240,10 @@ func forecastReservesFor(allocations forecastAllocationHistory) []string {
 }
 
 var (
-	forecastCacheMu         sync.Mutex
-	forecastCacheExpiresAt  time.Time
-	forecastCacheValue      *forecastResult
-	forecastLastRealized    *forecastResult
+	forecastCacheMu        sync.Mutex
+	forecastCacheExpiresAt time.Time
+	forecastCacheValue     *forecastResult
+	forecastLastRealized   *forecastResult
 )
 
 func resetEarnForecastCacheForTests() {
@@ -259,7 +258,7 @@ func resetEarnForecastCacheForTests() {
 // (earn-forecast.server.ts:183-231): a 5-minute cache with a 3-hour stale
 // fallback, served as availability "stale". The lock also single-flights the
 // DB reads the TS would race.
-func (h earnRoutes) mediumFeeAwareEarnForecast(ctx context.Context, now time.Time) *forecastResult {
+func (h earnRoutes) mediumFeeAwareEarnForecast(ctx context.Context, deps forecastDeps, now time.Time) *forecastResult {
 	forecastCacheMu.Lock()
 	defer forecastCacheMu.Unlock()
 	nowMS := now.UnixMilli()
@@ -267,7 +266,7 @@ func (h earnRoutes) mediumFeeAwareEarnForecast(ctx context.Context, now time.Tim
 		return forecastCacheValue
 	}
 
-	realized, err := h.realizedEarnForecast(ctx, now)
+	realized, err := h.realizedEarnForecast(ctx, deps, now)
 	if err != nil {
 		slog.Warn("[earn-forecast] realized APY read failed", "error", err)
 	}

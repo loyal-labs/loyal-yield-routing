@@ -45,7 +45,9 @@ type questCompletionRow struct {
 
 type questProgressRequest struct{ SessionInput }
 
-type questProgressOutput struct{ Body SolanaWeekQuestProgressResponse }
+type questProgressOutput struct {
+	Body SolanaWeekQuestProgressResponse
+}
 
 func (h earnRoutes) registerQuestProgress(api huma.API) {
 	huma.Register(api, huma.Operation{

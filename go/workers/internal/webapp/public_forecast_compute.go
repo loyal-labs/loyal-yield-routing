@@ -338,18 +338,18 @@ type forecastRealizedInput struct {
 }
 
 type forecastApySample struct {
-	apyBps    int64
+	apyBps     int64
 	observedAt string
 }
 
 type forecastRealizedResult struct {
-	realized7dBps        *int64
-	liveBps              *int64
-	headlineBps          int64
-	source               string // "realized_7d" | "live"
-	loyalSeries          []forecastApySample
+	realized7dBps         *int64
+	liveBps               *int64
+	headlineBps           int64
+	source                string // "realized_7d" | "live"
+	loyalSeries           []forecastApySample
 	mainUsdcReserveSeries []forecastApySample
-	measuredAtMS         int64
+	measuredAtMS          int64
 }
 
 func int64Ptr(v int64) *int64 { return &v }
@@ -374,13 +374,17 @@ func forecastComputeRealizedApy(input forecastRealizedInput) *forecastRealizedRe
 		bounded[reserve] = filtered
 	}
 	timeline := forecastAllocationTimeline(input.allocations)
-	measurementEndMS := int64(math.Inf(-1))
+	// Math.max() of no series is -Infinity, which Number.isFinite rejects.
+	measurementEndMS := int64(0)
+	sawMeasurement := false
 	for _, points := range bounded {
 		if len(points) > 0 {
-			measurementEndMS = max(measurementEndMS, points[len(points)-1].observedAtMS)
+			if latest := points[len(points)-1].observedAtMS; !sawMeasurement || latest > measurementEndMS {
+				measurementEndMS, sawMeasurement = latest, true
+			}
 		}
 	}
-	if measurementEndMS == int64(math.Inf(-1)) {
+	if !sawMeasurement {
 		return nil
 	}
 	aligned := false
