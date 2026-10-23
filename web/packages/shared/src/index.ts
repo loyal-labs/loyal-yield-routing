@@ -23,6 +23,17 @@ export type { ChatSummary, SummariesApiResponse, Topic } from "./summaries";
 export type * from "./earn-max";
 
 export { buildEarnMaxDailySeries } from "./earn-max-history";
+export {
+  earnMaxApyFigure,
+  earnMaxControls,
+  earnMaxDailySeries,
+  earnMaxPending,
+  earnMaxPendingMessage,
+  earnMaxPendingSubtitle,
+  earnMaxWithdrawalPending,
+  formatEarnMaxApyLabel,
+} from "./earn-max-view";
+export type { EarnMaxPending, EarnMaxWithdrawalInput } from "./earn-max-view";
 
 export { EARN_AUTODEPOSIT_DEFAULT_AMOUNT_PER_PERIOD_USDC } from "./earn-autodeposit";
 

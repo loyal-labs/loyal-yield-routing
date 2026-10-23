@@ -86,7 +86,6 @@ import EllipsisIcon from "../../assets/images/icons/ellipsis.svg";
 export default function WalletScreen() {
   const {
     summary: earnMaxSummary,
-    publicApyBps: earnMaxApyBps,
     hasLoaded: earnMaxLoaded,
   } = useEarnMax();
   const insets = useSafeAreaInsets();
@@ -402,7 +401,7 @@ export default function WalletScreen() {
               earnApyBps={earnApyBps}
               earnMaxUsd={earnMaxSummary?.balanceUsd ?? null}
               earnMaxLoading={walletAddress != null && !earnMaxLoaded}
-              earnMaxApyBps={earnMaxSummary?.forecastApyBps ?? earnMaxApyBps}
+              earnMaxApyBps={earnMaxSummary?.forecastApyBps ?? null}
               onPressEarnMax={() => router.navigate("/(tabs)/earn-max")}
               stablecoinsUsd={stablecoinsUsd}
               cryptoUsd={cryptoUsd}

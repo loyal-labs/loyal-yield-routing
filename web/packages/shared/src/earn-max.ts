@@ -85,9 +85,3 @@ export type MobileEarnMaxContext = {
   settingsPda: string;
   programId: string;
 };
-
-export type MobileEarnMaxResponses = {
-  summary: EarnMaxSummaryResponse;
-  activity: EarnMaxActivityResponse;
-  context: MobileEarnMaxContext;
-};
