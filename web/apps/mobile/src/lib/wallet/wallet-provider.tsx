@@ -42,10 +42,12 @@ import {
   authenticateWithBiometrics,
   disableBiometrics,
   enableBiometrics,
+  hasLegacyBiometricPin,
   isBiometricEnabled,
 } from "./biometrics";
 import {
   clearStoredKeypair,
+  getLockoutRemaining,
   getStoredPublicKey,
   hasStoredKeypair,
   importKeypair,
@@ -478,14 +480,27 @@ function WalletProviderCore({
     setWalletSigner(next);
     setState("unlocked");
     identifyWallet(pk, "imported");
+    if (await hasLegacyBiometricPin()) {
+      try {
+        setBiometricEnabledState(await enableBiometrics(kp.secretKey));
+      } catch (error) {
+        console.warn("[wallet] biometric rewrap failed", error);
+        await disableBiometrics();
+        setBiometricEnabledState(false);
+      }
+    }
   }, []);
 
   const unlockWithBiometrics = useCallback(async () => {
-    const pin = await authenticateWithBiometrics();
-    if (!pin) return false;
+    if ((await getLockoutRemaining()) > 0) return false;
+    const secretKey = await authenticateWithBiometrics();
+    if (!secretKey) {
+      setBiometricEnabledState(await isBiometricEnabled());
+      return false;
+    }
     try {
-      const kp = await loadKeypair(pin);
-      if (!kp) return false;
+      const kp = Keypair.fromSecretKey(secretKey);
+      if (kp.publicKey.toBase58() !== (await getStoredPublicKey())) return false;
       const next = new LocalKeypairSigner(kp);
       const pk = kp.publicKey.toBase58();
       setSigner(next);
@@ -502,8 +517,9 @@ function WalletProviderCore({
   const setBiometricEnabled = useCallback(
     async (pin: string, enabled: boolean) => {
       if (enabled) {
-        await enableBiometrics(pin);
-        setBiometricEnabledState(true);
+        const kp = await loadKeypair(pin);
+        if (!kp) throw new Error("Incorrect PIN");
+        setBiometricEnabledState(await enableBiometrics(kp.secretKey));
       } else {
         await disableBiometrics();
         setBiometricEnabledState(false);
@@ -518,11 +534,8 @@ function WalletProviderCore({
         throw new Error("Wallet must be unlocked");
       }
       await changeKeypairPin(signer.keypair, newPin);
-      if (biometricEnabled) {
-        await enableBiometrics(newPin);
-      }
     },
-    [signer, biometricEnabled],
+    [signer],
   );
 
   const resetWallet = useCallback(
