@@ -17,12 +17,6 @@ POST /api/smart-accounts/mobile/earn/autodeposit/sweeps/execute
 POST /api/smart-accounts/mobile/earn/autodeposit/toggle/confirm
 POST /api/smart-accounts/mobile/earn/deposit/confirm
 POST /api/smart-accounts/mobile/earn/deposit/prepare-context
-* /api/smart-accounts/mobile/earn/earnings
-POST /api/smart-accounts/mobile/earn/policy-refunds/prepare
-* /api/smart-accounts/mobile/earn/policy-refunds/scan
-POST /api/smart-accounts/mobile/earn/session
-* /api/smart-accounts/mobile/earn/state
-* /api/smart-accounts/mobile/earn/transactions
 POST /api/smart-accounts/mobile/earn/withdraw/cleanup/confirm
 POST /api/smart-accounts/mobile/earn/withdraw/cleanup/prepare-context
 POST /api/smart-accounts/mobile/earn/withdraw/confirm
