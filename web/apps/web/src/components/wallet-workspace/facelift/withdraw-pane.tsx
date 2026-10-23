@@ -28,6 +28,7 @@ import {
   DualIcon,
   resolveEarnCoinIconSrc,
 } from "@/components/wallet-workspace/facelift/earn-activity-card";
+import { sortByFundedNearestTrigger } from "@/components/wallet-workspace/facelift/upward-selector-sort";
 import {
   FlowDiagram,
   FlowExplainerOverlay,
@@ -194,15 +195,11 @@ export function WithdrawPane({
       })),
     [sources]
   );
-  // The selector opens upward from the trigger, so withdrawable sources sit
-  // at the bottom (nearest the trigger) and $0.00 dust at the top — same
-  // contract as the deposit source selector.
   const listedOptions = useMemo(
     () =>
-      [...options].sort(
-        (a, b) =>
-          (a.usd >= EARN_WITHDRAW_SOURCE_DUST_USD ? 1 : 0) -
-          (b.usd >= 0.005 ? 1 : 0)
+      sortByFundedNearestTrigger(
+        options,
+        (option) => option.usd >= EARN_WITHDRAW_SOURCE_DUST_USD
       ),
     [options]
   );

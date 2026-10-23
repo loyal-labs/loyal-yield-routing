@@ -342,6 +342,20 @@ function CompoundMarketImage({ src }: { src: string }) {
   );
 }
 
+export function deriveEarnTransactionIconSources(
+  item: EarnTransactionItem,
+  coinSrc: string | null
+): { backSrc: string | null; frontSrc: string | null } {
+  const isMovement =
+    item.kind === "rebalance" || item.kind === "reconciliation";
+  return {
+    backSrc:
+      isMovement || item.kind === "withdraw" ? item.source.icon : coinSrc,
+    frontSrc:
+      isMovement || item.kind === "deposit" ? item.destination.icon : coinSrc,
+  };
+}
+
 function CompoundIcon({
   backSrc = null,
   frontSrc = null,
@@ -468,12 +482,8 @@ function EarnTransactionRow({
   onSelect: (item: EarnTransactionItem) => void;
 }) {
   const label = getEarnTransactionRowLabel(item);
-  const isMovement =
-    item.kind === "rebalance" || item.kind === "reconciliation";
-  const compoundBackIcon =
-    isMovement || item.kind === "withdraw" ? item.source.icon : null;
-  const compoundFrontIcon =
-    isMovement || item.kind === "deposit" ? item.destination.icon : null;
+  const { backSrc: compoundBackIcon, frontSrc: compoundFrontIcon } =
+    deriveEarnTransactionIconSources(item, null);
   const timestamp =
     formatEarnTransactionTimestamp(
       getEarnTransactionConfirmedAt(item),

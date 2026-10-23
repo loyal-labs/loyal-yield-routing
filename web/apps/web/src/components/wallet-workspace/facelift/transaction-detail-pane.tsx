@@ -6,6 +6,7 @@ import { useState } from "react";
 
 import { EarnYieldIcon } from "@/components/wallet-sidebar/portfolio-content";
 import {
+  deriveEarnTransactionIconSources,
   formatEarnTransactionDateGroup,
   formatEarnTransactionTimestamp,
   getEarnTransactionAmountColor,
@@ -148,8 +149,6 @@ export function EarnTransactionDetailPane({
   walletAddress: string | null;
 }) {
   const publicEnv = usePublicEnv();
-  const isMovement =
-    item.kind === "rebalance" || item.kind === "reconciliation";
   const isAllowanceAction = item.kind === "autodeposit_action";
   const title = getEarnTransactionRowLabel(item);
   const confirmedAt = item.confirmedAt ?? item.sortTimestamp;
@@ -160,8 +159,6 @@ export function EarnTransactionDetailPane({
   const ownAddress = walletAddress ? truncateMiddle(walletAddress) : null;
   const hasSignature = item.signature.length > 0;
   const transactionUrl = getExplorerTxUrl(item.signature);
-  // Same art derivation as the activity list's TransactionRow, so the header
-  // identity matches the row that opened it.
   const coinSrc = item.liquidityMint
     ? resolveEarnCoinIconSrc({
         liquidityMint: item.liquidityMint,
@@ -174,10 +171,10 @@ export function EarnTransactionDetailPane({
         market: null,
       }).mintSymbol
     : "USDC";
-  const backSrc =
-    isMovement || item.kind === "withdraw" ? item.source.icon : coinSrc;
-  const frontSrc =
-    isMovement || item.kind === "deposit" ? item.destination.icon : coinSrc;
+  const { backSrc, frontSrc } = deriveEarnTransactionIconSources(
+    item,
+    coinSrc
+  );
 
   return (
     <div className="flex h-full min-h-0 w-full flex-col">

@@ -55,8 +55,6 @@ function ChartBody({
 }) {
   const { isBalanceHidden } = useBalanceVisibility();
   const isNarrowViewport = useIsNarrowViewport();
-  // Same source the old workspace feeds the forecast: the live position
-  // balance once one exists, the marketing principal otherwise.
   const forecastPrincipal =
     earnData.hasPosition && earnData.earnBalanceUsd > 0
       ? earnData.earnBalanceUsd

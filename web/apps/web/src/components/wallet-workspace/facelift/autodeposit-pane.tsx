@@ -1,12 +1,6 @@
 "use client";
 
 import {
-  getStablecoinMintForCluster,
-  resolveLoyalClusterForSolanaEnv,
-  Stablecoin,
-} from "@loyal-labs/actions";
-import { resolveSolanaEnv } from "@loyal-labs/solana-rpc";
-import {
   ArrowRightLeft,
   CalendarClock,
   Radar,
@@ -28,7 +22,7 @@ import {
 import { TextSwap } from "@/components/wallet-workspace/facelift/text-swap";
 import { ThemedIcon } from "@/components/wallet-workspace/facelift/themed-icon";
 import type { EarnPositionData } from "@/components/wallet-workspace/facelift/use-earn-position-data";
-import { usePublicEnv } from "@/contexts/public-env-context";
+import { useEarnUsdcSourceUsd } from "@/components/wallet-workspace/facelift/use-stablecoins-usd";
 import {
   splitUsdBalance,
   useWalletDesktopData,
@@ -137,22 +131,13 @@ export function AutodepositPane({
     }
   };
 
-  // Autodeposit sweeps USDC only (ASK-2096 keeps it USDC-only), so the
-  // "from" cell shows the USDC balance, not the all-stablecoins sum. Same
-  // source precedence as the deposit pane: authoritative main-account USDC,
-  // portfolio value as the loading fallback.
-  const publicEnv = usePublicEnv();
   const walletData = useWalletDesktopData({});
-  const usdcMint = getStablecoinMintForCluster(
-    resolveLoyalClusterForSolanaEnv(resolveSolanaEnv(publicEnv.solanaEnv)),
-    Stablecoin.USDC
-  ).toBase58();
-  const usdcPortfolioUsd =
-    walletData.positions.find((position) => position.asset.mint === usdcMint)
-      ?.totalValueUsd ?? 0;
-  const stablecoinsBalance = splitUsdBalance(
-    actions.mainUsdcAmount ?? usdcPortfolioUsd
+  const usdcSourceUsd = useEarnUsdcSourceUsd(
+    actions.mainUsdcAmount,
+    walletData.positions,
+    (position) => position.totalValueUsd ?? 0
   );
+  const stablecoinsBalance = splitUsdBalance(usdcSourceUsd);
   const earnBalance = splitUsdBalance(data.earnBalanceUsd);
   const addressLabel = data.walletAddress
     ? `${data.walletAddress.slice(0, 4)}…${data.walletAddress.slice(-4)}`
