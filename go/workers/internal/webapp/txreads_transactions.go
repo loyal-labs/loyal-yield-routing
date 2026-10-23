@@ -11,6 +11,34 @@ import (
 // collapse and the route's ordering (earn-transactions/formatter.ts and
 // route.ts sortEarnTransactions).
 
+// txreadsAssembleTransactions is route.ts:85-104: drop reconciliations and
+// position events already covered by an autodeposit sweep's deposit, serialize
+// the rest, collapse duplicate rebalances, sort newest first.
+func txreadsAssembleTransactions(positionEvents []txreadsPositionEvent, autodepositEvents []txreadsAutodepositEvent) []SerializedEarnTransaction {
+	depositSignatures := map[string]struct{}{}
+	for _, event := range autodepositEvents {
+		if event.depositSignature != nil {
+			depositSignatures[*event.depositSignature] = struct{}{}
+		}
+	}
+	transactions := make([]SerializedEarnTransaction, 0, len(positionEvents)+len(autodepositEvents))
+	for _, event := range positionEvents {
+		if event.typ == "reconciliation" {
+			continue
+		}
+		if _, swept := depositSignatures[event.signature]; event.signature != "" && swept {
+			continue
+		}
+		transactions = append(transactions, txreadsSerializePositionEvent(event))
+	}
+	for _, event := range autodepositEvents {
+		transactions = append(transactions, txreadsSerializeAutodepositEvent(event))
+	}
+	transactions = collapseDuplicateRebalanceTransactions(transactions)
+	sortEarnTransactions(transactions)
+	return transactions
+}
+
 func txreadsSerializePositionEvent(event txreadsPositionEvent) SerializedEarnTransaction {
 	kind := "deposit"
 	switch event.typ {

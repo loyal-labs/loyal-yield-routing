@@ -107,26 +107,6 @@ func (h earnRoutes) earnTransactions(ctx context.Context, in *sessionRequest) (*
 		return nil, earnUnavailable("autodeposit history", err, unavailableCode, unavailableMessage)
 	}
 
-	depositSignatures := map[string]struct{}{}
-	for _, event := range autodepositEvents {
-		if event.depositSignature != nil {
-			depositSignatures[*event.depositSignature] = struct{}{}
-		}
-	}
-	transactions := make([]SerializedEarnTransaction, 0, len(positionEvents)+len(autodepositEvents))
-	for _, event := range positionEvents {
-		if event.typ == "reconciliation" {
-			continue
-		}
-		if _, swept := depositSignatures[event.signature]; event.signature != "" && swept {
-			continue
-		}
-		transactions = append(transactions, txreadsSerializePositionEvent(event))
-	}
-	for _, event := range autodepositEvents {
-		transactions = append(transactions, txreadsSerializeAutodepositEvent(event))
-	}
-	transactions = collapseDuplicateRebalanceTransactions(transactions)
-	sortEarnTransactions(transactions)
+	transactions := txreadsAssembleTransactions(positionEvents, autodepositEvents)
 	return &earnTransactionsOutput{Body: EarnTransactionsResponse{Transactions: transactions}}, nil
 }

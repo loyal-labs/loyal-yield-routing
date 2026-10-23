@@ -107,7 +107,7 @@ func txreadsFormatExactUSDC(amount int64) string {
 		absolute = uint64(-amount)
 	}
 	return sign + "$" + strconv.FormatUint(absolute/1_000_000, 10) + "." +
-		strconv.FormatUint(absolute%1_000_000, 10)
+		fmt.Sprintf("%06d", absolute%1_000_000)
 }
 
 // txreadsFormatDisplayUSDC mirrors formatDisplayUsdcAmount: the sign comes
@@ -129,7 +129,7 @@ func txreadsFormatDisplayUSDC(amount int64, direction string) string {
 		cents = (absolute + 9_999) / 10_000
 	}
 	return sign + "$" + strconv.FormatUint(cents/100, 10) + "." +
-		strconv.FormatUint(cents%100, 10)
+		fmt.Sprintf("%02d", cents%100)
 }
 
 // txreadsDateGroup mirrors formatDateGroup: "October 22" in en-US, UTC.
