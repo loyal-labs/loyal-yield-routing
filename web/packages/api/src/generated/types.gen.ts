@@ -115,6 +115,36 @@ export type AutodepositSetupConfirmTarget = {
     walletBalanceFloorRaw: string | null;
 };
 
+export type AutodepositSweepRequestResult = {
+    acceleratedAmountRaw: string;
+    acceleratedLotCount: number;
+    eligibleAfter: string;
+    slotId: string;
+    status: string;
+    targetId: string;
+};
+
+export type AutodepositSweepsExecuteRequest = {
+    slotId?: string;
+};
+
+export type AutodepositSweepsExecuteResponse = {
+    status: string;
+    sweepRequest: AutodepositSweepRequestResult;
+    target: AutodepositSetupConfirmTarget;
+};
+
+export type AutodepositSweepsProgressResponse = {
+    eventId?: string;
+    eventType: string;
+    failureCode?: string;
+    occurredAt: string;
+    scheduledSlotId: string;
+    schemaVersion: number;
+    scope: string;
+    state: string;
+};
+
 export type AutodepositTargetResponse = {
     target: AutodepositSetupConfirmTarget;
 };
@@ -2461,6 +2491,105 @@ export type PostAutodepositSetupConfirmResponses = {
 };
 
 export type PostAutodepositSetupConfirmResponse = PostAutodepositSetupConfirmResponses[keyof PostAutodepositSetupConfirmResponses];
+
+export type GetAutodepositSweepsExecuteData = {
+    body?: never;
+    headers?: {
+        Authorization?: string;
+        Cookie?: string;
+        'X-Forwarded-Host'?: string;
+    };
+    path?: never;
+    query?: {
+        slotId?: string;
+    };
+    url: '/api/smart-accounts/yield-optimization/autodeposit/sweeps/execute';
+};
+
+export type GetAutodepositSweepsExecuteErrors = {
+    /**
+     * Bad Request
+     */
+    400: RouteError;
+    /**
+     * Unauthorized
+     */
+    401: RouteError;
+    /**
+     * Not Found
+     */
+    404: RouteError;
+    /**
+     * Internal Server Error
+     */
+    500: RouteError;
+    /**
+     * Service Unavailable
+     */
+    503: RouteError;
+};
+
+export type GetAutodepositSweepsExecuteError = GetAutodepositSweepsExecuteErrors[keyof GetAutodepositSweepsExecuteErrors];
+
+export type GetAutodepositSweepsExecuteResponses = {
+    /**
+     * OK
+     */
+    200: AutodepositSweepsProgressResponse;
+};
+
+export type GetAutodepositSweepsExecuteResponse = GetAutodepositSweepsExecuteResponses[keyof GetAutodepositSweepsExecuteResponses];
+
+export type PostAutodepositSweepsExecuteData = {
+    body?: AutodepositSweepsExecuteRequest;
+    headers?: {
+        Authorization?: string;
+        Cookie?: string;
+        'X-Forwarded-Host'?: string;
+        'Content-Type'?: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/smart-accounts/yield-optimization/autodeposit/sweeps/execute';
+};
+
+export type PostAutodepositSweepsExecuteErrors = {
+    /**
+     * Bad Request
+     */
+    400: RouteError;
+    /**
+     * Unauthorized
+     */
+    401: RouteError;
+    /**
+     * Not Found
+     */
+    404: RouteError;
+    /**
+     * Conflict
+     */
+    409: RouteError;
+    /**
+     * Internal Server Error
+     */
+    500: RouteError;
+    /**
+     * Service Unavailable
+     */
+    503: RouteError;
+};
+
+export type PostAutodepositSweepsExecuteError = PostAutodepositSweepsExecuteErrors[keyof PostAutodepositSweepsExecuteErrors];
+
+export type PostAutodepositSweepsExecuteResponses = {
+    /**
+     * OK
+     */
+    200: AutodepositSweepsExecuteResponse;
+};
+
+export type PostAutodepositSweepsExecuteResponse = PostAutodepositSweepsExecuteResponses[keyof PostAutodepositSweepsExecuteResponses];
 
 export type PostAutodepositToggleConfirmData = {
     body?: AutodepositToggleConfirmRequest;
