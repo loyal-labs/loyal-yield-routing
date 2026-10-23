@@ -47,7 +47,7 @@ func pushFields(raw []byte) (PushTokenRequest, *PushError) {
 	if !json.Valid(raw) {
 		return body, errPushFailed
 	}
-	if json.Unmarshal(raw, &body) != nil || body.Token == "" || body.Platform == "" {
+	if json.Unmarshal(raw, &body) != nil || body.Token == "" || (body.Platform != "ios" && body.Platform != "android") {
 		return body, errPushFields
 	}
 	return body, nil
