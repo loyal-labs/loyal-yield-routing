@@ -29,6 +29,7 @@ type Config struct {
 	AppDB       *pgxpool.Pool
 	Auth        *Auth
 	EarnMax     *EarnMax
+	Earn        *Earn
 	PushDB      bool
 	ContentDB   bool
 	StatsDB     bool
@@ -83,6 +84,9 @@ func registerAPI(api huma.API, cfg Config) {
 		if cfg.PushDB {
 			registerPush(api, cfg.Auth, cfg.AppDB)
 		}
+	}
+	if cfg.Earn != nil {
+		registerEarn(api, newEarnRoutes(cfg.Auth, cfg.AppDB, *cfg.Earn))
 	}
 	if cfg.CoinGeckoAPIKey != "" {
 		registerTokens(api, newTokenDetails(cfg.CoinGeckoAPIKey))
@@ -193,5 +197,6 @@ func OpenAPI() *huma.OpenAPI {
 	routes.registerReads(api)
 	routes.registerRedeem(api)
 	registerPush(api, nil, nil)
+	documentEarn(api)
 	return api.OpenAPI()
 }

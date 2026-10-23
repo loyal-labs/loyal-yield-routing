@@ -67,8 +67,8 @@ jobs:
       - name: go
         working-directory: go/workers
         run: |
-          go vet ./cmd/loyal-web ./cmd/loyal-admin ./internal/webapp ./internal/webserve ./internal/admin ./internal/earnmax
-          go test -race ./cmd/loyal-web ./cmd/loyal-admin ./internal/webapp ./internal/webserve ./internal/admin ./internal/earnmax
+          go vet ./cmd/loyal-web ./cmd/loyal-admin ./internal/webapp ./internal/webserve ./internal/admin ./internal/earnmax ./internal/earnprep ./internal/jwt
+          go test -race ./cmd/loyal-web ./cmd/loyal-admin ./internal/webapp ./internal/webserve ./internal/admin ./internal/earnmax ./internal/earnprep ./internal/jwt
 
   mobile:
     runs-on: ubuntu-24.04
