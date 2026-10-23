@@ -3,6 +3,8 @@ import { resolve } from "node:path";
 
 import { plugin } from "bun";
 
+import { PublicKey } from "../../../web/node_modules/@solana/web3.js";
+
 import { RPC_ENDPOINT, type RecordedCall } from "./transport";
 
 export const WEB_SRC = resolve(import.meta.dir, "../../../web/apps/web/src");
@@ -36,6 +38,7 @@ export function revive(value: unknown): unknown {
     const tagged = value as Record<string, unknown>;
     if (typeof tagged.$bigint === "string") return BigInt(tagged.$bigint);
     if (typeof tagged.$date === "string") return new Date(tagged.$date);
+    if (typeof tagged.$pubkey === "string") return new PublicKey(tagged.$pubkey);
     return Object.fromEntries(Object.entries(tagged).map(([key, inner]) => [key, revive(inner)]));
   }
   return value;
