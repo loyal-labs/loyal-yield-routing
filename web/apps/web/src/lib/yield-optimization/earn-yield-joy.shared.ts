@@ -83,6 +83,9 @@ export function qualifiedEarnJoyCampaigns(input: {
 export function selectEarnJoyPush(input: EarnJoyInput): EarnJoyDecision {
   const qualified = qualifiedEarnJoyCampaigns(input);
 
+  // A wallet the cron has never seen may already be months and dollars in.
+  // Adopting its standing silently is what keeps a deploy from turning into a
+  // broadcast of backdated milestones.
   if (!input.state) {
     return { kind: "seed", campaigns: qualified };
   }

@@ -111,6 +111,8 @@ export function transactionMessageToMultisigTransactionMessageBytes({
   transactionMessageBytes: Uint8Array;
   compiledMessage: MessageV0;
 } {
+  // Use custom implementation of `message.compileToV0Message` that allows instruction programIds
+  // to also be loaded from `addressLookupTableAccounts`.
   const compiledMessage = compileToWrappedMessageV0({
     payerKey: message.payerKey,
     recentBlockhash: message.recentBlockhash,

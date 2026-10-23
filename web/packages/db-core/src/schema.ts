@@ -1028,6 +1028,10 @@ export const appSmartAccountSettingsChangeRequests = pgTable(
   ]
 );
 
+/**
+ * A signer row can be linked to an app user only after wallet auth proves
+ * ownership of signerAddress.
+ */
 export const appSmartAccountSigners = pgTable(
   "app_smart_account_signers",
   {
