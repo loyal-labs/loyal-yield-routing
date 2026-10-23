@@ -48,11 +48,13 @@ type PrivyCompleteRequest struct {
 	WalletAddress string   `json:"walletAddress"`
 }
 
+// Field order follows the TS object literal in privy-auth.ts:125-134 so the
+// JSON body compares byte-for-byte with the Next route's response.
 type PrivyAuthUser struct {
 	AuthMethod          string  `json:"authMethod"`
+	Provider            string  `json:"provider"`
 	SubjectAddress      string  `json:"subjectAddress"`
 	DisplayAddress      string  `json:"displayAddress"`
-	Provider            string  `json:"provider"`
 	WalletAddress       string  `json:"walletAddress"`
 	SmartAccountAddress string  `json:"smartAccountAddress"`
 	SettingsPda         string  `json:"settingsPda"`
