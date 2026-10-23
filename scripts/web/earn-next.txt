@@ -1,13 +1,6 @@
 # Client calls under a Go-only prefix that only Next answers today. Each Earn lane deletes its lines
 # when Go serves the path; scripts/web/routes-census.ts fails on a new line, a stale line or an unlisted call.
 POST /api/smart-accounts/mobile/earn-max
-POST /api/smart-accounts/mobile/earn/autodeposit/close/confirm
-POST /api/smart-accounts/mobile/earn/autodeposit/floor/confirm
-POST /api/smart-accounts/mobile/earn/autodeposit/setup/confirm
-* /api/smart-accounts/mobile/earn/autodeposit/state
-* /api/smart-accounts/mobile/earn/autodeposit/sweeps/execute
-POST /api/smart-accounts/mobile/earn/autodeposit/sweeps/execute
-POST /api/smart-accounts/mobile/earn/autodeposit/toggle/confirm
 POST /api/smart-accounts/mobile/earn/deposit/confirm
 POST /api/smart-accounts/mobile/earn/deposit/prepare-context
 POST /api/smart-accounts/mobile/earn/withdraw/cleanup/confirm
