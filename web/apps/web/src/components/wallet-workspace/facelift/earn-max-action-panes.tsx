@@ -1,5 +1,9 @@
 "use client";
 
+import {
+  earnMaxWithdrawalPending,
+  formatEarnMaxApyLabel,
+} from "@loyal-labs/shared";
 import { floorToCents } from "@/components/wallet-workspace/facelift/floor-to-cents";
 import { EarnDualIcon } from "@/components/wallet-workspace/facelift/earn-activity-card";
 import {
@@ -36,10 +40,6 @@ import { getTokenIconUrl } from "@/lib/token-icon";
 
 const ASSET_BASE = "/wallet-workspace/facelift";
 const MIN_DEPOSIT_USD = 1;
-
-export function formatEarnMaxApyLabel(bps: number | null): string {
-  return bps === null ? "— APY" : `${(bps / 100).toFixed(2)}% APY`;
-}
 
 export function EarnMaxInfinityBadge({ className }: { className: string }) {
   return (
@@ -447,8 +447,7 @@ export function EarnMaxWithdrawPane({
     maximumFractionDigits: 2,
   });
   // One unwind at a time — the strategy queues a single withdrawal request.
-  const hasPendingWithdrawal =
-    view.withdrawal !== null && view.withdrawal.status !== "claimed";
+  const hasPendingWithdrawal = earnMaxWithdrawalPending(view.withdrawal);
   const isInsufficient = amountUsd > Math.max(balanceUsd, maxFillUsd);
   const isValidAmount =
     amountUsd > 0 && !isInsufficient && !hasPendingWithdrawal;

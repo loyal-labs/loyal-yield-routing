@@ -13,6 +13,7 @@ import {
   voltrRequestWithdrawalPlan,
   type WalletAdapterLike,
 } from "@loyal-labs/smart-account-vaults";
+import { earnMaxControls } from "@loyal-labs/shared";
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { PublicKey } from "@solana/web3.js";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -67,6 +68,10 @@ export function viewModel(input: {
   summary: EarnMaxSummaryResponse | null;
 }): EarnMaxViewModel {
   const summary = input.summary?.summary;
+  const controls = earnMaxControls({
+    busy: input.busy,
+    summary: summary ?? null,
+  });
   const strategyLabels: Record<string, string> = {
     onyc_usdc: "ONyc / USDC",
     onyc_usds: "ONyc / USDS",
@@ -81,12 +86,13 @@ export function viewModel(input: {
     apyHistory: summary?.apyHistory ?? [],
     apyWindowDays: summary?.apyWindowDays ?? null,
     balanceUsd: summary?.balanceUsd ?? 0,
+    canWithdraw: controls.canWithdraw,
     coverage: summary?.coverage ?? "history_incomplete",
     currentApyBps: summary?.currentApyBps ?? null,
     earnedUsd: summary?.earnedUsd ?? null,
     error: input.error,
     forecastApyBps: summary?.forecastApyBps ?? null,
-    isBusy: input.busy || Boolean(summary?.currentOperationId),
+    isBusy: controls.busy,
     isLoading: input.loading,
     performance: input.activity?.performance ?? [],
     policyStatus: summary?.policyStatus ?? null,
