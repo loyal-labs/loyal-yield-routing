@@ -53,17 +53,22 @@ import {
 } from "@/lib/solana/earn/autodeposit";
 import {
   toWithdrawPrepareSource,
-  type EarnHoldingItem,
   type EarnWithdrawSourceInfo,
 } from "@/lib/solana/earn/earn-api";
-import { getVisibleEarnAutodepositScheduledSweeps } from "@loyal-labs/shared";
+import {
+  EARN_WITHDRAW_SOURCE_DUST_USD,
+  earnAutodepositLabel,
+  earnWithdrawSources,
+  formatEarnApyLabel,
+  getVisibleEarnAutodepositScheduledSweeps,
+  toForecastApy,
+} from "@loyal-labs/shared";
 import { env } from "@/config/env";
 import { executeEarnDeposit } from "@/lib/solana/earn/deposit";
 import { getEarnProductAssets } from "@/lib/solana/earn/earn-product-mints";
 import { executeEarnWithdraw } from "@/lib/solana/earn/withdraw";
 import { useEarnAutodepositToggle } from "@/hooks/wallet/useEarnAutodepositToggle";
 import { useEarnForecast } from "@/hooks/wallet/useEarnForecast";
-import { useEarnWithdrawSources } from "@/hooks/wallet/useEarnWithdrawSources";
 import {
   useWalletAutoRefresh,
   type WalletRefreshReason,
@@ -108,21 +113,6 @@ const BADGE_MS = 500;
 const STATE_FADE_MS = 480;
 const FUNDED_CARD_RADIUS = 26;
 
-function earnHoldingToDisplaySource(
-  holding: EarnHoldingItem
-): EarnWithdrawSourceInfo {
-  return {
-    type: holding.kind === "idle" ? "idle" : "reserve",
-    id: holding.reserve ?? holding.market ?? holding.liquidityMint,
-    label: holding.label,
-    amountRaw: holding.amountRaw,
-    liquidityMint: holding.liquidityMint,
-    market: holding.market,
-    reserve: holding.reserve,
-    tokenAccount: null,
-  };
-}
-
 export default function EarnScreen() {
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
@@ -162,19 +152,17 @@ export default function EarnScreen() {
   } = useEarnPosition(walletAddress);
   const balanceLoading = walletAddress != null && !earnPositionLoaded;
   const forecastSummary = useEarnForecast();
-  const { sources: withdrawSources, refreshSources: refreshWithdrawSources } =
-    useEarnWithdrawSources(walletAddress);
-  // Per-position breakdown for the positions sheet, derived from the live
-  // on-chain holdings (the same read that drives the headline) so it matches the
-  // web instead of the stale DB withdraw-sources read. Display-only — the
-  // withdraw picker still uses `withdrawSources`. Sub-cent dust is dropped so a
-  // negligible idle balance doesn't render as a "$0.00" row.
-  const livePositions = useMemo<EarnWithdrawSourceInfo[]>(
-    () =>
-      holdings
-        .filter((holding) => Number(holding.amountRaw) >= 5000)
-        .map((holding) => earnHoldingToDisplaySource(holding)),
+  const withdrawSources = useMemo(
+    () => earnWithdrawSources(holdings),
     [holdings]
+  );
+  const livePositions = useMemo(
+    () =>
+      withdrawSources.filter(
+        (source) =>
+          source.balance >= EARN_WITHDRAW_SOURCE_DUST_USD
+      ),
+    [withdrawSources]
   );
   const [depositOpen, setDepositOpen] = useState(false);
   const [withdrawOpen, setWithdrawOpen] = useState(false);
@@ -573,9 +561,9 @@ export default function EarnScreen() {
 
   const handleOpenWithdraw = useCallback(() => {
     void Haptics.selectionAsync();
-    refreshWithdrawSources();
+    void refreshEarnPosition();
     setWithdrawOpen(true);
-  }, [refreshWithdrawSources]);
+  }, [refreshEarnPosition]);
 
   const handleCloseWithdraw = useCallback(() => {
     setWithdrawOpen(false);
@@ -583,9 +571,9 @@ export default function EarnScreen() {
 
   const handleOpenPositions = useCallback(() => {
     void Haptics.selectionAsync();
-    refreshWithdrawSources();
+    void refreshEarnPosition();
     setPositionsOpen(true);
-  }, [refreshWithdrawSources]);
+  }, [refreshEarnPosition]);
 
   const handlePositionsDeposit = useCallback(() => {
     setPositionsOpen(false);
@@ -594,9 +582,9 @@ export default function EarnScreen() {
 
   const handlePositionsWithdraw = useCallback(() => {
     setPositionsOpen(false);
-    refreshWithdrawSources();
+    void refreshEarnPosition();
     setWithdrawOpen(true);
-  }, [refreshWithdrawSources]);
+  }, [refreshEarnPosition]);
 
   const handleWithdrawConfirmed = useCallback(
     async (
@@ -628,7 +616,6 @@ export default function EarnScreen() {
           await Promise.all([
             refreshEarnPosition({ throwOnError: true }),
             refreshAutodeposit({ throwOnError: true }),
-            refreshWithdrawSources({ throwOnError: true }),
           ]);
           metric.completeAfterPaint();
         } catch (refreshError) {
@@ -649,7 +636,6 @@ export default function EarnScreen() {
       requestRefresh,
       refreshAutodeposit,
       refreshEarnPosition,
-      refreshWithdrawSources,
     ]
   );
 
@@ -795,17 +781,16 @@ export default function EarnScreen() {
   // chart and the web (forecast/loyal rate), not the position's raw reserve
   // supply APY (which reads lower). The starter hero's "into $X" projects the
   // $6,000 principal at the same rate so the headline always matches the badge.
-  const { apyLabel, heroTargetLabel } = useMemo(() => {
+  const apyLabel = formatEarnApyLabel(
+    forecastSummary ? toForecastApy(forecastSummary.forecast) : undefined
+  );
+  const heroTargetLabel = useMemo(() => {
     const apyBps = getLoyalApyBps(forecastSummary);
     if (apyBps === null) {
-      return { apyLabel: "— APY", heroTargetLabel: "—" };
+      return "—";
     }
-    const pct = apyBps / 100;
-    const target = Math.round(HERO_PRINCIPAL_USD * (1 + pct / 100));
-    return {
-      apyLabel: `${pct.toFixed(2)}% APY`,
-      heroTargetLabel: `$${target.toLocaleString("en-US")}`,
-    };
+    const target = Math.round(HERO_PRINCIPAL_USD * (1 + apyBps / 10_000));
+    return `$${target.toLocaleString("en-US")}`;
   }, [forecastSummary]);
 
   // Autodeposit threshold subtitle, shown once it's been set up (Figma 74:20722).
@@ -815,15 +800,14 @@ export default function EarnScreen() {
   // so only the missing final stage needs signing.
   const isAutodepositSetUp =
     autodepositThresholdUsd != null && autodeposit?.status !== "pending";
-  const autodepositSubtitle = useMemo(() => {
-    if (autodepositThresholdUsd == null) {
-      return null;
-    }
-    return `Anything above $${autodepositThresholdUsd.toLocaleString("en-US", {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    })}`;
-  }, [autodepositThresholdUsd]);
+  const autodepositSubtitle = earnAutodepositLabel(
+    isAutodepositSetUp && autodepositThresholdUsd != null
+      ? {
+          keepAmount: String(autodepositThresholdUsd),
+          state: autodepositEnabled ? "created" : "paused",
+        }
+      : null
+  );
 
   const balanceParts = useMemo(
     () => splitUsdCents(hasDeposit && depositedUsd != null ? depositedUsd : 0),

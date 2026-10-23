@@ -1,5 +1,6 @@
 "use client";
 
+import { EARN_FORECAST_REALIZED_MAX_AGE_MS } from "@loyal-labs/shared";
 import {
   readClientCacheEntry,
   writeClientCache,
@@ -14,7 +15,7 @@ import type {
 const CLIENT_CACHE_TTL_MS = 30 * 60 * 1000;
 const FAILURE_BACKOFF_MS = 5 * 60 * 1000;
 const PERSIST_TTL_MS = 24 * 60 * 60 * 1000;
-export const REALIZED_MAX_AGE_MS = 3 * 60 * 60 * 1000;
+export const REALIZED_MAX_AGE_MS = EARN_FORECAST_REALIZED_MAX_AGE_MS;
 
 const EARN_FORECAST_CACHE_KEY = "loyal.earnForecastSummary.v2";
 const EARN_FORECAST_CACHE_VERSION = 2;
@@ -66,24 +67,7 @@ let cachedSummary: {
 let inflightSummary: Promise<EarnForecastSummaryResponse> | null = null;
 let failedSummary: { error: unknown; retryAt: number } | null = null;
 
-export function toForecastApy(
-  payload: EarnForecastSummaryResponse["forecast"]
-): EarnForecastApy {
-  const expired =
-    payload.strategy === "realized_7d_share_price" &&
-    (!Number.isFinite(Date.parse(payload.updatedAt)) ||
-      Date.now() - Date.parse(payload.updatedAt) >= REALIZED_MAX_AGE_MS);
-  return {
-    apyBps: payload.apyBps,
-    availability: expired
-      ? "unavailable"
-      : payload.availability ??
-        (payload.strategy === "safe_no_fees" ? "unavailable" : "available"),
-    rangeHighBps: payload.rangeHighBps,
-    rangeLowBps: payload.rangeLowBps,
-    source: payload.source,
-  };
-}
+export { toForecastApy } from "@loyal-labs/shared";
 
 function validCachedSummary(
   summary: EarnForecastSummaryResponse,

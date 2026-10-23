@@ -1,4 +1,8 @@
-import { EARN_AUTODEPOSIT_DEFAULT_AMOUNT_PER_PERIOD_USDC } from "@loyal-labs/shared";
+import {
+  EARN_AUTODEPOSIT_DEFAULT_AMOUNT_PER_PERIOD_USDC,
+  earnWithdrawSourceKey,
+  earnWithdrawSources,
+} from "@loyal-labs/shared";
 import type {
   SmartAccountEarnUsdcDepositInput,
   SmartAccountEarnUsdcReserveTargetInput,
@@ -685,56 +689,16 @@ export function buildPostDepositEarnPosition(args: {
 export function getWithdrawSourceKeyForHolding(
   holding: ActiveEarnPositionHolding
 ): string {
-  if ("sourceId" in holding && typeof holding.sourceId === "string") {
-    return holding.sourceId;
-  }
-  const tokenAccount =
-    typeof holding.provenance.tokenAccount === "string"
-      ? holding.provenance.tokenAccount
-      : null;
-  const sourceId =
-    holding.kind === "idle"
-      ? tokenAccount ?? holding.liquidityMint
-      : holding.reserve ?? holding.liquidityMint;
-  return `${holding.kind}:${sourceId}`;
+  return earnWithdrawSourceKey(holding);
 }
 
 export function createWithdrawSourceOptions(
   holdings: ActiveEarnPositionHolding[] | undefined
 ): EarnWithdrawSourceOption[] {
-  const positiveHoldings =
-    holdings?.filter((holding) => {
-      try {
-        return BigInt(holding.amountRaw) > BigInt(0);
-      } catch {
-        return false;
-      }
-    }) ?? [];
-  return positiveHoldings.map((holding): EarnWithdrawSourceOption => {
-    const tokenAccount =
-      typeof holding.provenance.tokenAccount === "string"
-        ? holding.provenance.tokenAccount
-        : null;
-    const sourceId = getWithdrawSourceKeyForHolding(holding);
-    return {
-      amountRaw: holding.amountRaw,
-      balance: Number(BigInt(holding.amountRaw)) / 1_000_000,
-      id: sourceId,
-      icon: resolveEarnTransactionMarketIcon({ market: holding.market }),
-      label:
-        holding.kind === "idle"
-          ? `Idle vault ${holding.marketName}`
-          : `${holding.marketName} reserve`,
-      liquidityMint: holding.liquidityMint,
-      market: holding.market,
-      reserve: holding.reserve,
-      sourceId,
-      supplyApyBps: holding.supplyApyBps,
-      tokenAccount,
-      tokenProgramId: holding.tokenProgramId,
-      type: holding.kind === "idle" ? "idle" : "reserve",
-    };
-  });
+  return earnWithdrawSources(holdings).map((source) => ({
+    ...source,
+    icon: resolveEarnTransactionMarketIcon({ market: source.market }),
+  }));
 }
 
 function decodeWalletUsdcAmountRaw(

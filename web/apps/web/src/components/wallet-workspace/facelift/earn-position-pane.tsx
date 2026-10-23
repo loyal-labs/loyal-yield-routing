@@ -27,7 +27,7 @@ import { ThemedIcon } from "@/components/wallet-workspace/facelift/themed-icon";
 import { useEarnForecastApy } from "@/hooks/use-earn-forecast-apy";
 import type { EarnPositionData } from "@/components/wallet-workspace/facelift/use-earn-position-data";
 import { formatEarnApyLabel } from "@/lib/kamino/earn-forecast.shared";
-import { formatAutodepositUsdLabel } from "@loyal-labs/shared";
+import { earnAutodepositLabel } from "@loyal-labs/shared";
 import type { EarnTransactionItem } from "@/lib/yield-optimization/earn-transactions.client";
 
 const ASSET_BASE = "/wallet-workspace/facelift";
@@ -69,15 +69,7 @@ export function EarnPositionPane({
   const autodepositState = autodeposit?.state ?? null;
   const isAutodepositToggling =
     autodepositState === "pausing" || autodepositState === "resuming";
-  const autodepositLabel = autodeposit
-    ? autodepositState === "pausing"
-      ? "Pausing…"
-      : autodepositState === "resuming"
-      ? "Resuming…"
-      : autodepositState === "paused"
-      ? "Paused"
-      : `Anything above ${formatAutodepositUsdLabel(autodeposit.keepAmount)}`
-    : "Start earning the moment your money arrives";
+  const autodepositLabel = earnAutodepositLabel(autodeposit);
   const autodepositLabelHasAmount = Boolean(
     autodeposit && !isAutodepositToggling && autodepositState !== "paused"
   );

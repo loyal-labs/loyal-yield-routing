@@ -18,7 +18,7 @@ var signerReach = map[string]struct {
 	"NewSigner":  {"internal/jwt", []string{"cmd/loyal-web/main.go"}},
 	"Mint":       {"internal/jwt", []string{"internal/webapp/earn_session.go", "internal/webapp/earn_privy.go"}},
 	"NewSponsor": {"internal/earnprep", []string{"cmd/loyal-web/main.go"}},
-	"Cosign":     {"internal/earnprep", []string{"internal/webapp/earn_deposit.go"}},
+	"Cosign":     {"internal/earnprep", []string{"internal/webapp/earn_sponsor.go"}},
 }
 
 func TestSigningStaysWithItsOps(t *testing.T) {
@@ -67,7 +67,7 @@ func TestSigningStaysWithItsOps(t *testing.T) {
 				}
 				rule, guarded := signerReach[sel.Sel.Name]
 				if guarded && pkg != rule.owner && !slices.Contains(rule.from, file) {
-					t.Errorf("%s calls %s: only %s may reach the %s signer (the session mint and Privy complete sign JWTs; deposit prepare and Earn MAX context cosign sponsored setup); move the call there", file, sel.Sel.Name, strings.Join(rule.from, ", "), rule.owner)
+					t.Errorf("%s calls %s: only %s may reach the %s signer (the session mint and Privy complete sign JWTs; the sponsored smart account create cosigns); move the call there", file, sel.Sel.Name, strings.Join(rule.from, ", "), rule.owner)
 				}
 				return true
 			})
