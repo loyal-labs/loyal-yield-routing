@@ -451,7 +451,8 @@ func rebuildEarningsRangeSet(ctx context.Context, input earningsReadInput, deps 
 	for _, event := range effectiveLedger {
 		if event.positionID == nil || event.initializesPosition == nil {
 			hasPositionHistory = false
-		} else {
+		}
+		if event.positionID != nil || event.initializesPosition != nil {
 			somePositionEvidence = true
 		}
 	}
@@ -662,23 +663,32 @@ func rebuildEarningsRangeSet(ctx context.Context, input earningsReadInput, deps 
 	}
 
 	var savedRevision *string
+	skipSave := false
 	if deps.loadSourceRevision == nil {
 		savedRevision = strPtr(sourceRevision)
 	} else {
 		latest, revErr := deps.loadSourceRevision(ctx, input)
-		if revErr == nil && latest == sourceRevision {
+		if revErr != nil {
+			// TS evaluates the revision inside the saveSnapshot arguments: a
+			// failed re-read skips the save and its catch logs, it never stores
+			// a NULL-revision snapshot.
+			warnEarningsRead("snapshot write unavailable", revErr)
+			skipSave = true
+		} else if latest == sourceRevision {
 			savedRevision = strPtr(sourceRevision)
 		}
 	}
-	if err := deps.saveSnapshot(ctx, earningsSaveArgs{
-		input:          input,
-		payload:        payload,
-		principal:      projectedPrincipal,
-		timezone:       timezone,
-		sourceRevision: savedRevision,
-		checkpoint:     nextCheckpoint,
-	}); err != nil {
-		warnEarningsRead("snapshot write unavailable", err)
+	if !skipSave {
+		if err := deps.saveSnapshot(ctx, earningsSaveArgs{
+			input:          input,
+			payload:        payload,
+			principal:      projectedPrincipal,
+			timezone:       timezone,
+			sourceRevision: savedRevision,
+			checkpoint:     nextCheckpoint,
+		}); err != nil {
+			warnEarningsRead("snapshot write unavailable", err)
+		}
 	}
 
 	slog.Info("earnings-read ready",
