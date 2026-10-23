@@ -1,3 +1,5 @@
+import { type KeyMap, swapDeep, swapText } from "./translate";
+
 export const RPC_ENDPOINT = "https://rpc.earn-parity.invalid/";
 
 export type RecordedCall =
@@ -36,7 +38,9 @@ function jsonResponse(payload: unknown): Response {
   return new Response(JSON.stringify(payload), { status: 200, headers: { "content-type": "application/json" } });
 }
 
-export function recordingFetch(rpcUrl: string, realFetch: typeof fetch, log: RecordedCall[]): typeof fetch {
+const IDENTITY: KeyMap = { toSource: new Map(), toTarget: new Map() };
+
+export function recordingFetch(rpcUrl: string, realFetch: typeof fetch, log: RecordedCall[], keys: KeyMap = IDENTITY): typeof fetch {
   return (async (input: RequestInfo | URL, init?: RequestInit) => {
     const { url, method, body } = requestParts(input, init);
     if (url === RPC_ENDPOINT) {
@@ -44,19 +48,20 @@ export function recordingFetch(rpcUrl: string, realFetch: typeof fetch, log: Rec
       for (const request of requests) {
         if (!isReadOnlyRpc(request.method)) throw new Error(`earn-parity: refusing non-read RPC ${request.method}`);
       }
-      const response = await realFetch(rpcUrl, { method: "POST", headers: { "content-type": "application/json" }, body });
+      const sourceBody = JSON.stringify(requests.map((request) => ({ ...request, params: swapDeep(request.params, keys.toSource) })));
+      const response = await realFetch(rpcUrl, { method: "POST", headers: { "content-type": "application/json" }, body: sourceBody });
       if (!response.ok) throw new Error(`earn-parity: RPC answered HTTP ${response.status}`);
-      const payload = (await response.json()) as Record<string, unknown> | Record<string, unknown>[];
+      const payload = swapDeep(await response.json(), keys.toTarget) as Record<string, unknown> | Record<string, unknown>[];
       const responses = Array.isArray(payload) ? payload : [payload];
       requests.forEach((request, index) => {
         const { id: _id, ...rest } = responses.find((r) => r.id === request.id) ?? responses[index];
         log.push({ kind: "rpc", method: request.method, params: request.params ?? null, response: rest });
       });
-      return jsonResponse(payload);
+      return jsonResponse(Array.isArray(JSON.parse(body ?? "null")) ? responses : responses[0]);
     }
     if (!READ_ONLY_HTTP.test(url)) throw new Error(`earn-parity: refusing fetch to ${url}`);
-    const response = await realFetch(url, init);
-    const text = await response.text();
+    const response = await realFetch(url, { ...init, body: body === null ? null : swapText(body, keys.toSource) });
+    const text = swapText(await response.text(), keys.toTarget);
     log.push({ kind: "http", method, url, body, status: response.status, text });
     return new Response(text, { status: response.status, headers: { "content-type": "application/json" } });
   }) as typeof fetch;

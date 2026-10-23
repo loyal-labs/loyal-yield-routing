@@ -5,6 +5,7 @@ import { plugin } from "bun";
 
 import { PublicKey } from "../../../web/node_modules/@solana/web3.js";
 
+import type { RecordedFrom } from "./translate";
 import { RPC_ENDPOINT, type RecordedCall } from "./transport";
 
 export const WEB_SRC = resolve(import.meta.dir, "../../../web/apps/web/src");
@@ -25,6 +26,7 @@ export type Fixture = {
   route: string;
   branch: string;
   processEnv: Record<string, string>;
+  recordedFrom?: RecordedFrom;
   request: { body: unknown };
   principal: { walletAddress: string; settingsPda: string; smartAccountAddress: string };
   serverEnv: Record<string, unknown>;

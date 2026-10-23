@@ -18,7 +18,11 @@
 // --record runs the same handler against SOLANA_RPC_URL and api.kamino.finance and rewrites
 // fixture.transport. Only get* RPC methods and simulateTransaction pass; anything else throws.
 // --simulate also runs simulateTransaction on each printed message (sigVerify off, replaceRecentBlockhash
-// on) against SOLANA_RPC_URL and prints {path, err, logs} lines to stderr. Nothing is signed or sent.
+// on) against SOLANA_RPC_URL and prints {path, as, err, logs} lines to stderr. Nothing is signed or sent.
+// A fixture with recordedFrom is synthetic: --record ran the route as the principal while every RPC and
+// Kamino call was answered from the recordedFrom vault's real accounts, re-addressed key for key
+// (earn-parity/translate.ts). For such a fixture --simulate runs each message twice: as printed
+// ("principal") and re-addressed back onto the recordedFrom vault ("recordedFrom").
 //
 // Go side contract: a git-ignored go/workers/internal/webapp/<route>_scratch_test.go reads
 // EARN_PARITY_INPUT (the fixture path) and EARN_PARITY_TS (a file holding this script's stdout), serves
@@ -28,13 +32,14 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 
-import { Connection, VersionedTransaction } from "../../web/node_modules/@solana/web3.js";
+import { Connection, PublicKey, VersionedMessage, VersionedTransaction } from "../../web/node_modules/@solana/web3.js";
 import { compilePreparedOperation } from "../../web/packages/loyal-smart-accounts-core/src/core/transport/index";
 import {
   hydratePreparedOperation,
   type WirePreparedLoyalSmartAccountsOperation,
 } from "../../web/packages/smart-account-vaults/src/wire/prepared-operation-wire.shared";
 import { type Fixture, installBoundary, WEB_SRC } from "./earn-parity/boundary";
+import { keyMap, reserveFacts, swapDeep } from "./earn-parity/translate";
 import { type RecordedCall, recordingFetch, replayFetch } from "./earn-parity/transport";
 
 const PINNED_BLOCKHASH = "11111111111111111111111111111111";
@@ -72,7 +77,17 @@ const rpcUrl = (): string => {
 };
 const realFetch = globalThis.fetch;
 const recorded: RecordedCall[] = [];
-globalThis.fetch = values.record ? recordingFetch(rpcUrl(), realFetch, recorded) : replayFetch(fixture.transport);
+async function sourceKeys(): Promise<Parameters<typeof recordingFetch>[3]> {
+  const from = fixture.recordedFrom;
+  if (!from) return undefined;
+  const connection = new Connection(rpcUrl(), { commitment: "confirmed", fetch: realFetch });
+  const reserves = await connection.getMultipleAccountsInfo(from.reserves.map((reserve) => new PublicKey(reserve)));
+  return keyMap(fixture.principal, from, reserves.map((info, index) => {
+    if (!info) throw new Error(`reserve ${from.reserves[index]} not found`);
+    return reserveFacts(info.data);
+  }));
+}
+globalThis.fetch = values.record ? recordingFetch(rpcUrl(), realFetch, recorded, await sourceKeys()) : replayFetch(fixture.transport);
 Object.assign(process.env, fixture.processEnv);
 installBoundary(fixture);
 
@@ -121,11 +136,14 @@ if (values.record) {
 
 if (values.simulate) {
   const connection = new Connection(rpcUrl(), { commitment: "confirmed", fetch: realFetch });
+  const source = await sourceKeys();
   for (const { path, transaction } of compiled) {
-    const result = await connection.simulateTransaction(new VersionedTransaction(transaction.message), {
-      sigVerify: false,
-      replaceRecentBlockhash: true,
-    });
-    console.error(JSON.stringify({ path, err: result.value.err, logs: result.value.logs }));
+    const bytes = Buffer.from(transaction.message.serialize());
+    const runs = [{ as: "principal", message: transaction.message }];
+    if (source) runs.push({ as: "recordedFrom", message: VersionedMessage.deserialize(Buffer.from(swapDeep(bytes.toString("base64"), source.toSource) as string, "base64")) });
+    for (const run of runs) {
+      const result = await connection.simulateTransaction(new VersionedTransaction(run.message), { sigVerify: false, replaceRecentBlockhash: true });
+      console.error(JSON.stringify({ path, as: run.as, err: result.value.err, logs: result.value.logs }));
+    }
   }
 }
