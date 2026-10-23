@@ -9,13 +9,12 @@ import { getWalletSigner } from "@/lib/solana/wallet/wallet-details";
 import type { Signer } from "@/lib/wallet/signer";
 
 import type { EarnAuthFields } from "./earn-api";
-import type { EarnAuthPurpose } from "./earn-auth";
 
 const STORAGE_KEY = "earn.sessions.v2";
 const LEGACY_STORAGE_KEY = "earn.session.v1";
 const EXPIRY_SAFETY_MS = 5 * 60 * 1000;
 const FAILED_MINT_COOLDOWN_MS = 60 * 1000;
-const SESSION_PURPOSE: EarnAuthPurpose = "earn-max";
+const SESSION_PURPOSE = "earn-max";
 const SILENT_SIGNERS: ReadonlySet<Signer["kind"]> = new Set(["privy", "local"]);
 
 type StoredEarnSession = { token: string; expiresAt: string };
@@ -42,7 +41,7 @@ export function earnHeaders(flowId?: string): Record<string, string> {
 
 export async function signEarnAuthFields(
   signer: Signer,
-  purpose: EarnAuthPurpose,
+  purpose: typeof SESSION_PURPOSE,
 ): Promise<EarnAuthFields> {
   const walletAddress = signer.publicKey.toBase58();
   const issuedAt = new Date().toISOString();
