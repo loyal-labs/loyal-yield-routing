@@ -1,3 +1,9 @@
+import {
+  MOBILE_DEVICE_PLATFORMS,
+  type MobileDevicePlatform,
+  type TelemetryDeviceIdentity,
+} from "@loyal-labs/shared";
+
 import { isBrowserPageSessionId } from "./chunk-load-contract";
 import { isCanonicalUuidV4 } from "./lifecycle-contract";
 import {
@@ -76,13 +82,8 @@ export const MOBILE_LOADING_OPERATIONS = [
 ] as const;
 export type MobileLoadingOperation = (typeof MOBILE_LOADING_OPERATIONS)[number];
 
-export type MobileLoadingMetricEnvelope = {
+export type MobileLoadingMetricEnvelope = TelemetryDeviceIdentity & {
   appSessionId: string;
-  /**
-   * Stable per-install UUID, the join key for a device's whole telemetry
-   * trail (ASK-2097). Optional: older clients predate it.
-   */
-  deviceId?: string;
   durationMs: number;
   environment: string;
   flowId?: string;
@@ -91,7 +92,7 @@ export type MobileLoadingMetricEnvelope = {
   outcome: FrontendLoadingOutcome;
   pathname: string;
   phase: "app_ready" | "interaction_to_ui";
-  platform: "android" | "ios";
+  platform: MobileDevicePlatform;
   release: string;
   timestamp: string;
 };
@@ -111,7 +112,7 @@ export type NormalizedLoadingMetric = {
   pageSessionId?: string;
   pathname: string;
   phase: FrontendLoadingPhase | "app_ready" | "interaction_to_ui";
-  platform?: "android" | "ios";
+  platform?: MobileDevicePlatform;
   presentation?: FrontendLoadingPresentation;
   release: string;
   requestCount?: number;
@@ -352,7 +353,7 @@ export function parseMobileLoadingMetricEnvelope(
     !includes(MOBILE_LOADING_OPERATIONS, record.operation) ||
     !includes(FRONTEND_LOADING_OUTCOMES, record.outcome) ||
     !includes(["app_ready", "interaction_to_ui"] as const, record.phase) ||
-    !includes(["android", "ios"] as const, record.platform) ||
+    !includes(MOBILE_DEVICE_PLATFORMS, record.platform) ||
     !isFiniteNumberInRange(record.durationMs, 0, MAX_METRIC_DURATION_MS) ||
     !isCanonicalUuidV4(record.appSessionId) ||
     (record.deviceId !== undefined && !isCanonicalUuidV4(record.deviceId))

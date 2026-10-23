@@ -61,3 +61,24 @@ export {
   MIN_SUPPORTED_MOBILE_BUILD,
   MOBILE_BUILD_HEADER,
 } from "./client-floor";
+export {
+  isCanonicalUuidV4,
+  isTelemetryHttpStatus,
+  LIFECYCLE_ERROR_CODES,
+  LIFECYCLE_ERROR_DETAILS,
+  MAX_ERROR_MESSAGE_LENGTH,
+  MAX_ERROR_NAME_LENGTH,
+  MAX_ERROR_STACK_LENGTH,
+  mobileChannelToEnvironment,
+  MOBILE_DEVICE_PLATFORMS,
+  MOBILE_ERROR_OPERATIONS,
+} from "./telemetry-contract";
+export type {
+  LifecycleErrorDetail,
+  LifecycleErrorCode,
+  MobileDevicePlatform,
+  MobileErrorEnvelope,
+  MobileErrorOperation,
+  MobileTelemetryReleaseContext,
+  TelemetryDeviceIdentity,
+} from "./telemetry-contract";
