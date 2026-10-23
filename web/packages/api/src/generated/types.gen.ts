@@ -42,7 +42,7 @@ export type AutodepositFloorConfirmRequest = {
 
 export type AutodepositFloorConfirmResponse = {
     rebaselineSweep?: AutodepositFloorRebaselineSweep;
-    target: AutodepositSetupConfirmTarget;
+    target: AutodepositSetupConfirmTarget | null;
 };
 
 export type AutodepositFloorRebaselineSweep = {
@@ -131,7 +131,7 @@ export type AutodepositSweepsExecuteRequest = {
 export type AutodepositSweepsExecuteResponse = {
     status: string;
     sweepRequest: AutodepositSweepRequestResult;
-    target: AutodepositSetupConfirmTarget;
+    target: AutodepositSetupConfirmTarget | null;
 };
 
 export type AutodepositSweepsProgressResponse = {
@@ -146,7 +146,7 @@ export type AutodepositSweepsProgressResponse = {
 };
 
 export type AutodepositTargetResponse = {
-    target: AutodepositSetupConfirmTarget;
+    target: AutodepositSetupConfirmTarget | null;
 };
 
 export type AutodepositToggleConfirmRequest = {
@@ -284,8 +284,8 @@ export type DprepPreparedDeposit = {
     nativeSolRequirement: DprepNativeSolRequirement;
     persistence: DprepPersistence;
     policy: DprepPolicyRef;
-    policyFinalizePrepared: DepositWirePreparedOperation;
-    policySetupPrepared: DepositWirePreparedOperation;
+    policyFinalizePrepared: DepositWirePreparedOperation | null;
+    policySetupPrepared: DepositWirePreparedOperation | null;
     prepared: DepositWirePreparedOperation;
     setupPolicy?: EarnSetupPolicyRef;
     targetReserve: DprepTargetReserve;
@@ -472,7 +472,7 @@ export type EarnMaxSummary = {
     policyStatus: string;
     realizedApyBps: number | null;
     strategyKey: string | null;
-    withdrawal: WithdrawalView;
+    withdrawal: WithdrawalView | null;
 };
 
 export type EarnMaxSummaryResponse = {
@@ -603,7 +603,7 @@ export type EarnPolicyRefundScanResponse = {
     policies: Array<EarnPolicyRefundScanPolicy> | null;
     recurringDelegations: Array<EarnPolicyRefundRecurringDelegation> | null;
     settingsPda: string;
-    vault: EarnPolicyRefundVaultEntry;
+    vault: EarnPolicyRefundVaultEntry | null;
     vaultIndex: number;
     vaultPubkey: string;
 };
@@ -716,7 +716,7 @@ export type EarnPositionReconcileResponse = {
 };
 
 export type EarnPositionResponse = {
-    position: EarnPosition;
+    position: EarnPosition | null;
 };
 
 export type EarnPublicStats = {
@@ -864,7 +864,7 @@ export type EarnStatePolicy = {
     riskProfile: string | null;
     routeModes: Array<string> | null;
     seed: string;
-    setupPolicy: EarnStateSetupPolicy;
+    setupPolicy: EarnStateSetupPolicy | null;
     stableMints: Array<string> | null;
     universePreset: string | null;
     vaultIndex: number;
@@ -887,18 +887,18 @@ export type EarnStateProvenance = {
 };
 
 export type EarnStateResponse = {
-    autodeposit: EarnStateAutodeposit;
-    autoswap: EarnStateAutoswap;
+    autodeposit: EarnStateAutodeposit | null;
+    autoswap: EarnStateAutoswap | null;
     autoswapAvailable: boolean;
-    autoswapIndex: EarnStateAutoswapIndex;
+    autoswapIndex: EarnStateAutoswapIndex | null;
     canonicalVaultPubkey: string;
     loadErrors: {
         [key: string]: boolean;
     };
     onboarding: EarnStateOnboarding;
-    policy: EarnStatePolicy;
+    policy: EarnStatePolicy | null;
     policySignerPublicKey: string;
-    position: EarnStatePosition;
+    position: EarnStatePosition | null;
     programId: string;
     settingsPda: string;
     vault: EarnStateVault;
@@ -1151,13 +1151,13 @@ export type EarnWithdrawPrepareResponse = {
 
 export type EarnWithdrawPrepareWire = {
     amountRaw: string;
-    autodepositClosePrepared: EarnWithdrawPrepareWireAutodepositClosePreparedStruct;
+    autodepositClosePrepared: EarnWithdrawPrepareWireAutodepositClosePreparedStruct | null;
     mode: string;
     persistence: EarnWithdrawPersistence;
     policy: EarnWithdrawPolicyRef;
     prepared: DepositWirePreparedOperation;
     setupPolicy?: EarnWithdrawSetupPolicyRef;
-    targetReserve: EarnPolicyTargetReserve;
+    targetReserve: EarnPolicyTargetReserve | null;
     vault: EarnWithdrawVault;
     withdrawSteps: Array<EarnWithdrawStepWire> | null;
 };
@@ -1193,10 +1193,10 @@ export type EarnWithdrawSourceMetadata = {
 };
 
 export type EarnWithdrawStepWire = {
-    accountingReserve: EarnWithdrawAccountingReserve;
+    accountingReserve: EarnWithdrawAccountingReserve | null;
     amountRaw: string;
     collateralAta: string | null;
-    executionReserve: EarnWithdrawExecutionReserve;
+    executionReserve: EarnWithdrawExecutionReserve | null;
     mode: string;
     persistence: EarnWithdrawPersistence;
     prepared: DepositWirePreparedOperation;

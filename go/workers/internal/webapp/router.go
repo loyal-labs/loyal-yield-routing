@@ -198,5 +198,7 @@ func OpenAPI() *huma.OpenAPI {
 	routes.registerRedeem(api)
 	registerPush(api, nil, nil)
 	documentEarn(api)
-	return api.OpenAPI()
+	spec := api.OpenAPI()
+	markNullableObjects(spec)
+	return spec
 }
