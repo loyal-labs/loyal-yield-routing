@@ -2,6 +2,8 @@ package webapp
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -10,6 +12,7 @@ import (
 	"github.com/solana-foundation/solana-go/v2"
 	"github.com/solana-foundation/solana-go/v2/rpc"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
@@ -143,13 +146,12 @@ func (h earnRoutes) earnPoliciesPrepare(ctx context.Context, in *earnPoliciesPre
 		return nil, depositPrepareFailed(err)
 	}
 
-	// fetchSettings (client.ts:8282-8285): getAccountInfo at confirmed.
-	_, read, err := h.Chain.Accounts(ctx, []solana.PublicKey{account.Settings}, rpc.CommitmentConfirmed, 0)
+	settings, err := depositSettingsFor(ctx, h.Chain, account.Settings)
 	if err != nil {
-		return nil, depositPrepareUnavailable(account, err)
-	}
-	settings, err := squads.DecodeSettings(read[0])
-	if err != nil {
+		var refused *routeError
+		if errors.As(err, &refused) {
+			return nil, refused
+		}
 		return nil, depositPrepareUnavailable(account, err)
 	}
 	response, err := depositPreparePolicyResponse(account, settings, h.PolicySigner)
@@ -166,6 +168,22 @@ func depositPrepareUnavailable(account EarnAccount, err error) error {
 		"settings", account.Settings.String(),
 		"wallet", account.Wallet.String())
 	return depositPrepareFailed(err)
+}
+
+// depositSettingsFor is fetchSettings (client.ts:8282-8285): one getAccountInfo
+// read at confirmed, decoded as a Squads Settings. A missing account carries the
+// generated fetcher's own message (Settings.ts:110), which the Next route
+// surfaces verbatim as 500 prepare_failed.
+func depositSettingsFor(ctx context.Context, client *chain.Client, settings solana.PublicKey) (squads.Settings, error) {
+	_, read, err := client.Accounts(ctx, []solana.PublicKey{settings}, rpc.CommitmentConfirmed, 0)
+	if err != nil {
+		return squads.Settings{}, err
+	}
+	if read[0] == nil {
+		return squads.Settings{}, earnError(http.StatusInternalServerError, "prepare_failed",
+			fmt.Sprintf("Unable to find Settings account at %s", settings))
+	}
+	return squads.DecodeSettings(read[0])
 }
 
 // depositPrepareFailed is route.ts:101-105: an unexpected failure becomes 500
