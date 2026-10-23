@@ -319,6 +319,12 @@ func (h earnRoutes) exportOtlpPayload(ctx context.Context, payload any, signal s
 	if h.OTLP == nil || h.OTLP.Endpoint == nil || h.OTLP.IngestionKey == "" {
 		return false
 	}
+	// getTelemetryConfig (server.ts:51-74) only exports to https anywhere or
+	// http on loopback; anything else leaves the config null and the event
+	// dropped, never an error.
+	if !obsURLOriginLocal(h.OTLP.Endpoint) {
+		return false
+	}
 	endpoint := *h.OTLP.Endpoint
 	endpoint.Path = "/v1/" + signal
 	endpoint.RawQuery = ""
