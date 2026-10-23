@@ -294,8 +294,21 @@ func obsRateLimitSource(header func(string) string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func (h earnRoutes) obsConsumeRateLimit(limiter *obsRateLimiter, header func(string) string) bool {
+func obsConsumeRateLimit(limiter *obsRateLimiter, header func(string) string) bool {
 	return limiter.allow(obsRateLimitSource(header), time.Now().UnixMilli())
+}
+
+// obsEncodeJSON is JSON.stringify for the collector payload: no HTML
+// escaping, no trailing newline. < and & inside an error message must reach
+// the collector as literal bytes, not <.
+func obsEncodeJSON(payload any) ([]byte, bool) {
+	var out bytes.Buffer
+	encoder := json.NewEncoder(&out)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(payload); err != nil {
+		return nil, false
+	}
+	return bytes.TrimRight(out.Bytes(), "\n"), true
 }
 
 // exportOtlpPayload ports exportOtlpPayload (server.ts:108-140): one POST of
@@ -311,8 +324,8 @@ func (h earnRoutes) exportOtlpPayload(ctx context.Context, payload any, signal s
 	endpoint.RawQuery = ""
 	endpoint.Fragment = ""
 	endpoint.RawFragment = ""
-	body, err := json.Marshal(payload)
-	if err != nil {
+	body, ok := obsEncodeJSON(payload)
+	if !ok {
 		return false
 	}
 	sendCtx, cancel := context.WithTimeout(ctx, obsExportBudget)
