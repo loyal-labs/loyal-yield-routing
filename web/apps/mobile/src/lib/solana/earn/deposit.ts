@@ -205,7 +205,6 @@ async function signSendAndConfirmDeposit(args: {
   stages.push({ name: "deposit", operation: prepared.prepared });
 
   const sentBy = new Map<DepositStageName, SentTransaction>();
-  let confirmRecorded = true;
   for (const stage of stages) {
     const [landed] = await signAndSendPreparedOperations({
       connection: getConnection(),
@@ -258,13 +257,12 @@ async function signSendAndConfirmDeposit(args: {
   const depositRecorded = await confirmWithRetry("deposit", () =>
     confirmEarnDeposit({ walletAddress, body, flowId: args.flow.flowId }),
   );
-  confirmRecorded = confirmRecorded && depositRecorded;
-  if (!confirmRecorded) {
+  if (!depositRecorded) {
     console.warn("[earn-deposit] yield routing will adopt this deposit");
   }
   args.flow.observe("backend_confirm", {
     chainState: "confirmed",
-    ...(confirmRecorded
+    ...(depositRecorded
       ? { persistenceState: "recorded" as const }
       : {
           errorCode: "backend_confirmation_failed" as const,

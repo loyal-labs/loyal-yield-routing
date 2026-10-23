@@ -4,7 +4,6 @@ import {
   hydratePreparedEarnUsdcWithdraw,
   hydratePreparedOperation,
   type SmartAccountPreparedEarnUsdcWithdraw,
-  type WirePreparedLoyalSmartAccountsOperation,
   type WireSmartAccountPreparedEarnUsdcAutodepositClose,
   type WireSmartAccountPreparedEarnUsdcWithdraw,
 } from "@loyal-labs/smart-account-vaults";
@@ -368,7 +367,7 @@ async function runEarnWithdraw(
         signer: args.signer,
         operations: [
           hydratePreparedEarnUsdcAutodepositClose(
-            wireCleanup.autodepositClosePrepared as unknown as WireSmartAccountPreparedEarnUsdcAutodepositClose,
+            wireCleanup.autodepositClosePrepared as WireSmartAccountPreparedEarnUsdcAutodepositClose,
           ).prepared,
         ],
       });
@@ -379,9 +378,7 @@ async function runEarnWithdraw(
       connection: getConnection(),
       signer: args.signer,
       operations: [
-        hydratePreparedOperation(
-          wireCleanup.prepared as unknown as WirePreparedLoyalSmartAccountsOperation,
-        ),
+        hydratePreparedOperation(wireCleanup.prepared),
       ],
     });
     flow.observe("cleanup_wallet_submit_confirm", {
