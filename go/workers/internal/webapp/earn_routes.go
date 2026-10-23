@@ -20,6 +20,8 @@ type Earn struct {
 	PolicySigner solana.PublicKey
 	Session      *jwt.Signer
 	Sponsor      *earnprep.Sponsor
+	Realtime     *jwt.RealtimeIssuer
+	RealtimeURL  string
 	SponsorChain SponsorChain
 	HTTP         *http.Client
 	OTLP         *OTLP

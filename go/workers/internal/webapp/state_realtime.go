@@ -18,7 +18,6 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -39,23 +38,6 @@ const (
 	earnRealtimeEventsProdURL  = "https://realtime.askloyal.com/events"
 	earnRealtimeEventsLocalURL = "http://127.0.0.1:10000/events"
 )
-
-// realtimeWiring is what the token op needs from cmd/loyal-web/main.go: the
-// issuer and the resolved events URL. It travels through this holder instead
-// of a field on Earn (earn_routes.go) so the route can register, document and
-// answer 503 even when no issuer was configured.
-type realtimeWiring struct {
-	Issuer    *jwt.RealtimeIssuer
-	EventsURL string
-}
-
-var realtime atomic.Pointer[realtimeWiring]
-
-// SetRealtime wires the realtime token op; cmd/loyal-web/main.go calls it
-// once at startup, before serving.
-func SetRealtime(issuer *jwt.RealtimeIssuer, eventsURL string) {
-	realtime.Store(&realtimeWiring{Issuer: issuer, EventsURL: eventsURL})
-}
 
 // ResolveRealtimeEventsURL ports resolveEarnRealtimeEventsUrl
 // (web/apps/web/src/lib/core/config/earn-realtime.ts:11-26): an explicit
@@ -118,15 +100,14 @@ func (h earnRoutes) realtimeIssue(account EarnAccount, contentType string, body 
 	if realtimeHasClientControlledClaims(contentType, body) {
 		return nil, earnError(http.StatusBadRequest, "invalid_request", "Realtime identity is derived from the authenticated session.")
 	}
-	wiring := realtime.Load()
-	if wiring == nil || wiring.Issuer == nil {
+	if h.Realtime == nil {
 		slog.Error("earn-realtime-token REALTIME_AUTH_SECRET is not set",
 			"settingsPda", account.Settings.String(), "walletAddress", account.Wallet.String())
 		return nil, earnError(http.StatusServiceUnavailable, "realtime_unavailable", "Earn realtime is temporarily unavailable.")
 	}
 	issuedAt := time.Now().Unix()
 	expiresAt := issuedAt + int64(earnRealtimeTokenLifetime/time.Second)
-	token, err := wiring.Issuer.IssueRealtime(jwt.RealtimeClaims{
+	token, err := h.Realtime.IssueRealtime(jwt.RealtimeClaims{
 		Aud:              earnRealtimeTokenAudience,
 		ClientKind:       earnRealtimeTokenClient,
 		EarnVaultAddress: account.Vault.String(),
@@ -146,7 +127,7 @@ func (h earnRoutes) realtimeIssue(account EarnAccount, contentType string, body 
 	}
 	return &realtimeTokenOutput{CacheControl: "no-store", Body: RealtimeTokenResponse{
 		AccessToken:   token,
-		EventsURL:     wiring.EventsURL,
+		EventsURL:     h.RealtimeURL,
 		ExpiresAt:     isoMilliseconds(time.Unix(expiresAt, 0)),
 		SchemaVersion: earnRealtimeTokenSchema,
 	}}, nil

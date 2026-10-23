@@ -220,11 +220,10 @@ func earn(ctx context.Context, rpcClient *chain.Client, appDB, yieldDB *pgxpool.
 		}
 	}
 	if raw, ok := optionalCredential("Earn realtime token", "REALTIME_AUTH_SECRET"); ok && raw != "" {
-		if issuer, issuerErr := jwt.NewRealtimeIssuer(raw); issuerErr != nil {
-			degraded("Earn realtime token", issuerErr)
-		} else {
-			webapp.SetRealtime(issuer, webapp.ResolveRealtimeEventsURL(appEnvironment))
+		if e.Realtime, err = jwt.NewRealtimeIssuer(raw); err != nil {
+			degraded("Earn realtime token", err)
 		}
+		e.RealtimeURL = webapp.ResolveRealtimeEventsURL(appEnvironment)
 	}
 	if raw, ok := optionalCredential("sponsored smart account setup", "SMART_ACCOUNT_SPONSOR_PK"); ok {
 		if e.Sponsor, err = earnprep.NewSponsor(raw); err != nil {
