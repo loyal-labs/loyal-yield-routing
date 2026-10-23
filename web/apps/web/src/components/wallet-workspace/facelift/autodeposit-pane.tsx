@@ -46,7 +46,7 @@ const AUTODEPOSIT_DOCS_URL = "https://docs.askloyal.com/earn/autodeposit";
 // The pipeline a sweep travels, told as steps (user-docs/earn/autodeposit.mdx
 // "Execution"), with the trust facts the old flat rows carried — the on-chain
 // primitive, the permission scope, and how it's undone — folded into the
-// step bodies. Mirrors mobile's AutodepositInfoSheet content.
+// step bodies.
 const AUTODEPOSIT_STEPS: readonly FlowStep[] = [
   {
     Icon: Wallet,

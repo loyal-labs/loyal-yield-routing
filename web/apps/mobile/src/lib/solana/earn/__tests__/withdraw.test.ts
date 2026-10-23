@@ -41,6 +41,7 @@ class MockEarnApiError extends Error {
 jest.mock(
   "@loyal-labs/actions",
   () => ({
+    ...jest.requireActual("@loyal-labs/actions"),
     normalizeLoyalCluster: (cluster: string) => cluster,
   }),
   { virtual: true },

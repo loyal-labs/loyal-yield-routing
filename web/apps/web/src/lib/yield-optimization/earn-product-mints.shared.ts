@@ -1,10 +1,10 @@
 import {
   getStablecoinMintForCluster,
   getStablecoinsForCluster,
+  getStablecoinTokenProgramForCluster,
   type LoyalCluster,
   Stablecoin,
 } from "@loyal-labs/actions";
-import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "@solana/spl-token";
 import { PublicKey } from "@solana/web3.js";
 
 export const EARN_PRODUCT_STABLECOINS = [
@@ -26,18 +26,6 @@ export interface EarnProductAsset {
   tokenProgramId: PublicKey;
 }
 
-const TOKEN_2022_STABLECOINS = new Set<EarnProductStablecoin>([
-  Stablecoin.CASH,
-  Stablecoin.USDG,
-  Stablecoin.PYUSD,
-]);
-
-function tokenProgramFor(stablecoin: EarnProductStablecoin): PublicKey {
-  return TOKEN_2022_STABLECOINS.has(stablecoin)
-    ? TOKEN_2022_PROGRAM_ID
-    : TOKEN_PROGRAM_ID;
-}
-
 export function getEarnProductAssetsForCluster(
   cluster: LoyalCluster
 ): readonly EarnProductAsset[] {
@@ -49,7 +37,7 @@ export function getEarnProductAssetsForCluster(
     mint: getStablecoinMintForCluster(cluster, stablecoin),
     stablecoin,
     symbol: stablecoin,
-    tokenProgramId: tokenProgramFor(stablecoin),
+    tokenProgramId: getStablecoinTokenProgramForCluster(cluster, stablecoin),
   }));
 }
 

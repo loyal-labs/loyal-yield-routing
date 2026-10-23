@@ -55,9 +55,8 @@ import {
 const usdcLogo = require("../../../assets/images/earn/usdc.png");
 
 // Which stablecoin funds the deposit — one row per Earn product asset
-// (CASH/USDG/PYUSD/USDC/USDT/USDS on mainnet). Mirrors the web deposit
-// pane's DepositSourceOption; the picker chrome is the withdraw sheet's
-// source selector.
+// (CASH/USDG/PYUSD/USDC/USDT/USDS on mainnet). The picker chrome is the
+// withdraw sheet's source selector.
 type DepositSourceOption = {
   symbol: string;
   mint: string;
@@ -145,7 +144,7 @@ export function DepositSheet({
   // One row per Earn product asset, funded coins first (the sheet opens
   // downward, so funded rows sit nearest the trigger); product order within
   // each group. Empty rows stay visible but disabled so the coin set reads
-  // complete — mirrors the web deposit selector.
+  // complete.
   const sourceOptions = useMemo<DepositSourceOption[]>(() => {
     const options = getEarnProductAssets(earnMax ? "mainnet" : env.solanaEnv)
       .filter((asset) => !earnMax || asset.symbol === "USDC")

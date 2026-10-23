@@ -54,3 +54,5 @@ export type {
   EarnTransactionEventType,
   EarnTransactionKind,
 } from "./earn-transactions";
+
+export { EARN_WITHDRAW_SOURCE_DUST_USD } from "./earn-withdraw-dust";

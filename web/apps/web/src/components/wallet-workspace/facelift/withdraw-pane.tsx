@@ -1,5 +1,6 @@
 "use client";
 
+import { EARN_WITHDRAW_SOURCE_DUST_USD } from "@loyal-labs/shared";
 import { useEscapeOverlay } from "@/components/wallet-workspace/facelift/escape-owner";
 import {
   CircleDollarSign,
@@ -113,7 +114,7 @@ function SourceOptionRow({
 }) {
   const amount = splitUsdBalance(option.usd);
   const { isBalanceHidden } = useBalanceVisibility();
-  const isDust = option.usd < 0.005;
+  const isDust = option.usd < EARN_WITHDRAW_SOURCE_DUST_USD;
   return (
     <button
       className={`t-hover flex w-full items-center px-4 text-left disabled:opacity-40 enabled:hover:bg-accent ${rounded}`}
@@ -199,13 +200,15 @@ export function WithdrawPane({
   const listedOptions = useMemo(
     () =>
       [...options].sort(
-        (a, b) => (a.usd >= 0.005 ? 1 : 0) - (b.usd >= 0.005 ? 1 : 0)
+        (a, b) =>
+          (a.usd >= EARN_WITHDRAW_SOURCE_DUST_USD ? 1 : 0) -
+          (b.usd >= 0.005 ? 1 : 0)
       ),
     [options]
   );
   const selectedOption =
     options.find((option) => option.key === selectedKey) ??
-    options.find((option) => option.usd >= 0.005) ??
+    options.find((option) => option.usd >= EARN_WITHDRAW_SOURCE_DUST_USD) ??
     options[0] ??
     null;
   const fromBalance = splitUsdBalance(selectedOption?.usd ?? 0);
