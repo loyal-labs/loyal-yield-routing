@@ -56,6 +56,8 @@ type DepositStageName = "policy" | "policy-finalize" | "deposit";
 const NO_ELIGIBLE_RESERVE_ATTEMPTS = 4;
 const NO_ELIGIBLE_RESERVE_DELAY_MS = 2_000;
 const CONFIRM_ATTEMPTS = 3;
+const POLICY_CONFIRMED_BUT_NOT_RECORDED_MESSAGE =
+  "Earn setup is confirmed, but Earn is still updating. Refresh Earn, then continue this deposit. No USDC was deposited yet.";
 
 function hydrateOperation(
   wire: DepositWirePreparedOperation,
@@ -202,37 +204,42 @@ async function signSendAndConfirmDeposit(args: {
   }
   stages.push({ name: "deposit", operation: prepared.prepared });
 
-  const sent = await signAndSendPreparedOperations({
-    connection: getConnection(),
-    signer: args.signer,
-    operations: stages.map((stage) => stage.operation),
-  }).catch((error) => {
-    args.flow.failFrom("wallet_submit_confirm", error);
-    throw error;
-  });
+  const sentBy = new Map<DepositStageName, SentTransaction>();
+  let confirmRecorded = true;
+  for (const stage of stages) {
+    const [landed] = await signAndSendPreparedOperations({
+      connection: getConnection(),
+      signer: args.signer,
+      operations: [stage.operation],
+    }).catch((error) => {
+      args.flow.failFrom("wallet_submit_confirm", error);
+      throw error;
+    });
+    sentBy.set(stage.name, landed);
+    if (stage.name === "deposit") {
+      continue;
+    }
+    const stageName = stage.name;
+    const recorded = await confirmWithRetry(`${stageName} stage`, () =>
+      confirmEarnPolicy({
+        walletAddress,
+        body: policyStageConfirmBody(prepared.persistence, stageName, landed),
+      }),
+    );
+    if (!recorded) {
+      const error = new Error(POLICY_CONFIRMED_BUT_NOT_RECORDED_MESSAGE);
+      args.flow.failFrom("backend_confirm", error);
+      throw error;
+    }
+  }
   args.flow.observe("wallet_submit_confirm", {
     chainState: "confirmed",
-    executionMode: stages.length > 1 ? "batch" : "single",
+    executionMode: stages.length > 1 ? "sequential" : "single",
   });
 
-  const sentBy = new Map<DepositStageName, SentTransaction>();
-  stages.forEach((stage, index) => sentBy.set(stage.name, sent[index]));
   const deposit = sentBy.get("deposit");
   if (!deposit) {
     throw new Error("Deposit transaction did not land.");
-  }
-
-  let confirmRecorded = true;
-  for (const name of ["policy", "policy-finalize"] as const) {
-    const policySent = sentBy.get(name);
-    if (!policySent) continue;
-    const recorded = await confirmWithRetry(`${name} stage`, () =>
-      confirmEarnPolicy({
-        walletAddress,
-        body: policyStageConfirmBody(prepared.persistence, name, policySent),
-      }),
-    );
-    confirmRecorded = confirmRecorded && recorded;
   }
 
   const policy = sentBy.get("policy");

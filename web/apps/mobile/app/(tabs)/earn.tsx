@@ -148,7 +148,7 @@ export default function EarnScreen() {
     hasLoaded: earnPositionLoaded,
     refreshEarnPosition,
     markEarnMutation,
-  } = useEarnPosition(walletAddress);
+  } = useEarnPosition(walletAddress, signer);
   const balanceLoading = walletAddress != null && !earnPositionLoaded;
   const forecastSummary = useEarnForecast();
   const withdrawSources = useMemo(
@@ -313,9 +313,9 @@ export default function EarnScreen() {
   const badge = useSharedValue(0);
 
   const refreshEarnData = useCallback(
-    async (_reason: WalletRefreshReason) => {
+    async (reason: WalletRefreshReason) => {
       await Promise.allSettled([
-        refreshEarnPosition(),
+        refreshEarnPosition({ signIn: reason === "manual" }),
         refreshAutodeposit(),
         ...(walletAddress ? [refreshEarnEarningsCache(walletAddress)] : []),
       ]);

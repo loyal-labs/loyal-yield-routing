@@ -201,7 +201,7 @@ through `fetchEarnMax` in `src/services/api.ts`, with the mobile Earn bearer fro
 for deposit, withdrawal request and claim. Amounts are bigint raw USDC units
 (6 decimals); withdrawal also accepts `"max"`. It takes the account from the Go
 summary's `config`; only a wallet with no smart account yet calls
-`POST /api/smart-accounts/mobile/earn-max` `{action: "context"}`, which provisions
+`POST /api/smart-accounts/earn-max/context`, which provisions
 it after verifying at least $1 of spendable mainnet USDC. Passive
 summary/activity reads never provision an account. Pending withdrawal copy, the
 deposit/withdraw gates and the APY label come from `@loyal-labs/shared`
