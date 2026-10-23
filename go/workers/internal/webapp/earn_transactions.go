@@ -2,6 +2,7 @@ package webapp
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -19,11 +20,14 @@ var earnTransactionsFamily = earnFamily{
 	register: earnRoutes.registerTransactions,
 }
 
-// Every loyal_yield table the earn-transactions read path touches, including
-// the sync write it runs first (user_yield_position_holding_events INSERT,
-// user_yield_positions UPDATE).
+// Every loyal_yield table the earn-transactions and policy-refund-scan read
+// paths touch, including the sync write the history runs first
+// (user_yield_position_holding_events INSERT, user_yield_positions UPDATE).
 var earnTransactionYieldGrants = []Grant{
 	{"loyal_yield.balance_sweep_executions", "SELECT"},
+	{"loyal_yield.balance_sweep_lot_claims", "SELECT"},
+	{"loyal_yield.balance_sweep_policies", "SELECT"},
+	{"loyal_yield.balance_sweep_surplus_lots", "SELECT"},
 	{"loyal_yield.balance_sweep_targets", "SELECT"},
 	{"loyal_yield.managed_vaults", "SELECT"},
 	{"loyal_yield.rebalance_decisions", "SELECT"},
@@ -82,6 +86,13 @@ func (h earnRoutes) registerTransactions(api huma.API) {
 		Summary:     "Earn transaction history for the signed-in wallet",
 		Responses:   errorResponses[routeError](api, 401, 503),
 	}, h.earnTransactions)
+	huma.Register(api, huma.Operation{
+		OperationID: "scan-earn-policy-refunds",
+		Method:      http.MethodPost,
+		Path:        earnPolicyRefundScanPath,
+		Summary:     "Which Earn policies and vault accounts are refundable right now",
+		Responses:   errorResponses[routeError](api, 401, 409, 500),
+	}, h.earnPolicyRefundScan)
 }
 
 // earnTransactions ports the Next earn-transactions route: sync the confirmed
@@ -109,4 +120,100 @@ func (h earnRoutes) earnTransactions(ctx context.Context, in *sessionRequest) (*
 
 	transactions := txreadsAssembleTransactions(positionEvents, autodepositEvents)
 	return &earnTransactionsOutput{Body: EarnTransactionsResponse{Transactions: transactions}}, nil
+}
+
+const earnPolicyRefundScanPath = "/api/smart-accounts/yield-optimization/policy-refunds/scan"
+
+// EarnPolicyRefundRecurringDelegation mirrors
+// EarnPolicyRefundRecurringDelegation
+// (web/apps/web/src/lib/yield-optimization/earn-policy-refund-contracts.shared.ts).
+type EarnPolicyRefundRecurringDelegation struct {
+	Account             string  `json:"account"`
+	Active              bool    `json:"active"`
+	AmountPerPeriodRaw  *string `json:"amountPerPeriodRaw"`
+	AmountPulledRaw     *string `json:"amountPulledRaw"`
+	Authority           *string `json:"authority"`
+	BlockedReason       *string `json:"blockedReason"`
+	CanRefund           bool    `json:"canRefund"`
+	Delegatee           *string `json:"delegatee"`
+	Delegator           *string `json:"delegator"`
+	Exists              bool    `json:"exists"`
+	ExpiryTimestamp     *string `json:"expiryTimestamp"`
+	Lamports            *uint64 `json:"lamports"`
+	LifecycleStatus     string  `json:"lifecycleStatus"`
+	Mint                *string `json:"mint"`
+	PolicyAccount       *string `json:"policyAccount"`
+	Protected           bool    `json:"protected"`
+	ScheduledSweepCount int     `json:"scheduledSweepCount"`
+	Source              string  `json:"source"`
+	Status              string  `json:"status"`
+	TargetActive        bool    `json:"targetActive"`
+	TargetID            *string `json:"targetId"`
+	Usage               string  `json:"usage"`
+}
+
+type EarnPolicyRefundScanPolicy struct {
+	Account                    string                                `json:"account"`
+	AccountIndex               *uint8                                `json:"accountIndex"`
+	ActiveAutodeposit          bool                                  `json:"activeAutodeposit"`
+	ActiveManagedVault         bool                                  `json:"activeManagedVault"`
+	BlockedReason              *string                               `json:"blockedReason"`
+	CanRefund                  bool                                  `json:"canRefund"`
+	DBPresent                  bool                                  `json:"dbPresent"`
+	Lamports                   *uint64                               `json:"lamports"`
+	RecurringDelegations       []EarnPolicyRefundRecurringDelegation `json:"recurringDelegations"`
+	ReferencedByActivePosition bool                                  `json:"referencedByActivePosition"`
+	Seed                       string                                `json:"seed"`
+	State                      string                                `json:"state"`
+}
+
+type EarnVaultRefundTokenAccount struct {
+	Account   string `json:"account"`
+	AmountRaw string `json:"amountRaw"`
+	IsUsdc    bool   `json:"isUsdc"`
+	Lamports  uint64 `json:"lamports"`
+	Mint      string `json:"mint"`
+}
+
+type EarnPolicyRefundVaultEntry struct {
+	Account                 string                        `json:"account"`
+	BlockedReason           *string                       `json:"blockedReason"`
+	CanRefund               bool                          `json:"canRefund"`
+	Lamports                uint64                        `json:"lamports"`
+	TokenAccounts           []EarnVaultRefundTokenAccount `json:"tokenAccounts"`
+	TotalRefundableLamports uint64                        `json:"totalRefundableLamports"`
+}
+
+type EarnPolicyRefundScanResponse struct {
+	Policies             []EarnPolicyRefundScanPolicy          `json:"policies"`
+	RecurringDelegations []EarnPolicyRefundRecurringDelegation `json:"recurringDelegations"`
+	SettingsPDA          string                                `json:"settingsPda"`
+	Vault                *EarnPolicyRefundVaultEntry           `json:"vault"`
+	VaultIndex           uint8                                 `json:"vaultIndex"`
+	VaultPubkey          string                                `json:"vaultPubkey"`
+}
+
+type earnPolicyRefundScanOutput struct {
+	Body EarnPolicyRefundScanResponse
+}
+
+// earnPolicyRefundScan ports the Next policy-refunds scan route
+// (yield-optimization/policy-refunds/scan/route.ts): the chain and DB liveness
+// facts each route policy and the Earn vault need before a refund may run.
+// Next answers failures with its own 500 scan_failed envelope rather than the
+// 503 earn envelope, so only the auth refusal goes through earnUnavailable.
+func (h earnRoutes) earnPolicyRefundScan(ctx context.Context, in *sessionRequest) (*earnPolicyRefundScanOutput, error) {
+	account, err := h.account(ctx, in.SessionInput)
+	if err != nil {
+		return nil, earnUnavailable("earn policy refunds session", err,
+			"scan_failed", "Failed to scan policies.")
+	}
+	scan, err := h.txreadsScanPolicyRefunds(ctx, account)
+	if err != nil {
+		slog.Warn("earn policy refund scan failed", "settings", account.Settings.String(),
+			"wallet", account.Wallet.String(), "error", err)
+		// Next surfaces the underlying error.message in this envelope.
+		return nil, earnError(http.StatusInternalServerError, "scan_failed", err.Error())
+	}
+	return &earnPolicyRefundScanOutput{Body: scan}, nil
 }
