@@ -98,13 +98,9 @@ type AutodepositSetupConfirmResponse struct {
 // TS object-literal order and every failure names its key, so the first bad
 // field matches Next's error message exactly.
 func parseAutodepositSetupConfirmBody(raw []byte) (autodepositSetupInput, error) {
-	parsed, err := parseJSONBody(raw)
+	object, err := autodepositBodyObject(raw)
 	if err != nil {
-		return autodepositSetupInput{}, errors.New("Request body must be an object.")
-	}
-	object, ok := parsed.(map[string]any)
-	if !ok {
-		return autodepositSetupInput{}, errors.New("Request body must be an object.")
+		return autodepositSetupInput{}, err
 	}
 	in := autodepositSetupInput{}
 	read := func() error {
@@ -177,11 +173,11 @@ func parseAutodepositSetupConfirmBody(raw []byte) (autodepositSetupInput, error)
 		if err := readAutodepositString(object, "subscriptionDelegatee", &in.SubscriptionDelegatee); err != nil {
 			return err
 		}
-		// readVaultIndex: the JSON number must be exactly 1.
-		if value, ok := object["vaultIndex"]; !ok || value != float64(1) {
-			return errors.New("vaultIndex must be 1 for Earn autodeposit.")
+		var vaultIndex int
+		if err := readAutodepositVaultIndex(object, &vaultIndex); err != nil {
+			return err
 		}
-		in.VaultIndex = 1
+		in.VaultIndex = vaultIndex
 		if err := readAutodepositString(object, "vaultPubkey", &in.VaultPubkey); err != nil {
 			return err
 		}
