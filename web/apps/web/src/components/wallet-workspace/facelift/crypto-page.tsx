@@ -22,7 +22,7 @@ import {
   type CryptoRowActions,
 } from "@/components/wallet-workspace/facelift/crypto-pane";
 import { deriveSwapTokens, selectSwapToken } from "@/components/wallet-sidebar/swap-tokens";
-import { isEscapeGuardedTarget } from "@/components/wallet-workspace/facelift/keyboard";
+import { useEscapePage } from "@/components/wallet-workspace/facelift/escape-owner";
 import {
   MiddlePaneSlide,
   PaneReveal,
@@ -337,37 +337,22 @@ export function CryptoPage({
   // Esc backs out of the open Send/Swap flow (the shell owns Esc for
   // Earn's action screens). An open selector pane closes first; the next
   // press leaves the flow. Skipped while an input is focused.
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (
-        event.key !== "Escape" ||
-        isEscapeGuardedTarget(event.target) ||
-        (viewStack.length === 0 && !isSwapOpen && !isUnshieldOpen)
-      ) {
+  useEscapePage(
+    viewStack.length > 0 || isSwapOpen || isUnshieldOpen,
+    () => {
+      if (sendSelect !== null) {
+        setSendSelect(null);
         return;
       }
-      // Overlays (info sheets) preventDefault their own Esc; checked after
-      // dispatch so listener registration order can't matter.
-      queueMicrotask(() => {
-        if (event.defaultPrevented) {
-          return;
-        }
-        if (sendSelect !== null) {
-          setSendSelect(null);
-          return;
-        }
-        if (swapSelectSide !== null) {
-          setSwapSelectSide(null);
-          return;
-        }
-        setViewStack([]);
-        closeSwap();
-        closeUnshield();
-      });
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  });
+      if (swapSelectSide !== null) {
+        setSwapSelectSide(null);
+        return;
+      }
+      setViewStack([]);
+      closeSwap();
+      closeUnshield();
+    }
+  );
 
   const handleSwapTokenSelect = useCallback(
     (side: "from" | "to", token: SwapToken) => {

@@ -21,7 +21,6 @@ type TweetNaclSign = {
   detached: (message: Uint8Array, secretKey: Uint8Array) => Uint8Array;
 };
 
-// Lazy-loaded so tweetnacl's Buffer access never runs at module top-level.
 async function getTweetNaclSign(): Promise<TweetNaclSign> {
   const mod = (await import("tweetnacl")) as unknown as {
     sign?: TweetNaclSign;

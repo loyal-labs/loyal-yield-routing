@@ -97,9 +97,6 @@ function EarnScheduledRow({
 }) {
   const awaiting = forceExecuting || isScheduledSweepExecuting(sweep);
 
-  // "Available in Xs" countdown until the delegation window opens (mirrors the
-  // web button). Ticks once a second only while a future availableAt exists,
-  // and stops itself once the window opens.
   const availableAtMs = getLoadedScheduledSweepExecuteNowAvailableAtMs(sweep);
   const [nowMs, setNowMs] = useState(() => Date.now());
   useEffect(() => {
@@ -120,8 +117,6 @@ function EarnScheduledRow({
       : formatLoadedScheduledSweepAvailableIn(availableAtMs, nowMs);
 
   const statusLabels = getScheduledSweepStatusLabels(sweep, progressState);
-  // "Try again" stays tappable; active/complete progress states lock the
-  // button like the web (isProgressActive/isProgressComplete).
   const progressLocked =
     progressState === "requested" ||
     progressState === "selected" ||
