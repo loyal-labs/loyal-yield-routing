@@ -1,4 +1,4 @@
-import type { MobileEarnMaxResponses } from "@loyal-labs/shared";
+import type { MobileEarnMaxContext } from "@loyal-labs/shared";
 import type {
   Get,
   MobileTokenDetailResponse,
@@ -6,72 +6,55 @@ import type {
   Summary,
 } from "@loyal-labs/api";
 
-import { earnHeaders } from "@/lib/solana/earn/earn-session";
+import { earnHeaders, earnWalletRead } from "@/lib/solana/earn/earn-session";
 
 import { env } from "@/config/env";
 import { fetchWithTimeout } from "@/lib/network/fetch-with-timeout";
-import {
-  EarnApiError,
-  type EarnAuthFields,
-  type EarnSessionAuth,
-} from "@/lib/solana/earn/earn-api";
+import { EarnApiError } from "@/lib/solana/earn/earn-api";
 
-export async function fetchEarnMaxApy(): Promise<number | null> {
-  const response = await fetchWithTimeout(
-    `${env.apiBaseUrl}/api/earn-max/apy`,
-    { headers: earnHeaders() }
-  );
-  if (!response.ok) throw new Error("Earn MAX APY is unavailable.");
-  const payload = await response.json();
-  return typeof payload.apyBps === "number" && Number.isFinite(payload.apyBps)
-    ? payload.apyBps
-    : null;
-}
+type EarnMaxReadPath =
+  | "/api/smart-accounts/earn-max/summary"
+  | "/api/smart-accounts/earn-max/activity";
 
-export async function fetchMobileEarnMax<A extends "summary" | "activity">(
-  action: A, walletAddress: string
-): Promise<MobileEarnMaxResponses[A]> {
-  const response = await fetchWithTimeout(
-    `${env.apiBaseUrl}/api/smart-accounts/mobile/earn-max?action=${action}&walletAddress=${encodeURIComponent(walletAddress)}`,
-    { headers: earnHeaders() }
-  );
+async function earnMaxFailure(response: Response, fallback: string) {
   const payload = await response.json().catch(() => null);
-  if (!response.ok || !payload) throw new EarnApiError(
-    payload?.error?.message ?? "Unable to update Earn MAX. Please try again.",
-    payload?.error?.code ?? "earn_max_unavailable", response.status
+  return new EarnApiError(
+    payload?.error?.message || fallback,
+    payload?.error?.code ?? "earn_max_unavailable",
+    response.status
   );
-  return payload as MobileEarnMaxResponses[A];
 }
 
-export async function requestEarnMax<A extends keyof MobileEarnMaxResponses>(
-  action: A,
-  auth: EarnAuthFields | EarnSessionAuth | { walletAddress: string }
-): Promise<MobileEarnMaxResponses[A]> {
-  const session = "sessionToken" in auth;
+export async function fetchEarnMax<P extends EarnMaxReadPath>(
+  walletAddress: string,
+  path: P
+): Promise<Get[P] | null> {
+  const response = await earnWalletRead(walletAddress, `${env.apiBaseUrl}${path}`);
+  if (response.ok) return (await response.json()) as Get[P];
+  const failure = await earnMaxFailure(
+    response,
+    "Unable to update Earn MAX. Please try again."
+  );
+  if (failure.code === "smart_account_required") return null;
+  throw failure;
+}
+
+export async function provisionEarnMaxAccount(
+  sessionToken: string
+): Promise<MobileEarnMaxContext> {
   const response = await fetchWithTimeout(
     `${env.apiBaseUrl}/api/smart-accounts/mobile/earn-max`,
     {
       method: "POST",
-      credentials: "include",
-      headers: {
-        ...earnHeaders(),
-        ...(session ? { Authorization: `Bearer ${auth.sessionToken}` } : {}),
-      },
-      body: JSON.stringify({
-        ...(!session ? auth : {}),
-        action,
-      }),
+      headers: { ...earnHeaders(), Authorization: `Bearer ${sessionToken}` },
+      body: JSON.stringify({ action: "context" }),
     }
   );
-  const payload = await response.json().catch(() => null);
-  if (!payload || !response.ok) {
-    throw new EarnApiError(
-      payload?.error?.message ?? "Earn MAX is temporarily unavailable. Please try again later.",
-      payload?.error?.code ?? "earn_max_unavailable",
-      response.status
-    );
-  }
-  return payload as MobileEarnMaxResponses[A];
+  if (response.ok) return (await response.json()) as MobileEarnMaxContext;
+  throw await earnMaxFailure(
+    response,
+    "Earn MAX is temporarily unavailable. Please try again later."
+  );
 }
 
 export type GroupChat = {

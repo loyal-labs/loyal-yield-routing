@@ -155,19 +155,22 @@ EXPO_PUBLIC_SOLANA_ENV=mainnet
 
 ### Earn MAX
 
-`src/lib/solana/earn/mobile-earn-max.ts` exposes `readMobileEarnMax` for summary, activity and prepare context, and `executeMobileEarnMax`
+`src/features/earn-max/EarnMaxProvider.tsx` reads the Go routes
+`/api/smart-accounts/earn-max/summary` and `/activity` (types from `@loyal-labs/api`)
+through `fetchEarnMax` in `src/services/api.ts`, with the mobile Earn bearer from
+`earn-session.ts`. A `smart_account_required` answer reads as no position.
+`src/lib/solana/earn/mobile-earn-max.ts` exposes `executeMobileEarnMax`
 for deposit, withdrawal request and claim. Amounts are bigint raw USDC units
-(6 decimals); withdrawal also accepts `"max"`. They power `app/(tabs)/earn-max.tsx` and the Earn MAX activity tab.
-All HTTP calls go through `src/services/api.ts` to `env.apiBaseUrl` (loyal-web).
-The existing `earn-max.ts` Go-contract client stays separate; the imported
-mobile screens use `/api/smart-accounts/mobile/earn-max`, currently proxied to Next. A cached
-mobile Earn bearer session avoids prompts; an expired token falls back to a
-purpose-scoped wallet signature. Context reuses the canonical smart account or
-provisions it after verifying at least $1 of spendable mainnet USDC. Passive
-summary/activity reads never provision an account.
+(6 decimals); withdrawal also accepts `"max"`. It takes the account from the Go
+summary's `config`; only a wallet with no smart account yet calls
+`POST /api/smart-accounts/mobile/earn-max` `{action: "context"}`, which provisions
+it after verifying at least $1 of spendable mainnet USDC. Passive
+summary/activity reads never provision an account. Pending withdrawal copy, the
+deposit/withdraw gates and the APY label come from `@loyal-labs/shared`
+`earn-max-view`, the same functions the web pane renders from.
 
 The mainnet-only backend checks wallet ownership; mobile does not require an invite. Device
-preparation reuses the web Voltr plans from `@loyal-labs/smart-account-vaults`
+preparation calls the web's `prepareEarnMaxVoltr` from `@loyal-labs/smart-account-vaults`
 and the existing native signer/confirmation path, using vault index 2. Claim
 preparation rechecks cooldown and liquidity. Transactions are self-paid and
 return a confirmed signature/slot; the provider refreshes summary/activity after
@@ -182,20 +185,21 @@ Ordinary Earn now lives at `/(tabs)/earn`, with the old wallet route redirecting
 to Home. Earn MAX reuses the Earn amount sheets, positions sheet, and charts.
 Deposits accept mainnet USDC with a $1 minimum. Withdrawal requests have a
 10-minute cooldown, then require a separate Claim from Activity when liquidity
-is available. Another request is blocked while a withdrawal is pending.
+is available. Withdraw is disabled while a withdrawal is pending.
 Activity's Check status action disables itself and shows a spinner while it
 refreshes, then acknowledges a successful read with a last-checked time. Failed
 or superseded reads do not show a success timestamp.
-Earn MAX summary and activity use passive wallet-address GET reads, matching
-ordinary Earn. Opening the screen and foreground polling never authenticate or
-sign messages. Transaction context remains authenticated via POST. Both screens
+Earn MAX summary and activity are GET reads with the cached Earn bearer, as
+ordinary Earn reads are. Privy and local signers mint it without a prompt;
+opening the screen and foreground polling never prompt other signers, whose
+retry tap signs in once. Both screens
 render `EarnScreenControls` and `EarnChartTabs`, with back navigation and
 full-width balance actions. MAX shows only APY without a funded position or
 nonzero lifetime earnings; funded positions always expose Earned/APY. Until
 reported earnings reach the chart's $0.00001 display precision, Earned shows an
 explanation instead of an empty chart. MAX charts leave 16px below their date
 labels. Ordinary Earn keeps Forecast and Autodeposit.
-MAX refreshes the shared wallet token holdings on focus and on either Deposit
-entry point. Its amount and positions sheets use the supplied Figma assets and
+MAX's funding balance follows the wallet USDC account at confirmed commitment
+(`useEarnMaxFundingUsdc`), ordered by slot and re-read on foreground. Its amount and positions sheets use the supplied Figma assets and
 layout; the expanded positions card leaves the header and tab bar accessible.
 Earnings use the same cash-flow-adjusted daily series as web.

@@ -1,7 +1,5 @@
-import type {
-  EarnMaxActivityResponse,
-  EarnMaxSummary,
-} from "@loyal-labs/shared";
+import type { EarnMaxActivity, EarnMaxSummary } from "@loyal-labs/api";
+import { earnMaxControls } from "@loyal-labs/shared";
 import {
   createContext,
   useCallback,
@@ -17,9 +15,12 @@ import {
   executeMobileEarnMax,
   type MobileEarnMaxOperation,
 } from "@/lib/solana/earn/mobile-earn-max";
+import { deliberateSession } from "@/lib/solana/earn/earn-session";
 import { getSolanaEnv } from "@/lib/solana/rpc/connection";
 import { isWalletUnlocked, useWallet } from "@/lib/wallet/wallet-provider";
-import { fetchEarnMaxApy, fetchMobileEarnMax } from "@/services/api";
+import { fetchEarnMax } from "@/services/api";
+
+const NO_ACTIVITY: EarnMaxActivity = { operations: [], performance: [] };
 
 function useModel() {
   const { publicKey, signer, state } = useWallet();
@@ -27,40 +28,36 @@ function useModel() {
     isWalletUnlocked(state) && getSolanaEnv() === "mainnet" ? publicKey : null;
   const current = useRef(key);
   current.current = key;
-  const [publicApyBps, setPublicApyBps] = useState<number | null>(null);
-  useEffect(() => {
-    let active = true;
-    void fetchEarnMaxApy()
-      .then((value) => {
-        if (active) setPublicApyBps(value);
-      })
-      .catch(() => {});
-    return () => {
-      active = false;
-    };
-  }, []);
+  const signerRef = useRef(signer);
+  signerRef.current = signer;
   const [data, setData] = useState<{
     key: string;
     summary: EarnMaxSummary | null;
-    activity: EarnMaxActivityResponse;
+    activity: EarnMaxActivity;
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const locked = useRef(false);
   const readVersion = useRef(0);
   const [loadedKey, setLoadedKey] = useState<string | null>(null);
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (options?: { signIn?: boolean }) => {
     if (!key || getSolanaEnv() !== "mainnet") return false;
+    if (options?.signIn && signerRef.current)
+      await deliberateSession(signerRef.current);
     const version = ++readVersion.current;
     const isCurrent = () =>
       current.current === key && readVersion.current === version;
     try {
       const [summary, activity] = await Promise.all([
-        fetchMobileEarnMax("summary", key),
-        fetchMobileEarnMax("activity", key),
+        fetchEarnMax(key, "/api/smart-accounts/earn-max/summary"),
+        fetchEarnMax(key, "/api/smart-accounts/earn-max/activity"),
       ]);
       if (isCurrent()) {
-        setData({ key, summary: summary.summary, activity });
+        setData({
+          key,
+          summary: summary?.summary ?? null,
+          activity: activity ?? NO_ACTIVITY,
+        });
         setError(null);
         return true;
       }
@@ -135,7 +132,10 @@ function useModel() {
   return {
     unread: newest > seen,
     markSeen,
-    publicApyBps,
+    controls: earnMaxControls({
+      busy,
+      summary: visible?.summary ?? null,
+    }),
     summary: visible?.summary ?? null,
     activity: visible?.activity ?? null,
     error,
