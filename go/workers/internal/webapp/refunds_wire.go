@@ -60,9 +60,33 @@ type PreparedEarnVaultRefund struct {
 	VaultIndex              uint8                 `json:"vaultIndex"`
 }
 
+// WirePreparedEarnPolicyRefund mirrors WireSmartAccountPreparedEarnPolicyRefund
+// (contracts.shared.ts:107-113): the closed policy's scan facts plus the one
+// executeSettingsTransactionSync carrying its PolicyRemove.
+type WirePreparedEarnPolicyRefund struct {
+	EstimatedRefundLamports uint64                     `json:"estimatedRefundLamports"`
+	Policy                  EarnPolicyRefundScanPolicy `json:"policy"`
+	Prepared                WirePreparedOperation      `json:"prepared"`
+	SettingsPda             string                     `json:"settingsPda"`
+	VaultIndex              uint8                      `json:"vaultIndex"`
+}
+
+// WirePreparedEarnRecurringDelegationRefund mirrors
+// WireSmartAccountPreparedEarnRecurringDelegationRefund
+// (contracts.shared.ts:115-121). The estimated lamports ride the delegation's
+// own nullable rent read, so they serialize as null when the account is gone.
+type WirePreparedEarnRecurringDelegationRefund struct {
+	EstimatedRefundLamports *uint64                             `json:"estimatedRefundLamports"`
+	Prepared                WirePreparedOperation               `json:"prepared"`
+	RecurringDelegation     EarnPolicyRefundRecurringDelegation `json:"recurringDelegation"`
+	SettingsPda             string                              `json:"settingsPda"`
+	VaultIndex              uint8                               `json:"vaultIndex"`
+}
+
 // EarnPolicyRefundPrepareResponse mirrors EarnPolicyRefundPrepareResponse
-// (contracts.shared.ts:131-135). This unit serves the vault kind; the other
-// refund kinds answer 503 earn_refund_unported.
+// (contracts.shared.ts:131-135): exactly one branch key per request kind.
 type EarnPolicyRefundPrepareResponse struct {
-	PreparedVaultRefund *PreparedEarnVaultRefund `json:"preparedVaultRefund,omitempty"`
+	PreparedVaultRefund               *PreparedEarnVaultRefund                   `json:"preparedVaultRefund,omitempty"`
+	PreparedRecurringDelegationRefund *WirePreparedEarnRecurringDelegationRefund `json:"preparedRecurringDelegationRefund,omitempty"`
+	PreparedRefund                    *WirePreparedEarnPolicyRefund              `json:"preparedRefund,omitempty"`
 }

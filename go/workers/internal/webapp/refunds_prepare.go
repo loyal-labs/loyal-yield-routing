@@ -17,8 +17,9 @@ import (
 
 // Ports POST /api/smart-accounts/yield-optimization/policy-refunds/prepare
 // (web/apps/web/src/app/api/smart-accounts/yield-optimization/policy-refunds/
-// prepare/route.ts) for the vault-accounts refund kind:
-// earn-policy-refund.server.ts:341-382 and client.ts:10432-10573.
+// prepare/route.ts -> earn-policy-refund.server.ts prepareEarnPolicyRefund
+// :324-521) for all three refund kinds: the vault-accounts refund here, the
+// policy close and the recurring-delegation revoke in refunds_policy.go.
 
 const refundsPreparePath = "/api/smart-accounts/yield-optimization/policy-refunds/prepare"
 
@@ -280,10 +281,11 @@ func (h earnRoutes) earnPolicyRefundPrepare(ctx context.Context, in *refundPrepa
 	if err != nil {
 		return nil, err
 	}
-	if body.kind != refundKindVault {
-		// This unit ports the vault-accounts refund; the policy and
-		// recurring-delegation kinds stay on Next for now.
-		return nil, earnError(503, "earn_refund_unported", "This refund kind is not served by Go yet.")
+	switch body.kind {
+	case refundKindRecurringDelegation:
+		return h.prepareRecurringDelegationRefundKind(ctx, account, body.recurringDelegation)
+	case refundKindPolicy:
+		return h.preparePolicyRefundKind(ctx, account, body.policyAccount)
 	}
 
 	usdcMint := earnUSDCMint(account.Cluster)
