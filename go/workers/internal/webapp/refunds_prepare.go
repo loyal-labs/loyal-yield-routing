@@ -53,8 +53,15 @@ func parseRefundPrepareBody(raw []byte) (refundPrepareBody, error) {
 	if err != nil {
 		return refundPrepareBody{}, err
 	}
-	record, ok := parsed.(map[string]any)
-	if !ok {
+	// assertRecord (contracts.shared.ts:137-143) only refuses non-objects: an
+	// array passes and then misses every field, so it dies on the policyAccount
+	// check like TS, not on the object check.
+	record := map[string]any{}
+	switch value := parsed.(type) {
+	case map[string]any:
+		record = value
+	case []any:
+	default:
 		return refundPrepareBody{}, earnError(400, "invalid_request", "Request body must be an object.")
 	}
 
