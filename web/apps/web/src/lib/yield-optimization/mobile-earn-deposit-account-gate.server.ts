@@ -1,3 +1,5 @@
+import "server-only";
+
 import { Connection, PublicKey } from "@solana/web3.js";
 import { NextResponse } from "next/server";
 

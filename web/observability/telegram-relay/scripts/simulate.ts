@@ -610,7 +610,7 @@ async function simulate(
     idempotencyTtlMs: config.idempotencyTtlMs,
     maxCacheEntries: config.maxCacheEntries,
     dailyRecapEnabled: config.dailyRecapEnabled,
-    dailyRecapAtMinutes: config.dailyRecapAtMinutes,
+    dailyRecapMinutesPastUtcMidnight: config.dailyRecapAtUtcMinutes,
     escalationMultiplier: config.escalationMultiplier,
     restartGraceMs: config.restartGraceMs,
     analyze: createAlertAnalyzer(config),

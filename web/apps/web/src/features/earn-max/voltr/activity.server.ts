@@ -177,20 +177,11 @@ export async function readVoltrHistory(
   authority: PublicKey
 ): Promise<EarnMaxVoltrHistory> {
   const key = authority.toBase58();
-  const pages: Awaited<ReturnType<Connection["getSignaturesForAddress"]>>[] =
-    [];
-  let before: string | undefined;
-  let complete = false;
-  do {
-    const page = await connection.getSignaturesForAddress(authority, {
+  const signatures = (
+    await connection.getSignaturesForAddress(authority, {
       limit: HISTORY_LIMIT,
-      before,
-    });
-    pages.push(page);
-    complete = page.length < HISTORY_LIMIT;
-    before = page.at(-1)?.signature;
-  } while (!complete && before !== undefined);
-  const signatures = pages.flat().filter((s) => s.err === null);
+    })
+  ).filter((s) => s.err === null);
   const newest = signatures[0]?.signature ?? "";
   const hit = cache.get(key);
   if (hit && hit.newest === newest) {
@@ -198,15 +189,10 @@ export async function readVoltrHistory(
     cache.set(key, hit);
     return hit.value;
   }
-  const transactions = [];
-  for (let start = 0; start < signatures.length; start += HISTORY_LIMIT) {
-    transactions.push(
-      ...(await connection.getParsedTransactions(
-        signatures.slice(start, start + HISTORY_LIMIT).map((s) => s.signature),
-        { maxSupportedTransactionVersion: 0 }
-      ))
-    );
-  }
+  const transactions = await connection.getParsedTransactions(
+    signatures.map((s) => s.signature),
+    { maxSupportedTransactionVersion: 0 }
+  );
   const entries = transactions.flatMap((transaction, index) =>
     transaction
       ? decode(transaction, signatures[index]!.signature, authority)
@@ -222,7 +208,9 @@ export async function readVoltrHistory(
       laterClaimRaw = null;
     }
   }
-  const value = { complete, entries };
+  // ponytail: first 100 signatures only; page with `before` once an account
+  // outgrows that (the UI then treats history as incomplete).
+  const value = { complete: signatures.length < HISTORY_LIMIT, entries };
   cache.delete(key);
   cache.set(key, { newest, value });
   if (cache.size > MAX_CACHED_HISTORIES) {

@@ -31,7 +31,7 @@ export type SerializedEarnTransaction = {
   eventType: EarnTransactionEventType;
   id: string;
   kind: EarnTransactionKind;
-  liquidityMint: string;
+  liquidityMint: string | null;
   rawAmount: string;
   signature: string;
   sortTimestamp: string;

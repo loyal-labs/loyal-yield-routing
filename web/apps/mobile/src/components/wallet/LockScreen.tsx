@@ -172,7 +172,7 @@ export function LockScreen() {
         <View className="flex-1 items-center justify-center px-6">
           <Text style={styles.title}>Key not usable</Text>
           <Text style={styles.subtitle}>
-            This wallet's key is not usable on this phone. Import your secret
+            This wallet&apos;s key is not usable on this phone. Import your secret
             key.
           </Text>
           <View style={{ width: "100%", marginTop: 32 }}>
