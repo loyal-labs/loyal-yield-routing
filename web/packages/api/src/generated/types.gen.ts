@@ -992,7 +992,7 @@ export type EarnWithdrawConfirmRequest = {
     policyId?: string;
     policySeed?: string;
     requestedWithdrawAmountRaw?: string;
-    reserveWithdrawals?: Array<Item>;
+    reserveWithdrawals?: Array<EarnWithdrawConfirmReserveWithdrawal>;
     settings?: string;
     setupPolicyAccount?: string;
     setupPolicyId?: string;
@@ -1018,6 +1018,18 @@ export type EarnWithdrawConfirmRequest = {
 
 export type EarnWithdrawConfirmRequestAutodepositCloseStruct = {
     [key: string]: never;
+};
+
+export type EarnWithdrawConfirmReserveWithdrawal = {
+    accountingReserve: string;
+    collateralAta: string;
+    executionMarket: string;
+    executionReserve: string;
+    kaminoWithdrawAmountRaw: string;
+    liquidityMint: string;
+    market: string | null;
+    reserve: string;
+    withdrawnAmountRaw: string;
 };
 
 export type EarnWithdrawConfirmResponse = {
@@ -1316,10 +1328,6 @@ export type InviteRequest = {
 
 export type InviteStatus = {
     redeemed: boolean;
-};
-
-export type Item = {
-    [key: string]: never;
 };
 
 export type MobileLibraryArticle = {
