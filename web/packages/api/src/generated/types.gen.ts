@@ -652,6 +652,8 @@ export type EarnPolicyPrepareWire = {
 };
 
 export type EarnPolicyRefundPrepareResponse = {
+    preparedRecurringDelegationRefund?: WirePreparedEarnRecurringDelegationRefund;
+    preparedRefund?: WirePreparedEarnPolicyRefund;
     preparedVaultRefund?: PreparedEarnVaultRefund;
 };
 
@@ -1691,6 +1693,22 @@ export type WireAddressLookupTableStateStruct = {
     deactivationSlot: string;
     lastExtendedSlot: number;
     lastExtendedSlotStartIndex: number;
+};
+
+export type WirePreparedEarnPolicyRefund = {
+    estimatedRefundLamports: number;
+    policy: EarnPolicyRefundScanPolicy;
+    prepared: WirePreparedOperation;
+    settingsPda: string;
+    vaultIndex: number;
+};
+
+export type WirePreparedEarnRecurringDelegationRefund = {
+    estimatedRefundLamports: number | null;
+    prepared: WirePreparedOperation;
+    recurringDelegation: EarnPolicyRefundRecurringDelegation;
+    settingsPda: string;
+    vaultIndex: number;
 };
 
 export type WirePreparedInstruction = {
