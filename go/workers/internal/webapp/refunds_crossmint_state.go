@@ -283,3 +283,109 @@ func findEarnCrossMintState(ctx context.Context, yieldDB *pgxpool.Pool, scope cr
 	state, _, err := findEarnCrossMintSnapshot(ctx, yieldDB, scope)
 	return state, err
 }
+
+// setEarnCrossMintEnabled ports setEarnCrossMintEnabled
+// (repository.server.ts:174-246): one statement that locks the opt-in row FOR
+// UPDATE, bumps generation only when it still matches expectedGeneration and
+// the enabled bit actually flips, and answers applied/idempotent/stale/
+// missing without a second writer able to slip between.
+func setEarnCrossMintEnabled(ctx context.Context, yieldDB *pgxpool.Pool, scope crossMintScope, enabled bool, expectedGeneration int64) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	var kind string
+	err := yieldDB.QueryRow(ctx, `WITH current_enrollment AS (
+  SELECT *
+  FROM loyal_yield.cross_mint_vault_opt_ins
+  WHERE cluster = $1 AND settings = $2 AND vault_index = $3 AND vault_pubkey = $4
+  FOR UPDATE
+),
+updated_enrollment AS (
+  UPDATE loyal_yield.cross_mint_vault_opt_ins AS enrollment
+  SET enabled = $5,
+      generation = enrollment.generation + 1,
+      updated_at = CURRENT_TIMESTAMP
+  FROM current_enrollment AS current
+  WHERE enrollment.cluster = current.cluster
+    AND enrollment.settings = current.settings
+    AND enrollment.vault_index = current.vault_index
+    AND enrollment.vault_pubkey = current.vault_pubkey
+    AND current.generation = $6
+    AND current.enabled <> $5
+  RETURNING enrollment.*
+)
+SELECT
+  CASE
+    WHEN updated.generation IS NOT NULL THEN 'applied'
+    WHEN current.enabled = $5
+      AND current.generation IN ($6, $6 + 1) THEN 'idempotent'
+    ELSE 'stale'
+  END AS kind
+FROM current_enrollment AS current
+LEFT JOIN updated_enrollment AS updated ON true
+UNION ALL
+SELECT
+  'missing' AS kind
+WHERE NOT EXISTS (SELECT 1 FROM current_enrollment)`,
+		scope.Cluster, scope.Settings, scope.VaultIndex, scope.VaultPubkey, enabled, expectedGeneration).Scan(&kind)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// The UNION ALL always yields one row; a missing one means the
+		// statement never ran to completion.
+		return "missing", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("write cross-mint opt-in: %w", err)
+	}
+	return kind, nil
+}
+
+// setEarnCrossMintEnabledHuge handles an expectedGeneration outside int64:
+// the bigint column can never equal it nor sit in {expected, expected+1}, so
+// the CTE can only answer stale, or missing when no enrollment row exists.
+// Reading the row instead of sending an out-of-range parameter gives the same
+// outcome without a Postgres overflow error.
+func setEarnCrossMintEnabledHuge(ctx context.Context, yieldDB *pgxpool.Pool, scope crossMintScope) (string, error) {
+	_, _, found, err := findEarnCrossMintOptIn(ctx, yieldDB, scope)
+	if err != nil || !found {
+		return "missing", err
+	}
+	return "stale", nil
+}
+
+// hasNonTerminalEarnCrossMintMovement ports
+// hasNonTerminalEarnCrossMintMovement (repository.server.ts:248-268): one
+// cross_mint_jupiter decision that has not reached a terminal outcome.
+func hasNonTerminalEarnCrossMintMovement(ctx context.Context, yieldDB *pgxpool.Pool, scope crossMintScope) (bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	var has bool
+	err := yieldDB.QueryRow(ctx, `SELECT EXISTS (SELECT 1
+FROM loyal_yield.rebalance_decisions AS decisions
+JOIN loyal_yield.managed_vaults AS vaults ON vaults.id = decisions.vault_id
+WHERE vaults.settings = $1 AND vaults.vault_index = $2 AND vaults.vault_pubkey = $3
+  AND decisions.movement_route = 'cross_mint_jupiter'
+  AND decisions.terminal_outcome IS NULL
+LIMIT 1)`, scope.Settings, scope.VaultIndex, scope.VaultPubkey).Scan(&has)
+	if err != nil {
+		return false, fmt.Errorf("read cross-mint movement: %w", err)
+	}
+	return has, nil
+}
+
+// crossMintEnrollmentAfterTransition re-reads the state the way
+// setEarnCrossMintEnabled does after the write (repository.server.ts:234-245).
+func crossMintEnrollmentAfterTransition(ctx context.Context, yieldDB *pgxpool.Pool, scope crossMintScope) (*crossMintEnrollment, error) {
+	state, err := findEarnCrossMintState(ctx, yieldDB, scope)
+	if err != nil {
+		return nil, err
+	}
+	if state == nil {
+		return nil, nil
+	}
+	return &crossMintEnrollment{
+		BoundPolicies:              state.BoundPolicies,
+		DailySourceMintSpendingCap: state.DailySourceMintSpendingCap,
+		Enabled:                    state.Enabled,
+		Generation:                 state.Generation,
+		MaxSlippageBps:             state.MaxSlippageBps,
+	}, nil
+}
