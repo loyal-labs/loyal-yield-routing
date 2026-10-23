@@ -28,7 +28,15 @@ const MAINNET_ASSETS = assetsForCluster(LoyalCluster.MainnetBeta);
 const DEVNET_ASSETS = assetsForCluster(LoyalCluster.Devnet);
 
 export function getEarnProductAssets(solanaEnv: string): EarnProductAsset[] {
-  return solanaEnv === "devnet" ? DEVNET_ASSETS : MAINNET_ASSETS;
+  if (solanaEnv === "devnet") {
+    return DEVNET_ASSETS;
+  }
+  if (solanaEnv === "localnet") {
+    console.warn(
+      "[earn] localnet has no Earn product mints; showing the mainnet catalog",
+    );
+  }
+  return MAINNET_ASSETS;
 }
 
 export function tokenProgramForEarnMint(mint: string): PublicKey {
