@@ -1,12 +1,18 @@
 package webapp
 
-// GET /api/smart-accounts/yield-optimization/earn-state
-// <- web/apps/web/src/app/api/smart-accounts/yield-optimization/earn-state/route.ts
-// (mobile twins web/apps/web/src/app/api/smart-accounts/mobile/earn/state and
-// web/apps/web/src/app/api/smart-accounts/mobile/earn/autodeposit/state).
-// Five independent loads, each degraded into loadErrors + null on failure
-// exactly like loadEarnStatePart; the position load also runs its reconcile
-// writers, so this is a read with a bounded write blast radius.
+// The earn-state family serves the wallet-state reads and the position
+// reconciliation write:
+//
+//	GET  /api/smart-accounts/yield-optimization/earn-state
+//	GET  /api/smart-accounts/yield-optimization/position
+//	POST /api/smart-accounts/yield-optimization/position/reconcile
+//
+// <- web/apps/web/src/app/api/smart-accounts/yield-optimization/{earn-state,
+// position, position/reconcile}/route.ts (mobile twins .../mobile/earn/state
+// and .../mobile/earn/autodeposit/state). Earn-state runs five independent
+// loads, each degraded into loadErrors + null on failure exactly like
+// loadEarnStatePart; the position load also runs the reconcile writers, so
+// this is a read family with a bounded write blast radius.
 
 import (
 	"context"
@@ -20,12 +26,22 @@ import (
 
 var earnStateYieldGrants = []Grant{
 	{"loyal_yield.managed_vaults", "SELECT"},
+	{"loyal_yield.managed_vaults", "UPDATE"},
 	{"loyal_yield.route_policies", "SELECT"},
 	{"loyal_yield.user_yield_positions", "SELECT"},
+	{"loyal_yield.user_yield_positions", "UPDATE"},
 	{"loyal_yield.user_yield_position_holding_events", "SELECT"},
+	{"loyal_yield.user_yield_position_holding_events", "INSERT"},
+	{"loyal_yield.vault_position_snapshots", "INSERT"},
+	{"loyal_yield.vault_position_snapshots", "UPDATE"},
 	{"loyal_yield.vault_position_snapshot_positions", "SELECT"},
+	{"loyal_yield.vault_position_snapshot_positions", "INSERT"},
 	{"loyal_yield.vault_reserve_positions_current", "SELECT"},
+	{"loyal_yield.vault_reserve_positions_current", "DELETE"},
+	{"loyal_yield.vault_reserve_positions_current", "INSERT"},
 	{"loyal_yield.vault_idle_token_balances_current", "SELECT"},
+	{"loyal_yield.vault_idle_token_balances_current", "DELETE"},
+	{"loyal_yield.vault_idle_token_balances_current", "INSERT"},
 	{"loyal_yield.rebalance_decisions", "SELECT"},
 	{"loyal_yield.earn_deposit_onboarding_attempts", "SELECT"},
 	{"loyal_yield.balance_sweep_targets", "SELECT"},
@@ -69,6 +85,8 @@ func (h earnRoutes) registerState(api huma.API) {
 		Summary:     "Complete Earn state for the signed-in wallet",
 		Responses:   errorResponses[routeError](api, 401, 409, 503),
 	}, h.earnState)
+	h.registerPosition(api)
+	h.registerReconcile(api)
 }
 
 // stateCurrentTotalAmountRaw ports loadCurrentTotalAmountRaw: the sum of the
