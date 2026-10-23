@@ -297,7 +297,7 @@ export default function ProfileScreen() {
         },
       ],
     );
-  }, [isVaultBacked, router, wallet]);
+  }, [router, wallet]);
 
   return (
     <View className="flex-1 bg-white">

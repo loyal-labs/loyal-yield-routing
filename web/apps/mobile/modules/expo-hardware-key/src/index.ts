@@ -1,3 +1,5 @@
+import { requireOptionalNativeModule } from "expo-modules-core";
+
 export type KeyAuth = "device" | "biometry";
 
 export type UnwrapFailure = "canceled" | "invalidated" | "failed";
@@ -23,16 +25,10 @@ const FAILURE_BY_CODE: Record<string, UnwrapFailure> = {
 let cached: NativeHardwareKey | null | undefined;
 
 function getNative(): NativeHardwareKey | null {
-  if (cached !== undefined) return cached;
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { requireOptionalNativeModule } =
-      require("expo-modules-core") as typeof import("expo-modules-core");
+  if (cached === undefined) {
     const native =
       requireOptionalNativeModule<NativeHardwareKey>("ExpoHardwareKey");
     cached = native && native.isSupported() ? native : null;
-  } catch {
-    cached = null;
   }
   return cached;
 }

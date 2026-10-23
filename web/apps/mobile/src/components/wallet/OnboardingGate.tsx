@@ -5,6 +5,7 @@ import {
   usePrivy,
 } from "@privy-io/expo";
 import type { User as PrivyUser } from "@privy-io/expo";
+import { bytesToHex } from "@noble/hashes/utils.js";
 import { Keypair } from "@solana/web3.js";
 import * as SeedVault from "expo-seed-vault";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -25,6 +26,7 @@ import Animated, {
 } from "react-native-reanimated";
 
 import { BiometricSetupScreen } from "@/components/wallet/BiometricSetupScreen";
+import { SeedBackupScreen } from "@/components/wallet/SeedBackupScreen";
 import { ImportWalletScreen } from "@/components/wallet/ImportWalletScreen";
 import { OnboardingSlidesScreen } from "@/components/wallet/OnboardingSlidesScreen";
 import {
@@ -82,7 +84,13 @@ import {
 } from "@/services/observability";
 import { Text, View } from "@/tw";
 
-type Step = OnboardingStartStep | "create" | "login" | "import" | "biometric-setup";
+type Step =
+  | OnboardingStartStep
+  | "create"
+  | "login"
+  | "import"
+  | "seed-backup"
+  | "biometric-setup";
 type TransitionDirection = "forward" | "backward";
 
 type Props = {
@@ -306,7 +314,7 @@ function PrivyOnboardingGate({ mode = "setup", onReplayDone }: Props) {
       authFlowRef.current?.observe("challenge");
       setPendingKeypair(keypair);
       setPendingPin(pin);
-      navigateToStep("biometric-setup", "forward");
+      navigateToStep("seed-backup", "forward");
     },
     [navigateToStep],
   );
@@ -692,6 +700,15 @@ function PrivyOnboardingGate({ mode = "setup", onReplayDone }: Props) {
           navigateToStep("setup-onboarding", "backward");
         }}
       />
+    );
+  } else if (step === "seed-backup") {
+    content = (
+      pendingKeypair && (
+        <SeedBackupScreen
+          secretKeyHex={bytesToHex(pendingKeypair.secretKey)}
+          onComplete={() => navigateToStep("biometric-setup", "forward")}
+        />
+      )
     );
   } else {
     content = (
