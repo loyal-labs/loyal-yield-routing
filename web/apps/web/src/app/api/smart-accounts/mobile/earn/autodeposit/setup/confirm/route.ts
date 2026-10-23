@@ -1,3 +1,7 @@
+import {
+  hydratePreparedEarnUsdcAutodepositSetup,
+  type WireSmartAccountPreparedEarnUsdcAutodepositSetup,
+} from "@loyal-labs/smart-account-vaults";
 import { createHash } from "node:crypto";
 
 import { NextResponse } from "next/server";
@@ -37,10 +41,8 @@ import {
 } from "@/lib/yield-optimization/earn-autodeposit-artifacts.server";
 import {
   buildEarnAutodepositSetupConfirmRequestBody,
-  hydratePreparedEarnUsdcAutodepositSetup,
   parseEarnAutodepositSetupConfirmRequestBody,
   type EarnAutodepositSetupConfirmResponse,
-  type WireSmartAccountPreparedEarnUsdcAutodepositSetup,
 } from "@/lib/yield-optimization/earn-autodeposit-prepare-contracts.shared";
 import {
   recordAutodepositSetupIntent,

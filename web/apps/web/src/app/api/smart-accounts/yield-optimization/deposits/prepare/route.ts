@@ -7,6 +7,7 @@ import { pda } from "@loyal-labs/loyal-smart-accounts";
 import {
   createSmartAccountVaultsClient,
   isEarnPolicyUpdateRequiredError,
+  serializePreparedEarnUsdcDeposit,
 } from "@loyal-labs/smart-account-vaults";
 import type { SolanaEnv } from "@loyal-labs/solana-rpc";
 import { Connection, PublicKey } from "@solana/web3.js";
@@ -22,10 +23,7 @@ import { resolveLoyalWebSolanaEnvFromEnv } from "@/lib/core/config/solana-env-ov
 import { getServerSolanaEndpoints } from "@/lib/solana/rpc-endpoints.server";
 import { getFrontendSolanaRpcFetch } from "@/lib/solana/rpc-rate-limit";
 import { getDeploymentPolicySignerPublicKey } from "@/lib/yield-optimization/deployment-policy-signer.server";
-import {
-  parseEarnDepositPrepareRequestBody,
-  serializePreparedEarnUsdcDeposit,
-} from "@/lib/yield-optimization/earn-deposit-prepare-contracts.shared";
+import { parseEarnDepositPrepareRequestBody } from "@/lib/yield-optimization/earn-deposit-prepare-contracts.shared";
 import {
   type EarnProductAsset,
   resolveEarnProductAsset,

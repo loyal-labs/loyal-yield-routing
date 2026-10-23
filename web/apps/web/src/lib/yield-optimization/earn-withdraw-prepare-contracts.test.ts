@@ -1,11 +1,11 @@
+import {
+  hydratePreparedEarnUsdcWithdraw,
+  type WireSmartAccountPreparedEarnUsdcWithdraw,
+} from "@loyal-labs/smart-account-vaults";
 import { describe, expect, test } from "bun:test";
 import { TOKEN_PROGRAM_ID } from "@solana/spl-token";
 
-import {
-  hydratePreparedEarnUsdcWithdraw,
-  parseEarnWithdrawPrepareRequestBody,
-  type WireSmartAccountPreparedEarnUsdcWithdraw,
-} from "./earn-withdraw-prepare-contracts.shared";
+import { parseEarnWithdrawPrepareRequestBody } from "./earn-withdraw-prepare-contracts.shared";
 
 // The parser accepts two wire shapes: the current `{ amountRaw, sourceId }`
 // and the legacy `{ amountRaw, mode, source }` every shipped mobile client

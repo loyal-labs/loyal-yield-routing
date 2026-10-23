@@ -1,6 +1,9 @@
 import { resolveLoyalClusterForSolanaEnv } from "@loyal-labs/actions";
 import { pda } from "@loyal-labs/loyal-smart-accounts";
-import { createSmartAccountVaultsClient } from "@loyal-labs/smart-account-vaults";
+import {
+  createSmartAccountVaultsClient,
+  serializePreparedEarnUsdcWithdraw,
+} from "@loyal-labs/smart-account-vaults";
 import type { SolanaEnv } from "@loyal-labs/solana-rpc";
 import { Connection, PublicKey } from "@solana/web3.js";
 import { NextResponse } from "next/server";
@@ -21,7 +24,6 @@ import {
 import {
   type EarnWithdrawLegacyPrepareRequest,
   parseEarnWithdrawPrepareRequestBody,
-  serializePreparedEarnUsdcWithdraw,
 } from "@/lib/yield-optimization/earn-withdraw-prepare-contracts.shared";
 
 // Mobile twin of `yield-optimization/withdrawals/prepare`. Identical source

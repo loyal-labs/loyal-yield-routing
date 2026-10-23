@@ -62,7 +62,9 @@ jest.mock(
   "@loyal-labs/smart-account-vaults",
   () => ({
     createSmartAccountVaultsClient,
+    hydratePreparedOperation: (operation: unknown) => operation,
     KaminoUpstreamError: MockKaminoUpstreamError,
+    serializePreparedEarnUsdcWithdraw: () => ({ wire: "withdraw" }),
   }),
   { virtual: true },
 );
@@ -122,11 +124,6 @@ jest.mock("../earn-auth", () => ({
 
 jest.mock("../send-prepared", () => ({
   signAndSendPreparedOperations,
-}));
-
-jest.mock("../wire", () => ({
-  hydratePreparedOperation: (operation: unknown) => operation,
-  serializePreparedEarnUsdcWithdraw: () => ({ wire: "withdraw" }),
 }));
 
 // Keep the subject import after mock initialization: this test uses virtual

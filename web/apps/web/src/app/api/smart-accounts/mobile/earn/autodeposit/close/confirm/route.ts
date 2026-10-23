@@ -1,3 +1,7 @@
+import {
+  hydratePreparedEarnUsdcAutodepositClose,
+  type WireSmartAccountPreparedEarnUsdcAutodepositClose,
+} from "@loyal-labs/smart-account-vaults";
 import { NextResponse } from "next/server";
 import {
   normalizeLoyalCluster,
@@ -17,10 +21,8 @@ import { getFrontendSolanaRpcFetch } from "@/lib/solana/rpc-rate-limit";
 import { getDeploymentPolicySignerPublicKey } from "@/lib/yield-optimization/deployment-policy-signer.server";
 import {
   buildEarnAutodepositCloseConfirmRequestBody,
-  hydratePreparedEarnUsdcAutodepositClose,
   parseEarnAutodepositCloseConfirmRequestBody,
   type EarnAutodepositCloseConfirmResponse,
-  type WireSmartAccountPreparedEarnUsdcAutodepositClose,
 } from "@/lib/yield-optimization/earn-autodeposit-prepare-contracts.shared";
 import {
   recordAutodepositCloseIntent,
