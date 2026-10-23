@@ -334,7 +334,12 @@ type autodepositSweepsProgressInput struct {
 	SlotID string `query:"slotId" required:"false"`
 }
 
-func (h earnRoutes) autodepositSweepsProgress(ctx context.Context, in *autodepositSweepsProgressInput) (*AutodepositSweepsProgressResponse, error) {
+// autodepositSweepsProgressOutput wraps the body, same as the execute output.
+type autodepositSweepsProgressOutput struct {
+	Body AutodepositSweepsProgressResponse
+}
+
+func (h earnRoutes) autodepositSweepsProgress(ctx context.Context, in *autodepositSweepsProgressInput) (*autodepositSweepsProgressOutput, error) {
 	// route.ts:115-118.
 	account, err := h.account(ctx, in.SessionInput)
 	if err != nil {
@@ -374,20 +379,20 @@ func (h earnRoutes) autodepositSweepsProgress(ctx context.Context, in *autodepos
 			"No matching Autodeposit scheduled sweep is available.")
 	}
 
-	response := &AutodepositSweepsProgressResponse{
+	response := &autodepositSweepsProgressOutput{Body: AutodepositSweepsProgressResponse{
 		EventType:       autodepositRealtimeEventType,
 		OccurredAt:      isoMilliseconds(progress.OccurredAt),
 		ScheduledSlotID: strconv.FormatInt(progress.SlotID, 10),
 		SchemaVersion:   autodepositRealtimeSchemaVersion,
 		Scope:           "autodeposit",
 		State:           state,
-	}
+	}}
 	if progress.EventID != nil {
 		eventID := strconv.FormatInt(*progress.EventID, 10)
-		response.EventID = &eventID
+		response.Body.EventID = &eventID
 	}
 	if progress.CompletionFailureCode != nil {
-		response.FailureCode = progress.CompletionFailureCode
+		response.Body.FailureCode = progress.CompletionFailureCode
 	}
 	return response, nil
 }
@@ -410,7 +415,14 @@ func (h earnRoutes) registerAutodepositSweeps(api huma.API) {
 	}, h.autodepositSweepsProgress)
 }
 
-func (h earnRoutes) autodepositSweepsExecute(ctx context.Context, in *autodepositSweepsExecuteInput) (*AutodepositSweepsExecuteResponse, error) {
+// autodepositSweepsExecuteOutput wraps the body: huma reads a top-level Status
+// field as the response status code, so the route's "status" key must live one
+// level down.
+type autodepositSweepsExecuteOutput struct {
+	Body AutodepositSweepsExecuteResponse
+}
+
+func (h earnRoutes) autodepositSweepsExecute(ctx context.Context, in *autodepositSweepsExecuteInput) (*autodepositSweepsExecuteOutput, error) {
 	// route.ts:206-210.
 	account, err := h.account(ctx, in.SessionInput)
 	if err != nil {
@@ -463,7 +475,7 @@ func (h earnRoutes) autodepositSweepsExecute(ctx context.Context, in *autodeposi
 			"There are no pending scheduled Autodeposit sweeps to execute now.")
 	}
 
-	return &AutodepositSweepsExecuteResponse{
+	return &autodepositSweepsExecuteOutput{Body: AutodepositSweepsExecuteResponse{
 		Status: "requested",
 		SweepRequest: &AutodepositSweepRequestResult{
 			AcceleratedAmountRaw: strconv.FormatUint(result.AcceleratedAmountRaw, 10),
@@ -474,5 +486,5 @@ func (h earnRoutes) autodepositSweepsExecute(ctx context.Context, in *autodeposi
 			TargetID:             strconv.FormatInt(result.TargetID, 10),
 		},
 		Target: serializeAutodepositTarget(*target),
-	}, nil
+	}}, nil
 }
