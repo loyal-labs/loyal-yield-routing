@@ -403,6 +403,13 @@ proxying the session routes to Next.
 | `WEB_APP_DATABASE_URL` | yes | App Neon; SELECT on `app_users` and `app_user_smart_accounts` (sessions), SELECT and INSERT on `earn_max_invite_redemptions` (Earn MAX routes), SELECT, INSERT and UPDATE on `push_tokens` (`/api/push-tokens`) |
 | `WEB_YIELD_DATABASE_URL` | no | Yield Neon; SELECT on `loyal_yield.multiply_route_states`; without it Earn MAX reads show no current APY and no withdrawal health |
 | `EARN_MAX_INVITE_CODE_HASHES` | no | the Next deployment's value: comma-separated sha256 hex of the invite codes; unset or malformed, `POST /api/smart-accounts/earn-max/invite` keeps proxying to Next (a malformed entry logs one line) |
+| `AUTH_JWT_RS256_PRIVATE_KEY` | no | PKCS#8 PEM, the Next deployment's value; with it `loyal-web` mints the mobile Earn session JWT RS256, without it HS256 under `AUTH_JWT_SECRET` (`POST /api/smart-accounts/earn/session`, `POST /api/auth/privy/complete`) |
+| `EARN_YIELD_ROUTER_PUBLIC_KEY` | no | base58 public key of the deployment policy signer; Earn transaction prepares read only this public key, never `DEPLOYMENT_PK` |
+| `SMART_ACCOUNT_SPONSOR_PK` | no | the Next deployment's value: base58 64-byte secret key that cosigns sponsored smart account setup (deposit prepare, Earn MAX context) |
+| `OBSERVABILITY_OTLP_ENDPOINT` | no | the Next deployment's value; `/api/observability/*` forward to its `/v1/{logs,metrics,traces}` |
+| `OBSERVABILITY_INGESTION_API_KEY` | no | the Next deployment's value, sent with each forwarded OTLP request |
+| `PRIVY_APP_ID` | no | the Next deployment's `NEXT_PUBLIC_PRIVY_APP_ID` |
+| `PRIVY_APP_SECRET` | no | the Next deployment's value; with `PRIVY_APP_ID`, Go serves `POST /api/auth/privy/complete` |
 
 With sessions verified, Go serves `GET /api/smart-accounts/earn-max/summary`,
 `GET /api/smart-accounts/earn-max/activity` and `GET`/`POST

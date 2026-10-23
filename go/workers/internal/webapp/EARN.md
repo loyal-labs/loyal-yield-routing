@@ -47,7 +47,8 @@ Build exactly what the TS builder builds (web/packages/smart-account-vaults/src/
 execute and the policy signer key; reuse `internal/programs/*`. Prove bytes with
 `scripts/web/earn-tx-parity.ts` (its header has the command) and a git-ignored
 `earn_<family>_scratch_test.go` that builds the same input in Go and compares. Never send.
-The earnprep builders and the harness land in the seed's second push; pull lane/parity-seed.
+`earnprep.CompileV0` orders keys as web3.js `compileToV0Message` does; solana-go's
+`NewTransaction` does not, so never use it for a message the parity harness checks.
 
 ## Signing
 
