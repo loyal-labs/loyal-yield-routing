@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"slices"
 	"strings"
 	"time"
 
@@ -43,11 +44,12 @@ type autodepositTargetRow struct {
 	StartTimestamp          uint64
 	RecurringDelegationNull bool
 	RecurringDelegationNu64 uint64
+	DelegatedSigners        []string
 }
 
 const autodepositTargetColumns = `id, active, balance_sweep_policy_id, chain_status, policy_account, recurring_delegation, wallet_balance_floor_raw,
 	settings, wallet, vault_index, vault_pubkey, wallet_usdc_ata, vault_usdc_ata, token_mint, wallet_token_ata, vault_token_ata,
-	subscription_authority, last_seen_signature, start_timestamp, recurring_delegation_nonce`
+	subscription_authority, last_seen_signature, start_timestamp, recurring_delegation_nonce, delegated_signers`
 
 func scanAutodepositTarget(row pgx.Row) (autodepositTargetRow, error) {
 	var target autodepositTargetRow
@@ -58,6 +60,7 @@ func scanAutodepositTarget(row pgx.Row) (autodepositTargetRow, error) {
 		&target.VaultIndex, &target.VaultPubkey, &target.WalletUsdcAta, &target.VaultUsdcAta,
 		&target.TokenMint, &target.WalletTokenAta, &target.VaultTokenAta,
 		&target.SubscriptionAuthority, &target.LastSeenSignature, &target.StartTimestamp, &nonce,
+		&target.DelegatedSigners,
 	)
 	if err != nil {
 		return autodepositTargetRow{}, err
@@ -519,6 +522,179 @@ func scheduleBootstrapAutodepositSweepTx(ctx context.Context, tx pgx.Tx, now tim
 
 func startTimestampOf(target autodepositTargetRow) uint64 {
 	return target.StartTimestamp
+}
+
+// ---- close and toggle confirm writes (:1556, :2057) ----
+
+// recordAutodepositCloseIntent ports recordAutodepositCloseIntent
+// (earn-autodeposit-repository.server.ts:1556): verify the row belongs to the
+// confirming wallet, release its selected claims and open lots, then flip
+// desired_active off. The TS runs the cancel and the flip as two pool
+// statements; one tx here cannot leave suppressed lots behind a still-active
+// target after a crash, and a re-run converges either way.
+func (h earnRoutes) recordAutodepositCloseIntent(ctx context.Context, in autodepositCloseInput) (autodepositTargetRow, error) {
+	existing, err := h.findAutodepositTargetByPolicy(ctx, in.PolicyAccount)
+	if err != nil {
+		return autodepositTargetRow{}, err
+	}
+	if existing == nil {
+		return autodepositTargetRow{}, errors.New("Autodeposit target does not exist.")
+	}
+	target := *existing
+	if target.Settings != in.Settings || target.Wallet != in.WalletAddress ||
+		int(target.VaultIndex) != in.VaultIndex || target.VaultPubkey != in.VaultPubkey {
+		return autodepositTargetRow{}, errors.New("Autodeposit close target does not match the wallet.")
+	}
+	if !slices.Contains(target.DelegatedSigners, in.DelegatedSigner) {
+		return autodepositTargetRow{}, errors.New("Autodeposit close signer does not match target policy.")
+	}
+	if target.RecurringDelegation != nil && *target.RecurringDelegation != in.RecurringDelegation {
+		return autodepositTargetRow{}, errors.New("Autodeposit recurring delegation does not match target.")
+	}
+
+	now := time.Now()
+	tx, err := h.YieldDB.Begin(ctx)
+	if err != nil {
+		return autodepositTargetRow{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := cancelScheduledAutodepositTransactionsForCloseTx(ctx, tx, now, target.ID); err != nil {
+		return autodepositTargetRow{}, err
+	}
+	updated, err := scanAutodepositTarget(tx.QueryRow(ctx,
+		`UPDATE loyal_yield.balance_sweep_targets SET active = false WHERE id = $1 RETURNING `+autodepositTargetColumns,
+		target.ID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return autodepositTargetRow{}, errors.New("Failed to record autodeposit close intent.")
+	}
+	if err != nil {
+		return autodepositTargetRow{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return autodepositTargetRow{}, err
+	}
+	return updated, nil
+}
+
+// cancelScheduledAutodepositTransactionsForCloseTx ports
+// cancelScheduledAutodepositTransactionsForClose (:537): restore amounts from
+// the target's selected claims, release those claims, then suppress every
+// still-open scoped lot so no sweep can move them after the close intent.
+func cancelScheduledAutodepositTransactionsForCloseTx(ctx context.Context, tx pgx.Tx, now time.Time, targetID int64) error {
+	_, err := tx.Exec(ctx, `WITH scheduled_slots AS (
+  SELECT DISTINCT event.observed_slot
+  FROM loyal_yield.balance_sweep_surplus_lots lot
+  INNER JOIN loyal_yield.balance_sweep_wallet_balance_events event
+    ON event.event_id = lot.source_event_id
+  WHERE lot.target_id = $1
+    AND lot.status IN ('open', 'selected')
+    AND lot.remaining_amount_raw > 0
+  UNION
+  SELECT DISTINCT event.observed_slot
+  FROM loyal_yield.balance_sweep_lot_claims claim
+  INNER JOIN loyal_yield.balance_sweep_lot_claim_items item
+    ON item.claim_token = claim.claim_token
+  INNER JOIN loyal_yield.balance_sweep_surplus_lots lot
+    ON lot.id = item.lot_id
+  INNER JOIN loyal_yield.balance_sweep_wallet_balance_events event
+    ON event.event_id = lot.source_event_id
+  WHERE claim.target_id = $1
+    AND claim.status = 'selected'
+),
+scoped_lots AS (
+  SELECT lot.id
+  FROM loyal_yield.balance_sweep_surplus_lots lot
+  INNER JOIN loyal_yield.balance_sweep_wallet_balance_events event
+    ON event.event_id = lot.source_event_id
+  INNER JOIN scheduled_slots
+    ON scheduled_slots.observed_slot = event.observed_slot
+  WHERE lot.target_id = $1
+),
+selected_claims AS (
+  SELECT claim.claim_token
+  FROM loyal_yield.balance_sweep_lot_claims claim
+  WHERE claim.target_id = $1
+    AND claim.status = 'selected'
+    AND EXISTS (
+      SELECT 1
+      FROM loyal_yield.balance_sweep_lot_claim_items scoped_item
+      INNER JOIN scoped_lots
+        ON scoped_lots.id = scoped_item.lot_id
+      WHERE scoped_item.claim_token = claim.claim_token
+    )
+),
+restored_amounts AS (
+  SELECT item.lot_id AS lot_id, SUM(item.amount_raw)::bigint AS amount_raw
+  FROM loyal_yield.balance_sweep_lot_claim_items item
+  INNER JOIN selected_claims
+    ON selected_claims.claim_token = item.claim_token
+  GROUP BY item.lot_id
+),
+restored_lots AS (
+  UPDATE loyal_yield.balance_sweep_surplus_lots lot
+  SET remaining_amount_raw = lot.remaining_amount_raw + restored_amounts.amount_raw,
+      status = CASE WHEN lot.status = 'suppressed' THEN lot.status
+        ELSE 'open'::loyal_yield.balance_sweep_surplus_lot_status END,
+      updated_at = $2
+  FROM restored_amounts
+  WHERE lot.id = restored_amounts.lot_id
+    AND lot.target_id = $1
+    AND lot.id IN (SELECT id FROM scoped_lots)
+  RETURNING lot.id
+),
+released_claims AS (
+  UPDATE loyal_yield.balance_sweep_lot_claims claim
+  SET status = 'released'::loyal_yield.balance_sweep_lot_claim_status,
+      updated_at = $2
+  WHERE claim.claim_token IN (SELECT claim_token FROM selected_claims)
+  RETURNING claim.claim_token
+)
+UPDATE loyal_yield.balance_sweep_surplus_lots lot
+SET status = 'suppressed'::loyal_yield.balance_sweep_surplus_lot_status,
+    updated_at = $2
+WHERE lot.target_id = $1
+  AND lot.id IN (SELECT id FROM scoped_lots)
+  AND lot.status IN ('open', 'selected')
+  AND lot.remaining_amount_raw > 0`, targetID, now)
+	return err
+}
+
+// updateAutodepositTargetActive ports updateAutodepositTargetActive
+// (earn-autodeposit-repository.server.ts:2057): a DB-only flag flip on the
+// one row behind the policy account; the delegation stays in place and the
+// sweep worker honors desired_active.
+func (h earnRoutes) updateAutodepositTargetActive(ctx context.Context, in autodepositToggleInput) (autodepositTargetRow, error) {
+	existing, err := h.findAutodepositTargetByPolicy(ctx, in.PolicyAccount)
+	if err != nil {
+		return autodepositTargetRow{}, err
+	}
+	if existing == nil {
+		return autodepositTargetRow{}, errors.New("Autodeposit target does not exist.")
+	}
+	target := *existing
+	if target.Settings != in.Settings || target.Wallet != in.WalletAddress || int(target.VaultIndex) != in.VaultIndex {
+		return autodepositTargetRow{}, errors.New("Autodeposit target does not match the wallet.")
+	}
+	if target.LifecycleStatus == "closed" {
+		return autodepositTargetRow{}, errors.New("Closed autodeposit targets cannot be toggled.")
+	}
+	if target.LifecycleStatus != "active" {
+		return autodepositTargetRow{}, errors.New("Pending autodeposit targets cannot be toggled.")
+	}
+	if target.RecurringDelegation == nil || *target.RecurringDelegation != in.RecurringDelegation {
+		return autodepositTargetRow{}, errors.New("Autodeposit recurring delegation does not match target.")
+	}
+
+	updated, err := scanAutodepositTarget(h.YieldDB.QueryRow(ctx,
+		`UPDATE loyal_yield.balance_sweep_targets SET active = $1 WHERE policy_account = $2 RETURNING `+autodepositTargetColumns,
+		in.Active, in.PolicyAccount))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return autodepositTargetRow{}, errors.New("Failed to update autodeposit target active state.")
+	}
+	if err != nil {
+		return autodepositTargetRow{}, err
+	}
+	return updated, nil
 }
 
 // ensureScheduledAutodepositSlotTx ports ensureScheduledAutodepositSlot

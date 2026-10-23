@@ -61,7 +61,9 @@ type autodepositCloseInput struct {
 type autodepositFloorInput struct {
 	PolicyAccount         string
 	RecurringDelegation   string
+	Settings              string
 	VaultIndex            int
+	WalletAddress         string
 	WalletBalanceFloorRaw uint64
 }
 
@@ -69,7 +71,9 @@ type autodepositToggleInput struct {
 	Active              bool
 	PolicyAccount       string
 	RecurringDelegation string
+	Settings            string
 	VaultIndex          int
+	WalletAddress       string
 }
 
 // autodepositBodyObject ports assertRequestObject
