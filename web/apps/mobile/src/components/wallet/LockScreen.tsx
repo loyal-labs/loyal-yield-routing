@@ -4,15 +4,16 @@ import { ActivityIndicator, AppState, StyleSheet } from "react-native";
 import Animated, { FadeIn, FadeOut } from "react-native-reanimated";
 
 import { LogoHeader } from "@/components/LogoHeader";
+import { ImportWalletScreen } from "@/components/wallet/ImportWalletScreen";
 import { PinPadInput } from "@/components/wallet/PinPadInput";
 import { getBiometricType } from "@/lib/wallet/biometrics";
-import { PinLockedError, WalletKeyUnavailableError } from "@/lib/wallet/keypair-storage";
+import { PinLockedError, WalletKeyReadError, WalletKeyUnavailableError } from "@/lib/wallet/keypair-storage";
 import { WALLET_PIN_LENGTH } from "@/lib/wallet/pin";
 import { useWallet } from "@/lib/wallet/wallet-provider";
 import { Pressable, Text, View } from "@/tw";
 
 export function LockScreen() {
-  const { unlock, unlockWithBiometrics, biometricEnabled, resetWallet } = useWallet();
+  const { unlock, unlockWithBiometrics, biometricEnabled, publicKey, finalizeSigner } = useWallet();
   const [pin, setPin] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [unlocking, setUnlocking] = useState(false);
@@ -22,6 +23,7 @@ export function LockScreen() {
   const [biometricFailed, setBiometricFailed] = useState(false);
   const [lockCountdown, setLockCountdown] = useState(0);
   const [keyUnavailable, setKeyUnavailable] = useState(false);
+  const [recovering, setRecovering] = useState(false);
 
   const didAttemptBiometric = useRef(false);
 
@@ -72,7 +74,7 @@ export function LockScreen() {
   // overlay hides the PIN pad with no way out of the loop. Android's
   // BiometricPrompt keeps the activity resumed, so neither quirk exists.
   useEffect(() => {
-    if (!biometricEnabled) return;
+    if (!biometricEnabled || recovering || keyUnavailable) return;
 
     const subscription = AppState.addEventListener("change", (next) => {
       if (next === "background") {
@@ -101,7 +103,7 @@ export function LockScreen() {
         });
     });
     return () => subscription.remove();
-  }, [biometricEnabled, unlockWithBiometrics]);
+  }, [biometricEnabled, unlockWithBiometrics, recovering, keyUnavailable]);
 
   useEffect(() => {
     if (lockCountdown <= 0) return;
@@ -129,6 +131,8 @@ export function LockScreen() {
         setError(`Wallet locked for ${seconds}s`);
       } else if (e instanceof WalletKeyUnavailableError) {
         setKeyUnavailable(true);
+      } else if (e instanceof WalletKeyReadError) {
+        setError(e.message);
       } else {
         setError("Incorrect PIN");
       }
@@ -165,6 +169,18 @@ export function LockScreen() {
   const isFaceId = biometricType === "faceid";
   const BiometricIcon = isFaceId ? Scan : Fingerprint;
 
+  if (recovering && publicKey) {
+    return (
+      <ImportWalletScreen
+        expectedPublicKey={publicKey}
+        onBack={() => setRecovering(false)}
+        onComplete={(keypair, nextPin) =>
+          finalizeSigner(keypair, nextPin, { alreadyStored: true })
+        }
+      />
+    );
+  }
+
   if (keyUnavailable) {
     return (
       <Animated.View entering={FadeIn.duration(200)} style={styles.container}>
@@ -178,9 +194,18 @@ export function LockScreen() {
           <View style={{ width: "100%", marginTop: 32 }}>
             <Pressable
               style={styles.primaryButton}
-              onPress={() => void resetWallet()}
+              onPress={() => setRecovering(true)}
+              accessibilityRole="button"
+              disabled={!publicKey}
             >
               <Text style={styles.primaryButtonText}>Import secret key</Text>
+            </Pressable>
+            <Pressable
+              style={styles.biometricButton}
+              onPress={() => setKeyUnavailable(false)}
+              accessibilityRole="button"
+            >
+              <Text style={styles.biometricButtonText}>Try unlocking again</Text>
             </Pressable>
           </View>
         </View>

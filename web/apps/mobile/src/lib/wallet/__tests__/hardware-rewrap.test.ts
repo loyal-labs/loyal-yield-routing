@@ -2,7 +2,7 @@ import { Keypair } from "@solana/web3.js";
 import * as HardwareKey from "expo-hardware-key";
 
 import { encryptSecret } from "../crypto";
-import { loadKeypair } from "../keypair-storage";
+import { importKeypair, loadKeypair, WalletKeyReadError, WalletKeyUnavailableError } from "../keypair-storage";
 
 const store = new Map<string, string>();
 jest.mock("expo-secure-store", () => ({
@@ -71,4 +71,44 @@ test("a rewrap whose round-trip fails keeps the legacy blob", async () => {
   expect(unlocked?.publicKey.toBase58()).toBe(keypair.publicKey.toBase58());
   expect(store.get("wallet_encrypted_keypair")).toBe(legacy);
   expect(store.has("wallet_hardware_keypair")).toBe(false);
+});
+
+
+test.each(["failed", "canceled"] as const)("%s hardware access stays retryable without changing credentials or PIN attempts", async (reason) => {
+  const keypair = await seedLegacyWallet("1234");
+  await loadKeypair("1234");
+  const before = new Map(store);
+  unwrap.mockResolvedValueOnce({ ok: false, reason });
+  await expect(loadKeypair("1234")).rejects.toBeInstanceOf(WalletKeyReadError);
+  expect(store).toEqual(before);
+  expect((await loadKeypair("1234"))?.publicKey.toBase58()).toBe(keypair.publicKey.toBase58());
+});
+
+test("an invalidated hardware key offers recovery while keeping all wallet records", async () => {
+  await seedLegacyWallet("1234");
+  await loadKeypair("1234");
+  const before = new Map(store);
+  unwrap.mockResolvedValueOnce({ ok: false, reason: "invalidated" });
+  await expect(loadKeypair("1234")).rejects.toBeInstanceOf(WalletKeyUnavailableError);
+  expect(store).toEqual(before);
+});
+
+test("recovery rejects another wallet or malformed key before touching stored credentials", async () => {
+  const keypair = await seedLegacyWallet("1234");
+  const before = new Map(store);
+  await expect(importKeypair(Keypair.generate().secretKey, "5678", keypair.publicKey.toBase58())).rejects.toThrow("different wallet");
+  await expect(importKeypair(new Uint8Array(64), "5678", keypair.publicKey.toBase58())).rejects.toThrow();
+  expect(store).toEqual(before);
+});
+
+test("recovery of the same wallet replaces an unusable hardware blob and clears PIN lockout", async () => {
+  const keypair = await seedLegacyWallet("1234");
+  await loadKeypair("1234");
+  store.set("wallet_failed_attempts", "4");
+  store.set("wallet_locked_until", String(Date.now() + 30_000));
+  // The device key is invalidated, so recovery must retain a working PIN blob.
+  unwrap.mockResolvedValueOnce({ ok: false, reason: "invalidated" });
+  await importKeypair(keypair.secretKey, "5678", keypair.publicKey.toBase58());
+  expect(store.has("wallet_locked_until")).toBe(false);
+  expect((await loadKeypair("5678"))?.publicKey.toBase58()).toBe(keypair.publicKey.toBase58());
 });

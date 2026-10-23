@@ -18,7 +18,8 @@ import { Pressable, SafeAreaView, Text, View } from "@/tw";
 type Step = "pin" | "confirm" | "import";
 
 type Props = {
-  onComplete: (keypair: Keypair, pin: string) => void;
+  onComplete: (keypair: Keypair, pin: string) => void | Promise<void>;
+  expectedPublicKey?: string;
   onBack: () => void;
 };
 
@@ -90,7 +91,7 @@ function parseSecretKey(
   };
 }
 
-export function ImportWalletScreen({ onComplete, onBack }: Props) {
+export function ImportWalletScreen({ onComplete, onBack, expectedPublicKey }: Props) {
   const { importWallet } = useWallet();
 
   const [step, setStep] = useState<Step>("pin");
@@ -150,14 +151,14 @@ export function ImportWalletScreen({ onComplete, onBack }: Props) {
     setImportError(null);
 
     try {
-      const keypair = await importWallet(bytes, pin);
-      onComplete(keypair, pin);
+      const keypair = await importWallet(bytes, pin, expectedPublicKey);
+      await onComplete(keypair, pin);
     } catch (e) {
       setImportError(e instanceof Error ? e.message : "Failed to import wallet");
     } finally {
       setIsImporting(false);
     }
-  }, [hexKey, pin, importWallet, onComplete]);
+  }, [hexKey, pin, importWallet, onComplete, expectedPublicKey]);
 
   if (isImporting) {
     return (
