@@ -67,9 +67,6 @@ async function restoreState(
     const state = (await file.json()) as PersistedState;
     return target.importState(state);
   } catch (error) {
-    // A corrupt or unreadable snapshot must never stop the relay from
-    // accepting alerts; it only costs the duplicate messages it would have
-    // prevented.
     console.error(
       JSON.stringify({
         event: "state_restore_failed",
@@ -144,8 +141,6 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
   // `false` keeps active connections alive until their handler resolves.
   await server.stop(false);
 
-  // Written after the drain so the snapshot includes whatever those last
-  // requests accumulated.
   await persistState(config, relay);
 
   console.info(JSON.stringify({ event: "server_stopped", signal }));

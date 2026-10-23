@@ -66,9 +66,6 @@ export function EarnPositionPane({
   const { isBalanceHidden } = useBalanceVisibility();
   const [isInfoOpen, setIsInfoOpen] = useState(false);
 
-  // Same toggle-state mapping as the old workspace's autodeposit card:
-  // while toggling the knob optimistically shows the target position and the
-  // hook reverts the state on failure.
   const autodepositState = autodeposit?.state ?? null;
   const isAutodepositToggling =
     autodepositState === "pausing" || autodepositState === "resuming";

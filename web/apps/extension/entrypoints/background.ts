@@ -344,7 +344,6 @@ export default defineBackground(() => {
   let approvalPopupId: number | null = null;
 
   async function isExtensionUiOpen(): Promise<boolean> {
-    // Fast path: in-memory counter (accurate unless SW restarted)
     if (uiConnectionCount > 0) return true;
     try {
       const contexts = await (

@@ -111,18 +111,6 @@ export function transactionMessageToMultisigTransactionMessageBytes({
   transactionMessageBytes: Uint8Array;
   compiledMessage: MessageV0;
 } {
-  // // Make sure authority is marked as non-signer in all instructions,
-  // // otherwise the message will be serialized in incorrect format.
-  // message.instructions.forEach((instruction) => {
-  //   instruction.keys.forEach((key) => {
-  //     if (key.pubkey.equals(vaultPda)) {
-  //       key.isSigner = false;
-  //     }
-  //   });
-  // });
-
-  // Use custom implementation of `message.compileToV0Message` that allows instruction programIds
-  // to also be loaded from `addressLookupTableAccounts`.
   const compiledMessage = compileToWrappedMessageV0({
     payerKey: message.payerKey,
     recentBlockhash: message.recentBlockhash,
@@ -286,7 +274,6 @@ export async function accountsForTransactionExecute({
       return { pubkey: key, isSigner: false, isWritable: false };
     })
   );
-  // Then add static account keys included into the message.
   for (const [accountIndex, accountKey] of message.accountKeys.entries()) {
     accountMetas.push({
       pubkey: accountKey,
@@ -299,7 +286,6 @@ export async function accountsForTransactionExecute({
         !ephemeralSignerPdas.find((k) => accountKey.equals(k)),
     });
   }
-  // Then add accounts that will be loaded with address lookup tables.
   for (const lookup of message.addressTableLookups) {
     const lookupTableAccount = addressLookupTableAccounts.get(
       lookup.accountKey.toBase58()

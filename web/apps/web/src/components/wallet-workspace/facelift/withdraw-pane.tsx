@@ -223,8 +223,6 @@ export function WithdrawPane({
   const amountLabel = amountUsd.toLocaleString("en-US", {
     maximumFractionDigits: 2,
   });
-  // Same mode derivation as the old workspace: compare the exact selected
-  // source balance for MAX even when its two-decimal label rounds differently.
   const withdrawMode = deriveEarnWithdrawMode({ amount: amountUsd, sources });
   const fullExitSources = useMemo(
     () => sources.filter((source) => source.type === "reserve"),

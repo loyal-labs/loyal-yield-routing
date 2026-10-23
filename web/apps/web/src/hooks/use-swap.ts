@@ -42,7 +42,6 @@ function cleanSolanaErrorMessage(message: string): string {
 
 const PERCENTAGE_MULTIPLIER = 100;
 
-// Jupiter route slippage tolerance (0.5%).
 const SLIPPAGE_BPS = 50;
 const PRIORITY_FEE_MAX_LAMPORTS = 50_000_000;
 

@@ -35,7 +35,6 @@ import {
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const WALLET_CONCURRENCY = 5;
-// Leaves headroom under the route's 300s ceiling for the final state writes.
 const DEFAULT_TIME_BUDGET_MS = 240_000;
 
 export type EarnYieldJoyOutcome = {
@@ -221,8 +220,6 @@ async function processCandidate(args: {
       candidate.walletAddress,
       joyPushPayload(decision.push)
     );
-    // The digest reports what changed since the user was last told a number,
-    // so every push — not just a digest — rebases the baseline.
     await saveState({
       campaigns:
         decision.push.type === "digest"

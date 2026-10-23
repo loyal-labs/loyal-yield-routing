@@ -632,9 +632,6 @@ const styles = StyleSheet.create({
     borderTopRightRadius: 38,
   },
   container: {
-    // Definite height matching the modal's snap point. Without an explicit
-    // height, BottomSheetView sizes to content and absolute `bottom: 0`
-    // children land at the content's bottom, not the sheet's bottom.
     backgroundColor: "#FFF",
     borderTopLeftRadius: 38,
     borderTopRightRadius: 38,

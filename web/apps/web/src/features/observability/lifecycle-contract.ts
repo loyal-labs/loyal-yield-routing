@@ -162,8 +162,6 @@ export const LIFECYCLE_STAGES = {
     "state_observed",
     "ui_commit",
   ],
-  // Setup/delete sign wallet transactions (two shard policies on setup, one
-  // revocation on delete); pause/resume are backend-only generation bumps.
   "earn.autoswap.configuration": [
     "intent",
     "prepare",
@@ -720,9 +718,6 @@ export function parseBrowserLifecycleEnvelope(
   )
     ? record.clientPlatform
     : undefined;
-  // Exact-token match only: at the ingest boundary an unrecognized value is
-  // dropped, never bucketed into `other` — mapping display names onto tokens
-  // is the emitter's job via normalizeLifecycleWalletProvider.
   const walletProvider = includes(
     LIFECYCLE_WALLET_PROVIDERS,
     record.walletProvider

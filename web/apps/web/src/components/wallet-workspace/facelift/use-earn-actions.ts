@@ -131,9 +131,6 @@ import {
   invalidateEarnTransactionsCache,
 } from "@/lib/yield-optimization/earn-transactions.client";
 
-// Same local widening the old workspace uses: the loaded state only knows
-// created/creating/paused; pausing/resuming/closing are optimistic transients
-// while a toggle/close request is in flight.
 export type EarnAutodepositConfigView = Omit<
   LoadedEarnAutodepositConfig,
   "state"
@@ -199,12 +196,6 @@ export type PendingEarnApproval = {
   reject: () => void;
 };
 
-// The old workspace's Earn mutation orchestration (app-wallet-workspace.tsx
-// handlers) rebuilt for the facelift panes. Every executor call, precondition,
-// optimistic update, observability event and refresh registration mirrors the
-// monolith; the one structural change is that the review overlay's
-// per-stage "Continue" clicks are auto-chained after a single up-front
-// approval gate — the wallet still prompts per signature.
 const PENDING_SIGNATURE_CAP_MS = 20_000;
 
 export function useEarnActions(deps: {

@@ -24,7 +24,6 @@ import type { WalletSigner } from "../types/signer";
 
 export type ShieldedBalance = {
   tokenMint: string;
-  /** Raw base-unit amount held in the deposit PDA. */
   amountRaw: bigint;
 };
 

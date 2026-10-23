@@ -5646,8 +5646,6 @@ export function useSmartAccountSidebarData(
           };
         }
 
-        // threshold-1: read settings to learn the proposal's transactionIndex,
-        // then approve + execute as separate signs.
         const settingsAfterPropose =
           await client.sdk.smartAccounts.queries.fetchSettings(settingsPda);
         const transactionIndex = BigInt(

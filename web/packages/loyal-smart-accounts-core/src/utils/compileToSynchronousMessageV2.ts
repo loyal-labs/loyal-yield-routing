@@ -120,8 +120,6 @@ function serializeCompiledInstruction(ix: {
     // SmallVec<u8, u8> for account indexes
     Buffer.from([ix.accountIndexes.length]),
     Buffer.from(ix.accountIndexes),
-    // SmallVec<u16, u8> for data
-    // Length prefix as u16 (little endian)
     Buffer.from(new Uint16Array([ix.data.length]).buffer),
     ix.data,
   ]);

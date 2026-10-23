@@ -56,8 +56,6 @@ function SparklineInner({
   const lastX = padding + (data.length - 1) * stepX;
   const fillPoints = `${firstX},${height} ${points} ${lastX},${height}`;
 
-  // Animate draw-on effect on first render, then smooth transitions on updates
-  // useLayoutEffect runs before paint — prevents flash of fully-drawn line
   useLayoutEffect(() => {
     const line = lineRef.current;
     if (!line) return;

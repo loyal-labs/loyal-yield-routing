@@ -121,11 +121,6 @@ function SwapTokenPill({
   );
 }
 
-// Swap screen (Figma 4819:414629 wide / 4813:404479 downsized): the middle
-// pane form. Quote/execute logic is the OG SwapContent orchestration ported
-// onto useSwap — debounced Jupiter quote, price-ratio fallback, MAX with the
-// SOL fee reserve, flip keeps the USD value. Confirm walks the step screens:
-// processing (4813:405472) → success (4813:406464) or error (4813:407564).
 export function SwapPane({
   activeSelectSide,
   fromToken,
@@ -734,8 +729,6 @@ export function SwapTokenSelectPane({
     refreshTrending();
   }, [refreshTrending]);
 
-  // Debounced remote search. Each keystroke aborts the request before it; a
-  // failed or aborted one leaves the previous results on screen.
   useEffect(() => {
     if (!isRemoteSearchEnabled || rawQuery.length < TOKEN_SEARCH_MIN_LENGTH) {
       searchAbortRef.current?.abort();

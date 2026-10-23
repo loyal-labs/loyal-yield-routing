@@ -158,8 +158,6 @@ export function WorkspaceFaceliftShell() {
     null
   );
   const [depositSourceKey, setDepositSourceKey] = useState<string | null>(null);
-  // Mirrored from the sidebar (which owns the unseen-activity computation)
-  // so the mobile tab bar's clock shows the same badge.
   const [hasUnseenActivity, setHasUnseenActivity] = useState(false);
   const earnData = useEarnPositionData();
   const earnMaxAvailable = EARN_MAX_VISIBLE && isSignedIn;

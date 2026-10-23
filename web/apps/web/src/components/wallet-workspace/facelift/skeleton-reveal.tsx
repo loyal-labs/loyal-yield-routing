@@ -45,8 +45,6 @@ function PlainSegments({ segments }: { segments: PopDigitsSegment[] }) {
   );
 }
 
-// One APY-fed text: skeleton until revealed, then (optionally) pop the digits
-// once.
 export function ApyRevealText({
   isRevealed,
   segments,

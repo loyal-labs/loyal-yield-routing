@@ -27,9 +27,6 @@ const FrontmatterSchema = z.object({
   readingTime: z.number().int().positive().optional(),
 });
 
-/**
- * Every post body, read once at build time.
- */
 const rawPosts = import.meta.glob<string>(
   "../../../web/public/blog/*/post.md",
   { query: "?raw", import: "default", eager: true },

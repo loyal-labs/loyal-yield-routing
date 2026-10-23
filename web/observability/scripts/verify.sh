@@ -114,8 +114,6 @@ done
 if rg --quiet 'location = /v1/workflows' "$project_dir/nginx.conf"; then
   fail "the nonexistent /v1/workflows path must not be proxied"
 fi
-# Non-upgrade requests must resolve to an empty value so nginx omits the
-# Connection header entirely.
 require_literal "    '' '';" "$project_dir/nginx.conf"
 require_literal \
   'proxy_set_header Connection $connection_upgrade;' \

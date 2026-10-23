@@ -132,8 +132,6 @@ export function CryptoPage({
     () => getStablecoinMintSetForSolanaEnv(publicEnv.solanaEnv),
     [publicEnv.solanaEnv]
   );
-  // Shielded balances as display rows, split by the same stablecoin rule as
-  // the public assets so each lands on its own page.
   const shieldedRows = useMemo<ShieldedRow[]>(
     () =>
       shieldedBalances
