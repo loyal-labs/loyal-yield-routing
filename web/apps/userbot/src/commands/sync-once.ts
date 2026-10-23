@@ -15,7 +15,7 @@ import {
 } from "../lib/database";
 import { loadUserbotConfig, type UserbotConfig } from "../lib/env";
 import {
-  buildReauthGuidance,
+  authFailureGuidance,
   createNonInteractiveStartParams,
 } from "../lib/non-interactive-auth";
 import {
@@ -964,13 +964,10 @@ export async function runSyncOnceCli(
     await runSyncOnce(overrides, options);
     return 0;
   } catch (error) {
-    let guidance = "Run bun run auth:bootstrap.";
-    try {
-      guidance = buildReauthGuidance(loadConfig(env));
-    } catch {
-      // Keep default guidance when config cannot be loaded.
-    }
-    logger.error(`[userbot] sync:once failed to start. ${guidance}`, error);
+    logger.error(
+      `[userbot] sync:once failed to start. ${authFailureGuidance(loadConfig, env)}`,
+      error
+    );
     return 1;
   }
 }

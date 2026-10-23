@@ -13,6 +13,20 @@ import { useDeviceSafeAreaTop } from "@/hooks/useTelegramSafeArea";
 const isAndroid = () =>
   typeof navigator !== "undefined" && /android/i.test(navigator.userAgent);
 
+const HEADER_SAFE_AREA_MIN_PX = 12;
+const HEADER_TOP_GAP_PX = 10;
+const HEADER_LOGO_HEIGHT_PX = 27;
+const HEADER_BOTTOM_PADDING_PX = 16;
+
+export function telegramHeaderHeight(safeAreaInsetTop: number): number {
+  return (
+    Math.max(safeAreaInsetTop || 0, HEADER_SAFE_AREA_MIN_PX) +
+    HEADER_TOP_GAP_PX +
+    HEADER_LOGO_HEIGHT_PX +
+    HEADER_BOTTOM_PADDING_PX
+  );
+}
+
 export default function Header() {
   const safeAreaInsetTop = useDeviceSafeAreaTop();
   const [isScrolled, setIsScrolled] = useState(false);
@@ -35,8 +49,10 @@ export default function Header() {
     <header
       className="fixed top-0 left-0 right-0 z-50 flex flex-col items-center justify-center"
       style={{
-        paddingTop: Math.max(safeAreaInsetTop || 0, 12) + 10,
-        paddingBottom: 16,
+        paddingTop:
+          Math.max(safeAreaInsetTop || 0, HEADER_SAFE_AREA_MIN_PX) +
+          HEADER_TOP_GAP_PX,
+        paddingBottom: HEADER_BOTTOM_PADDING_PX,
         background: "#fff",
         border: "none",
         boxShadow: "none",

@@ -1,6 +1,7 @@
 import type { SolanaEnv } from "@loyal-labs/solana-rpc";
 import { PublicKey } from "@solana/web3.js";
 
+import { SMART_ACCOUNTS_PROGRAM_ID } from "./constants.ts";
 import { LoyalCluster } from "./types.ts";
 
 export type LoyalClusterConfig = {
@@ -13,9 +14,7 @@ export type LoyalClusterConfig = {
 };
 
 const sharedConfig: LoyalClusterConfig = {
-  squadsSmartAccountProgramId: new PublicKey(
-    "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
-  ),
+  squadsSmartAccountProgramId: SMART_ACCOUNTS_PROGRAM_ID,
   jupiterV6ProgramId: new PublicKey(
     "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
   ),
