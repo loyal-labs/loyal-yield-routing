@@ -111,7 +111,7 @@ function createSystem(options: SystemOptions = {}) {
     now: () => now,
     analyze: createAlertAnalyzer(config),
     dailyRecapEnabled: config.dailyRecapEnabled,
-    dailyRecapAtMinutes: config.dailyRecapAtUtcMinutes,
+    dailyRecapMinutesPastUtcMidnight: config.dailyRecapAtUtcMinutes,
     escalationMultiplier: config.escalationMultiplier,
     restartGraceMs: config.restartGraceMs,
     startedAt: startAt,

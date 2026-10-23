@@ -108,8 +108,7 @@ export interface AlertRelayOptions {
   now?: () => number;
   analyze?: AlertAnalyzer;
   dailyRecapEnabled?: boolean;
-  /** Minutes past UTC midnight at which the daily recap is posted. */
-  dailyRecapAtMinutes?: number;
+  dailyRecapMinutesPastUtcMidnight?: number;
   /**
    * Break the cooldown when volume grows by this factor, so an escalating
    * incident is not invisible for a whole window. `0` disables escalation.
@@ -125,7 +124,7 @@ export interface AlertRelayOptions {
   maxFlushAttempts?: number;
 }
 
-const DEFAULT_DAILY_RECAP_AT_MINUTES = 6 * 60;
+const DEFAULT_DAILY_RECAP_MINUTES_PAST_UTC_MIDNIGHT = 6 * 60;
 const DAY_MS = 86_400_000;
 
 const MAX_TRACKED_SIGNATURES = 20;
@@ -493,7 +492,10 @@ export class AlertRelay {
   }
 
   private recapAtMinutes(): number {
-    return this.options.dailyRecapAtMinutes ?? DEFAULT_DAILY_RECAP_AT_MINUTES;
+    return (
+      this.options.dailyRecapMinutesPastUtcMidnight ??
+      DEFAULT_DAILY_RECAP_MINUTES_PAST_UTC_MIDNIGHT
+    );
   }
 
   private async flushDailyRecap(now: number): Promise<void> {
