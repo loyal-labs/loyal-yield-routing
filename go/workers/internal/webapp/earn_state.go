@@ -46,7 +46,8 @@ var earnStateFamily = earnFamily{
 }
 
 type earnStateOutput struct {
-	// Next serves this route with Cache-Control: no-store (route.ts:48-51).
+	// Next sets no explicit cache header on this route; no-store is pinned
+	// here because every byte is per-wallet state.
 	CacheControl string `header:"Cache-Control"`
 	Body         EarnStateResponse
 }
@@ -213,6 +214,7 @@ func (h earnRoutes) earnState(ctx context.Context, in *sessionRequest) (*earnSta
 			Policy:                policyOut,
 			Position:              positionOut,
 			PolicySignerPublicKey: h.PolicySigner.String(),
+			ProgramID:             squads.ProgramID.String(),
 			SettingsPda:           settings,
 			Vault:                 EarnStateVault{AccountIndex: int(earnVaultIndex), Pubkey: vaultPubkey},
 		},
