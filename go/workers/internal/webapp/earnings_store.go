@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"sort"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -381,4 +382,202 @@ func scanEarningsSourceRows(ctx context.Context, pool *pgxpool.Pool, q string, i
 		out = append(out, row)
 	}
 	return out, rows.Err()
+}
+
+// ---- Positions and vault exposure snapshots ----
+
+type earningsVaultRef struct {
+	id          int64
+	vaultPubkey string
+}
+
+// loadEarningsPositions ports findActiveYieldPositionsForVault
+// (repository:2705): active rows for the wallet scope, newest-updated first.
+func loadEarningsPositions(ctx context.Context, pool *pgxpool.Pool, input earningsReadInput) ([]earningsPosition, error) {
+	const q = `SELECT id, initial_reserve, initial_market, initial_liquidity_mint, principal_amount_raw
+FROM ` + earningsSchema + `.user_yield_positions
+WHERE settings = $1 AND vault_index = $2 AND wallet_address = $3 AND status = 'active'
+ORDER BY updated_at DESC, id DESC`
+	rows, err := pool.Query(ctx, q, input.settings, input.vaultIndex, input.walletAddress)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var positions []earningsPosition
+	for rows.Next() {
+		var position earningsPosition
+		if err := rows.Scan(&position.id, &position.initialReserve, &position.initialMarket, &position.initialLiquidityMint, &position.principalAmountRaw); err != nil {
+			return nil, err
+		}
+		positions = append(positions, position)
+	}
+	return positions, rows.Err()
+}
+
+type earningsSnapshotRow struct {
+	id           int64
+	observedAt   time.Time
+	observedSlot int64
+}
+
+// loadCompleteEarningsVaultSnapshots ports
+// findCompleteYieldVaultExposureSnapshots (repository:2725): the vault's
+// complete-product snapshots with kamino position rows plus idle balances on
+// the latest snapshot only.
+func loadCompleteEarningsVaultSnapshots(ctx context.Context, pool *pgxpool.Pool, input earningsReadInput, observedSince *time.Time) ([]earningsPortfolioSnapshot, error) {
+	positions, err := loadEarningsPositions(ctx, pool, input)
+	if err != nil {
+		return nil, err
+	}
+	if len(positions) == 0 {
+		return nil, nil
+	}
+	var vaultRef earningsVaultRef
+	err = pool.QueryRow(ctx,
+		`SELECT v.id, v.vault_pubkey
+FROM `+earningsSchema+`.managed_vaults v
+JOIN `+earningsSchema+`.user_yield_positions p
+  ON p.vault_pubkey = v.vault_pubkey AND p.settings = v.settings AND p.vault_index = v.vault_index
+WHERE v.settings = $1 AND v.vault_index = $2 AND p.status = 'active'
+ORDER BY p.updated_at DESC, p.id DESC
+LIMIT 1`,
+		input.settings, input.vaultIndex,
+	).Scan(&vaultRef.id, &vaultRef.vaultPubkey)
+	// TS keys the vault on the first active position's vaultPubkey; the join
+	// above keeps that pin (newest-updated active position first).
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	snapshotQuery := `SELECT id, observed_at, observed_slot
+FROM ` + earningsSchema + `.vault_position_snapshots
+WHERE vault_id = $1
+  AND context->>'publication_scope' = 'complete_product_vault'`
+	args := []any{vaultRef.id}
+	if observedSince != nil {
+		snapshotQuery += ` AND observed_at >= $2::timestamptz`
+		args = append(args, *observedSince)
+	}
+	snapshotQuery += ` ORDER BY observed_at ASC, observed_slot ASC, id ASC`
+	rows, err := pool.Query(ctx, snapshotQuery, args...)
+	if err != nil {
+		return nil, err
+	}
+	var snapshotRows []earningsSnapshotRow
+	for rows.Next() {
+		var row earningsSnapshotRow
+		if err := rows.Scan(&row.id, &row.observedAt, &row.observedSlot); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		row.observedAt = msTime(row.observedAt)
+		snapshotRows = append(snapshotRows, row)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+	if len(snapshotRows) == 0 {
+		return nil, nil
+	}
+	// TS re-sorts by (observedSlot, id) after the SQL fetch.
+	sort.SliceStable(snapshotRows, func(i, j int) bool {
+		if snapshotRows[i].observedSlot != snapshotRows[j].observedSlot {
+			return snapshotRows[i].observedSlot < snapshotRows[j].observedSlot
+		}
+		return snapshotRows[i].id < snapshotRows[j].id
+	})
+
+	positionsBySnapshot := map[int64][]earningsPortfolioExposure{}
+	ids := make([]int64, 0, len(snapshotRows))
+	for _, row := range snapshotRows {
+		ids = append(ids, row.id)
+	}
+	positionRows, err := pool.Query(ctx,
+		`SELECT snapshot_id, amount_raw, liquidity_mint, reserve
+FROM `+earningsSchema+`.vault_position_snapshot_positions
+WHERE snapshot_id = ANY($1::bigint[]) AND has_value = true`, ids)
+	if err != nil {
+		return nil, err
+	}
+	for positionRows.Next() {
+		var snapshotID int64
+		var exposure earningsPortfolioExposure
+		var reserve string
+		if err := positionRows.Scan(&snapshotID, &exposure.amountRaw, &exposure.liquidityMint, &reserve); err != nil {
+			positionRows.Close()
+			return nil, err
+		}
+		if exposure.amountRaw <= 0 {
+			continue
+		}
+		exposure.kind = "kamino"
+		exposure.reserve = &reserve
+		exposure.sourceID = "reserve:" + reserve
+		positionsBySnapshot[snapshotID] = append(positionsBySnapshot[snapshotID], exposure)
+	}
+	if err := positionRows.Err(); err != nil {
+		positionRows.Close()
+		return nil, err
+	}
+	positionRows.Close()
+
+	type idleRow struct {
+		observedSlot int64
+		amountRaw    int64
+		mint         string
+		tokenAccount string
+	}
+	var idleRows []idleRow
+	idleRowsScan, err := pool.Query(ctx,
+		`SELECT observed_slot, amount_raw, mint, token_account
+FROM `+earningsSchema+`.vault_idle_token_balances_current
+WHERE vault_id = $1`, vaultRef.id)
+	if err != nil {
+		return nil, err
+	}
+	for idleRowsScan.Next() {
+		var row idleRow
+		if err := idleRowsScan.Scan(&row.observedSlot, &row.amountRaw, &row.mint, &row.tokenAccount); err != nil {
+			idleRowsScan.Close()
+			return nil, err
+		}
+		idleRows = append(idleRows, row)
+	}
+	if err := idleRowsScan.Err(); err != nil {
+		idleRowsScan.Close()
+		return nil, err
+	}
+	idleRowsScan.Close()
+
+	latest := snapshotRows[len(snapshotRows)-1]
+	out := make([]earningsPortfolioSnapshot, 0, len(snapshotRows))
+	for _, row := range snapshotRows {
+		snapshot := earningsPortfolioSnapshot{
+			exposures:    positionsBySnapshot[row.id],
+			observedAt:   row.observedAt,
+			observedSlot: row.observedSlot,
+		}
+		if snapshot.exposures == nil {
+			snapshot.exposures = []earningsPortfolioExposure{}
+		}
+		if row.id == latest.id {
+			for _, idle := range idleRows {
+				if idle.observedSlot == row.observedSlot && idle.amountRaw > 0 {
+					snapshot.exposures = append(snapshot.exposures, earningsPortfolioExposure{
+						amountRaw:     idle.amountRaw,
+						kind:          "idle",
+						liquidityMint: idle.mint,
+						sourceID:      "idle:" + idle.tokenAccount,
+					})
+				}
+			}
+		}
+		out = append(out, snapshot)
+	}
+	return out, nil
 }
