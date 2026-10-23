@@ -39,14 +39,6 @@ type WirePreparedOperation struct {
 	RequiresConfirmation bool                      `json:"requiresConfirmation"`
 }
 
-type EarnVaultRefundTokenAccount struct {
-	Account   string `json:"account"`
-	AmountRaw string `json:"amountRaw"`
-	IsUsdc    bool   `json:"isUsdc"`
-	Lamports  uint64 `json:"lamports"`
-	Mint      string `json:"mint"`
-}
-
 // EarnVaultRefundEntry mirrors EarnPolicyRefundVaultEntry: the Earn vault's
 // refundable rent, chain-derived (contracts.shared.ts:72-83).
 type EarnVaultRefundEntry struct {

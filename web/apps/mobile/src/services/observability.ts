@@ -1,6 +1,6 @@
 // ClickStack error reporting (ASK-1804) — posts unhandled JS errors, fatal JS
 // crashes, and unhandled promise rejections to the askloyal.com observability
-// ingest at `/api/observability/mobile/errors`.
+// ingest at `/api/observability/errors`.
 //
 // Best-effort by design: every path here swallows its own failures. Telemetry
 // must never crash the app or block a user flow. Native crashes (JS VM dies
@@ -183,7 +183,7 @@ export async function postObservabilityJson(
 }
 
 function postEnvelope(envelope: MobileErrorEnvelope): Promise<void> {
-  return postObservabilityJson("/api/observability/mobile/errors", envelope);
+  return postObservabilityJson("/api/observability/errors", envelope);
 }
 
 function report(
@@ -529,7 +529,7 @@ export function startLifecycleFlow<F extends LifecycleFlowName>(args: {
       ) {
         terminal = true;
       }
-      void postObservabilityJson("/api/observability/mobile/events", envelope);
+      void postObservabilityJson("/api/observability/events", envelope);
     } catch {
     }
   };

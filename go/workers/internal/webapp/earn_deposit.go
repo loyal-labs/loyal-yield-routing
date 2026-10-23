@@ -17,4 +17,5 @@ var earnDepositFamily = earnFamily{
 
 func (h earnRoutes) registerDeposit(api huma.API) {
 	h.registerPoliciesPrepare(api)
+	h.registerPoliciesConfirm(api)
 }

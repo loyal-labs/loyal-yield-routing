@@ -290,7 +290,7 @@ func (h earnRoutes) stateVaultReserveRows(ctx context.Context, vaultID int64) ([
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	rows, err := h.YieldDB.Query(ctx, `SELECT reserve, market, liquidity_mint, amount_raw,
-  snapshot_id, observed_slot, observed_at, planning_metadata
+  supply_apy_bps, snapshot_id, observed_slot, observed_at, planning_metadata
 FROM loyal_yield.vault_reserve_positions_current
 WHERE vault_id = $1 AND amount_raw > 0
 ORDER BY observed_slot DESC, amount_raw DESC, snapshot_id DESC`, vaultID)
@@ -302,7 +302,7 @@ ORDER BY observed_slot DESC, amount_raw DESC, snapshot_id DESC`, vaultID)
 	for rows.Next() {
 		var row stateVaultReserveRow
 		if err := rows.Scan(&row.Reserve, &row.Market, &row.LiquidityMint, &row.AmountRaw,
-			&row.SnapshotID, &row.ObservedSlot, &row.ObservedAt, &row.PlanningMetadata); err != nil {
+			&row.SupplyApyBps, &row.SnapshotID, &row.ObservedSlot, &row.ObservedAt, &row.PlanningMetadata); err != nil {
 			return nil, fmt.Errorf("read vault reserve positions: %w", err)
 		}
 		out = append(out, row)
@@ -349,7 +349,8 @@ func (h earnRoutes) stateCurrentIdleRows(ctx context.Context, settings, wallet, 
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	rows, err := h.YieldDB.Query(ctx, `SELECT mint, amount_raw, observed_slot
+	rows, err := h.YieldDB.Query(ctx, `SELECT mint, amount_raw, owner, token_account,
+  source_commitment, observed_slot, observed_at
 FROM loyal_yield.vault_idle_token_balances_current
 WHERE vault_id = $1 AND amount_raw > 0
 ORDER BY observed_slot DESC, updated_at DESC`, *vaultID)
@@ -360,7 +361,8 @@ ORDER BY observed_slot DESC, updated_at DESC`, *vaultID)
 	var out []stateVaultIdleRow
 	for rows.Next() {
 		var row stateVaultIdleRow
-		if err := rows.Scan(&row.Mint, &row.AmountRaw, &row.ObservedSlot); err != nil {
+		if err := rows.Scan(&row.Mint, &row.AmountRaw, &row.Owner, &row.TokenAccount,
+			&row.SourceCommitment, &row.ObservedSlot, &row.ObservedAt); err != nil {
 			return nil, fmt.Errorf("read vault idle balances: %w", err)
 		}
 		out = append(out, row)

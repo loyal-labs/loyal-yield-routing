@@ -1,3 +1,12 @@
+import type {
+  EarnPolicyRefundPrepareResponse,
+  EarnPolicyRefundScanResponse,
+  EarnStateResponse,
+  EarningsBar,
+  EarningsRange,
+  EarningsRangeSet,
+  SolanaWeekQuestProgressResponse,
+} from "@loyal-labs/api";
 import { env } from "@/config/env";
 import {
   EARN_AUTODEPOSIT_PROGRESS_STATES,
@@ -10,7 +19,6 @@ import {
   type SerializedEarnTransaction,
 } from "@loyal-labs/shared";
 import type {
-  EarnRpcPolicyMetadata,
   SmartAccountNativeSolRequirement,
   WirePreparedLoyalSmartAccountsOperation as WirePreparedOperation,
 } from "@loyal-labs/smart-account-vaults";
@@ -685,31 +693,14 @@ export async function fetchEarnAutodepositSweepProgress(
   }
 }
 
-// Current on-chain Earn position read-model (balance + live APY). All amounts
-// are USDC base units (6 decimals) as strings; APY is in basis points.
-export type EarnPosition = {
-  currentAmountRaw: string;
-  currentSupplyApyBps: string | null;
-  principalAmountRaw: string;
-  status: string;
-};
-
-export type EarnStateResponse = {
-  policy?: EarnRpcPolicyMetadata | null;
-  position: EarnPosition | null;
-  programId?: string | null;
-  settingsPda: string | null;
-  smartAccountAddress: string | null;
-};
+export type { EarnStateResponse };
 
 export async function fetchEarnState(
   walletAddress: string,
 ): Promise<EarnStateResponse> {
   const res = await earnWalletRead(
     walletAddress,
-    `${env.apiBaseUrl}/api/smart-accounts/mobile/earn/state?walletAddress=${encodeURIComponent(
-      walletAddress,
-    )}`,
+    `${env.apiBaseUrl}/api/smart-accounts/yield-optimization/earn-state`,
   );
   if (!res.ok) {
     return throwEarnError(res, "Failed to load Earn state.");
@@ -717,35 +708,9 @@ export async function fetchEarnState(
   return (await res.json()) as EarnStateResponse;
 }
 
-export type EarnEarningsBar = {
-  apyBps: number | null;
-  avgPrincipalUsd: number;
-  earnedUsd: number;
-  endAt: string;
-  isCurrent: boolean;
-  label: string;
-  principalAmountRaw: string;
-  principalUsd: number;
-  startAt: string;
-};
+export type EarnEarningsResponse = EarningsRange;
 
-export type EarnEarningsResponse = {
-  bars: EarnEarningsBar[];
-  currentApyBps: number | null;
-  lastDepositAt: string | null;
-  lifetimeEarnedUsd: number;
-  principalAmountRaw: string;
-  principalUsd: number;
-  rangeEarnedUsd: number;
-  sinceLastDepositEarnedUsd: number;
-  todayEarnedUsd: number;
-};
-
-// The backend returns every range in one payload (7D/30D/1Y/ALL); the mobile
-// chart plots the 30-day daily range.
-export type EarnEarningsRangeSetResponse = {
-  ranges: Record<"7D" | "30D" | "1Y" | "ALL", EarnEarningsResponse>;
-};
+export type EarnEarningsBar = EarningsBar;
 
 // The server buckets bars by calendar day in this zone. Omitting it buckets in
 // UTC, which puts the wrong earnings in "today" for anyone far from it — and
@@ -762,16 +727,15 @@ export async function fetchEarnEarnings(
   walletAddress: string,
 ): Promise<EarnEarningsResponse> {
   const timezone = deviceTimezone();
+  const query = new URLSearchParams(timezone ? { timezone } : {});
   const res = await earnWalletRead(
     walletAddress,
-    `${env.apiBaseUrl}/api/smart-accounts/mobile/earn/earnings?walletAddress=${encodeURIComponent(
-      walletAddress,
-    )}${timezone ? `&timezone=${encodeURIComponent(timezone)}` : ""}`,
+    `${env.apiBaseUrl}/api/smart-accounts/yield-optimization/earnings?${query}`,
   );
   if (!res.ok) {
     return throwEarnError(res, "Failed to load Earn earnings.");
   }
-  const payload = (await res.json()) as EarnEarningsRangeSetResponse;
+  const payload = (await res.json()) as EarningsRangeSet;
   return payload.ranges["30D"];
 }
 
@@ -786,14 +750,15 @@ export async function fetchEarnTransactions(
 ): Promise<EarnTransactionsResponse> {
   const res = await earnWalletRead(
     walletAddress,
-    `${env.apiBaseUrl}/api/smart-accounts/mobile/earn/transactions?walletAddress=${encodeURIComponent(
-      walletAddress,
-    )}`,
+    `${env.apiBaseUrl}/api/smart-accounts/earn-transactions`,
   );
   if (!res.ok) {
     return throwEarnError(res, "Failed to load Earn transactions.");
   }
-  return (await res.json()) as EarnTransactionsResponse;
+  const payload = (await res.json()) as {
+    transactions: EarnTransactionItem[] | null;
+  };
+  return { transactions: payload.transactions ?? [] };
 }
 
 export type EarnApySample = EarnForecastApyHistorySample;
@@ -839,33 +804,12 @@ export async function confirmEarnDeposit(
 
 export type SolanaWeekQuestKind = "earn_deposit" | "first_autodeposit_sweep";
 
-export type SolanaWeekQuestStatus =
-  | "reported"
-  | "pending"
-  | "failed"
-  | "not_started";
-
-export type SolanaWeekQuestProgressItem = {
-  kind: SolanaWeekQuestKind;
-  status: SolanaWeekQuestStatus;
-  solanaStatus: string | null;
-  reportedAt: string | null;
-  attempts: number;
-};
-
-export type SolanaWeekQuestProgressResponse = {
-  walletAddress: string;
-  quests: SolanaWeekQuestProgressItem[];
-};
-
 export async function fetchSolanaWeekQuestProgress(
   walletAddress: string,
 ): Promise<SolanaWeekQuestProgressResponse> {
   const res = await earnWalletRead(
     walletAddress,
-    `${env.apiBaseUrl}/api/solana-week/progress?walletAddress=${encodeURIComponent(
-      walletAddress,
-    )}`,
+    `${env.apiBaseUrl}/api/solana-week/progress`,
   );
   if (!res.ok) {
     return throwEarnError(res, "Failed to load quest progress.");
@@ -873,38 +817,18 @@ export async function fetchSolanaWeekQuestProgress(
   return (await res.json()) as SolanaWeekQuestProgressResponse;
 }
 
-export type EarnRefundScanItem = {
-  account: string;
-  blockedReason: string | null;
-  canRefund: boolean;
-  lamports: number | null;
-};
-
-export type EarnRefundScanVault = EarnRefundScanItem & {
-  totalRefundableLamports: number;
-};
-
-export type EarnRefundScanResponse = {
-  scan: {
-    policies: EarnRefundScanItem[];
-    recurringDelegations: EarnRefundScanItem[];
-    vault: EarnRefundScanVault | null;
-  } | null;
-};
-
 export async function fetchEarnRefundScan(
   walletAddress: string,
-): Promise<EarnRefundScanResponse> {
+): Promise<EarnPolicyRefundScanResponse> {
   const res = await earnWalletRead(
     walletAddress,
-    `${env.apiBaseUrl}/api/smart-accounts/mobile/earn/policy-refunds/scan?walletAddress=${encodeURIComponent(
-      walletAddress,
-    )}`,
+    `${env.apiBaseUrl}/api/smart-accounts/yield-optimization/policy-refunds/scan`,
+    { method: "POST" },
   );
   if (!res.ok) {
     return throwEarnError(res, "Failed to scan for refunds.");
   }
-  return (await res.json()) as EarnRefundScanResponse;
+  return (await res.json()) as EarnPolicyRefundScanResponse;
 }
 
 export type EarnRefundPrepareRequest =
@@ -912,31 +836,17 @@ export type EarnRefundPrepareRequest =
   | { kind: "recurring_delegation"; recurringDelegation: string }
   | { kind: "vault" };
 
-type WirePreparedEarnRefund = {
-  estimatedRefundLamports: number | null;
-  prepared: WirePreparedOperation;
-};
-
-export type EarnRefundPrepareResponse = {
-  preparedRefund?: WirePreparedEarnRefund;
-  preparedRecurringDelegationRefund?: WirePreparedEarnRefund;
-  preparedVaultRefund?: WirePreparedEarnRefund;
-};
-
 export async function prepareEarnRefund(args: {
-  auth: EarnAuthFields;
+  walletAddress: string;
   request: EarnRefundPrepareRequest;
-}): Promise<EarnRefundPrepareResponse> {
-  const res = await fetch(
-    `${env.apiBaseUrl}/api/smart-accounts/mobile/earn/policy-refunds/prepare`,
-    {
-      method: "POST",
-      headers: earnHeaders(),
-      body: JSON.stringify({ ...args.auth, ...args.request }),
-    },
+}): Promise<EarnPolicyRefundPrepareResponse> {
+  const res = await earnWalletRead(
+    args.walletAddress,
+    `${env.apiBaseUrl}/api/smart-accounts/yield-optimization/policy-refunds/prepare`,
+    { body: JSON.stringify(args.request), method: "POST" },
   );
   if (!res.ok) {
     return throwEarnError(res, "Failed to prepare the refund.");
   }
-  return (await res.json()) as EarnRefundPrepareResponse;
+  return (await res.json()) as EarnPolicyRefundPrepareResponse;
 }
