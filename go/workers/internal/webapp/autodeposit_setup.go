@@ -6,10 +6,13 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"log/slog"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/danielgtaylor/huma/v2"
 	"github.com/solana-foundation/solana-go/v2"
 	"github.com/solana-foundation/solana-go/v2/rpc"
 )
@@ -331,4 +334,184 @@ func (h earnRoutes) readAutodepositBootstrapSnapshot(ctx context.Context, in aut
 		Source:           autodepositBootstrapEventSource,
 		SourceCommitment: "confirmed",
 	}, nil, nil
+}
+
+type autodepositSetupConfirmInput struct {
+	SessionInput
+	Raw rawJSON
+}
+
+type autodepositSetupConfirmOutput struct {
+	Body AutodepositSetupConfirmResponse
+}
+
+func (h earnRoutes) registerAutodepositSetup(api huma.API) {
+	huma.Register(api, huma.Operation{
+		OperationID: "post-autodeposit-setup-confirm",
+		Method:      http.MethodPost,
+		Path:        autodepositSetupConfirmPath,
+		Summary:     "Confirm an Earn autodeposit setup stage",
+		Responses:   errorResponses[routeError](api, 400, 401, 403, 409),
+	}, h.autodepositSetupConfirm)
+	documentJSONBody[AutodepositSetupConfirmRequest](api, autodepositSetupConfirmPath)
+}
+
+func (h earnRoutes) autodepositSetupConfirm(ctx context.Context, in *autodepositSetupConfirmInput) (*autodepositSetupConfirmOutput, error) {
+	account, err := h.account(ctx, in.SessionInput)
+	if err != nil {
+		return nil, earnUnavailable("load Earn account", err, "account_unavailable", "Earn account is unavailable.")
+	}
+
+	// route.ts:415-424 — parse errors pass their message through under
+	// invalid_request.
+	input, err := parseAutodepositSetupConfirmBody(in.Raw.data)
+	if err != nil {
+		return nil, earnError(http.StatusBadRequest, "invalid_request", err.Error())
+	}
+
+	// route.ts:426-435 — the echoed wallet/settings must be the session's.
+	if input.WalletAddress != account.Wallet.String() || input.Settings != account.Settings.String() {
+		return nil, earnError(http.StatusForbidden, "principal_mismatch",
+			"Confirmed autodeposit setup does not match the authenticated wallet session.")
+	}
+
+	// route.ts:437-447 — rebuild every address canonically.
+	canonical, err := canonicalizeAutodepositSetupInput(input, h.PolicySigner)
+	if err != nil {
+		return nil, earnError(http.StatusBadRequest, "metadata_mismatch", err.Error())
+	}
+
+	// route.ts:449-459.
+	if canonical.Cluster != string(account.Cluster) {
+		return nil, earnError(http.StatusBadRequest, "cluster_mismatch",
+			"Confirmed autodeposit setup cluster does not match the configured Solana environment.")
+	}
+
+	// route.ts:461-487 — the setup transaction must be confirmed; the client's
+	// non-zero slot must match the observed one.
+	confirmedSlot, err := autodepositConfirmedSlot(ctx, h.Chain, canonical.SetupSignature)
+	if err != nil {
+		return nil, earnError(http.StatusBadRequest, "unconfirmed_signature", err.Error())
+	}
+	if canonical.ConfirmedSlot != 0 && canonical.ConfirmedSlot != confirmedSlot {
+		return nil, earnError(http.StatusBadRequest, "slot_mismatch",
+			"Confirmed autodeposit setup slot does not match the transaction status.")
+	}
+	canonical.ConfirmedSlot = confirmedSlot
+
+	requirePolicy := canonical.SetupStage == "create_policy" || canonical.SetupStage == "approve_token_delegate"
+	requireDelegation := canonical.SetupStage == "create_recurring_delegation" || canonical.SetupStage == "approve_token_delegate"
+
+	// route.ts:489-541 — the created policy and delegation must exist, be
+	// owned correctly and match the canonical layout byte for byte.
+	if requirePolicy || requireDelegation {
+		policyKey, keyErr := solana.PublicKeyFromBase58(canonical.PolicyAccount)
+		if keyErr != nil {
+			return nil, earnError(http.StatusBadRequest, "metadata_mismatch", keyErr.Error())
+		}
+		delegationKey, keyErr := solana.PublicKeyFromBase58(canonical.RecurringDelegation)
+		if keyErr != nil {
+			return nil, earnError(http.StatusBadRequest, "metadata_mismatch", keyErr.Error())
+		}
+		err := withAutodepositArtifactRetry(ctx, func() error {
+			accounts, readErr := autodepositAccountAt(ctx, h.Chain, policyKey, delegationKey)
+			if readErr != nil {
+				return readErr
+			}
+			if err := assertAutodepositArtifactsExist(accounts, requirePolicy, requireDelegation); err != nil {
+				return err
+			}
+			return assertAutodepositCanonicalArtifacts(accounts, canonical, h.PolicySigner, requirePolicy, requireDelegation)
+		})
+		if err != nil {
+			return nil, earnError(http.StatusConflict, "artifact_missing", err.Error())
+		}
+	}
+
+	// route.ts:543-560 — the wallet must have approved the delegation pull.
+	if requireDelegation {
+		walletAta, keyErr := solana.PublicKeyFromBase58(canonical.WalletUsdcAta)
+		if keyErr != nil {
+			return nil, earnError(http.StatusBadRequest, "metadata_mismatch", keyErr.Error())
+		}
+		err := withAutodepositArtifactRetry(ctx, func() error {
+			accounts, readErr := autodepositAccountAt(ctx, h.Chain, walletAta)
+			if readErr != nil {
+				return readErr
+			}
+			return assertAutodepositWalletTokenApproval(accounts[0], canonical)
+		})
+		if err != nil {
+			return nil, earnError(http.StatusConflict, "token_approval_missing", err.Error())
+		}
+	}
+
+	// route.ts:562-566 — the first stage only proves the authority landed.
+	if canonical.SetupStage == "initialize_subscription_authority" {
+		return &autodepositSetupConfirmOutput{Body: AutodepositSetupConfirmResponse{
+			ConfirmedSlot: strconv.FormatUint(confirmedSlot, 10),
+		}}, nil
+	}
+
+	// route.ts:568-585.
+	target, err := h.recordAutodepositSetupIntent(ctx, canonical)
+	if err != nil {
+		if strings.Contains(err.Error(), "Closed autodeposit targets cannot be reactivated") {
+			return nil, earnError(http.StatusConflict, "autodeposit_target_closed",
+				"Autodeposit was already closed. Start Autodeposit again to create a fresh policy.")
+		}
+		return nil, earnError(http.StatusBadRequest, "record_failed", err.Error())
+	}
+
+	// route.ts:586-625 — only an already-active target bootstraps a sweep;
+	// any failure is reported in the response, never the status.
+	var bootstrapSweep *AutodepositSetupConfirmBootstrapSweep
+	var scheduledSweep *autodepositSweepRow
+	if target.Active && target.LifecycleStatus == "active" {
+		snapshot, skipReason, err := h.readAutodepositBootstrapSnapshot(ctx, canonical)
+		switch {
+		case err != nil:
+			slog.WarnContext(ctx, "[autodeposit setup] bootstrap scheduling failed",
+				"errorMessage", err.Error(), "policyAccount", canonical.PolicyAccount,
+				"setupSignature", canonical.SetupSignature, "walletAddress", canonical.WalletAddress)
+			reason := err.Error()
+			bootstrapSweep = &AutodepositSetupConfirmBootstrapSweep{Reason: &reason, Status: "failed"}
+		case skipReason != nil:
+			bootstrapSweep = &AutodepositSetupConfirmBootstrapSweep{Reason: skipReason, Status: "skipped"}
+		default:
+			result, scheduleErr := h.scheduleBootstrapAutodepositSweep(ctx, snapshot, target)
+			if scheduleErr != nil {
+				slog.WarnContext(ctx, "[autodeposit setup] bootstrap scheduling failed",
+					"errorMessage", scheduleErr.Error(), "policyAccount", canonical.PolicyAccount,
+					"setupSignature", canonical.SetupSignature, "walletAddress", canonical.WalletAddress)
+				reason := scheduleErr.Error()
+				bootstrapSweep = &AutodepositSetupConfirmBootstrapSweep{Reason: &reason, Status: "failed"}
+			} else if result.Status == "skipped" {
+				bootstrapSweep = &AutodepositSetupConfirmBootstrapSweep{Reason: &result.Reason, Status: "skipped"}
+			} else {
+				bootstrapSweep = &AutodepositSetupConfirmBootstrapSweep{Status: result.Status, Sweep: serializeAutodepositSweep(result.Sweep)}
+				if result.Status == "scheduled" {
+					scheduledSweep = result.Sweep
+				}
+			}
+		}
+	}
+
+	// Mobile parity (M/autodeposit/setup/confirm/route.ts:713-731, DECIDED
+	// keep in pathmap.md:14): push exactly when a delegation-bearing stage
+	// confirms — the scheduled-sweep copy when one was scheduled, the enabled
+	// copy otherwise.
+	if requireDelegation {
+		payload := autodepositEnabledPush()
+		if scheduledSweep != nil {
+			payload = autodepositSweepScheduledPush(scheduledSweep.RemainingAmountRaw)
+		}
+		sendAutodepositWalletPush(ctx, canonical.WalletAddress, payload)
+	}
+
+	return &autodepositSetupConfirmOutput{Body: AutodepositSetupConfirmResponse{
+		ConfirmedSlot:  strconv.FormatUint(confirmedSlot, 10),
+		BootstrapSweep: bootstrapSweep,
+		Target:         serializeAutodepositTarget(target),
+	}}, nil
 }
