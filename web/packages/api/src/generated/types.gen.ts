@@ -291,6 +291,69 @@ export type DprepVault = {
     usdcAta: string;
 };
 
+export type EarnDepositConfirmCurrentHolding = {
+    amountRaw: string;
+    liquidityMint: string;
+    market: string;
+    observedAt: string;
+    observedSlot: string;
+    provenance: EarnDepositConfirmPositionProvenance;
+    reserve: string;
+};
+
+export type EarnDepositConfirmInitialHolding = {
+    liquidityMint: string;
+    market: string;
+    reserve: string;
+    supplyApyBps: string | null;
+};
+
+export type EarnDepositConfirmPosition = {
+    currentHolding: EarnDepositConfirmCurrentHolding;
+    id: string;
+    initialHolding: EarnDepositConfirmInitialHolding;
+    principalAmountRaw: string;
+    status: string;
+};
+
+export type EarnDepositConfirmPositionProvenance = {
+    lastHoldingEventId: string | null;
+    lastRebalanceDecisionId: string | null;
+};
+
+export type EarnDepositConfirmRequest = {
+    cluster?: string;
+    confirmedSlot?: string;
+    delegatedSigner?: string;
+    depositMint?: string;
+    depositSignature?: string;
+    liquidityMint?: string;
+    market?: string;
+    policyAccount?: string;
+    policyConfirmedSlot?: string;
+    policyId?: string;
+    policyInitialization?: 'create' | 'reuse';
+    policySeed?: string;
+    policySignature?: string;
+    principalAmountRaw?: string;
+    settings?: string;
+    setupPolicyAccount?: string;
+    setupPolicyConfirmedSlot?: string;
+    setupPolicyId?: string;
+    setupPolicySeed?: string;
+    setupPolicySignature?: string;
+    smartAccountAddress?: string;
+    targetReserve?: string;
+    targetSupplyApyBps?: string;
+    vaultIndex?: number;
+    vaultPubkey?: string;
+    walletAddress?: string;
+};
+
+export type EarnDepositConfirmResponse = {
+    position: EarnDepositConfirmPosition;
+};
+
 export type EarnForecastApyHistoryResponse = {
     feeBps: number;
     generatedAt: string;
@@ -2528,6 +2591,48 @@ export type PostEarnCrossMintToggleResponses = {
 };
 
 export type PostEarnCrossMintToggleResponse = PostEarnCrossMintToggleResponses[keyof PostEarnCrossMintToggleResponses];
+
+export type PostEarnDepositsConfirmData = {
+    body?: EarnDepositConfirmRequest;
+    headers?: {
+        Authorization?: string;
+        Cookie?: string;
+        'X-Forwarded-Host'?: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/smart-accounts/yield-optimization/deposits/confirm';
+};
+
+export type PostEarnDepositsConfirmErrors = {
+    /**
+     * Bad Request
+     */
+    400: RouteError;
+    /**
+     * Unauthorized
+     */
+    401: RouteError;
+    /**
+     * Forbidden
+     */
+    403: RouteError;
+    /**
+     * Service Unavailable
+     */
+    503: RouteError;
+};
+
+export type PostEarnDepositsConfirmError = PostEarnDepositsConfirmErrors[keyof PostEarnDepositsConfirmErrors];
+
+export type PostEarnDepositsConfirmResponses = {
+    /**
+     * OK
+     */
+    200: EarnDepositConfirmResponse;
+};
+
+export type PostEarnDepositsConfirmResponse = PostEarnDepositsConfirmResponses[keyof PostEarnDepositsConfirmResponses];
 
 export type PostEarnDepositsPrepareData = {
     body?: DprepRequestBody;
