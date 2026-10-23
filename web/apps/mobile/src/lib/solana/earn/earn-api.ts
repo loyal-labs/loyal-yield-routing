@@ -6,6 +6,10 @@ import type {
   AutodepositSweepsExecuteResponse,
   AutodepositSweepsProgressResponse,
   AutodepositToggleConfirmRequest,
+  DprepResponse,
+  EarnDepositConfirmRequest,
+  EarnPolicyConfirmRequest,
+  EarnPolicyPrepareResponse,
   EarnPolicyRefundPrepareResponse,
   EarnWithdrawConfirmRequest,
   EarnWithdrawPrepareResponse,
@@ -29,25 +33,12 @@ import {
 } from "@loyal-labs/shared";
 import type {
   SmartAccountEarnUsdcReserveWithdrawalMetadata,
-  SmartAccountNativeSolRequirement,
   SmartAccountPreparedEarnUsdcAutodepositClose,
   SmartAccountPreparedEarnUsdcAutodepositSetup,
-  WirePreparedLoyalSmartAccountsOperation as WirePreparedOperation,
 } from "@loyal-labs/smart-account-vaults";
-import {
-  fetchWithTimeout,
-  FetchTimeoutError,
-} from "@/lib/network/fetch-with-timeout";
 import type { LifecycleErrorDetail } from "@/services/observability";
 
 import { earnHeaders, earnWalletRead } from "./earn-session";
-
-// A first-ever deposit provisions the smart account inline on the server
-// (finalized-creation wait plus reservation-conflict retries), which can
-// exceed the platform's default request ceiling — iOS aborts at ~60s. Give
-// prepare its own generous deadline; provisioning keeps running server-side,
-// so a retry after a timeout lands on the fast path.
-const PREPARE_TIMEOUT_MS = 120_000;
 
 export type EarnAuthFields = {
   walletAddress: string;
@@ -56,23 +47,6 @@ export type EarnAuthFields = {
 };
 
 export type EarnSessionAuth = { sessionToken: string };
-
-// The serialized prepared deposit. Only the fields mobile needs to sign+send are
-// typed; the whole object is echoed back to `confirm` opaquely.
-export type WirePreparedEarnDeposit = {
-  nativeSolRequirement?: SmartAccountNativeSolRequirement;
-  prepared: WirePreparedOperation;
-  policySetupPrepared?: WirePreparedOperation | null;
-  policyFinalizePrepared?: WirePreparedOperation | null;
-};
-
-export type EarnDepositPrepareResponse = {
-  cluster: string;
-  programId: string;
-  settingsPda: string;
-  smartAccountAddress: string;
-  preparedDeposit: WirePreparedEarnDeposit;
-};
 
 export class EarnApiError extends Error {
   readonly code?: string;
@@ -111,68 +85,53 @@ async function throwEarnError(res: Response, fallback: string): Promise<never> {
   );
 }
 
-// Everything the device needs to run the SDK's deposit prepare locally
-// (client-side instruction building on the device's own RPC) instead of
-// calling `deposit/prepare` — mirrors the autodeposit `/state` prepareContext.
-// Serialized by `deposit/prepare-context`.
-export type EarnDepositPrepareContext = {
-  cluster: string;
-  programId: string;
-  settingsPda: string;
-  smartAccountAddress: string;
-  policySigner: string;
-  revokeStrayUsdcDelegate: boolean;
-  yieldRoutingPolicy: {
-    account: string;
-    seed: string;
-    setupPolicy: { account: string; seed: string } | null;
-  } | null;
-  target: {
-    reserve: string;
-    market: string;
-    liquidityMint: string;
-    liquidityTokenProgram: string;
-    supplyApyBps: string | null;
-  } | null;
-};
-
-// Resolves the on-device prepare context (auth + provisioning + DB reads only
-// — no instruction building server-side). `mint` selects the Earn product
-// stablecoin.
-export async function fetchEarnDepositPrepareContext(args: {
-  auth: EarnAuthFields;
+export async function prepareEarnDeposit(args: {
+  walletAddress: string;
   amountRaw: string;
   mint: string;
   flowId?: string;
-}): Promise<EarnDepositPrepareContext> {
-  let res: Response;
-  try {
-    res = await fetchWithTimeout(
-      `${env.apiBaseUrl}/api/smart-accounts/mobile/earn/deposit/prepare-context`,
-      {
-        method: "POST",
-        headers: earnHeaders(args.flowId),
-        body: JSON.stringify({
-          ...args.auth,
-          amountRaw: args.amountRaw,
-          mint: args.mint,
-        }),
-        timeoutMs: PREPARE_TIMEOUT_MS,
-      },
-    );
-  } catch (error) {
-    if (error instanceof FetchTimeoutError) {
-      throw earnNetworkError(
-        "Setting up your Earn account is taking longer than usual. It finishes in the background — try again in a minute.",
-        "request_timeout",
-      );
-    }
-    throw error;
-  }
+}): Promise<DprepResponse> {
+  const res = await earnWalletRead(
+    args.walletAddress,
+    `${env.apiBaseUrl}/api/smart-accounts/yield-optimization/deposits/prepare`,
+    {
+      body: JSON.stringify({ amountRaw: args.amountRaw, mint: args.mint }),
+      flowId: args.flowId,
+      method: "POST",
+    },
+  );
   if (!res.ok) {
     return throwEarnError(res, "Failed to prepare Earn deposit.");
   }
-  return (await res.json()) as EarnDepositPrepareContext;
+  return (await res.json()) as DprepResponse;
+}
+
+export async function prepareEarnPolicy(
+  walletAddress: string,
+): Promise<EarnPolicyPrepareResponse> {
+  const res = await earnWalletRead(
+    walletAddress,
+    `${env.apiBaseUrl}/api/smart-accounts/yield-optimization/policies/prepare`,
+    { method: "POST" },
+  );
+  if (!res.ok) {
+    return throwEarnError(res, "Failed to prepare Earn policy.");
+  }
+  return (await res.json()) as EarnPolicyPrepareResponse;
+}
+
+export async function confirmEarnPolicy(args: {
+  walletAddress: string;
+  body: EarnPolicyConfirmRequest;
+}): Promise<void> {
+  const res = await earnWalletRead(
+    args.walletAddress,
+    `${env.apiBaseUrl}/api/smart-accounts/yield-optimization/policies/confirm`,
+    { body: JSON.stringify(args.body), method: "POST" },
+  );
+  if (!res.ok) {
+    await throwEarnError(res, "Failed to confirm Earn policy.");
+  }
 }
 
 export type EarnWithdrawMode = "partial" | "full";
@@ -594,24 +553,15 @@ export async function fetchEarnForecastSummary(): Promise<EarnForecastSummary> {
   return (await res.json()) as EarnForecastSummary;
 }
 
-export type EarnDepositConfirmArgs = {
-  auth: EarnAuthFields;
-  preparedDeposit: WirePreparedEarnDeposit;
-  depositSignature: string;
-  confirmedSlot: string;
-};
-
-export async function confirmEarnDeposit(
-  args: EarnDepositConfirmArgs,
-): Promise<void> {
-  const { auth, ...rest } = args;
-  const res = await fetch(
-    `${env.apiBaseUrl}/api/smart-accounts/mobile/earn/deposit/confirm`,
-    {
-      method: "POST",
-      headers: earnHeaders(),
-      body: JSON.stringify({ ...auth, ...rest }),
-    },
+export async function confirmEarnDeposit(args: {
+  walletAddress: string;
+  body: EarnDepositConfirmRequest;
+  flowId?: string;
+}): Promise<void> {
+  const res = await earnWalletRead(
+    args.walletAddress,
+    `${env.apiBaseUrl}/api/smart-accounts/yield-optimization/deposits/confirm`,
+    { body: JSON.stringify(args.body), flowId: args.flowId, method: "POST" },
   );
   if (!res.ok) {
     await throwEarnError(res, "Failed to confirm Earn deposit.");

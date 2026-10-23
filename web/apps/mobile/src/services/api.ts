@@ -1,15 +1,14 @@
-import type { MobileEarnMaxContext } from "@loyal-labs/shared";
 import type {
+  EarnMaxContextResponse,
   Get,
   MobileTokenDetailResponse,
   MobileTrustedDapp,
   Summary,
 } from "@loyal-labs/api";
 
-import { earnHeaders, earnWalletRead } from "@/lib/solana/earn/earn-session";
+import { earnWalletRead } from "@/lib/solana/earn/earn-session";
 
 import { env } from "@/config/env";
-import { fetchWithTimeout } from "@/lib/network/fetch-with-timeout";
 import { EarnApiError } from "@/lib/solana/earn/earn-api";
 
 type EarnMaxReadPath =
@@ -40,17 +39,14 @@ export async function fetchEarnMax<P extends EarnMaxReadPath>(
 }
 
 export async function provisionEarnMaxAccount(
-  sessionToken: string
-): Promise<MobileEarnMaxContext> {
-  const response = await fetchWithTimeout(
-    `${env.apiBaseUrl}/api/smart-accounts/mobile/earn-max`,
-    {
-      method: "POST",
-      headers: { ...earnHeaders(), Authorization: `Bearer ${sessionToken}` },
-      body: JSON.stringify({ action: "context" }),
-    }
+  walletAddress: string
+): Promise<EarnMaxContextResponse> {
+  const response = await earnWalletRead(
+    walletAddress,
+    `${env.apiBaseUrl}/api/smart-accounts/earn-max/context`,
+    { method: "POST", body: "{}" }
   );
-  if (response.ok) return (await response.json()) as MobileEarnMaxContext;
+  if (response.ok) return (await response.json()) as EarnMaxContextResponse;
   throw await earnMaxFailure(
     response,
     "Earn MAX is temporarily unavailable. Please try again later."
