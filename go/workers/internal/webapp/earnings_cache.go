@@ -69,8 +69,6 @@ func itoa4(v int) string { return formatInt64(int64(v)) }
 // the pool so a held lock never takes a connection the refresh reads need;
 // closing the connection, or the process dying, releases it.
 func withEarningsRefreshLock(ctx context.Context, pool *pgxpool.Pool, key string, task func(context.Context) error) (bool, error) {
-	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
 	conn, err := pgx.ConnectConfig(ctx, pool.Config().ConnConfig)
 	if err != nil {
 		return false, err

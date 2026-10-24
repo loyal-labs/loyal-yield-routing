@@ -40,9 +40,7 @@ var earnEarningsFamily = earnFamily{
 	register:    earnRoutes.registerEarnings,
 }
 
-// earningsRefreshBudget bounds the detached rebuild. The refresh lock's own
-// 15s transaction window is the real cap; this is slack for the stale path.
-const earningsRefreshBudget = 20 * time.Second
+const earningsRefreshBudget = 5 * time.Minute
 
 type earningsRequest struct {
 	SessionInput

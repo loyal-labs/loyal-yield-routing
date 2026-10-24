@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strconv"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // Port of the orchestration half of earnings-read-service.server.ts: the
@@ -86,6 +88,19 @@ func normalizedErrorKind(err error) (errorCode, errorName, errorDetailCode strin
 		return "timescale_unavailable", errorName, ""
 	}
 	return "dependency_unavailable", errorName, ""
+}
+
+func earningsErrorCause(err error) string {
+	var pgErr *pgconn.PgError
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return "deadline_exceeded"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	case errors.As(err, &pgErr):
+		return "sqlstate_" + pgErr.Code
+	}
+	return "unknown"
 }
 
 func errorNameOf(err error) string {
@@ -304,6 +319,12 @@ func rebuildEarningsRangeSet(ctx context.Context, input earningsReadInput, deps 
 			err = unavailable
 			return
 		}
+		code, name, _ := normalizedErrorKind(err)
+		slog.Warn("earnings-read unavailable",
+			"errorCode", code,
+			"errorName", name,
+			"cause", earningsErrorCause(err),
+			"elapsedMs", time.Since(startedAt).Milliseconds())
 		err = &earningsUnavailableError{code: "earnings_unavailable", message: "Earn earnings are unavailable.", detailCode: "earnings_unavailable"}
 	}()
 
