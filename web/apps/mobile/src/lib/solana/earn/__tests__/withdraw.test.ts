@@ -83,6 +83,10 @@ jest.mock("../earn-api", () => ({
   prepareEarnWithdraw,
 }));
 
+jest.mock("../earn-session", () => ({
+  ensureEarnSession: jest.fn(),
+}));
+
 jest.mock("../send-prepared", () => ({
   signAndSendPreparedOperations,
 }));
