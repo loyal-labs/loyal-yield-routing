@@ -2,6 +2,7 @@ import { MOBILE_BUILD_HEADER } from "@loyal-labs/shared";
 import bs58 from "bs58";
 import { Buffer } from "buffer";
 import Constants from "expo-constants";
+import * as SecureStore from "expo-secure-store";
 
 import { env } from "@/config/env";
 import { fetchWithTimeout } from "@/lib/network/fetch-with-timeout";
@@ -55,18 +56,13 @@ export async function signEarnAuthFields(
   return { walletAddress, signature: bs58.encode(signature), issuedAt };
 }
 
-async function secureStore() {
-  return await import("expo-secure-store");
-}
-
 async function loadStored(): Promise<Map<string, StoredEarnSession>> {
   if (cached) {
     return cached;
   }
   const loaded = new Map<string, StoredEarnSession>();
   try {
-    const store = await secureStore();
-    const raw = await store.getItemAsync(STORAGE_KEY);
+    const raw = await SecureStore.getItemAsync(STORAGE_KEY);
     if (raw) {
       for (const [wallet, entry] of Object.entries(
         JSON.parse(raw) as Record<string, StoredEarnSession>,
@@ -74,7 +70,7 @@ async function loadStored(): Promise<Map<string, StoredEarnSession>> {
         loaded.set(wallet, entry);
       }
     } else {
-      const legacy = await store.getItemAsync(LEGACY_STORAGE_KEY);
+      const legacy = await SecureStore.getItemAsync(LEGACY_STORAGE_KEY);
       if (legacy) {
         const { walletAddress, ...entry } = JSON.parse(legacy) as LegacyRecord;
         loaded.set(walletAddress, entry);
@@ -88,9 +84,8 @@ async function loadStored(): Promise<Map<string, StoredEarnSession>> {
 async function persist(sessions: Map<string, StoredEarnSession>) {
   const snapshot = JSON.stringify(Object.fromEntries(sessions));
   try {
-    const store = await secureStore();
-    await store.setItemAsync(STORAGE_KEY, snapshot);
-    await store.deleteItemAsync(LEGACY_STORAGE_KEY);
+    await SecureStore.setItemAsync(STORAGE_KEY, snapshot);
+    await SecureStore.deleteItemAsync(LEGACY_STORAGE_KEY);
   } catch {}
 }
 
@@ -114,9 +109,8 @@ export async function clearEarnSession(): Promise<void> {
   mints.clear();
   failedMintAt.clear();
   try {
-    const store = await secureStore();
-    await store.deleteItemAsync(STORAGE_KEY);
-    await store.deleteItemAsync(LEGACY_STORAGE_KEY);
+    await SecureStore.deleteItemAsync(STORAGE_KEY);
+    await SecureStore.deleteItemAsync(LEGACY_STORAGE_KEY);
   } catch {}
 }
 

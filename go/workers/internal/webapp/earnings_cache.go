@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -64,12 +65,18 @@ func pad2(v int) string {
 func itoa4(v int) string { return formatInt64(int64(v)) }
 
 // withEarningsRefreshLock ports withEarnEarningsRefreshLock (cache:30). The
-// advisory lock is transaction-scoped so it releases on failure, and it runs
-// through the same pool the reads use.
+// advisory lock is transaction-scoped on its own connection, opened outside
+// the pool so a held lock never takes a connection the refresh reads need;
+// closing the connection, or the process dying, releases it.
 func withEarningsRefreshLock(ctx context.Context, pool *pgxpool.Pool, key string, task func(context.Context) error) (bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	tx, err := pool.Begin(ctx)
+	conn, err := pgx.ConnectConfig(ctx, pool.Config().ConnConfig)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = conn.Close(context.Background()) }()
+	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return false, err
 	}

@@ -59,10 +59,9 @@ func privyCookieAllowLocalhost() bool {
 	return raw == "true"
 }
 
-// privyCookieParentDomains mirrors parseAuthCookieParentDomains
+// ParseCookieParentDomains mirrors parseAuthCookieParentDomains
 // (config/shared.ts:46-66): a normalized, de-duplicated domain list.
-func privyCookieParentDomains() []string {
-	raw := os.Getenv("AUTH_COOKIE_PARENT_DOMAIN")
+func ParseCookieParentDomains(raw string) []string {
 	if raw == "" {
 		return nil
 	}
@@ -135,8 +134,8 @@ func privySessionCookieName(cookieHeader, forwardedHost, host string) string {
 	return walletSessionCookie
 }
 
-func privyMatchParentDomain(hostname string) (string, bool) {
-	for _, domain := range privyCookieParentDomains() {
+func privyMatchParentDomain(domains []string, hostname string) (string, bool) {
+	for _, domain := range domains {
 		if hostname == domain || strings.HasSuffix(hostname, "."+domain) {
 			return domain, true
 		}
@@ -146,7 +145,7 @@ func privyMatchParentDomain(hostname string) (string, bool) {
 
 // privySessionCookieHeader ports resolveCookieOptions and serializes the
 // Set-Cookie value the Next route attaches to its response.
-func privySessionCookieHeader(name, token string, ttl int, forwardedProto, forwardedHost, host, scheme string) (string, error) {
+func privySessionCookieHeader(domains []string, name, token string, ttl int, forwardedProto, forwardedHost, host, scheme string) (string, error) {
 	proto := privyCookiePrimaryValue(forwardedProto)
 	if proto == "" {
 		proto = scheme
@@ -189,7 +188,7 @@ func privySessionCookieHeader(name, token string, ttl int, forwardedProto, forwa
 			SameSite: http.SameSiteLaxMode,
 		}), nil
 	default:
-		domain, matched := privyMatchParentDomain(hostname)
+		domain, matched := privyMatchParentDomain(domains, hostname)
 		if !matched {
 			if privyCookiePreviewFallback() {
 				return set(http.Cookie{
@@ -198,7 +197,7 @@ func privySessionCookieHeader(name, token string, ttl int, forwardedProto, forwa
 					SameSite: http.SameSiteLaxMode,
 				}), nil
 			}
-			if len(privyCookieParentDomains()) == 0 {
+			if len(domains) == 0 {
 				return "", fmt.Errorf("AUTH_COOKIE_PARENT_DOMAIN is not set")
 			}
 			return "", fmt.Errorf("Host %q is not allowed for auth session cookies", hostname)

@@ -11,7 +11,7 @@ import "github.com/danielgtaylor/huma/v2"
 var earnAutodepositFamily = earnFamily{
 	name: "earn autodeposit",
 	ready: func(h earnRoutes) bool {
-		return h.signedIn() && h.YieldDB != nil && h.Chain != nil && !h.PolicySigner.IsZero()
+		return h.signedIn() && h.YieldDB != nil && h.Chain != nil && !h.PolicySigner.IsZero() && h.Push != nil
 	},
 	// The setup confirm reads the target row, then writes the intent and the
 	// bootstrap sweep state machine (targets, wallet projections, events,

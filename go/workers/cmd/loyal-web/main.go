@@ -242,7 +242,25 @@ func earn(ctx context.Context, rpcClient *chain.Client, appDB, yieldDB *pgxpool.
 	appID, okID := optionalCredential("Privy sign-in", "PRIVY_APP_ID")
 	appSecret, okAppSecret := optionalCredential("Privy sign-in", "PRIVY_APP_SECRET")
 	if okID && okAppSecret && appID != "" && appSecret != "" {
-		e.Privy = &webapp.Privy{AppID: strings.TrimSpace(appID), AppSecret: strings.TrimSpace(appSecret)}
+		domains := webapp.ParseCookieParentDomains(os.Getenv("AUTH_COOKIE_PARENT_DOMAIN"))
+		if len(domains) == 0 {
+			degraded("Privy sign-in", errors.New("AUTH_COOKIE_PARENT_DOMAIN is not set"))
+		}
+		e.Privy = &webapp.Privy{AppID: strings.TrimSpace(appID), AppSecret: strings.TrimSpace(appSecret), CookieParentDomains: domains}
+	}
+	if url, ok := optionalCredential("Earn earnings, state and deposit prepare", "TIMESCALEDB_URL"); ok {
+		if e.TimescaleURL = url; url == "" {
+			degraded("Earn earnings, state and deposit prepare", errors.New("TIMESCALEDB_URL is not installed"))
+		}
+	}
+	baseURL, okBase := optionalCredential("Earn autodeposit", "MOBILE_PUSH_API_BASE_URL")
+	pushSecret, okPush := optionalCredential("Earn autodeposit", "MOBILE_PUSH_API_SECRET")
+	if okBase && okPush {
+		if baseURL != "" && pushSecret != "" {
+			e.Push = &webapp.WalletPush{BaseURL: baseURL, Secret: pushSecret}
+		} else {
+			degraded("Earn autodeposit", errors.New("MOBILE_PUSH_API_BASE_URL and MOBILE_PUSH_API_SECRET are not both installed"))
+		}
 	}
 	grantCtx, cancel := context.WithTimeout(ctx, grantBound)
 	defer cancel()

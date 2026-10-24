@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 )
@@ -26,12 +25,8 @@ type autodepositWalletPush struct {
 
 const autodepositPushSendTimeout = 5 * time.Second
 
-func sendAutodepositWalletPush(ctx context.Context, walletAddress string, payload autodepositWalletPush) {
-	baseURL := os.Getenv("MOBILE_PUSH_API_BASE_URL")
-	secret := os.Getenv("MOBILE_PUSH_API_SECRET")
-	if baseURL == "" || secret == "" {
-		return
-	}
+func (h earnRoutes) sendAutodepositWalletPush(ctx context.Context, walletAddress string, payload autodepositWalletPush) {
+	baseURL, secret := h.Push.BaseURL, h.Push.Secret
 	body, err := json.Marshal(map[string]string{
 		"body":            payload.Body,
 		"title":           payload.Title,

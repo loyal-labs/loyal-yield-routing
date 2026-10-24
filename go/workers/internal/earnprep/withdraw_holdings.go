@@ -105,9 +105,6 @@ func assertWithdrawPolicyUniverse(cluster string, policy *WithdrawPolicyUniverse
 	if policy == nil {
 		return nil, nil, errors.New("Active Earn policy metadata is required for RPC holdings.")
 	}
-	if policy.VaultIndex != WithdrawVaultIndex {
-		return nil, nil, errors.New("Active Earn policy is not for the Earn vault.")
-	}
 	var assets []withdrawProductAsset
 	for _, asset := range withdrawProductAssets(cluster) {
 		mint := asset.Mint.String()
@@ -267,13 +264,13 @@ type withdrawDiscoveredDeposit struct {
 }
 
 // FetchWithdrawHoldingsSnapshot mirrors fetchEarnRpcHoldingsSnapshot
-// (:422-662). The vault is the settings' account at WithdrawVaultIndex.
+// (:422-662). The vault is the settings' account at the policy's VaultIndex.
 func FetchWithdrawHoldingsSnapshot(ctx context.Context, rpc RPC, args WithdrawHoldingsArgs) (WithdrawSnapshot, error) {
 	assets, markets, err := assertWithdrawPolicyUniverse(args.Cluster, args.Policy)
 	if err != nil {
 		return WithdrawSnapshot{}, err
 	}
-	vaultPda, _, err := squads.SmartAccountAddress(args.SettingsPda, WithdrawVaultIndex)
+	vaultPda, _, err := squads.SmartAccountAddress(args.SettingsPda, args.Policy.VaultIndex)
 	if err != nil {
 		return WithdrawSnapshot{}, err
 	}

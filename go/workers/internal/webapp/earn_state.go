@@ -59,7 +59,7 @@ var earnStateYieldGrants = []Grant{
 var earnStateFamily = earnFamily{
 	name:        "earn state",
 	yieldGrants: earnStateYieldGrants,
-	ready:       func(h earnRoutes) bool { return h.signedIn() && h.YieldDB != nil },
+	ready:       func(h earnRoutes) bool { return h.signedIn() && h.YieldDB != nil && h.TimescaleURL != "" },
 	register:    earnRoutes.registerState,
 }
 

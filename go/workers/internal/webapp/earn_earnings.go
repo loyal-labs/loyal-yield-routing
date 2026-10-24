@@ -36,7 +36,7 @@ var earnEarningsYieldGrants = []Grant{
 var earnEarningsFamily = earnFamily{
 	name:        "earn earnings",
 	yieldGrants: earnEarningsYieldGrants,
-	ready:       func(h earnRoutes) bool { return h.signedIn() && h.YieldDB != nil },
+	ready:       func(h earnRoutes) bool { return h.signedIn() && h.YieldDB != nil && h.TimescaleURL != "" },
 	register:    earnRoutes.registerEarnings,
 }
 
@@ -97,7 +97,7 @@ func (h earnRoutes) earnEarnings(ctx context.Context, in *earningsRequest) (*ear
 		walletAddress: account.Wallet.String(),
 	}
 	payload, err := readCachedEarnEarningsRangeSet(ctx, h.YieldDB, input,
-		h.scheduleEarningsRefresh(ctx), newEarningsReadDependencies(h.YieldDB, false))
+		h.scheduleEarningsRefresh(ctx), newEarningsReadDependencies(h.YieldDB, h.TimescaleURL, false))
 	if err != nil {
 		return nil, earningsRouteError(err)
 	}
