@@ -14,9 +14,7 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
-	"os"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -200,9 +198,8 @@ var stateTimescalePool struct {
 	failed error
 }
 
-func stateTimescaleDB() (*pgxpool.Pool, error) {
+func stateTimescaleDB(url string) (*pgxpool.Pool, error) {
 	stateTimescalePool.once.Do(func() {
-		url := strings.TrimSpace(os.Getenv("TIMESCALEDB_URL"))
 		if url == "" {
 			return
 		}
@@ -222,7 +219,7 @@ func stateTimescaleDB() (*pgxpool.Pool, error) {
 // the route looks up: the latest non-stale update with an in-bounds supply
 // APY, joined to the latest-per-reserve pointer table.
 func (h earnRoutes) stateTimescaleSupplyApy(ctx context.Context, reserve string) (*float64, error) {
-	db, err := stateTimescaleDB()
+	db, err := stateTimescaleDB(h.TimescaleURL)
 	if err != nil || db == nil {
 		return nil, err
 	}

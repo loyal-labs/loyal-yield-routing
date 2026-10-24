@@ -174,7 +174,7 @@ func (h earnRoutes) privyComplete(ctx context.Context, in *privyCompleteInput) (
 	if err != nil {
 		return nil, earnError(http.StatusInternalServerError, "session_config_invalid", "Session signing is not configured.")
 	}
-	setCookie, err := privySessionCookieHeader(cookieName, sessionToken, seconds,
+	setCookie, err := privySessionCookieHeader(h.Privy.CookieParentDomains, cookieName, sessionToken, seconds,
 		in.ForwardedProto, in.ForwardedHost, in.SessionInput.host, in.scheme)
 	if err != nil {
 		slog.Warn("privy session cookie refused", "error", err, "wallet", wallet.String())

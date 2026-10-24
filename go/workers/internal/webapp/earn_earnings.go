@@ -97,7 +97,7 @@ func (h earnRoutes) earnEarnings(ctx context.Context, in *earningsRequest) (*ear
 		walletAddress: account.Wallet.String(),
 	}
 	payload, err := readCachedEarnEarningsRangeSet(ctx, h.YieldDB, input,
-		h.scheduleEarningsRefresh(ctx), newEarningsReadDependencies(h.YieldDB, false))
+		h.scheduleEarningsRefresh(ctx), newEarningsReadDependencies(h.YieldDB, h.TimescaleURL, false))
 	if err != nil {
 		return nil, earningsRouteError(err)
 	}

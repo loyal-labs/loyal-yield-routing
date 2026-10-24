@@ -26,7 +26,14 @@ type Earn struct {
 	HTTP         *http.Client
 	OTLP         *OTLP
 	Privy        *Privy
+	TimescaleURL string
+	Push         *WalletPush
 	Granted      map[string]bool
+}
+
+type WalletPush struct {
+	BaseURL string
+	Secret  string
 }
 
 type OTLP struct {
@@ -35,8 +42,9 @@ type OTLP struct {
 }
 
 type Privy struct {
-	AppID     string
-	AppSecret string
+	AppID               string
+	AppSecret           string
+	CookieParentDomains []string
 }
 
 type earnRoutes struct {

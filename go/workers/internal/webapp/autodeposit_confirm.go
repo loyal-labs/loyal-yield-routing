@@ -450,7 +450,7 @@ func (h earnRoutes) autodepositFloorConfirm(ctx context.Context, in *autodeposit
 	// keep in pathmap.md:15): push the scheduled-sweep copy when the floor
 	// rebaseline scheduled a sweep.
 	if result.Rebaseline.Status == "scheduled" && result.Rebaseline.Sweep != nil {
-		sendAutodepositWalletPush(ctx, account.Wallet.String(),
+		h.sendAutodepositWalletPush(ctx, account.Wallet.String(),
 			autodepositSweepScheduledPush(uint64(result.Rebaseline.Sweep.RemainingAmountRaw)))
 	}
 
@@ -511,7 +511,7 @@ func (h earnRoutes) autodepositToggleConfirm(ctx context.Context, in *autodeposi
 	// Mobile parity (M/autodeposit/toggle/confirm/route.ts:124-126, DECIDED
 	// keep in pathmap.md:16): push the enabled copy when the target turns on.
 	if input.Active {
-		sendAutodepositWalletPush(ctx, account.Wallet.String(), autodepositEnabledPush())
+		h.sendAutodepositWalletPush(ctx, account.Wallet.String(), autodepositEnabledPush())
 	}
 	return newAutodepositTargetOutput(target), nil
 }

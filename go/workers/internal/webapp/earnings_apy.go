@@ -3,7 +3,6 @@ package webapp
 import (
 	"context"
 	"fmt"
-	"os"
 	"sort"
 	"time"
 
@@ -173,15 +172,14 @@ func earningsApyReserves(args earningsApyArgs) []string {
 }
 
 // newEarningsApyLoader returns the read-service loadApySamples dependency.
-// TIMESCALEDB_URL names the timescale pool; without it the loader fails the
-// way getTimescaleReserveDatabaseUrl does.
-func newEarningsApyLoader() func(context.Context, earningsReadInput, earningsApyArgs) ([]reserveApySample, error) {
+// databaseURL names the timescale pool; without it the loader fails the way
+// getTimescaleReserveDatabaseUrl does.
+func newEarningsApyLoader(databaseURL string) func(context.Context, earningsReadInput, earningsApyArgs) ([]reserveApySample, error) {
 	return func(ctx context.Context, _ earningsReadInput, args earningsApyArgs) ([]reserveApySample, error) {
 		reserves := earningsApyReserves(args)
 		if len(reserves) == 0 {
 			return []reserveApySample{}, nil
 		}
-		databaseURL := os.Getenv("TIMESCALEDB_URL")
 		if databaseURL == "" {
 			return nil, fmt.Errorf("missing_timescale_database_url")
 		}

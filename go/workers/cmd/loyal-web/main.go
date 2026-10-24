@@ -242,7 +242,12 @@ func earn(ctx context.Context, rpcClient *chain.Client, appDB, yieldDB *pgxpool.
 	appID, okID := optionalCredential("Privy sign-in", "PRIVY_APP_ID")
 	appSecret, okAppSecret := optionalCredential("Privy sign-in", "PRIVY_APP_SECRET")
 	if okID && okAppSecret && appID != "" && appSecret != "" {
-		e.Privy = &webapp.Privy{AppID: strings.TrimSpace(appID), AppSecret: strings.TrimSpace(appSecret)}
+		e.Privy = &webapp.Privy{AppID: strings.TrimSpace(appID), AppSecret: strings.TrimSpace(appSecret),
+			CookieParentDomains: webapp.ParseCookieParentDomains(os.Getenv("AUTH_COOKIE_PARENT_DOMAIN"))}
+	}
+	e.TimescaleURL = strings.TrimSpace(os.Getenv("TIMESCALEDB_URL"))
+	if baseURL, secret := os.Getenv("MOBILE_PUSH_API_BASE_URL"), os.Getenv("MOBILE_PUSH_API_SECRET"); baseURL != "" && secret != "" {
+		e.Push = &webapp.WalletPush{BaseURL: baseURL, Secret: secret}
 	}
 	grantCtx, cancel := context.WithTimeout(ctx, grantBound)
 	defer cancel()

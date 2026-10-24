@@ -37,7 +37,7 @@ type dprepRoutes struct {
 
 func dprepRoutesFor(h earnRoutes) dprepRoutes {
 	routes := dprepRoutes{earnRoutes: h, blockTime: dprepChainBlockTime(h.Chain)}
-	if pool, err := stateTimescaleDB(); err != nil {
+	if pool, err := stateTimescaleDB(h.TimescaleURL); err != nil {
 		slog.Warn("earn deposit prepare reads no reserve feed", "error", err)
 	} else if pool != nil {
 		routes.reserves = pool

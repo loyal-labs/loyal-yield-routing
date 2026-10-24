@@ -898,10 +898,10 @@ func sortEarningsHoldingEventsDescending(events []earningsHoldingEvent) {
 // (read-service:916): the real store loaders over the yield pool, the
 // timescale APY reader over TIMESCALEDB_URL, and the 8s APY budget. readOnly
 // mirrors the TS flag: no snapshot reads or writes.
-func newEarningsReadDependencies(pool *pgxpool.Pool, readOnly bool) earningsReadDeps {
+func newEarningsReadDependencies(pool *pgxpool.Pool, timescaleURL string, readOnly bool) earningsReadDeps {
 	deps := earningsReadDeps{
 		apyTimeout:     8 * time.Second,
-		loadApySamples: newEarningsApyLoader(),
+		loadApySamples: newEarningsApyLoader(timescaleURL),
 		loadLedgerEvents: func(ctx context.Context, input earningsReadInput) ([]earningsEvent, error) {
 			return loadEarningsLedgerEvents(ctx, pool, input)
 		},
