@@ -175,7 +175,7 @@ jobs:
           GOENV: 'off'
           GOMODCACHE: ${{ runner.temp }}/workers-go/gomod
           GOCACHE: ${{ runner.temp }}/workers-go/gobuild
-        run: go test -race -count=1 -v -run 'TestPushToken|TestEarnStats' ./internal/webapp/
+        run: go test -race -count=1 -v -run 'TestPushToken|TestEarnStats|TestEarningsRefreshLock' ./internal/webapp/
       - name: Save Go module and build caches
         if: github.event_name == 'push' && steps.go-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
