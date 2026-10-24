@@ -20,7 +20,7 @@ import (
 var earnDprepFamily = earnFamily{
 	name:        "earn deposit prepare",
 	appGrants:   earnPrivyFamily.appGrants,
-	yieldGrants: append(append([]Grant{}, earnStateYieldGrants...), Grant{"loyal_yield.earn_deposit_onboarding_attempts", "SELECT"}),
+	yieldGrants: append(append([]Grant{}, earnStateYieldGrants...), TableGrant("loyal_yield.earn_deposit_onboarding_attempts", "SELECT")),
 	ready: func(h earnRoutes) bool {
 		return h.signedIn() && h.Chain != nil && !h.PolicySigner.IsZero() && h.TimescaleURL != ""
 	},

@@ -14,7 +14,7 @@ func TestMissingGrantsChecksASequenceAsASequence(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	missing, err := MissingGrants(ctx, pool, []Grant{{"public.grant_check_test_event_id_seq", "USAGE"}})
+	missing, err := MissingGrants(ctx, pool, []Grant{SequenceGrant("public.grant_check_test_event_id_seq", "USAGE")})
 
 	if err != nil || len(missing) != 0 {
 		t.Fatalf("missing=%v err=%v, want USAGE on the sequence its owner holds", missing, err)

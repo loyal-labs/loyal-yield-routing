@@ -18,8 +18,8 @@ import (
 const earnVaultIndex uint8 = 1
 
 var EarnPolicyGrants = []Grant{
-	{"loyal_yield.managed_vaults", "SELECT"},
-	{"loyal_yield.route_policies", "SELECT"},
+	TableGrant("loyal_yield.managed_vaults", "SELECT"),
+	TableGrant("loyal_yield.route_policies", "SELECT"),
 }
 
 type LoyalCluster string

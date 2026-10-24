@@ -12,18 +12,18 @@ var earnWithdrawFamily = earnFamily{
 	// recorded close intent (confirm) — over the sweep tables the close
 	// cancel restores and suppresses.
 	yieldGrants: append([]Grant{
-		{"loyal_yield.user_yield_position_withdrawals", "SELECT"},
-		{"loyal_yield.balance_sweep_targets", "SELECT"},
-		{"loyal_yield.balance_sweep_targets", "UPDATE"},
-		{"loyal_yield.balance_sweep_policies", "SELECT"},
-		{"loyal_yield.balance_sweep_policies", "UPDATE"},
-		{"loyal_yield.balance_sweep_executions", "SELECT"},
-		{"loyal_yield.balance_sweep_surplus_lots", "SELECT"},
-		{"loyal_yield.balance_sweep_surplus_lots", "UPDATE"},
-		{"loyal_yield.balance_sweep_wallet_balance_events", "SELECT"},
-		{"loyal_yield.balance_sweep_lot_claims", "SELECT"},
-		{"loyal_yield.balance_sweep_lot_claims", "UPDATE"},
-		{"loyal_yield.balance_sweep_lot_claim_items", "SELECT"},
+		TableGrant("loyal_yield.user_yield_position_withdrawals", "SELECT"),
+		TableGrant("loyal_yield.balance_sweep_targets", "SELECT"),
+		TableGrant("loyal_yield.balance_sweep_targets", "UPDATE"),
+		TableGrant("loyal_yield.balance_sweep_policies", "SELECT"),
+		TableGrant("loyal_yield.balance_sweep_policies", "UPDATE"),
+		TableGrant("loyal_yield.balance_sweep_executions", "SELECT"),
+		TableGrant("loyal_yield.balance_sweep_surplus_lots", "SELECT"),
+		TableGrant("loyal_yield.balance_sweep_surplus_lots", "UPDATE"),
+		TableGrant("loyal_yield.balance_sweep_wallet_balance_events", "SELECT"),
+		TableGrant("loyal_yield.balance_sweep_lot_claims", "SELECT"),
+		TableGrant("loyal_yield.balance_sweep_lot_claims", "UPDATE"),
+		TableGrant("loyal_yield.balance_sweep_lot_claim_items", "SELECT"),
 	}, EarnPolicyGrants...),
 	ready: func(h earnRoutes) bool {
 		return h.signedIn() && h.YieldDB != nil && h.Chain != nil && !h.PolicySigner.IsZero()

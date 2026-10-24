@@ -15,9 +15,9 @@ var earnPublicFamily = earnFamily{
 }
 
 var earnPublicYieldGrants = []Grant{
-	{"loyal_yield.earn_reserve_share_prices", "SELECT"},
-	{"loyal_yield.earn_fleet_allocations_hourly", "SELECT"},
-	{"loyal_yield.solana_week_quest_completions", "SELECT"},
+	TableGrant("loyal_yield.earn_reserve_share_prices", "SELECT"),
+	TableGrant("loyal_yield.earn_fleet_allocations_hourly", "SELECT"),
+	TableGrant("loyal_yield.solana_week_quest_completions", "SELECT"),
 }
 
 func (h earnRoutes) registerPublic(api huma.API) {

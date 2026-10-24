@@ -11,11 +11,11 @@ import "github.com/danielgtaylor/huma/v2"
 // policy pair read behind the citation (EARN.md's activePolicyPair) and the
 // mobile quest report's solana_week_quest_completions rows.
 var earnDepositYieldGrants = []Grant{
-	{"loyal_yield.managed_vaults", "SELECT"},
-	{"loyal_yield.route_policies", "SELECT"},
-	{"loyal_yield.solana_week_quest_completions", "SELECT"},
-	{"loyal_yield.solana_week_quest_completions", "INSERT"},
-	{"loyal_yield.solana_week_quest_completions", "UPDATE"},
+	TableGrant("loyal_yield.managed_vaults", "SELECT"),
+	TableGrant("loyal_yield.route_policies", "SELECT"),
+	TableGrant("loyal_yield.solana_week_quest_completions", "SELECT"),
+	TableGrant("loyal_yield.solana_week_quest_completions", "INSERT"),
+	TableGrant("loyal_yield.solana_week_quest_completions", "UPDATE"),
 }
 
 // earnDepositAppGrants is the earn-max context op's app schema footprint:
