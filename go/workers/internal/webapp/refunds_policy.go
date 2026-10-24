@@ -12,7 +12,6 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"strconv"
 	"time"
 
 	"github.com/solana-foundation/solana-go/v2"
@@ -167,9 +166,6 @@ func (h earnRoutes) preparePolicyRefundKind(ctx context.Context, account EarnAcc
 		return nil, err
 	}
 
-	// Promise.all (earn-policy-refund.server.ts:440-451); the order below is
-	// the array's order, so the first failure to surface matches on reads that
-	// fail together.
 	policies, err := h.txreadsScanPolicyAccounts(ctx, account.Settings)
 	if err != nil {
 		return nil, refundPrepareFailed(err)
@@ -179,26 +175,10 @@ func (h earnRoutes) preparePolicyRefundKind(ctx context.Context, account EarnAcc
 		return nil, refundPrepareFailed(err)
 	}
 	info := infoReads[0]
-	openDelegations, err := h.txreadsOpenDelegations(ctx, account.Wallet, account.Vault)
-	if err != nil {
-		return nil, refundPrepareFailed(err)
-	}
-	dbState, err := h.txreadsRefundDBState(ctx, account, earnVaultIndex, []string{policyAccount.String()}, openDelegations)
-	if err != nil {
-		return nil, refundPrepareFailed(err)
-	}
-	snapshot, err := fetchEarnVaultRefundSnapshot(ctx, h.Chain, account.Vault, earnUSDCMint(account.Cluster))
-	if err != nil {
-		return nil, refundPrepareFailed(err)
-	}
-
-	// getAccountInfo null check (:452-458).
-	var policyLamports uint64
-	if info != nil {
-		policyLamports = info.Lamports
-	} else {
+	if info == nil {
 		return nil, earnError(http.StatusConflict, "policy_closed", "Policy account is already closed.")
 	}
+	policyLamports := info.Lamports
 
 	var overviewPolicy *txreadsPolicySeed
 	for i := range policies {
@@ -211,53 +191,15 @@ func (h earnRoutes) preparePolicyRefundKind(ctx context.Context, account EarnAcc
 		return nil, earnError(http.StatusForbidden, "policy_not_owned", "Policy does not belong to this smart account.")
 	}
 
-	// findSingleEarnPolicyRefundDbState
-	// (earn-policy-refund-state.server.ts:754-787): the one policy's slice of
-	// the shared DB state.
-	address := policyAccount.String()
-	recurringDelegations := dbState.byPolicyAccount[address]
-	if recurringDelegations == nil {
-		recurringDelegations = []EarnPolicyRefundRecurringDelegation{}
+	index := txreadsPolicyVaultIndex(*overviewPolicy)
+	facts, err := h.txreadsReadVaultFacts(ctx, account, index, []string{policyAccount.String()})
+	if err != nil {
+		return nil, refundPrepareFailed(err)
 	}
-	singleActiveAutodeposit := dbState.activeAutodepositAccounts[address]
-	singleActiveManagedVault := dbState.activeManagedVaultAccounts[address]
-	singleReferencedByPosition := dbState.activePositionAccounts[address]
-
-	// getBlockedReason (:471-481): chain funds first, the Kamino obligation
-	// read only when the token accounts are clean. vaultHoldsChainFunds
-	// (earn-policy-refund.server.ts:88) over the same snapshot the route read.
-	holdsChainFunds := false
-	for _, tokenAccount := range snapshot.TokenAccounts {
-		if tokenAccount.Amount > 0 && tokenAccount.Address != snapshot.VaultUsdcATA {
-			holdsChainFunds = true
-			break
-		}
-	}
-	if !holdsChainFunds {
-		holds, err := h.txreadsVaultHoldsKaminoCollateral(ctx, account, earnVaultIndex)
-		if err != nil {
-			return nil, refundPrepareFailed(err)
-		}
-		holdsChainFunds = holds
-	}
-	blockedReason := txreadsPolicyBlockedReason(singleActiveAutodeposit, singleActiveManagedVault, singleReferencedByPosition, holdsChainFunds)
-
-	policy := EarnPolicyRefundScanPolicy{
-		Account:                    overviewPolicy.address.String(),
-		AccountIndex:               overviewPolicy.accountIndex,
-		ActiveAutodeposit:          singleActiveAutodeposit,
-		ActiveManagedVault:         singleActiveManagedVault,
-		BlockedReason:              blockedReason,
-		CanRefund:                  blockedReason == nil,
-		DBPresent:                  dbState.routePolicyAccounts[address],
-		Lamports:                   &policyLamports,
-		RecurringDelegations:       recurringDelegations,
-		ReferencedByActivePosition: singleReferencedByPosition,
-		Seed:                       strconv.FormatUint(overviewPolicy.seed, 10),
-		State:                      overviewPolicy.state,
-	}
-	if blockedReason != nil {
-		return nil, earnError(http.StatusConflict, "policy_active", *blockedReason)
+	policy := txreadsScanPolicy(*overviewPolicy, map[uint8]txreadsVaultFacts{index: facts})
+	policy.Lamports = &policyLamports
+	if policy.BlockedReason != nil {
+		return nil, earnError(http.StatusConflict, "policy_active", *policy.BlockedReason)
 	}
 
 	// prepareClosePoliciesSync (client.ts:11791-11816): the resolver re-read
@@ -284,7 +226,7 @@ func (h earnRoutes) preparePolicyRefundKind(ctx context.Context, account EarnAcc
 				RequiresConfirmation: false,
 			},
 			SettingsPda: account.Settings.String(),
-			VaultIndex:  earnVaultIndex,
+			VaultIndex:  index,
 		},
 	}}, nil
 }

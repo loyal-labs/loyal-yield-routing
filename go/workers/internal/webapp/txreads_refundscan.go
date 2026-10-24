@@ -932,7 +932,6 @@ func txreadsVaultRefundEntry(account EarnAccount, snapshot txreadsVaultSnapshot,
 // each policy that names it: the DB liveness rows, the open wallet-to-vault
 // delegations and whether the vault still holds funds on chain.
 type txreadsVaultFacts struct {
-	vault           solana.PublicKey
 	snapshot        txreadsVaultSnapshot
 	openDelegations []EarnPolicyRefundRecurringDelegation
 	db              txreadsRefundDBState
@@ -944,7 +943,7 @@ func (h earnRoutes) txreadsReadVaultFacts(ctx context.Context, account EarnAccou
 	if err != nil {
 		return txreadsVaultFacts{}, err
 	}
-	facts := txreadsVaultFacts{vault: vault}
+	var facts txreadsVaultFacts
 	if facts.openDelegations, err = h.txreadsOpenDelegations(ctx, account.Wallet, vault); err != nil {
 		return txreadsVaultFacts{}, err
 	}
@@ -963,10 +962,21 @@ func (h earnRoutes) txreadsReadVaultFacts(ctx context.Context, account EarnAccou
 	return facts, nil
 }
 
+// txreadsPolicyVaultIndex is the vault a policy belongs to: the index its
+// header names, or the Earn vault for kinds that name none. Settings
+// accountUtilization is not a census (0 on accounts using vaults 0 and 2), so
+// the policies themselves say which vaults the scan reads.
+func txreadsPolicyVaultIndex(policy txreadsPolicySeed) uint8 {
+	if policy.accountIndex != nil {
+		return *policy.accountIndex
+	}
+	return earnVaultIndex
+}
+
 // txreadsScanPolicy is one policy's scan entry, judged by the facts of the
 // vault it belongs to.
 func txreadsScanPolicy(policy txreadsPolicySeed, vaults map[uint8]txreadsVaultFacts) EarnPolicyRefundScanPolicy {
-	facts := vaults[earnVaultIndex]
+	facts := vaults[txreadsPolicyVaultIndex(policy)]
 	address := policy.address.String()
 	activeManagedVault := facts.db.activeManagedVaultAccounts[address]
 	activeAutodeposit := facts.db.activeAutodepositAccounts[address]
@@ -1001,15 +1011,20 @@ func (h earnRoutes) txreadsScanPolicyRefunds(ctx context.Context, account EarnAc
 	if err != nil {
 		return EarnPolicyRefundScanResponse{}, err
 	}
-	policyAddresses := make([]string, 0, len(policies))
+	addressesByVault := map[uint8][]string{earnVaultIndex: {}}
 	for _, policy := range policies {
-		policyAddresses = append(policyAddresses, policy.address.String())
+		index := txreadsPolicyVaultIndex(policy)
+		addressesByVault[index] = append(addressesByVault[index], policy.address.String())
 	}
-	earnFacts, err := h.txreadsReadVaultFacts(ctx, account, earnVaultIndex, policyAddresses)
-	if err != nil {
-		return EarnPolicyRefundScanResponse{}, err
+	vaults := make(map[uint8]txreadsVaultFacts, len(addressesByVault))
+	for index, addresses := range addressesByVault {
+		facts, err := h.txreadsReadVaultFacts(ctx, account, index, addresses)
+		if err != nil {
+			return EarnPolicyRefundScanResponse{}, err
+		}
+		vaults[index] = facts
 	}
-	vaults := map[uint8]txreadsVaultFacts{earnVaultIndex: earnFacts}
+	earnFacts := vaults[earnVaultIndex]
 	vaultFlags, err := h.txreadsVaultDBFlags(ctx, account)
 	if err != nil {
 		return EarnPolicyRefundScanResponse{}, err
