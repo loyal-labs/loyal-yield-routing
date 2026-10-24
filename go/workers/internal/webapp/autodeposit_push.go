@@ -26,9 +26,6 @@ type autodepositWalletPush struct {
 const autodepositPushSendTimeout = 5 * time.Second
 
 func (h earnRoutes) sendAutodepositWalletPush(ctx context.Context, walletAddress string, payload autodepositWalletPush) {
-	if h.Push == nil {
-		return
-	}
 	baseURL, secret := h.Push.BaseURL, h.Push.Secret
 	body, err := json.Marshal(map[string]string{
 		"body":            payload.Body,

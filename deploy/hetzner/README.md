@@ -412,6 +412,14 @@ proxying the session routes to Next.
 | `PRIVY_APP_SECRET` | no | the Next deployment's value; with `PRIVY_APP_ID`, Go serves `POST /api/auth/privy/complete` |
 | `REALTIME_AUTH_SECRET` | no | the realtime deployment's value (one `realtime-envelope` input); with it Go serves `POST /api/smart-accounts/yield-optimization/realtime/token`, without it the route answers 503 `realtime_unavailable` |
 | `REALTIME_EVENTS_URL` | no | the events URL returned in the token response (`realtime.askloyal.com/events` by default) |
+| `TIMESCALEDB_URL` | no | file `loyal-web-timescale-db`; the Next deployment's value (the reserve APY feed); without it earn earnings, earn state and earn deposit prepare log one line and keep proxying to Next |
+| `MOBILE_PUSH_API_BASE_URL` | no | file `loyal-web-mobile-push-base-url`; the Next deployment's value, the app backend that sends wallet pushes |
+| `MOBILE_PUSH_API_SECRET` | no | file `loyal-web-mobile-push-secret`; the Next deployment's value (it matches the app's `PUSH_DEBUG_SECRET`); without both push values the autodeposit family logs one line and keeps proxying to Next |
+
+`AUTH_COOKIE_PARENT_DOMAIN` is plain config, not a credential:
+`loyal-web.service` sets `Environment=AUTH_COOKIE_PARENT_DOMAIN=askloyal.com`,
+the domain Next's prod session cookie carries. Unset, `loyal-web` logs one line
+and `POST /api/auth/privy/complete` keeps proxying to Next.
 
 ### Earn family grants
 

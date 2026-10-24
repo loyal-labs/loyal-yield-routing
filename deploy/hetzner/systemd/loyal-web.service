@@ -26,6 +26,9 @@ TimeoutStopSec=60s
 Environment=LOYAL_WEB_ADDRESS=127.0.0.1:10080
 # The Next deployment the proxy forwards unowned /api paths to.
 Environment=LOYAL_WEB_UPSTREAM=https://app.askloyal.com
+# The session cookie's parent domain, the Next deployment's value (prod sets
+# Domain=askloyal.com). Unset, POST /api/auth/privy/complete proxies to Next.
+Environment=AUTH_COOKIE_PARENT_DOMAIN=askloyal.com
 # LOYAL_WEB_APP_HOST is deliberately unset: the test host serves the
 # marketing site and /app from one hostname, so the app-host routing is
 # unused. Set it in a drop-in if the sites split onto separate hostnames.

@@ -36,7 +36,7 @@ var earnEarningsYieldGrants = []Grant{
 var earnEarningsFamily = earnFamily{
 	name:        "earn earnings",
 	yieldGrants: earnEarningsYieldGrants,
-	ready:       func(h earnRoutes) bool { return h.signedIn() && h.YieldDB != nil },
+	ready:       func(h earnRoutes) bool { return h.signedIn() && h.YieldDB != nil && h.TimescaleURL != "" },
 	register:    earnRoutes.registerEarnings,
 }
 

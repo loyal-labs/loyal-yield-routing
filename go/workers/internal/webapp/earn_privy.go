@@ -37,7 +37,7 @@ var earnPrivyFamily = earnFamily{
 		{"app_smart_account_signers", "UPDATE"},
 	},
 	ready: func(h earnRoutes) bool {
-		return h.Privy != nil && h.Privy.AppID != "" && h.Session != nil && h.signedIn()
+		return h.Privy != nil && h.Privy.AppID != "" && len(h.Privy.CookieParentDomains) > 0 && h.Session != nil && h.signedIn()
 	},
 	register: earnRoutes.registerPrivy,
 }
