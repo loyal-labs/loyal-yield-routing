@@ -11,11 +11,11 @@ var earnRefundsFamily = earnFamily{
 	// refund scan reads (txreads_refundscan.go) and the cross-mint opt-in
 	// read/write plus policy and movement reads (refunds_crossmint_state.go).
 	appGrants: AuthGrants,
-	yieldGrants: []Grant{{"loyal_yield.user_yield_positions", "SELECT"}, {"loyal_yield.managed_vaults", "SELECT"}, {"loyal_yield.balance_sweep_targets", "SELECT"},
-		{"loyal_yield.cross_mint_vault_opt_ins", "SELECT"}, {"loyal_yield.cross_mint_vault_opt_ins", "UPDATE"},
-		{"loyal_yield.cross_mint_swap_policies", "SELECT"}, {"loyal_yield.rebalance_decisions", "SELECT"},
-		{"loyal_yield.route_policies", "SELECT"}, {"loyal_yield.balance_sweep_policies", "SELECT"},
-		{"loyal_yield.balance_sweep_surplus_lots", "SELECT"}, {"loyal_yield.balance_sweep_lot_claims", "SELECT"}},
+	yieldGrants: []Grant{TableGrant("loyal_yield.user_yield_positions", "SELECT"), TableGrant("loyal_yield.managed_vaults", "SELECT"), TableGrant("loyal_yield.balance_sweep_targets", "SELECT"),
+		TableGrant("loyal_yield.cross_mint_vault_opt_ins", "SELECT"), TableGrant("loyal_yield.cross_mint_vault_opt_ins", "UPDATE"),
+		TableGrant("loyal_yield.cross_mint_swap_policies", "SELECT"), TableGrant("loyal_yield.rebalance_decisions", "SELECT"),
+		TableGrant("loyal_yield.route_policies", "SELECT"), TableGrant("loyal_yield.balance_sweep_policies", "SELECT"),
+		TableGrant("loyal_yield.balance_sweep_surplus_lots", "SELECT"), TableGrant("loyal_yield.balance_sweep_lot_claims", "SELECT")},
 	ready: func(h earnRoutes) bool {
 		return h.signedIn() && h.YieldDB != nil && h.Chain != nil
 	},

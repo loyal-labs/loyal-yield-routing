@@ -24,22 +24,22 @@ var earnTransactionsFamily = earnFamily{
 // paths touch, including the sync write the history runs first
 // (user_yield_position_holding_events INSERT, user_yield_positions UPDATE).
 var earnTransactionYieldGrants = []Grant{
-	{"loyal_yield.balance_sweep_executions", "SELECT"},
-	{"loyal_yield.balance_sweep_lot_claims", "SELECT"},
-	{"loyal_yield.balance_sweep_policies", "SELECT"},
-	{"loyal_yield.balance_sweep_surplus_lots", "SELECT"},
-	{"loyal_yield.balance_sweep_targets", "SELECT"},
-	{"loyal_yield.managed_vaults", "SELECT"},
-	{"loyal_yield.rebalance_decisions", "SELECT"},
-	{"loyal_yield.route_policies", "SELECT"},
-	{"loyal_yield.user_yield_position_deposits", "SELECT"},
-	{"loyal_yield.user_yield_position_holding_events", "INSERT"},
-	{"loyal_yield.user_yield_position_holding_events", "SELECT"},
-	{"loyal_yield.user_yield_position_withdrawals", "SELECT"},
-	{"loyal_yield.user_yield_positions", "SELECT"},
-	{"loyal_yield.user_yield_positions", "UPDATE"},
-	{"loyal_yield.vault_position_snapshot_positions", "SELECT"},
-	{"loyal_yield.vault_position_snapshots", "SELECT"},
+	TableGrant("loyal_yield.balance_sweep_executions", "SELECT"),
+	TableGrant("loyal_yield.balance_sweep_lot_claims", "SELECT"),
+	TableGrant("loyal_yield.balance_sweep_policies", "SELECT"),
+	TableGrant("loyal_yield.balance_sweep_surplus_lots", "SELECT"),
+	TableGrant("loyal_yield.balance_sweep_targets", "SELECT"),
+	TableGrant("loyal_yield.managed_vaults", "SELECT"),
+	TableGrant("loyal_yield.rebalance_decisions", "SELECT"),
+	TableGrant("loyal_yield.route_policies", "SELECT"),
+	TableGrant("loyal_yield.user_yield_position_deposits", "SELECT"),
+	TableGrant("loyal_yield.user_yield_position_holding_events", "INSERT"),
+	TableGrant("loyal_yield.user_yield_position_holding_events", "SELECT"),
+	TableGrant("loyal_yield.user_yield_position_withdrawals", "SELECT"),
+	TableGrant("loyal_yield.user_yield_positions", "SELECT"),
+	TableGrant("loyal_yield.user_yield_positions", "UPDATE"),
+	TableGrant("loyal_yield.vault_position_snapshot_positions", "SELECT"),
+	TableGrant("loyal_yield.vault_position_snapshots", "SELECT"),
 }
 
 const earnTransactionsPath = "/api/smart-accounts/earn-transactions"

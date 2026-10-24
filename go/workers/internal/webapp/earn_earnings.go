@@ -18,19 +18,19 @@ import (
 )
 
 var earnEarningsYieldGrants = []Grant{
-	{"loyal_yield.earn_earnings_snapshots", "SELECT"},
-	{"loyal_yield.earn_earnings_snapshots", "INSERT"},
-	{"loyal_yield.earn_earnings_snapshots", "UPDATE"},
-	{"loyal_yield.earn_history_day_revisions", "SELECT"},
-	{"loyal_yield.managed_vaults", "SELECT"},
-	{"loyal_yield.rebalance_decisions", "SELECT"},
-	{"loyal_yield.user_yield_position_deposits", "SELECT"},
-	{"loyal_yield.user_yield_position_holding_events", "SELECT"},
-	{"loyal_yield.user_yield_position_withdrawals", "SELECT"},
-	{"loyal_yield.user_yield_positions", "SELECT"},
-	{"loyal_yield.vault_idle_token_balances_current", "SELECT"},
-	{"loyal_yield.vault_position_snapshot_positions", "SELECT"},
-	{"loyal_yield.vault_position_snapshots", "SELECT"},
+	TableGrant("loyal_yield.earn_earnings_snapshots", "SELECT"),
+	TableGrant("loyal_yield.earn_earnings_snapshots", "INSERT"),
+	TableGrant("loyal_yield.earn_earnings_snapshots", "UPDATE"),
+	TableGrant("loyal_yield.earn_history_day_revisions", "SELECT"),
+	TableGrant("loyal_yield.managed_vaults", "SELECT"),
+	TableGrant("loyal_yield.rebalance_decisions", "SELECT"),
+	TableGrant("loyal_yield.user_yield_position_deposits", "SELECT"),
+	TableGrant("loyal_yield.user_yield_position_holding_events", "SELECT"),
+	TableGrant("loyal_yield.user_yield_position_withdrawals", "SELECT"),
+	TableGrant("loyal_yield.user_yield_positions", "SELECT"),
+	TableGrant("loyal_yield.vault_idle_token_balances_current", "SELECT"),
+	TableGrant("loyal_yield.vault_position_snapshot_positions", "SELECT"),
+	TableGrant("loyal_yield.vault_position_snapshots", "SELECT"),
 }
 
 var earnEarningsFamily = earnFamily{
@@ -40,9 +40,7 @@ var earnEarningsFamily = earnFamily{
 	register:    earnRoutes.registerEarnings,
 }
 
-// earningsRefreshBudget bounds the detached rebuild. The refresh lock's own
-// 15s transaction window is the real cap; this is slack for the stale path.
-const earningsRefreshBudget = 20 * time.Second
+const earningsRefreshBudget = 5 * time.Minute
 
 type earningsRequest struct {
 	SessionInput

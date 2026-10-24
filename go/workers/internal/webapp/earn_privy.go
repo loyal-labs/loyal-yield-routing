@@ -24,17 +24,17 @@ import (
 var earnPrivyFamily = earnFamily{
 	name: "privy complete",
 	appGrants: []Grant{
-		{"app_users", "SELECT"},
-		{"app_users", "INSERT"},
-		{"app_users", "UPDATE"},
-		{"app_user_wallets", "INSERT"},
-		{"app_user_wallets", "UPDATE"},
-		{"app_user_smart_accounts", "SELECT"},
-		{"app_user_smart_accounts", "INSERT"},
-		{"app_user_smart_accounts", "UPDATE"},
-		{"app_smart_account_signers", "SELECT"},
-		{"app_smart_account_signers", "INSERT"},
-		{"app_smart_account_signers", "UPDATE"},
+		TableGrant("app_users", "SELECT"),
+		TableGrant("app_users", "INSERT"),
+		TableGrant("app_users", "UPDATE"),
+		TableGrant("app_user_wallets", "INSERT"),
+		TableGrant("app_user_wallets", "UPDATE"),
+		TableGrant("app_user_smart_accounts", "SELECT"),
+		TableGrant("app_user_smart_accounts", "INSERT"),
+		TableGrant("app_user_smart_accounts", "UPDATE"),
+		TableGrant("app_smart_account_signers", "SELECT"),
+		TableGrant("app_smart_account_signers", "INSERT"),
+		TableGrant("app_smart_account_signers", "UPDATE"),
 	},
 	ready: func(h earnRoutes) bool {
 		return h.Privy != nil && h.Privy.AppID != "" && len(h.Privy.CookieParentDomains) > 0 && h.Session != nil && h.signedIn()
