@@ -253,7 +253,7 @@ func prepareStepFromTickObservation(ctx context.Context, rpc *chain.Client, view
 	case stepRelease:
 		evidence, _, err := releaseLeg(ctx, rpc, view, client, manifest, observation.policies, accounts, st, s, decision)
 		logStage("prepare_step", prepareStart)
-		return observation, withStepSale(accounts, route, evidence), err
+		return observation, evidence, err
 	case stepUp:
 		borrow := uint64(decision.AmountRaw)
 		if decision.Reason != termKeepAliveReason {
@@ -331,7 +331,7 @@ func releaseLeg(ctx context.Context, rpc *chain.Client, view *View, client *jupi
 		return StepExecutionEvidence{}, 0, err
 	}
 	evidence, _, err := assembleStep(ctx, rpc, view, client, manifest, policies, st, stepExit, receipts, liquidity+st.collateralBalance, s.Slot)
-	return evidence, 0, err
+	return withStepSale(accounts, st.route, evidence), 0, err
 }
 
 func assembleStep(ctx context.Context, rpc *chain.Client, view *View, client *jupiter.Client, manifest RouteManifest, policies installedPolicies, st stepState, kind StepKind, openRaw, convertRaw uint64, slot int64) (StepExecutionEvidence, uint64, error) {
