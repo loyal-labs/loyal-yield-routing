@@ -40,8 +40,8 @@ type DepositWireLookupTableAccount struct {
 	State DepositWireLookupTableState `json:"state"`
 }
 
-// DepositWireSimulationDiagnostics mirrors
-// client.ts:2310-2320 (withEarnPolicyCreateSimulationDiagnostics).
+// DepositWireSimulationDiagnostics pins the TS client's
+// withEarnPolicyCreateSimulationDiagnostics shape.
 type DepositWireSimulationDiagnostics struct {
 	IncludedPolicyAccounts []string `json:"includedPolicyAccounts"`
 	Kind                   string   `json:"kind"`

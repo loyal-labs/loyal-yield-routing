@@ -1,11 +1,9 @@
 package webapp
 
-// POST and GET /api/smart-accounts/yield-optimization/autodeposit/sweeps/execute,
-// ported from web/apps/web/src/app/api/smart-accounts/yield-optimization/autodeposit/sweeps/execute/route.ts.
-// POST flips the wallet's oldest eligible scheduled slot to "requested" so the
-// sweep worker executes it now (execute-now); GET reports one slot's progress
-// for the client fallback when the realtime stream is down. Identity is the
-// Principal; the mobile twin's walletAddress query param never reaches here.
+// POST and GET /api/smart-accounts/yield-optimization/autodeposit/sweeps/execute:
+// GET reports one slot's progress for the client fallback when the realtime
+// stream is down. Identity is the session Principal; the mobile twin's
+// walletAddress query param never reaches here.
 
 import (
 	"context"
@@ -108,9 +106,8 @@ func parseAutodepositSlotID(value string) (int64, error) {
 	return slotID, nil
 }
 
-// parseAutodepositOptionalSlotID ports parseOptionalSlotId:
-// only an application/json body carries a slot; a missing key, null, an empty
-// string or a non-object body means "oldest eligible slot".
+// parseAutodepositOptionalSlotID: a nil slotID selects the wallet's oldest
+// eligible slot.
 func parseAutodepositOptionalSlotID(raw []byte) (*int64, error) {
 	parsed, err := parseJSONBody(raw)
 	if err != nil {
@@ -149,13 +146,8 @@ type autodepositSweepRequestResult struct {
 	TargetID             int64
 }
 
-// requestImmediateAutodepositSweep ports
-// requestImmediateEarnAutodepositScheduledSweep (:903-987): one statement
-// locks the oldest eligible slot FOR UPDATE, flips it to "requested" and
-// re-labels its open lots, returning the accelerated totals. A second call
-// finds nothing left in ('scheduled','failed','released') with open lots and
-// returns nil — the caller renders 409 no_scheduled_sweeps. The eligible-after
-// bump to max(now, delegation-ready) is what moves the worker's pick-up forward.
+// requestImmediateAutodepositSweep: the eligible_after bump to
+// max(now, delegation-ready) is what moves the sweep worker's pick-up forward.
 func (h earnRoutes) requestImmediateAutodepositSweep(ctx context.Context, target autodepositTargetRow, slotID *int64) (*autodepositSweepRequestResult, error) {
 	now := time.Now()
 	eligibleAfter := now
@@ -421,8 +413,8 @@ func (h earnRoutes) autodepositSweepsExecute(ctx context.Context, in *autodeposi
 			"Earn Autodeposit must be active before a scheduled sweep can be executed now.")
 	}
 
-	// route.ts:257-281 — a withdrawn-away position has no route policy left and
-	// its sweeps would strand on "Executing…" forever; lookup errors fail open.
+	// A withdrawn-away position has no route policy left and its sweeps would
+	// strand on "Executing…" forever; lookup errors fail open.
 	pair, gateErr := h.activePolicyPair(ctx, account)
 	if gateErr != nil {
 		slog.WarnContext(ctx, "[autodeposit-sweeps-execute] earn position gate skipped",

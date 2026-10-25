@@ -68,3 +68,11 @@ new or missing line. A mobile twin line goes when the RN lane points the client 
 
 `bun scripts/web/openapi-types.ts --check` fails once you register a path: expected, the foreman
 regenerates after merging the lanes.
+
+## Decided
+
+- The autodeposit setup, floor and toggle confirm ops send the mobile wallet push themselves:
+  setup when a delegation-bearing stage lands (the scheduled-sweep copy when a sweep was
+  scheduled, the enabled copy otherwise), floor the scheduled-sweep copy when the rebaseline
+  scheduled a sweep, toggle the enabled copy when the target turns on.
+- Deposit confirm reports quest completion inside the Go op.

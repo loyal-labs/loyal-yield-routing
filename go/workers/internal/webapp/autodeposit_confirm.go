@@ -326,8 +326,6 @@ func (h earnRoutes) autodepositCloseConfirm(ctx context.Context, in *autodeposit
 		return nil, earnUnavailable("load Earn account", err, "account_unavailable", "Earn account is unavailable.")
 	}
 
-	// route.ts:164-173 — parse errors pass their message through under
-	// invalid_request.
 	input, err := parseAutodepositCloseConfirmBody(in.Raw.data)
 	if err != nil {
 		return nil, earnError(http.StatusBadRequest, "invalid_request", err.Error())
@@ -392,8 +390,7 @@ func (h earnRoutes) autodepositFloorConfirm(ctx context.Context, in *autodeposit
 		return nil, earnError(http.StatusBadRequest, "invalid_request", err.Error())
 	}
 
-	// route.ts:80-87 — the wallet and settings come from the principal, never
-	// from the body.
+	// The wallet and settings come from the principal, never from the body.
 	input.Settings = account.Settings.String()
 	input.WalletAddress = account.Wallet.String()
 	result, err := h.updateAutodepositWalletBalanceFloor(ctx, input)
@@ -401,9 +398,9 @@ func (h earnRoutes) autodepositFloorConfirm(ctx context.Context, in *autodeposit
 		return nil, earnError(http.StatusBadRequest, "update_failed", err.Error())
 	}
 
-	// Mobile parity (M/autodeposit/floor/confirm/route.ts:144-151, DECIDED
-	// keep in pathmap.md:15): push the scheduled-sweep copy when the floor
-	// rebaseline scheduled a sweep.
+	// The floor confirm op sends the mobile wallet push itself (EARN.md,
+	// Decided): the scheduled-sweep copy when the floor rebaseline scheduled
+	// a sweep.
 	if result.Rebaseline.Status == "scheduled" && result.Rebaseline.Sweep != nil {
 		h.Push.send(ctx, account.Wallet.String(),
 			autodepositSweepScheduledPush(uint64(result.Rebaseline.Sweep.RemainingAmountRaw)))
@@ -453,7 +450,7 @@ func (h earnRoutes) autodepositToggleConfirm(ctx context.Context, in *autodeposi
 		return nil, earnError(http.StatusBadRequest, "invalid_request", err.Error())
 	}
 
-	// route.ts:54-61 — the wallet and settings come from the principal.
+	// The wallet and settings come from the principal.
 	input.Settings = account.Settings.String()
 	input.WalletAddress = account.Wallet.String()
 	target, err := h.updateAutodepositTargetActive(ctx, input)
@@ -461,8 +458,8 @@ func (h earnRoutes) autodepositToggleConfirm(ctx context.Context, in *autodeposi
 		return nil, earnError(http.StatusBadRequest, "toggle_failed", err.Error())
 	}
 
-	// Mobile parity (M/autodeposit/toggle/confirm/route.ts:124-126, DECIDED
-	// keep in pathmap.md:16): push the enabled copy when the target turns on.
+	// The toggle confirm op sends the mobile wallet push itself (EARN.md,
+	// Decided): the enabled copy when the target turns on.
 	if input.Active {
 		h.Push.send(ctx, account.Wallet.String(), autodepositEnabledPush())
 	}

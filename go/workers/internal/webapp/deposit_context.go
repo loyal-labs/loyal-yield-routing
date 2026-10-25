@@ -19,9 +19,7 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
-// POST /api/smart-accounts/earn-max/context ports the context action of
-// web/apps/web/src/app/api/smart-accounts/mobile/earn-max/route.ts POST
-// : resolve the signed-in wallet's
+// POST /api/smart-accounts/earn-max/context: resolve the signed-in wallet's
 // Earn smart account, sponsoring the on-chain create through
 // earn_sponsor.go's ensureSmartAccount when no ready account exists, after
 // the $1 USDC gate. Nothing here signs anything itself and
@@ -173,10 +171,9 @@ func (h earnRoutes) earnMaxContextUserID(ctx context.Context, wallet solana.Publ
 	return id, nil
 }
 
-// earnMaxWalletUsdcBalance is readEarnMaxWalletUsdcBalance
-// : the wallet's token accounts at confirmed,
-// summed over the ones for the USDC mint whose state is "initialized" — a
-// frozen account holds but does not spend, so it does not count.
+// earnMaxWalletUsdcBalance sums the wallet's USDC token accounts whose state
+// is "initialized" — a frozen account holds but does not spend, so it does
+// not count.
 func (h earnRoutes) earnMaxWalletUsdcBalance(ctx context.Context, wallet solana.PublicKey) (uint64, error) {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
@@ -195,9 +192,8 @@ func (h earnRoutes) earnMaxWalletUsdcBalance(ctx context.Context, wallet solana.
 	return total, nil
 }
 
-// earnMaxContextBalanceGate is mobile.ts:80-88: the shipped clients send no
-// deposit amount, so a wallet holding less than $1 USDC cannot have its
-// setup sponsored.
+// earnMaxContextBalanceGate: the shipped clients send no deposit amount, so a
+// wallet holding less than $1 USDC cannot have its setup sponsored.
 func earnMaxContextBalanceGate(balance uint64) error {
 	if balance < earnMaxContextMinUsdc {
 		return earnError(http.StatusPaymentRequired, "insufficient_balance",
@@ -206,11 +202,10 @@ func earnMaxContextBalanceGate(balance uint64) error {
 	return nil
 }
 
-// earnMaxContextFailed is the Next POST's catch: a
-// provisioning refusal keeps its own status, code and message, and anything
-// else is logged without the request body and answered 500
-// earn_max_unavailable — the status the mobile route ships, kept over
-// EARN.md's generic 503 because this port's contract is that route.
+// earnMaxContextFailed passes a provisioning refusal through with its own
+// status, code and message; anything else is logged and answered 500
+// earn_max_unavailable — this route's shipped contract, not EARN.md's generic
+// 503.
 func earnMaxContextFailed(step string, err error) error {
 	var refused *routeError
 	if errors.As(err, &refused) {

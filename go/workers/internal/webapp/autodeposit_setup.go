@@ -17,13 +17,12 @@ import (
 	"github.com/solana-foundation/solana-go/v2/rpc"
 )
 
-// POST /api/smart-accounts/yield-optimization/autodeposit/setup/confirm ports
-// web/apps/web/src/app/api/smart-accounts/yield-optimization/autodeposit/setup/confirm/route.ts.
-// The device echoes its prepared metadata; the server rebuilds every address
+// POST /api/smart-accounts/yield-optimization/autodeposit/setup/confirm: the
+// device echoes its prepared metadata; the server rebuilds every address
 // canonically, asserts the on-chain artifacts, records the intent
 // (autodeposit_repository.go) and, for an already-active target, schedules the
-// bootstrap sweep. Mobile's sendWalletPush stays inside the op (pathmap.md:14).
-// Remaining family paths (floor/toggle/close confirms, sweeps GET) are units 2-3.
+// bootstrap sweep. The setup confirm op sends the mobile wallet push itself
+// (EARN.md, Decided).
 const autodepositSetupConfirmPath = "/api/smart-accounts/yield-optimization/autodeposit/setup/confirm"
 
 // AutodepositSetupConfirmRequest is the documented body: every unsigned
@@ -473,10 +472,8 @@ func (h earnRoutes) autodepositSetupConfirm(ctx context.Context, in *autodeposit
 		}
 	}
 
-	// Mobile parity (M/autodeposit/setup/confirm/route.ts:713-731, DECIDED
-	// keep in pathmap.md:14): push exactly when a delegation-bearing stage
-	// confirms — the scheduled-sweep copy when one was scheduled, the enabled
-	// copy otherwise.
+	// The setup confirm op sends the mobile wallet push itself (EARN.md,
+	// Decided).
 	if requireDelegation {
 		payload := autodepositEnabledPush()
 		if scheduledSweep != nil {

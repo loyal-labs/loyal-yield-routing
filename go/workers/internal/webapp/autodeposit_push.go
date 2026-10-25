@@ -11,14 +11,9 @@ import (
 	"time"
 )
 
-// Wallet push bridge, ported from
-// web/apps/web/src/lib/push-notifications/wallet-push.server.ts (sendWalletPush
-// :18, autodepositEnabledPush :91, autodepositSweepScheduledPush :98). Expo
-// push tokens register per wallet on the app backend, so Earn delivers pushes
-// through its authenticated send endpoint. The DECIDED pathmap.md:14 row keeps
-// the mobile route's sendWalletPush call inside the Go confirm op. Like the
-// TS, a nil WalletPush (push off at startup) or a failed send never fails the
-// confirm.
+// Wallet push bridge. Expo push tokens register per wallet on the app
+// backend, so Earn delivers pushes through its authenticated send endpoint.
+// The confirm ops send the mobile wallet push themselves (EARN.md, Decided).
 type autodepositWalletPush struct {
 	Body  string `json:"body"`
 	Title string `json:"title"`

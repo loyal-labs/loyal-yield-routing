@@ -14,15 +14,10 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// Autodeposit setup persistence, ported from
-// web/apps/web/src/lib/yield-optimization/earn-autodeposit-repository.server.ts
-// (findTargetForAutodepositSetup :298, assertTargetCanResumeAutodepositSetup
-// :317, targetValuesFromSetup :1375, recordAutodepositSetupIntent :1501) and
-// the bootstrap scheduler (:989) with ensureScheduledAutodepositSlot (:457)
-// and findPendingEarnAutodepositScheduledSweeps (:768). Released clients keep
-// calling setup confirmation after the transaction lands: persist only the
-// user's configuration; LaserStream owns chain_status, signatures, observed
-// slots, policy rows and the delegation projection.
+// Autodeposit setup persistence. Released clients keep calling setup
+// confirmation after the transaction lands: persist only the user's
+// configuration; LaserStream owns chain_status, signatures, observed slots,
+// policy rows and the delegation projection.
 type autodepositTargetRow struct {
 	ID                      int64
 	Active                  bool
@@ -801,11 +796,10 @@ func derefTime(value *time.Time) time.Time {
 	return *value
 }
 
-// autodepositFloorRebaselineSQL is the retained Apps floor-rebaseline CTE,
-// ported statement for statement from
-// earn-autodeposit-repository.server.ts:1812-2004 (locked_target through the
-// final projection join). Event IDs come from the reserved negative floor
-// sequence (migrations/yield/0069_autodeposit_event_id_ranges.sql:13).
+// autodepositFloorRebaselineSQL is the retained Apps floor-rebaseline CTE.
+// Event IDs come from the reserved negative floor sequence
+// balance_sweep_floor_rebaseline_event_id_seq
+// (migrations/yield/0069_autodeposit_event_id_ranges.sql:13).
 const autodepositFloorRebaselineSQL = `WITH locked_target AS (
   SELECT target.id
   FROM loyal_yield.balance_sweep_targets target
@@ -983,10 +977,10 @@ FROM updated_target
 LEFT JOIN projection ON true
 LEFT JOIN inserted_lot ON true`
 
-// ensureScheduledAutodepositSlotTx ports ensureScheduledAutodepositSlot
-// (:457): the same three steps as the Go worker's openSlotFor — take the
-// target's turn, cancel a slot whose lots drained, then upsert against the
-// partial unique index (migrations/yield/0109_autodeposit_one_scheduled_slot.sql:115).
+// ensureScheduledAutodepositSlotTx runs the same three steps as the worker's
+// openSlotFor — take the target's turn, cancel a slot whose lots drained,
+// then upsert against the partial unique index
+// (migrations/yield/0109_autodeposit_one_scheduled_slot.sql:115).
 func ensureScheduledAutodepositSlotTx(ctx context.Context, tx pgx.Tx, now time.Time, targetID int64, mint string, eligibleAfter time.Time) (int64, error) {
 	if _, err := tx.Exec(ctx, `SELECT 1 FROM loyal_yield.balance_sweep_targets WHERE id = $1 FOR UPDATE`, targetID); err != nil {
 		return 0, err
@@ -1018,8 +1012,8 @@ func ensureScheduledAutodepositSlotTx(ctx context.Context, tx pgx.Tx, now time.T
 }
 
 func findScheduledAutodepositSweepBySlotID(ctx context.Context, tx pgx.Tx, target autodepositTargetRow, slotID int64) (*autodepositSweepRow, error) {
-	// The sweep aggregation runs on the caller's pool in TS; inside the
-	// bootstrap tx the same rows are visible, so read them here directly.
+	// The aggregation read must run inside the open tx to see this tx's
+	// uncommitted event and lot inserts.
 	var sweep autodepositSweepRow
 	err := tx.QueryRow(ctx, `SELECT slot.id,
 		COALESCE(MIN(lot.classification::text) FILTER (WHERE lot.status = 'open'), 'unknown'),

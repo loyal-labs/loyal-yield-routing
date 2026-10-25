@@ -18,19 +18,16 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
-// POST /api/smart-accounts/yield-optimization/policies/prepare ports
-// web/apps/web/src/app/api/smart-accounts/yield-optimization/policies/prepare/route.ts
-// (prepareEarnUsdcYieldRoutingPolicy, client.ts:8266-8347): the two unsigned
-// Squads ops that create the Earn route policy at the Settings' next seed and
-// its setup policy at seed+1. No database access, nothing signed, nothing
-// sent; the client compiles both ops against a fresh blockhash.
+// POST /api/smart-accounts/yield-optimization/policies/prepare: the two
+// unsigned Squads ops that create the Earn route policy at the Settings' next
+// seed and its setup policy at seed+1. No database access, nothing signed,
+// nothing sent; the client compiles both ops against a fresh blockhash.
 const earnPoliciesPreparePath = "/api/smart-accounts/yield-optimization/policies/prepare"
 
 const depositExecuteSettingsOperation = "executeSettingsTransactionSync"
 
 // depositMaxPolicySeed is Number.MAX_SAFE_INTEGER: the wire carries seeds as
-// JSON numbers on the TS side, so a seed beyond 2^53-1 cannot round-trip
-// (resolveNextPolicySeed, client.ts:4482-4484).
+// JSON numbers on the TS side, so a seed beyond 2^53-1 cannot round-trip.
 const depositMaxPolicySeed = 1<<53 - 1
 
 const (
@@ -76,8 +73,7 @@ type EarnPolicySwapLanePersistence struct {
 }
 
 // EarnPolicyPersistence is the persistence object the client stores with the
-// confirmed policies (prepareEarnUsdcYieldRoutingPolicy, client.ts:8328-8345,
-// spreading createYieldRoutePolicyPlan's persistence, sdk.ts:203-212).
+// confirmed policies and replays at confirm.
 type EarnPolicyPersistence struct {
 	Cluster              string                          `json:"cluster"`
 	WalletAddress        string                          `json:"walletAddress"`

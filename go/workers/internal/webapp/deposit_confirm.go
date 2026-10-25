@@ -18,16 +18,14 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
-// POST /api/smart-accounts/yield-optimization/deposits/confirm ports
-// web/apps/web/src/app/api/smart-accounts/yield-optimization/deposits/confirm/route.ts
-// plus the mobile twin's quest report (M/deposit/confirm/route.ts:159, DECIDED
-// in pathmap.md). The route is verification-only: the LaserStream projection is
-// the sole writer of Earn deposit state (scripts/web/verify-earn-confirm-single-writer.ts
-// forbids recordConfirmedYieldDeposit here), so this endpoint validates the
-// client's confirmed deposit against the principal, the canonical policy
-// metadata and the on-chain transaction, then acknowledges it. The mobile
-// quest report rides along best-effort after verification. No transaction is
-// built, nothing signed, nothing sent; parity is DB rows + JSON.
+// POST /api/smart-accounts/yield-optimization/deposits/confirm. The route is
+// verification-only: the LaserStream projection is the sole writer of Earn
+// deposit state (scripts/web/verify-earn-confirm-single-writer.ts forbids
+// recordConfirmedYieldDeposit here), so this endpoint validates the client's
+// confirmed deposit against the principal, the canonical policy metadata and
+// the on-chain transaction, then acknowledges it — no transaction is built,
+// nothing signed, nothing sent. The op reports quest completion itself
+// (EARN.md, Decided).
 const earnDepositsConfirmPath = "/api/smart-accounts/yield-optimization/deposits/confirm"
 
 // RPC_VERIFY_ATTEMPTS and RPC_VERIFY_DELAY_MS
@@ -750,9 +748,8 @@ func depositBigIntText(value *big.Int) string {
 	return value.String()
 }
 
-// depositSerializeVerifiedPosition is serializeVerifiedDepositPosition
-// . observedAt keeps TS
-// toISOString's millisecond precision.
+// depositSerializeVerifiedPosition: observedAt keeps toISOString's
+// millisecond precision.
 func depositSerializeVerifiedPosition(canonical depositConfirmCanonical, depositSignature string, confirmedSlot *big.Int, principalAmount *big.Int, verifiedAt time.Time) *EarnDepositConfirmPosition {
 	var supplyApyBps *string
 	if canonical.TargetSupplyApyBps != nil {
@@ -777,14 +774,9 @@ func depositSerializeVerifiedPosition(canonical depositConfirmCanonical, deposit
 	}
 }
 
-// depositReportQuestCompletion is the mobile twin's
-// reportEarnDepositQuestCompletion (M/deposit/confirm/route.ts:159-167,
-// quest-completion-service.ts:190-199), kept in the Go op per pathmap DECIDED.
-// reportQuestCompletion is retired, so a
-// qualifying deposit only records its pending completion row and the disabled
-// reporter's attempts bump; the quest-1 push fires only on "reported", which
-// is unreachable while reporting is disabled. Best-effort: a failure logs and
-// never fails the confirm.
+// depositReportQuestCompletion runs inside the op per the decided behavior
+// (EARN.md, Decided). Reporting is retired: rows stay pending and "reported"
+// is unreachable.
 func (h earnRoutes) depositReportQuestCompletion(ctx context.Context, account EarnAccount, principalAmount *big.Int) {
 	if h.YieldDB == nil || principalAmount == nil || principalAmount.Cmp(depositQuestMinUsdcRaw) < 0 {
 		return
@@ -811,7 +803,8 @@ func (h earnRoutes) depositReportQuestCompletion(ctx context.Context, account Ea
 	if status == "reported" {
 		return
 	}
-	// applyReportResult's disabled branch.
+	// The retired reporter's row contract: bump attempts, keep the status
+	// pending, record the retired reason.
 	if _, err := h.YieldDB.Exec(ctx, `UPDATE loyal_yield.solana_week_quest_completions
   SET attempts = attempts + 1, updated_at = now(), status = 'pending', last_error_code = $2
   WHERE id = $1`, rowID, depositQuestRetiredReason); err != nil {

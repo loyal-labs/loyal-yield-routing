@@ -9,9 +9,7 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
-// The canonical Earn universe, ported from
-// web/packages/loyal-actions/src/constants.ts:7-236 (STABLECOINS order) and
-// :97-134 (Safe basket order). Key order matters: it is the encoded order of
+// The canonical Earn universe. Key order matters: it is the encoded order of
 // the policy's pubkey-list constraints.
 var (
 	depositKLendProgramID = kamino.ProgramID
@@ -113,8 +111,7 @@ func depositDataEquals(value []byte) squads.DataConstraintView {
 	return squads.DataBytes(0, value)
 }
 
-// EarnRoutePayload builds the route policy's two instruction constraints
-// (createEarnProgramInteractionPolicyCreationPayload, client.ts:2013-2050):
+// EarnRoutePayload builds the route policy's two instruction constraints:
 // KLend withdraw at account 2 over the Safe markets, then KLend deposit at
 // account 2 with the liquidity mints at account 5. liquidityMintOwner is nil
 // for a fresh creation (policies/prepare) and the token program when matching
@@ -148,8 +145,7 @@ func EarnRoutePayload(cluster LoyalCluster, vault solana.PublicKey, liquidityMin
 	return []squads.InstructionConstraintView{withdraw, deposit}, nil
 }
 
-// EarnSetupPayload builds the setup policy's one init-obligation constraint
-// (createEarnKaminoInitObligationInstructionConstraint, client.ts:2158-2194):
+// EarnSetupPayload builds the setup policy's one init-obligation constraint:
 // one obligation PDA per Safe market, in market order, plus the vault's user
 // metadata and the rent/system accounts at positions 7 and 8.
 func EarnSetupPayload(cluster LoyalCluster, vault solana.PublicKey) ([]squads.InstructionConstraintView, error) {

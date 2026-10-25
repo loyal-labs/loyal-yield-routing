@@ -19,10 +19,9 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
-// POST /api/smart-accounts/yield-optimization/policies/confirm ports
-// web/apps/web/src/app/api/smart-accounts/yield-optimization/policies/confirm/route.ts:
-// after the client sends the policy-create transactions from policies/prepare,
-// it confirms one of them here. The route checks the body against the
+// POST /api/smart-accounts/yield-optimization/policies/confirm: after the
+// client sends the policy-create transactions from policies/prepare, it
+// confirms one of them here. The route checks the body against the
 // canonical policy metadata derived from the Settings, waits for the claimed
 // signature to reach confirmed on RPC and returns the canonical policy
 // reference. No database access, nothing signed, nothing sent.
