@@ -12,13 +12,12 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
-	"github.com/solana-foundation/solana-go/v2"
-	solanarpc "github.com/solana-foundation/solana-go/v2/rpc"
 )
 
 func ObserveConfirmedRouteSnapshot(ctx context.Context, rpc *chain.Client, view *View, manifest RouteManifest, state *vaultState, ownWriteSlot int64, inputs targetInputs) (Observation, []ConfirmedAccount, error) {
@@ -36,8 +35,8 @@ func ObserveConfirmedRouteSnapshot(ctx context.Context, rpc *chain.Client, view 
 		refreshValuation: func(ctx context.Context, routes []RuntimeRoute, addresses []string, minSlot int64) (int64, []ConfirmedAccount, error) {
 			return simulateRouteValuationRefresh(ctx, v, rpc, routes, addresses, minSlot)
 		},
-		stageAllowance: func(ctx context.Context, slot int64, now time.Time) (*StageAllowance, error) {
-			return observeStageAllowance(ctx, rpc, v, slot, now)
+		stageAllowance: func(ctx context.Context, slot, chainNow int64) (*StageAllowance, error) {
+			return observeStageAllowance(ctx, rpc, v, slot, chainNow)
 		},
 		now: func() time.Time { return time.Now().UTC() },
 	})
@@ -84,7 +83,7 @@ type routeObservationRuntime struct {
 	refreshValuation func(context.Context, []RuntimeRoute, []string, int64) (int64, []ConfirmedAccount, error)
 	read             func(context.Context, []string, int64) (int64, []ConfirmedAccount, []programAccount, error)
 	minSlot          int64
-	stageAllowance   func(context.Context, int64, time.Time) (*StageAllowance, error)
+	stageAllowance   func(context.Context, int64, int64) (*StageAllowance, error)
 	now              func() time.Time
 	inputs           targetInputs
 	state            *vaultState
@@ -210,7 +209,12 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 	}
 	var allowance *StageAllowance
 	if views[0].Snapshot.SquadsIdleRaw > 0 && runtime.stageAllowance != nil {
-		if allowance, err = runtime.stageAllowance(ctx, slot, runtime.now()); err != nil {
+		allowance, err = runtime.stageAllowance(ctx, slot, clockUnixTimestamp(accounts))
+		detail := ""
+		if err != nil {
+			detail = err.Error()
+		}
+		if runtime.state.stageAllowanceNote.changed(detail) && err != nil {
 			_, _ = fmt.Fprintf(os.Stderr, "backyard-rwa-worker: stage allowance unknown: %v\n", err)
 		}
 	}
@@ -759,20 +763,34 @@ func transientValuationRefreshFailure(err error) bool {
 	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, errConfirmedObservationUnavailable)
 }
 
-func observeStageAllowance(ctx context.Context, rpc *chain.Client, v *Vault, slot int64, now time.Time) (*StageAllowance, error) {
+type changeNote struct {
+	mu   sync.Mutex
+	last string
+}
+
+func (n *changeNote) changed(detail string) bool {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.last == detail {
+		return false
+	}
+	n.last = detail
+	return true
+}
+
+func observeStageAllowance(ctx context.Context, rpc *chain.Client, v *Vault, slot, chainNow int64) (*StageAllowance, error) {
+	if chainNow <= 0 {
+		return nil, fmt.Errorf("confirmed batch has no usable Clock sysvar")
+	}
 	policies, err := observeInstalledPolicies(ctx, rpc, v, slot)
 	if err != nil {
 		return nil, err
 	}
-	address, err := policies.account(bridgePolicyKey(v, StageSquadsToVoltr))
-	if err != nil {
+	key := bridgePolicyKey(v, StageSquadsToVoltr)
+	if _, err := policies.account(key); err != nil {
 		return nil, err
 	}
-	_, read, err := rpc.Accounts(ctx, []solana.PublicKey{solanaKey(address)}, solanarpc.CommitmentConfirmed, uint64(max(slot, 0)))
-	if err != nil {
-		return nil, unavailable(err)
-	}
-	usage, err := squads.DecodeSpendingLimitUsage(read[0], solanaKey(fleet.USDCMint))
+	usage, err := squads.DecodeSpendingLimitUsage(policies[key].Raw, solanaKey(fleet.USDCMint))
 	if err != nil {
 		return nil, err
 	}
@@ -780,8 +798,8 @@ func observeStageAllowance(ctx context.Context, rpc *chain.Client, v *Vault, slo
 	if err != nil {
 		return nil, err
 	}
-	if usage.MaxPerPeriod > math.MaxInt64 || usage.RemainingInPeriod > usage.MaxPerPeriod || usage.LastReset <= 0 || usage.LastReset > now.Unix()+period {
+	if usage.MaxPerPeriod > math.MaxInt64 || usage.RemainingInPeriod > usage.MaxPerPeriod || usage.LastReset <= 0 || usage.LastReset > chainNow+period {
 		return nil, fmt.Errorf("stage spending limit usage is out of range")
 	}
-	return &StageAllowance{RemainingRaw: int64(usage.RemainingInPeriod), MaxRaw: int64(usage.MaxPerPeriod), ResetAt: usage.LastReset + period, ObservedAt: now.Unix()}, nil
+	return &StageAllowance{RemainingRaw: int64(usage.RemainingInPeriod), MaxRaw: int64(usage.MaxPerPeriod), ResetAt: usage.LastReset + period, ObservedAt: chainNow}, nil
 }

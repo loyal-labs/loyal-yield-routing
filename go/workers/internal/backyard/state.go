@@ -59,6 +59,7 @@ type debtCustodyRaw int64
 
 // StageAllowance is what Squads lets the stage policy move now: RemainingRaw
 // until ResetAt (unix seconds, lastReset plus period), MaxRaw after it.
+// ObservedAt is the chain Clock, the one Squads resets on, never the worker's.
 type StageAllowance struct {
 	RemainingRaw int64
 	MaxRaw       int64
