@@ -162,6 +162,7 @@ type Snapshot struct {
 	TargetInputs                     string     `json:",omitempty"`
 	ExitLiabilityRaw                 int64      `json:",omitempty"`
 	JournalExitAtReportRaw           int64      `json:",omitempty"`
+	ExitCostBPS                      microBPS   `json:",omitempty"`
 }
 
 func (o Observation) exitCosts() exitCosts {

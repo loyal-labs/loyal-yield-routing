@@ -385,6 +385,9 @@ func observeLaneView(ctx context.Context, manifest RouteManifest, runtime routeO
 	base.Snapshot.PositionDebtValueRaw = int64(nav.PositionDebtValue)
 	base.Snapshot.StrategyNAVRaw = int64(nav.StrategyNAVRaw)
 	base.Snapshot.ExitLiabilityRaw = int64(nav.ExitLiabilityRaw)
+	if nav.ExitCost != nil {
+		base.Snapshot.ExitCostBPS = nav.ExitCost.BPS
+	}
 	base.Snapshot.LTVBPS = ltv
 	base.Snapshot.LiquidationThresholdBPS, base.Snapshot.MaxLTVBPS = position.LiquidationThresholdBPS, position.MaxLTVBPS()
 	entryUSDC, err := routeEntryCapacityUSDC(position, accounts, route)

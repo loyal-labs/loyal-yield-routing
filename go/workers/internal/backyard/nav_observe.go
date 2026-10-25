@@ -92,6 +92,7 @@ type RouteNAVSnapshot struct {
 	Report                  BridgeReport
 	OtherLanes              []heldLaneState
 	ExitLiabilityRaw        uint64
+	ExitCost                *ExitCost
 }
 
 func (n RouteNAVSnapshot) otherLanesState() string {
@@ -473,6 +474,7 @@ func computeRouteNAVForRoutes(slot int64, accounts []ConfirmedAccount, manifest 
 		Report:           BridgeReport{Sequence: uint64(slot), ObservedSlot: uint64(slot), NAVAfterRaw: uint64(nav.Raw), SnapshotDigest: nav.SnapshotDigest},
 		OtherLanes:       otherLanes,
 		ExitLiabilityRaw: exitLiability,
+		ExitCost:         held.exitCost,
 	}, nil
 }
 
