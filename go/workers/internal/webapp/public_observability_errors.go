@@ -311,13 +311,10 @@ func isCapWidgetInternalError(operation, message string) bool {
 }
 
 // obsErrorSeverity is the closed value set of a normalized error's severity.
-// Construction defaults to ERROR; WARN is the only non-error level.
+// Construction always sets ERROR; nothing produces WARN.
 type obsErrorSeverity string
 
-const (
-	obsSeverityError obsErrorSeverity = "ERROR"
-	obsSeverityWarn  obsErrorSeverity = "WARN"
-)
+const obsSeverityError obsErrorSeverity = "ERROR"
 
 type obsNormalizedError struct {
 	browserDiagnostics    *obsChunkDiagnostics
