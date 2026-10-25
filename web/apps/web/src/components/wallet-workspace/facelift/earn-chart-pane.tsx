@@ -341,7 +341,6 @@ function ExpandedChartOverlay({
 }
 
 export function EarnChartPane({
-  banner,
   custom,
   earnData,
   hideAside = false,
@@ -353,7 +352,6 @@ export function EarnChartPane({
   statsPanel,
 }: {
   custom?: ChartCardCustomContent;
-  banner?: ReactNode;
   earnData: EarnPositionData;
   hideAside?: boolean;
   isExpanded: boolean;
@@ -386,7 +384,6 @@ export function EarnChartPane({
             selectedTab={selectedTab}
           />
           {statsPanel}
-          {banner}
         </div>
       )}
 
