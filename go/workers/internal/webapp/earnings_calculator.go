@@ -112,8 +112,7 @@ func sortEarningsEvents(events []earningsEvent) ([]earningsEvent, error) {
 	return ordered, nil
 }
 
-// lastIndexAtOrBefore returns the last i with times[i] <= atMs, or -1.
-// times must be ascending.
+// lastIndexAtOrBefore requires times to be ascending.
 func lastIndexAtOrBefore(times []int64, atMs int64) int {
 	low, high, found := 0, len(times)-1, -1
 	for low <= high {
@@ -248,8 +247,8 @@ type apyIndex struct {
 	unscoped  apySeries
 }
 
-// buildApyIndex ports getApyIndex; samples must be time-sorted, as
-// calculateEarnEarnings sorts them once per request.
+// buildApyIndex requires samples time-sorted, as calculateEarnEarnings
+// sorts them once per request.
 func buildApyIndex(samples []reserveApySample) *apyIndex {
 	index := &apyIndex{byReserve: map[string]*apySeries{}}
 	for position, sample := range samples {
@@ -274,9 +273,9 @@ func buildApyIndex(samples []reserveApySample) *apyIndex {
 	return index
 }
 
-// getApyAt ports earnings-calculator.server.ts:441: the latest sample at or
-// before `at`, reserve-scoped when the reserve has its own series and that
-// series' newest match sits later in the sample list than the unscoped one.
+// getApyAt returns the latest sample at or before `at`, reserve-scoped when
+// the reserve has its own series and that series' newest match sits later in
+// the sample list than the unscoped one.
 func getApyAt(index *apyIndex, reserve *string, at time.Time) *float64 {
 	atMs := at.UnixMilli()
 	if reserve == nil || *reserve == "" {
@@ -440,8 +439,8 @@ func portfolioApyAt(apy *apyIndex, at time.Time, snapshot *earningsPortfolioSnap
 	return &value
 }
 
-// calculatePortfolioWindow ports earnings-calculator.server.ts:705: earnings
-// accrue per snapshot exposure; the principal line still comes from the ledger.
+// calculatePortfolioWindow: earnings accrue per snapshot exposure; the
+// principal line still comes from the ledger.
 func calculatePortfolioWindow(apy *apyIndex, events []earningsEvent, principalIndexes map[principalClamp]*principalIndex, clamp principalClamp, snapshotIdx *portfolioSnapshotIndex, samples []reserveApySample, startAt, endAt time.Time) (earningsWindow, error) {
 	startMs, endMs := startAt.UnixMilli(), endAt.UnixMilli()
 	if endMs <= startMs {

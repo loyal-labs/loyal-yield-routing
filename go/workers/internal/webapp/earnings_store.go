@@ -59,10 +59,9 @@ func marshalEarningsPayload(payload EarningsRangeSet, sourceRevision *string, ch
 	return string(bytes.TrimSuffix(buf.Bytes(), []byte("\n"))), nil
 }
 
-// saveEarningsSnapshot ports saveSnapshot (read-service:712). The upsert is
-// idempotent per scope and last-write-wins only forward in time: an older
-// generated_at can never overwrite a newer row, so a double run or a retry
-// after a crash leaves the newest payload intact.
+// saveEarningsSnapshot's upsert is last-write-wins only forward in time: an
+// older generated_at can never overwrite a newer row, so a double run or a
+// retry after a crash leaves the newest payload intact.
 func saveEarningsSnapshot(ctx context.Context, pool *pgxpool.Pool, args earningsSaveArgs) error {
 	generatedAt := mustParseISO(args.payload.GeneratedAt)
 	payloadJSON, err := marshalEarningsPayload(args.payload, args.sourceRevision, args.checkpoint)

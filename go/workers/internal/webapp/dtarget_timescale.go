@@ -9,16 +9,12 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// Timescale Kamino reserve feed reads behind the Earn deposit-target
-// selection. Ports web/apps/web/src/lib/kamino/timescale-reserve-client.server.ts:
-// currentConfirmedReserves (:353-417), getCurrentEligibleSafeReserves
-// (:734-779), getLatestReserveObservationsByReserve (:685-718) and
-// isRecentChainFrontier (:327-351). A nil dtargetQuerier is the unconfigured
-// TIMESCALEDB_URL feed (getTimescaleReserveDatabaseUrl :225-227).
+// A nil dtargetQuerier is the unconfigured TIMESCALEDB_URL Kamino reserve
+// feed.
 
 const (
-	// dtargetReserveStreamMaxAgeMS bounds both receipt age and the frontier's
-	// actual chain age; the observer timestamps replays when received
+	// dtargetReserveStreamMaxAgeMS bounds the receipt age; observed_at is
+	// receipt time, not chain time.
 	dtargetReserveStreamMaxAgeMS    = 240_000
 	dtargetMinVenueTotalSupplyUSD   = 100_000.0
 	dtargetMaxSupplyApy             = 0.5
@@ -33,6 +29,8 @@ type dtargetQuerier interface {
 // for the RPC null result, err for a failed call.
 type dtargetBlockTimeFunc func(ctx context.Context, slot int64) (unixSeconds int64, ok bool, err error)
 
+// dtargetReserveRow is one current reserve row from the Timescale feed,
+// which has no token-program column.
 type dtargetReserveRow struct {
 	Reserve       string
 	Market        *string

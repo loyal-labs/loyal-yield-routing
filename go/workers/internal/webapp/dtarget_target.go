@@ -13,10 +13,8 @@ const (
 	dtargetSelectionRetryDelay = 700 * time.Millisecond
 )
 
-// dtargetEarnReserveTarget mirrors EarnUsdcReserveTarget
-// : base58 addresses plus the supply APY
-// in basis points; nil SupplyApyBps is "no APY" for a position-derived or
-// static target, never zero.
+// dtargetEarnReserveTarget: nil SupplyApyBps is "no APY" for a
+// position-derived or static target, never zero.
 type dtargetEarnReserveTarget struct {
 	Reserve               string
 	Market                string
@@ -25,9 +23,8 @@ type dtargetEarnReserveTarget struct {
 	SupplyApyBps          *int64
 }
 
-// dtargetActivePosition is the reconciled-position slice the selection reads
-// (Pick<UserYieldPositionRecord, "currentLiquidityMint" | "currentMarket" |
-// "currentReserve">); CurrentMarket is null until the position reconciles.
+// dtargetActivePosition: nil CurrentMarket means the position is not yet
+// reconciled.
 type dtargetActivePosition struct {
 	CurrentLiquidityMint string
 	CurrentMarket        *string
@@ -49,9 +46,6 @@ type dtargetProductMint struct {
 	TokenProgram string
 }
 
-// dtargetProductMints lists mainnet Earn products in STABLECOINS order
-// with the token programs
-// from STABLECOIN_TOKEN_PROGRAMS.
 var dtargetProductMints = []dtargetProductMint{
 	{"CASH", "CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH", "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"},
 	{"USDG", "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH", "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"},
@@ -185,9 +179,6 @@ func dtargetSelectBestSafeEarnReserveTarget(cluster LoyalCluster, product dtarge
 	return nil, nil
 }
 
-// dtargetReserveRowToTarget mirrors reserveRowToTarget
-// : the row's token program is the
-// product's, since Timescale tracks the liquidity mint.
 func dtargetReserveRowToTarget(product dtargetProductMint, row dtargetReserveRow) (*dtargetEarnReserveTarget, error) {
 	if row.Market == nil {
 		return nil, errors.New("Kamino reserve candidate is missing a market.")
@@ -246,11 +237,8 @@ func dtargetFindBestSafeEarnReserveTargetWithRetry(ctx context.Context, q dtarge
 	}
 }
 
-// dtargetFindEarnReserveTargetIneligibility mirrors
-// findEarnReserveTargetIneligibility:
-// the Timescale feed only tracks mainnet, an unconfigured feed never blocks,
-// and a reserve the observer does not sample or one without real liquidity is
-// refused.
+// dtargetFindEarnReserveTargetIneligibility: the Timescale feed only tracks
+// mainnet.
 func dtargetFindEarnReserveTargetIneligibility(ctx context.Context, q dtargetQuerier, getBlockTime dtargetBlockTimeFunc, cluster LoyalCluster, reserve string) (dtargetReserveIneligibility, error) {
 	if cluster != LoyalMainnetBeta {
 		return "", nil

@@ -4,11 +4,8 @@ import "github.com/danielgtaylor/huma/v2"
 
 var earnWithdrawFamily = earnFamily{
 	name: "earn withdraw",
-	// Confirm reads auth and chain state only. The cleanup pair adds the
-	// vault state and full-withdrawal projection reads, and the one write
-	// each — a stale autodeposit row reconciled closed (prepare) and the
-	// recorded close intent (confirm) — over the sweep tables the close
-	// cancel restores and suppresses.
+	// The only writes beyond reads: prepare reconciles a stale autodeposit
+	// row closed; confirm records the close intent.
 	yieldGrants: append([]Grant{
 		TableGrant("loyal_yield.user_yield_position_withdrawals", "SELECT"),
 		TableGrant("loyal_yield.balance_sweep_targets", "SELECT"),

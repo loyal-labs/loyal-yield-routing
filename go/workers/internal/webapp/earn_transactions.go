@@ -18,9 +18,8 @@ var earnTransactionsFamily = earnFamily{
 	register: earnRoutes.registerTransactions,
 }
 
-// Every loyal_yield table the earn-transactions and policy-refund-scan read
-// paths touch, including the sync write the history runs first
-// (user_yield_position_holding_events INSERT, user_yield_positions UPDATE).
+// A history GET needs INSERT/UPDATE: it runs the wallet sync write before
+// reading.
 var earnTransactionYieldGrants = []Grant{
 	TableGrant("loyal_yield.balance_sweep_executions", "SELECT"),
 	TableGrant("loyal_yield.balance_sweep_lot_claims", "SELECT"),
@@ -192,11 +191,9 @@ type earnPolicyRefundScanOutput struct {
 	Body EarnPolicyRefundScanResponse
 }
 
-// earnPolicyRefundScan ports the Next policy-refunds scan route
-// (yield-optimization/policy-refunds/scan/route.ts): the chain and DB liveness
-// facts each route policy and the Earn vault need before a refund may run.
-// Next answers failures with its own 500 scan_failed envelope rather than the
-// 503 earn envelope, so only the auth refusal goes through earnUnavailable.
+// earnPolicyRefundScan answers failures with the 500 scan_failed envelope,
+// not the 503 earn envelope; only the auth refusal goes through
+// earnUnavailable.
 func (h earnRoutes) earnPolicyRefundScan(ctx context.Context, in *sessionRequest) (*earnPolicyRefundScanOutput, error) {
 	account, err := h.account(ctx, in.SessionInput)
 	if err != nil {

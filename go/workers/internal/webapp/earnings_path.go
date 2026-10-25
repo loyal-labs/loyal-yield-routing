@@ -81,12 +81,8 @@ func sortHoldingEventsAscending(events []earningsHoldingEvent) []earningsHolding
 	return ordered
 }
 
-// buildHoldingBackedPortfolioSnapshots ports read-service:227: replay holding
-// events into per-position exposures until the first complete snapshot takes
-// over. Exposure order inside a snapshot follows first insertion, like a JS Map.
-// buildHoldingBackedPortfolioSnapshots ports read-service:227: complete
-// vault-product snapshots, plus a holding-event replay for everything before
-// the first complete one.
+// buildHoldingBackedPortfolioSnapshots: exposure order inside a snapshot
+// follows first insertion, like a JS Map.
 func buildHoldingBackedPortfolioSnapshots(completeSnapshots []earningsPortfolioSnapshot, holdingEvents []earningsHoldingEvent) []earningsPortfolioSnapshot {
 	sortedComplete := sortedPortfolioSnapshots(completeSnapshots)
 	var firstCompleteAtMs int64 = 1 << 62
