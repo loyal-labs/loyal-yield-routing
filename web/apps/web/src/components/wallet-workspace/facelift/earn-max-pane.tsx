@@ -926,6 +926,7 @@ export function EarnMaxWorkspace({
         {isHydrated && !isSignedIn ? (
           <PaneReveal>
             <EarnEmptyPane
+              onOpenChart={() => setIsChartExpanded(true)}
               onOpenSettings={onOpenSettings}
               staticHeadline
               title="Earn MAX"
@@ -940,6 +941,7 @@ export function EarnMaxWorkspace({
               apyBadgeLabel={formatEarnMaxApyLabel(view.forecastApyBps)}
               onBack={onBack}
               onDeposit={() => setScreen("deposit")}
+              onOpenChart={() => setIsChartExpanded(true)}
               title="Earn MAX"
               tooltipText={EARN_MAX_TOOLTIP_TEXT}
             />
