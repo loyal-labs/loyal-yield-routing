@@ -649,15 +649,26 @@ func calculateEarnEarnings(args calculateEarnEarningsArgs) (EarningsRange, error
 	if firstDepositAt != nil {
 		lifetimeStart = *firstDepositAt
 	}
-	lifetime, err := calculateEarningsRange(args, sorted, apy, apySorted, snapshotIdx, principalIndexes, pathIdx, usePortfolio, lifetimeStart, resumeAtMs)
+	ranges := earningsRangeInputs{
+		now:              args.now,
+		clamp:            args.principalClamp,
+		sorted:           sorted,
+		apy:              apy,
+		snapshotIdx:      snapshotIdx,
+		principalIndexes: principalIndexes,
+		pathIdx:          pathIdx,
+		usePortfolio:     usePortfolio,
+		resumeAtMs:       resumeAtMs,
+	}
+	lifetime, err := ranges.window(lifetimeStart)
 	if err != nil {
 		return EarningsRange{}, err
 	}
-	sinceLastDeposit, err := calculateEarningsRange(args, sorted, apy, apySorted, snapshotIdx, principalIndexes, pathIdx, usePortfolio, ptrOr(lastDepositAt, args.now), resumeAtMs)
+	sinceLastDeposit, err := ranges.window(ptrOr(lastDepositAt, args.now))
 	if err != nil {
 		return EarningsRange{}, err
 	}
-	today, err := calculateEarningsRange(args, sorted, apy, apySorted, snapshotIdx, principalIndexes, pathIdx, usePortfolio, startOfLocalDay(args.now, args.timezone), resumeAtMs)
+	today, err := ranges.window(startOfLocalDay(args.now, args.timezone))
 	if err != nil {
 		return EarningsRange{}, err
 	}
@@ -710,18 +721,28 @@ func calculateEarnEarnings(args calculateEarnEarningsArgs) (EarningsRange, error
 	}, nil
 }
 
-// calculateEarningsRange is the inner `calculateRange` closure of
-// calculateEarnEarnings with the checkpoint resume start applied.
-func calculateEarningsRange(args calculateEarnEarningsArgs, sorted []earningsEvent, apy *apyIndex, apySorted []reserveApySample, snapshotIdx *portfolioSnapshotIndex, principalIndexes map[principalClamp]*principalIndex, pathIdx *pathEventIndex, usePortfolio bool, from time.Time, resumeAtMs int64) (earningsWindow, error) {
+type earningsRangeInputs struct {
+	now              time.Time
+	clamp            principalClamp
+	sorted           []earningsEvent
+	apy              *apyIndex
+	snapshotIdx      *portfolioSnapshotIndex
+	principalIndexes map[principalClamp]*principalIndex
+	pathIdx          *pathEventIndex
+	usePortfolio     bool
+	resumeAtMs       int64
+}
+
+func (in earningsRangeInputs) window(from time.Time) (earningsWindow, error) {
 	startMs := from.UnixMilli()
-	if resumeAtMs > startMs {
-		startMs = resumeAtMs
+	if in.resumeAtMs > startMs {
+		startMs = in.resumeAtMs
 	}
 	startAt := msTimeMillis(startMs)
-	if usePortfolio {
-		return calculatePortfolioWindow(apy, sorted, principalIndexes, args.principalClamp, snapshotIdx, apySorted, startAt, args.now)
+	if in.usePortfolio {
+		return calculatePortfolioWindow(in.apy, in.sorted, in.principalIndexes, in.clamp, in.snapshotIdx, in.apy.samples, startAt, in.now)
 	}
-	return calculateWindow(apy, pathIdx, apySorted, startAt, args.now), nil
+	return calculateWindow(in.apy, in.pathIdx, in.apy.samples, startAt, in.now), nil
 }
 
 func firstDepositOf(sorted []earningsEvent, pathSorted []earningsPathEvent) *time.Time {
