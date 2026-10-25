@@ -63,7 +63,6 @@ type RealtimeTokenResponse struct {
 }
 
 type realtimeTokenOutput struct {
-	// no-store is pinned on success and errors alike.
 	CacheControl string `header:"Cache-Control"`
 	Body         RealtimeTokenResponse
 }
@@ -115,7 +114,7 @@ func (h earnRoutes) realtimeIssue(account EarnAccount, contentType string, body 
 			"settingsPda", account.Settings.String(), "walletAddress", account.Wallet.String())
 		return nil, earnError(http.StatusServiceUnavailable, "realtime_unavailable", "Earn realtime is temporarily unavailable.")
 	}
-	return &realtimeTokenOutput{CacheControl: "no-store", Body: RealtimeTokenResponse{
+	return &realtimeTokenOutput{CacheControl: perWalletCacheControl(), Body: RealtimeTokenResponse{
 		AccessToken:   token,
 		EventsURL:     h.RealtimeURL,
 		ExpiresAt:     isoMilliseconds(time.Unix(expiresAt, 0)),

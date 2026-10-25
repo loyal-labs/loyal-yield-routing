@@ -61,7 +61,6 @@ var earnStateFamily = earnFamily{
 }
 
 type earnStateOutput struct {
-	// no-store is deliberate: every byte is per-wallet state.
 	CacheControl string `header:"Cache-Control"`
 	Body         EarnStateResponse
 }
@@ -214,7 +213,7 @@ func (h earnRoutes) earnState(ctx context.Context, in *sessionRequest) (*earnSta
 	nextStep := stateOnboardingNextStep(attempt, position != nil, pair != nil, pair != nil && pair.Setup != nil)
 
 	return &earnStateOutput{
-		CacheControl: "no-store",
+		CacheControl: perWalletCacheControl(),
 		Body: EarnStateResponse{
 			Autodeposit:           autodeposit,
 			Autoswap:              autoswap,

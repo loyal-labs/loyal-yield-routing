@@ -94,8 +94,6 @@ type EarnPositionResponse struct {
 }
 
 type statePositionOutput struct {
-	// Next sets no explicit cache header on this route; no-store is pinned
-	// here because every byte is per-wallet state.
 	CacheControl string `header:"Cache-Control"`
 	Body         EarnPositionResponse
 }
@@ -123,7 +121,7 @@ func (h earnRoutes) earnPosition(ctx context.Context, in *sessionRequest) (*stat
 		return nil, earnUnavailable("earn-position read", err, "position_unavailable", "Earn position is unavailable.")
 	}
 	if position == nil {
-		return &statePositionOutput{CacheControl: "no-store", Body: EarnPositionResponse{}}, nil
+		return &statePositionOutput{CacheControl: perWalletCacheControl(), Body: EarnPositionResponse{}}, nil
 	}
 
 	reserveRows, err := h.stateCurrentReserveRows(ctx, settings, wallet, position.VaultPubkey)
@@ -142,7 +140,7 @@ func (h earnRoutes) earnPosition(ctx context.Context, in *sessionRequest) (*stat
 		return nil, earnUnavailable("earn-position serialize", err, "position_unavailable", "Earn position is unavailable.")
 	}
 	return &statePositionOutput{
-		CacheControl: "no-store",
+		CacheControl: perWalletCacheControl(),
 		Body:         EarnPositionResponse{Position: serialized},
 	}, nil
 }

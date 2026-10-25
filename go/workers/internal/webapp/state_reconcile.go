@@ -37,8 +37,6 @@ type stateReconcileRequest struct {
 }
 
 type stateReconcileOutput struct {
-	// Next's NextResponse.json sets no cache header on this route; no-store
-	// is pinned because the write is per-wallet state.
 	CacheControl string `header:"Cache-Control"`
 	Body         EarnPositionReconcileResponse
 }
@@ -67,7 +65,7 @@ func (h earnRoutes) earnPositionReconcile(ctx context.Context, in *stateReconcil
 		slog.Warn("[earn-position] reconciliation failed", "error", err)
 		return nil, earnError(http.StatusInternalServerError, "reconcile_failed", err.Error())
 	}
-	return &stateReconcileOutput{CacheControl: "no-store", Body: result}, nil
+	return &stateReconcileOutput{CacheControl: perWalletCacheControl(), Body: result}, nil
 }
 
 func stateReconcileMissing(vault *stateManagedVaultRow) EarnPositionReconcileResponse {
