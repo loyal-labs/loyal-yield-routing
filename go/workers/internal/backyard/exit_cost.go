@@ -27,6 +27,8 @@ const exitQuoteInterval = time.Hour
 
 const selectorDestinationExitUnpriced = "selector_destination_exit_unpriced"
 
+const exitUnpriced = "exit_unpriced"
+
 type ExitCost struct {
 	Lane                string
 	BPS                 microBPS
@@ -96,7 +98,7 @@ func (e exitCosts) at(lane string, heldRaw uint64, mark kamino.ScaledFraction) (
 	case costs.Quote != nil:
 		return *costs.Quote, nil
 	}
-	return ExitCost{}, fmt.Errorf("lane %s has no exit quote and no realized exit cost", lane)
+	return ExitCost{}, staleHoldFrom(fmt.Errorf("lane %s has no exit quote and no realized exit cost", lane), exitUnpriced)
 }
 
 func (c ExitCost) outlier(realized *ExitCost) bool {
@@ -108,7 +110,7 @@ func (e exitCosts) quoteDue(b heldExitBasis, lastAttempt, now time.Time) bool {
 	switch {
 	case costs.Quote != nil && costs.Quote.fresh(b.heldRaw, b.mark):
 		return false
-	case costs.Quote == nil && costs.Realized == nil:
+	case costs.Realized == nil:
 		return true
 	}
 	return now.Sub(lastAttempt) >= exitQuoteInterval
@@ -157,10 +159,10 @@ func (q *exitQuoter) quote(ctx context.Context, m RouteManifest, slot int64, acc
 			q.events.exitQuoteFailed(lane, err)
 			continue
 		}
-		if cost.outlier(costs[lane].Realized) {
-			q.events.exitQuoteOutlier(cost, *costs[lane].Realized)
-		}
 		if stored {
+			if cost.outlier(costs[lane].Realized) {
+				q.events.exitQuoteOutlier(cost, *costs[lane].Realized)
+			}
 			costs = costs.withQuote(cost)
 		}
 	}
@@ -190,7 +192,7 @@ type heldExitBasis struct {
 
 func readHeldExitBasis(m RouteManifest, accounts []ConfirmedAccount, route RuntimeRoute, slot int64) (heldExitBasis, bool, error) {
 	st, err := readStepState(m.vault, accounts, route, slot)
-	if err != nil || st.position.CollateralDepositedRaw == 0 {
+	if err != nil || st.position.CollateralDepositedRaw == 0 && st.collateralBalance == 0 {
 		return heldExitBasis{}, false, err
 	}
 	if st.cash, err = vaultCustodyRaw(m.vault, accounts, m.vault.cash, fleet.USDCMint, bridgeTokenProgram); err != nil {

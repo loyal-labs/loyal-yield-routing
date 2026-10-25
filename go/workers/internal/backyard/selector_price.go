@@ -589,6 +589,12 @@ func (p lanePricer) settleHeld(ctx context.Context, o Observation, s Snapshot, m
 
 func (p lanePricer) priceHeldExit(ctx context.Context, b heldExitBasis, slot int64, at time.Time) (ExitCost, error) {
 	receipts, sold, value := b.st.position.CollateralDepositedRaw, b.heldRaw, b.markValue
+	if receipts == 0 {
+		var err error
+		if receipts, err = payoffReceiptsForLiquidity(b.st.collateral.totalLiquiditySF, b.st.collateral.terms.CollateralMintTotalSupply, b.heldRaw); err != nil {
+			return ExitCost{}, staleHoldFrom(err, "exit_quote_unavailable")
+		}
+	}
 	if limit := stepLegCap(b.st.route); limit.exceeded(receipts) {
 		receipts = limit.raw
 		liquidity, err := b.st.collateral.redeemLiquidityRaw(receipts)
