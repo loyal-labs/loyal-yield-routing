@@ -14,6 +14,7 @@ import (
 	"github.com/solana-foundation/solana-go/v2/rpc"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earncatalog"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnprep"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 )
@@ -21,8 +22,8 @@ import (
 const tokenAccountDataLen = 165
 
 var (
-	mainnetUSDCMint = solana.MustPublicKeyFromBase58("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v")
-	devnetUSDCMint  = solana.MustPublicKeyFromBase58("4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU")
+	mainnetUSDCMint = solana.MustPublicKeyFromBase58(earncatalog.USDC)
+	devnetUSDCMint  = solana.MustPublicKeyFromBase58(earncatalog.DevnetUSDC)
 )
 
 func earnUSDCMint(cluster LoyalCluster) solana.PublicKey {

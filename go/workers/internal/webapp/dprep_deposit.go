@@ -14,6 +14,7 @@ import (
 	"github.com/solana-foundation/solana-go/v2/rpc"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earncatalog"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnprep"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
@@ -60,7 +61,7 @@ func dprepTargetOf(target dtargetEarnReserveTarget) (dprepTarget, error) {
 	return out, nil
 }
 
-func (h dprepRoutes) prepareDeposit(ctx context.Context, account EarnAccount, amount uint64, product dtargetProductMint) (*dprepPreparedDeposit, error) {
+func (h dprepRoutes) prepareDeposit(ctx context.Context, account EarnAccount, amount uint64, product earncatalog.Product) (*dprepPreparedDeposit, error) {
 	if account.Cluster != LoyalMainnetBeta {
 		return nil, errors.New("Earn deposit prepare is served by Go on mainnet-beta only.")
 	}

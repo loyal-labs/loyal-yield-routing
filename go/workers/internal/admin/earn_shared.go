@@ -2,6 +2,7 @@ package admin
 
 import (
 	"fmt"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earncatalog"
 	"time"
 )
 
@@ -13,14 +14,14 @@ type EarnStablecoin struct {
 	Symbol   string `json:"symbol"`
 }
 
-var EarnStablecoins = []EarnStablecoin{
-	{earnStablecoinDecimals, "CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH", "CASH"},
-	{earnStablecoinDecimals, "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH", "USDG"},
-	{earnStablecoinDecimals, "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo", "PYUSD"},
-	{earnStablecoinDecimals, "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "USDC"},
-	{earnStablecoinDecimals, "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB", "USDT"},
-	{earnStablecoinDecimals, "USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA", "USDS"},
-}
+var EarnStablecoins = func() []EarnStablecoin {
+	products := earncatalog.Mainnet()
+	coins := make([]EarnStablecoin, len(products))
+	for i, product := range products {
+		coins[i] = EarnStablecoin{earnStablecoinDecimals, product.Mint, product.Symbol}
+	}
+	return coins
+}()
 
 var earnSafeRiskBasketMarkets = []string{
 	"7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF",

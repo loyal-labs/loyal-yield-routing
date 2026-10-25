@@ -5,6 +5,7 @@ import (
 
 	"github.com/solana-foundation/solana-go/v2"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earncatalog"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
@@ -14,17 +15,8 @@ import (
 var (
 	depositKLendProgramID = kamino.ProgramID
 
-	depositMainnetStableMints = []solana.PublicKey{
-		solana.MustPublicKeyFromBase58("CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH"),
-		solana.MustPublicKeyFromBase58("2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH"),
-		solana.MustPublicKeyFromBase58("2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo"),
-		solana.MustPublicKeyFromBase58("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"),
-		solana.MustPublicKeyFromBase58("Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"),
-		solana.MustPublicKeyFromBase58("USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA"),
-	}
-	depositDevnetStableMints = []solana.PublicKey{
-		solana.MustPublicKeyFromBase58("4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"),
-	}
+	depositMainnetStableMints = catalogMintKeys(earncatalog.Mainnet())
+	depositDevnetStableMints  = catalogMintKeys(earncatalog.Devnet())
 
 	depositMainnetSafeMarkets = []solana.PublicKey{
 		solana.MustPublicKeyFromBase58("7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF"),
@@ -37,7 +29,7 @@ var (
 		solana.MustPublicKeyFromBase58("27MKCQo5qP7ijrwWSMKX2Jeb3PhK2NZmHQ9befWVRS4J"),
 	}
 
-	depositTokenProgramID = solana.MustPublicKeyFromBase58("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
+	depositTokenProgramID = solana.MustPublicKeyFromBase58(earncatalog.SPLTokenProgram)
 
 	depositMainnetUSDCReserve = solana.MustPublicKeyFromBase58("D6q6wuQSrifJKZYpR1M8R4YawnLDtDsMmWM1NbBmgJ59")
 	depositDevnetUSDCReserve  = solana.MustPublicKeyFromBase58("9uKMtFU9UJ9DfbwzCReGENb31appi79KTEeDGdCnvMjy")
@@ -58,6 +50,14 @@ type depositEarnTarget struct {
 	Market                      solana.PublicKey
 	Reserve                     solana.PublicKey
 	WithdrawDiscriminator       []byte
+}
+
+func catalogMintKeys(products []earncatalog.Product) []solana.PublicKey {
+	keys := make([]solana.PublicKey, len(products))
+	for i, product := range products {
+		keys[i] = solana.MustPublicKeyFromBase58(product.Mint)
+	}
+	return keys
 }
 
 func depositEarnTargetFor(cluster LoyalCluster) (depositEarnTarget, error) {

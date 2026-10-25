@@ -5,6 +5,7 @@ package webapp
 
 import (
 	"cmp"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earncatalog"
 	"math"
 	"slices"
 	"time"
@@ -37,7 +38,7 @@ const (
 const (
 	KaminoMainMarket            = "7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF"
 	KaminoMainMarketUSDCReserve = "D6q6wuQSrifJKZYpR1M8R4YawnLDtDsMmWM1NbBmgJ59"
-	KaminoMainMarketUSDCMint    = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+	KaminoMainMarketUSDCMint    = earncatalog.USDC
 )
 
 type forecastSharePricePoint struct {

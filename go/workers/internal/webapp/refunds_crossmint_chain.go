@@ -10,6 +10,7 @@ import (
 	"github.com/solana-foundation/solana-go/v2/rpc"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earncatalog"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnprep"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
@@ -39,17 +40,15 @@ type crossMintStablecoin struct {
 }
 
 var crossMintStablecoins = func() []crossMintStablecoin {
-	must := func(text string) solana.PublicKey {
-		return solana.MustPublicKeyFromBase58(text)
+	products := earncatalog.Mainnet()
+	stablecoins := make([]crossMintStablecoin, len(products))
+	for i, product := range products {
+		stablecoins[i] = crossMintStablecoin{
+			Mint:    solana.MustPublicKeyFromBase58(product.Mint),
+			Program: solana.MustPublicKeyFromBase58(product.TokenProgram),
+		}
 	}
-	return []crossMintStablecoin{
-		{must("CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH"), solana.Token2022ProgramID},
-		{must("2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH"), solana.Token2022ProgramID},
-		{must("2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo"), solana.Token2022ProgramID},
-		{must("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"), solana.TokenProgramID},
-		{must("Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"), solana.TokenProgramID},
-		{must("USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA"), solana.TokenProgramID},
-	}
+	return stablecoins
 }()
 
 func crossMintCanonicalVaultATAs(vault solana.PublicKey) ([]solana.PublicKey, error) {

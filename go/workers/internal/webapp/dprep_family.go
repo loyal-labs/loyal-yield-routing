@@ -13,6 +13,7 @@ import (
 	"github.com/solana-foundation/solana-go/v2"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earncatalog"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnprep"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
@@ -130,7 +131,7 @@ func (h dprepRoutes) prepare(ctx context.Context, in *dprepInput) (*dprepOutput,
 	return &dprepOutput{Body: response}, nil
 }
 
-func (h dprepRoutes) principal(ctx context.Context, session Session, mobile bool, amount uint64, product dtargetProductMint) (Principal, error) {
+func (h dprepRoutes) principal(ctx context.Context, session Session, mobile bool, amount uint64, product earncatalog.Product) (Principal, error) {
 	settings, smartAccount, err := session.account(ctx)
 	var refused *AuthError
 	if mobile && errors.As(err, &refused) && refused.Failure == SmartAccountRequired {

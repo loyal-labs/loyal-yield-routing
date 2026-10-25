@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"testing"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earncatalog"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
 
@@ -55,7 +56,7 @@ func setupFixture(t *testing.T, stage SetupStage) (*SweepWireBuilder, DepositPla
 		plan.Reserve:            reserve,
 		plan.Market:             {Address: plan.Market, Owner: kamino.ProgramID.String()},
 		plan.Target.VaultPubkey: {Address: plan.Target.VaultPubkey, Owner: systemProgramZero, Lamports: 10_000_000},
-		ata:                     {Address: ata, Owner: splTokenID, Data: custodyData},
+		ata:                     {Address: ata, Owner: earncatalog.SPLTokenProgram, Data: custodyData},
 		metadata:                {Address: metadata, Owner: kamino.ProgramID.String(), Lamports: 1, Data: metadataData},
 		obligation:              {Address: obligation, Owner: kamino.ProgramID.String(), Lamports: 1, Data: obligationData},
 	}

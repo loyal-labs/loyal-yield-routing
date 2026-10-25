@@ -15,6 +15,7 @@ import (
 	"github.com/solana-foundation/solana-go/v2"
 	"github.com/solana-foundation/solana-go/v2/rpc"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earncatalog"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
@@ -33,7 +34,7 @@ const earnMaxContextMinUsdc = uint64(1_000_000)
 // earnMaxContextUsdcMint is VOLTR_ASSET_MINT
 // , the mainnet USDC whose
 // spendable balance the gate reads.
-var earnMaxContextUsdcMint = solana.MustPublicKeyFromBase58("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v")
+var earnMaxContextUsdcMint = solana.MustPublicKeyFromBase58(earncatalog.USDC)
 
 // EarnMaxContextRequest is the POST body. The Next route dispatches
 // summary/activity/context on one path; this dedicated path implies context,

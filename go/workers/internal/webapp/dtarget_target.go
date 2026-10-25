@@ -3,6 +3,7 @@ package webapp
 import (
 	"context"
 	"errors"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earncatalog"
 	"log/slog"
 	"math"
 	"time"
@@ -40,30 +41,11 @@ const (
 	dtargetUnsampledReserve    dtargetReserveIneligibility = "unsampled_reserve"
 )
 
-type dtargetProductMint struct {
-	Symbol       string
-	Mint         string
-	TokenProgram string
-}
-
-var dtargetProductMints = []dtargetProductMint{
-	{"CASH", "CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH", "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"},
-	{"USDG", "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH", "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"},
-	{"PYUSD", "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo", "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"},
-	{"USDC", "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"},
-	{"USDT", "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB", "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"},
-	{"USDS", "USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA", "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"},
-}
-
 const (
-	dtargetUSDCMint               = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
-	dtargetDevnetUSDCMint         = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
 	dtargetKaminoMainMarket       = "7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF"
 	dtargetDevnetMainMarket       = "27MKCQo5qP7ijrwWSMKX2Jeb3PhK2NZmHQ9befWVRS4J"
 	dtargetDevnetMainUSDCReserve  = "9uKMtFU9UJ9DfbwzCReGENb31appi79KTEeDGdCnvMjy"
 	dtargetMainnetMainUSDCReserve = "D6q6wuQSrifJKZYpR1M8R4YawnLDtDsMmWM1NbBmgJ59"
-	dtargetSplTokenProgram        = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-	dtargetSplToken2022Program    = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
 )
 
 var dtargetSafeMarkets = map[LoyalCluster][]string{
@@ -77,20 +59,17 @@ var dtargetSafeMarkets = map[LoyalCluster][]string{
 	LoyalDevnet: {dtargetDevnetMainMarket},
 }
 
-func dtargetProductMintsForCluster(cluster LoyalCluster) []dtargetProductMint {
-	if cluster == LoyalDevnet {
-		return []dtargetProductMint{{Symbol: "USDC", Mint: dtargetDevnetUSDCMint, TokenProgram: dtargetSplTokenProgram}}
-	}
-	return dtargetProductMints
+func dtargetProductMintsForCluster(cluster LoyalCluster) []earncatalog.Product {
+	return earncatalog.ForCluster(cluster == LoyalDevnet)
 }
 
-func dtargetResolveEarnProductAsset(cluster LoyalCluster, mint string) (dtargetProductMint, error) {
+func dtargetResolveEarnProductAsset(cluster LoyalCluster, mint string) (earncatalog.Product, error) {
 	for _, product := range dtargetProductMintsForCluster(cluster) {
 		if product.Mint == mint {
 			return product, nil
 		}
 	}
-	return dtargetProductMint{}, errors.New("mint is not a supported Earn product mint.")
+	return earncatalog.Product{}, errors.New("mint is not a supported Earn product mint.")
 }
 
 // dtargetSupplyApyToBps mirrors supplyApyToBps
@@ -106,15 +85,15 @@ func dtargetMainUsdcEarnReserveTarget(cluster LoyalCluster) dtargetEarnReserveTa
 		return dtargetEarnReserveTarget{
 			Reserve:               dtargetDevnetMainUSDCReserve,
 			Market:                dtargetDevnetMainMarket,
-			LiquidityMint:         dtargetDevnetUSDCMint,
-			LiquidityTokenProgram: dtargetSplTokenProgram,
+			LiquidityMint:         earncatalog.DevnetUSDC,
+			LiquidityTokenProgram: earncatalog.SPLTokenProgram,
 		}
 	}
 	return dtargetEarnReserveTarget{
 		Reserve:               dtargetMainnetMainUSDCReserve,
 		Market:                dtargetKaminoMainMarket,
-		LiquidityMint:         dtargetUSDCMint,
-		LiquidityTokenProgram: dtargetSplTokenProgram,
+		LiquidityMint:         earncatalog.USDC,
+		LiquidityTokenProgram: earncatalog.SPLTokenProgram,
 	}
 }
 
@@ -139,11 +118,11 @@ func dtargetEarnReserveTargetFromActivePosition(position dtargetActivePosition, 
 // stablecoin, unknown mints dropped, ties keeping the earlier row, output in
 // STABLECOINS order. Rows arrive ordered by supply_apy DESC (:769).
 func dtargetBestApyReserveByStablecoin(rows []dtargetReserveRow) []dtargetReserveRow {
-	mintToSymbol := make(map[string]string, len(dtargetProductMints))
-	for _, product := range dtargetProductMints {
+	mintToSymbol := make(map[string]string, len(earncatalog.Mainnet()))
+	for _, product := range earncatalog.Mainnet() {
 		mintToSymbol[product.Mint] = product.Symbol
 	}
-	best := make(map[string]dtargetReserveRow, len(dtargetProductMints))
+	best := make(map[string]dtargetReserveRow, len(earncatalog.Mainnet()))
 	for _, row := range rows {
 		symbol, ok := mintToSymbol[row.LiquidityMint]
 		if !ok {
@@ -155,7 +134,7 @@ func dtargetBestApyReserveByStablecoin(rows []dtargetReserveRow) []dtargetReserv
 		best[symbol] = row
 	}
 	out := make([]dtargetReserveRow, 0, len(best))
-	for _, product := range dtargetProductMints {
+	for _, product := range earncatalog.Mainnet() {
 		if row, ok := best[product.Symbol]; ok {
 			out = append(out, row)
 		}
@@ -163,7 +142,7 @@ func dtargetBestApyReserveByStablecoin(rows []dtargetReserveRow) []dtargetReserv
 	return out
 }
 
-func dtargetSelectBestSafeEarnReserveTarget(cluster LoyalCluster, product dtargetProductMint, rows []dtargetReserveRow) (*dtargetEarnReserveTarget, error) {
+func dtargetSelectBestSafeEarnReserveTarget(cluster LoyalCluster, product earncatalog.Product, rows []dtargetReserveRow) (*dtargetEarnReserveTarget, error) {
 	safeMarkets := make(map[string]bool, len(dtargetSafeMarkets[cluster]))
 	for _, market := range dtargetSafeMarkets[cluster] {
 		safeMarkets[market] = true
@@ -179,7 +158,7 @@ func dtargetSelectBestSafeEarnReserveTarget(cluster LoyalCluster, product dtarge
 	return nil, nil
 }
 
-func dtargetReserveRowToTarget(product dtargetProductMint, row dtargetReserveRow) (*dtargetEarnReserveTarget, error) {
+func dtargetReserveRowToTarget(product earncatalog.Product, row dtargetReserveRow) (*dtargetEarnReserveTarget, error) {
 	if row.Market == nil {
 		return nil, errors.New("Kamino reserve candidate is missing a market.")
 	}
@@ -196,7 +175,7 @@ func dtargetReserveRowToTarget(product dtargetProductMint, row dtargetReserveRow
 // dtargetFindBestSafeEarnReserveTarget mirrors findBestSafeEarnReserveTarget
 // : devnet falls back to the static
 // USDC venue and never samples Timescale (the feed only tracks mainnet).
-func dtargetFindBestSafeEarnReserveTarget(ctx context.Context, q dtargetQuerier, getBlockTime dtargetBlockTimeFunc, cluster LoyalCluster, product dtargetProductMint) (*dtargetEarnReserveTarget, error) {
+func dtargetFindBestSafeEarnReserveTarget(ctx context.Context, q dtargetQuerier, getBlockTime dtargetBlockTimeFunc, cluster LoyalCluster, product earncatalog.Product) (*dtargetEarnReserveTarget, error) {
 	if cluster == LoyalDevnet {
 		if product.Symbol != "USDC" {
 			return nil, nil
@@ -220,7 +199,7 @@ func dtargetStablecoinMints(cluster LoyalCluster) []string {
 	return mints
 }
 
-func dtargetFindBestSafeEarnReserveTargetWithRetry(ctx context.Context, q dtargetQuerier, getBlockTime dtargetBlockTimeFunc, cluster LoyalCluster, product dtargetProductMint) (*dtargetEarnReserveTarget, error) {
+func dtargetFindBestSafeEarnReserveTargetWithRetry(ctx context.Context, q dtargetQuerier, getBlockTime dtargetBlockTimeFunc, cluster LoyalCluster, product earncatalog.Product) (*dtargetEarnReserveTarget, error) {
 	for attempt := 0; ; attempt++ {
 		target, err := dtargetFindBestSafeEarnReserveTarget(ctx, q, getBlockTime, cluster, product)
 		if err != nil {

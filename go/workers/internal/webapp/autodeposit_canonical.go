@@ -13,6 +13,7 @@ import (
 	"github.com/solana-foundation/solana-go/v2/rpc"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earncatalog"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnprep"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
@@ -22,21 +23,6 @@ const (
 	autodepositMonthPeriodSeconds uint64 = 30 * 24 * 60 * 60
 	autodepositMaxSafePolicySeed  uint64 = 1<<53 - 1
 
-	autodepositSubscriptionsProgramID = "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
-	autodepositDevnetUSDCMint         = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
-
-	autodepositSubscriptionAuthoritySeed = "SubscriptionAuthority"
-	autodepositSubscriptionDelegateSeed  = "delegation"
-	autodepositSubscriptionEventSeed     = "event_authority"
-
-	autodepositDelegationDiscriminator   = 3
-	autodepositDelegationDelegatorOffset = 3
-	autodepositDelegationDelegateeOffset = 35
-	autodepositDelegationAuthorityOffset = 107
-	autodepositDelegationMintOffset      = 139
-	autodepositDelegationPerPeriodOffset = 195
-	autodepositDelegationDataLen         = 211
-
 	// SPL token account layout: the delegate COption sits between the amount
 	// and the account state; its delegated amount follows is_native.
 	autodepositTokenDelegateTagOffset     = 72
@@ -44,7 +30,7 @@ const (
 	autodepositTokenDelegatedAmountOffset = 121
 )
 
-var autodepositSubscriptionsProgram = solana.MustPublicKeyFromBase58(autodepositSubscriptionsProgramID)
+var autodepositSubscriptionsProgram = solana.MustPublicKeyFromBase58(earncatalog.SubscriptionsProgram)
 
 // autodepositSetupInput is the parsed POST /autodeposit/setup/confirm body,
 // mirroring ConfirmedEarnAutodepositSetupInput (BigInt fields become uint64;
@@ -80,10 +66,9 @@ type autodepositSetupInput struct {
 
 func autodepositUSDCMint(cluster LoyalCluster) solana.PublicKey {
 	if cluster == LoyalDevnet {
-		return solana.MustPublicKeyFromBase58(autodepositDevnetUSDCMint)
+		return solana.MustPublicKeyFromBase58(earncatalog.DevnetUSDC)
 	}
-	// fleet.USDCMint, inlined to keep this package off the fleet graph.
-	return solana.MustPublicKeyFromBase58("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v")
+	return solana.MustPublicKeyFromBase58(earncatalog.USDC)
 }
 
 func normalizeLoyalCluster(cluster string) (string, error) {
@@ -98,7 +83,7 @@ func normalizeLoyalCluster(cluster string) (string, error) {
 
 func autodepositSubscriptionAuthority(wallet, mint solana.PublicKey) solana.PublicKey {
 	key, _, err := solana.FindProgramAddress([][]byte{
-		[]byte(autodepositSubscriptionAuthoritySeed), wallet[:], mint[:],
+		[]byte(earncatalog.SubscriptionAuthoritySeed), wallet[:], mint[:],
 	}, autodepositSubscriptionsProgram)
 	if err != nil {
 		return solana.PublicKey{}
@@ -108,7 +93,7 @@ func autodepositSubscriptionAuthority(wallet, mint solana.PublicKey) solana.Publ
 
 func autodepositRecurringDelegation(authority, delegator, delegatee solana.PublicKey, nonce uint64) solana.PublicKey {
 	key, _, err := solana.FindProgramAddress([][]byte{
-		[]byte(autodepositSubscriptionDelegateSeed), authority[:], delegator[:], delegatee[:],
+		[]byte(earncatalog.SubscriptionDelegateSeed), authority[:], delegator[:], delegatee[:],
 		binary.LittleEndian.AppendUint64(nil, nonce),
 	}, autodepositSubscriptionsProgram)
 	if err != nil {
@@ -119,7 +104,7 @@ func autodepositRecurringDelegation(authority, delegator, delegatee solana.Publi
 
 func autodepositSubscriptionEventAuthority() solana.PublicKey {
 	key, _, err := solana.FindProgramAddress([][]byte{
-		[]byte(autodepositSubscriptionEventSeed),
+		[]byte(earncatalog.SubscriptionEventSeed),
 	}, autodepositSubscriptionsProgram)
 	if err != nil {
 		return solana.PublicKey{}
@@ -330,12 +315,12 @@ func autodepositCanonicalTransferConstraint(in autodepositSetupInput, eventAutho
 				AccountIndex: 0,
 				Owner:        &autodepositSubscriptionsProgram,
 				AccountData: []squads.DataConstraintView{
-					u8At(0, autodepositDelegationDiscriminator),
-					bytesAt(autodepositDelegationDelegatorOffset, walletFromInput(in)),
-					bytesAt(autodepositDelegationDelegateeOffset, vault),
-					bytesAt(autodepositDelegationAuthorityOffset, subscriptionAuthority),
-					bytesAt(autodepositDelegationMintOffset, usdcMint),
-					{DataOffset: autodepositDelegationPerPeriodOffset, Operator: squads.OpLessThanOrEqualTo, DataValue: squads.DataValueView{Kind: squads.ValueU64, U64: in.AmountPerPeriodRaw}},
+					u8At(0, earncatalog.DelegationDiscriminator),
+					bytesAt(earncatalog.DelegationDelegatorOffset, walletFromInput(in)),
+					bytesAt(earncatalog.DelegationDelegateeOffset, vault),
+					bytesAt(earncatalog.DelegationAuthorityOffset, subscriptionAuthority),
+					bytesAt(earncatalog.DelegationMintOffset, usdcMint),
+					{DataOffset: earncatalog.DelegationPerPeriodOffset, Operator: squads.OpLessThanOrEqualTo, DataValue: squads.DataValueView{Kind: squads.ValueU64, U64: in.AmountPerPeriodRaw}},
 				},
 			},
 			owned(1, autodepositSubscriptionsProgram, subscriptionAuthority),
@@ -431,10 +416,10 @@ func assertAutodepositCanonicalArtifacts(accounts []*chain.Account, in autodepos
 	if delegation.Owner != autodepositSubscriptionsProgram {
 		return errors.New("Autodeposit recurring delegation owner is invalid.")
 	}
-	if len(delegation.Data) < autodepositDelegationDataLen {
+	if len(delegation.Data) < earncatalog.DelegationDataLen {
 		return errors.New("Autodeposit recurring delegation data is incomplete.")
 	}
-	if delegation.Data[0] != autodepositDelegationDiscriminator {
+	if delegation.Data[0] != earncatalog.DelegationDiscriminator {
 		return errors.New("Autodeposit recurring delegation discriminator is invalid.")
 	}
 	for _, check := range []struct {
@@ -442,16 +427,16 @@ func assertAutodepositCanonicalArtifacts(accounts []*chain.Account, in autodepos
 		offset   int
 		expected solana.PublicKey
 	}{
-		{"delegator", autodepositDelegationDelegatorOffset, wallet},
-		{"delegatee", autodepositDelegationDelegateeOffset, vault},
-		{"authority", autodepositDelegationAuthorityOffset, subscriptionAuthority},
-		{"mint", autodepositDelegationMintOffset, usdcMint},
+		{"delegator", earncatalog.DelegationDelegatorOffset, wallet},
+		{"delegatee", earncatalog.DelegationDelegateeOffset, vault},
+		{"authority", earncatalog.DelegationAuthorityOffset, subscriptionAuthority},
+		{"mint", earncatalog.DelegationMintOffset, usdcMint},
 	} {
 		if solana.PublicKeyFromBytes(delegation.Data[check.offset:check.offset+32]) != check.expected {
 			return fmt.Errorf("Autodeposit recurring delegation %s does not match.", check.label)
 		}
 	}
-	if binary.LittleEndian.Uint64(delegation.Data[autodepositDelegationPerPeriodOffset:autodepositDelegationPerPeriodOffset+8]) != in.AmountPerPeriodRaw {
+	if binary.LittleEndian.Uint64(delegation.Data[earncatalog.DelegationPerPeriodOffset:earncatalog.DelegationPerPeriodOffset+8]) != in.AmountPerPeriodRaw {
 		return errors.New("Autodeposit recurring delegation amount does not match.")
 	}
 	return nil

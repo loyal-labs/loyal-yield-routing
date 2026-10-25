@@ -14,6 +14,7 @@ import (
 	"github.com/solana-foundation/solana-go/v2/rpc"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earncatalog"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnprep"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
@@ -414,7 +415,7 @@ func buildAutodepositClosePrepared(ctx context.Context, client *chain.Client, in
 				{PublicKey: in.Wallet, IsSigner: true, IsWritable: true},
 				{PublicKey: close_.RecurringDelegation, IsWritable: true},
 			},
-			Data: []byte{autodepositDelegationDiscriminator},
+			Data: []byte{earncatalog.DelegationDiscriminator},
 		}
 		instructions = append(instructions, wirePreparedInstruction(revoke))
 	}

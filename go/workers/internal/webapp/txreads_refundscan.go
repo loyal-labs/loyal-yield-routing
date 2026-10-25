@@ -11,8 +11,8 @@ import (
 	"github.com/solana-foundation/solana-go/v2"
 	"github.com/solana-foundation/solana-go/v2/rpc"
 
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/autodeposit"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earncatalog"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnprep"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
@@ -20,22 +20,7 @@ import (
 
 // Read-only unit: no DB writes, so re-running it changes nothing.
 
-var txreadsSubscriptionsProgramKey = solana.MustPublicKeyFromBase58(autodeposit.SubscriptionsProgramID)
-
-// Subscriptions-program recurring-delegation layout (@loyal-labs/actions
-// constants.ts, same offsets as internal/autodeposit/delegation.go). A
-// delegation is a zero-copy Anchor account: u8 discriminator, then pubkeys and
-// u64 counters.
-const (
-	txreadsDelegationDiscriminator    = 3
-	txreadsDelegationDataLen          = 211
-	txreadsDelegationDelegatorOffset  = 3
-	txreadsDelegationDelegateeOffset  = 35
-	txreadsDelegationAuthorityOffset  = 107
-	txreadsDelegationMintOffset       = 139
-	txreadsDelegationPerPeriodOffset  = 195
-	txreadsDelegationAmountPulledOffs = 203
-)
+var txreadsSubscriptionsProgramKey = solana.MustPublicKeyFromBase58(earncatalog.SubscriptionsProgram)
 
 // txreadsLocaleCompare orders account addresses the way the Next route's
 // Array.sort((left, right) => left.localeCompare(right)) does: ICU collation
@@ -285,17 +270,17 @@ func txreadsInspectDelegation(account *chain.Account, row txreadsAutodepositRow,
 		return txreadsFinalizeDelegation(delegation, false, "missing")
 	}
 
-	delegation.AmountPerPeriodRaw = txreadsU64At(account.Data, txreadsDelegationPerPeriodOffset)
-	delegation.AmountPulledRaw = txreadsU64At(account.Data, txreadsDelegationAmountPulledOffs)
-	delegation.Authority = txreadsKeyAt(account.Data, txreadsDelegationAuthorityOffset)
-	delegation.Delegatee = txreadsKeyAt(account.Data, txreadsDelegationDelegateeOffset)
-	delegation.Delegator = txreadsKeyAt(account.Data, txreadsDelegationDelegatorOffset)
-	delegation.Mint = txreadsKeyAt(account.Data, txreadsDelegationMintOffset)
+	delegation.AmountPerPeriodRaw = txreadsU64At(account.Data, earncatalog.DelegationPerPeriodOffset)
+	delegation.AmountPulledRaw = txreadsU64At(account.Data, earncatalog.DelegationAmountPulledOffset)
+	delegation.Authority = txreadsKeyAt(account.Data, earncatalog.DelegationAuthorityOffset)
+	delegation.Delegatee = txreadsKeyAt(account.Data, earncatalog.DelegationDelegateeOffset)
+	delegation.Delegator = txreadsKeyAt(account.Data, earncatalog.DelegationDelegatorOffset)
+	delegation.Mint = txreadsKeyAt(account.Data, earncatalog.DelegationMintOffset)
 	delegation.Lamports = &account.Lamports
 
 	valid := account.Owner == txreadsSubscriptionsProgramKey &&
-		len(account.Data) >= txreadsDelegationDataLen &&
-		account.Data[0] == txreadsDelegationDiscriminator
+		len(account.Data) >= earncatalog.DelegationDataLen &&
+		account.Data[0] == earncatalog.DelegationDiscriminator
 	if !valid {
 		return txreadsFinalizeDelegation(delegation, true, "invalid")
 	}
@@ -339,10 +324,10 @@ func (h earnRoutes) txreadsOpenDelegations(ctx context.Context, wallet, vaultPub
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	filters := []rpc.RPCFilter{
-		{DataSize: txreadsDelegationDataLen},
-		{Memcmp: &rpc.RPCFilterMemcmp{Offset: 0, Bytes: []byte{txreadsDelegationDiscriminator}}},
-		{Memcmp: &rpc.RPCFilterMemcmp{Offset: txreadsDelegationDelegatorOffset, Bytes: wallet[:]}},
-		{Memcmp: &rpc.RPCFilterMemcmp{Offset: txreadsDelegationDelegateeOffset, Bytes: vaultPubkey[:]}},
+		{DataSize: earncatalog.DelegationDataLen},
+		{Memcmp: &rpc.RPCFilterMemcmp{Offset: 0, Bytes: []byte{earncatalog.DelegationDiscriminator}}},
+		{Memcmp: &rpc.RPCFilterMemcmp{Offset: earncatalog.DelegationDelegatorOffset, Bytes: wallet[:]}},
+		{Memcmp: &rpc.RPCFilterMemcmp{Offset: earncatalog.DelegationDelegateeOffset, Bytes: vaultPubkey[:]}},
 	}
 	_, accounts, err := h.Chain.ProgramAccounts(ctx, txreadsSubscriptionsProgramKey, filters, rpc.CommitmentConfirmed, 0)
 	if err != nil {
@@ -727,9 +712,9 @@ func txreadsCollectDelegations(byPolicyAccount map[string][]EarnPolicyRefundRecu
 
 func txreadsUSDCMint(cluster LoyalCluster) solana.PublicKey {
 	if cluster == LoyalDevnet {
-		return solana.MustPublicKeyFromBase58(dtargetDevnetUSDCMint)
+		return solana.MustPublicKeyFromBase58(earncatalog.DevnetUSDC)
 	}
-	return solana.MustPublicKeyFromBase58(dtargetUSDCMint)
+	return solana.MustPublicKeyFromBase58(earncatalog.USDC)
 }
 
 type txreadsVaultSnapshot struct {

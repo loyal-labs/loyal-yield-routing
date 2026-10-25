@@ -2,6 +2,7 @@ package webapp
 
 import (
 	"fmt"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earncatalog"
 	"strconv"
 	"time"
 )
@@ -40,15 +41,13 @@ var txreadsMarketIcons = map[string]string{
 	"BJnbcRHqvppTyGesLzWASGKnmnF1wq9jZu6ExrjT7wvF": "/wallet-workspace/earn-ethena.png",
 }
 
-var txreadsMintSymbols = map[string]string{
-	"CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH": "CASH",
-	"2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH": "USDG",
-	"2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo": "PYUSD",
-	"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": "USDC",
-	"Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB": "USDT",
-	"USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA":  "USDS",
-	"4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": "USDC",
-}
+var txreadsMintSymbols = func() map[string]string {
+	symbols := map[string]string{}
+	for _, product := range append(earncatalog.Mainnet(), earncatalog.Devnet()...) {
+		symbols[product.Mint] = product.Symbol
+	}
+	return symbols
+}()
 
 var txreadsMonths = [...]string{"January", "February", "March", "April", "May", "June",
 	"July", "August", "September", "October", "November", "December"}

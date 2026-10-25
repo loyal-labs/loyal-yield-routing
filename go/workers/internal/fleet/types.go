@@ -1,17 +1,18 @@
 package fleet
 
 import (
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earncatalog"
 	"math"
 	"time"
 )
 
 const (
-	USDCMint                                 = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
-	CashMint                                 = "CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH"
-	USDGMint                                 = "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH"
-	PYUSDMint                                = "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo"
-	USDTMint                                 = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"
-	USDSMint                                 = "USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA"
+	USDCMint                                 = earncatalog.USDC
+	CashMint                                 = earncatalog.CASH
+	USDGMint                                 = earncatalog.USDG
+	PYUSDMint                                = earncatalog.PYUSD
+	USDTMint                                 = earncatalog.USDT
+	USDSMint                                 = earncatalog.USDS
 	KaminoMainMarket                         = "7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF"
 	KaminoFigureMarket                       = "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA"
 	KaminoMapleMarket                        = "6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y"

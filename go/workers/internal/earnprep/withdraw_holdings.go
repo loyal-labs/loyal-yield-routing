@@ -13,6 +13,7 @@ import (
 	"github.com/solana-foundation/solana-go/v2/rpc"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earncatalog"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
@@ -44,24 +45,19 @@ type withdrawProductAsset struct {
 	TokenProgram solana.PublicKey
 }
 
-var (
-	withdrawDevnetUSDCMint = solana.MustPublicKeyFromBase58("4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU")
-	withdrawTokenProgram   = solana.TokenProgramID
-	withdrawToken2022      = solana.Token2022ProgramID
-)
+var withdrawDevnetUSDCMint = solana.MustPublicKeyFromBase58(earncatalog.DevnetUSDC)
 
 func withdrawProductAssets(cluster string) []withdrawProductAsset {
-	if cluster == "devnet" {
-		return []withdrawProductAsset{{Mint: withdrawDevnetUSDCMint, Symbol: "USDC", TokenProgram: withdrawTokenProgram}}
+	products := earncatalog.ForCluster(cluster == "devnet")
+	assets := make([]withdrawProductAsset, len(products))
+	for i, product := range products {
+		assets[i] = withdrawProductAsset{
+			Mint:         solana.MustPublicKeyFromBase58(product.Mint),
+			Symbol:       product.Symbol,
+			TokenProgram: solana.MustPublicKeyFromBase58(product.TokenProgram),
+		}
 	}
-	return []withdrawProductAsset{
-		{Mint: solana.MustPublicKeyFromBase58("CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH"), Symbol: "CASH", TokenProgram: withdrawToken2022},
-		{Mint: solana.MustPublicKeyFromBase58("2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH"), Symbol: "USDG", TokenProgram: withdrawToken2022},
-		{Mint: solana.MustPublicKeyFromBase58("2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo"), Symbol: "PYUSD", TokenProgram: withdrawToken2022},
-		{Mint: solana.MustPublicKeyFromBase58("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"), Symbol: "USDC", TokenProgram: withdrawTokenProgram},
-		{Mint: solana.MustPublicKeyFromBase58("Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"), Symbol: "USDT", TokenProgram: withdrawTokenProgram},
-		{Mint: solana.MustPublicKeyFromBase58("USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA"), Symbol: "USDS", TokenProgram: withdrawTokenProgram},
-	}
+	return assets
 }
 
 func withdrawSafeMarkets(cluster string) []solana.PublicKey {

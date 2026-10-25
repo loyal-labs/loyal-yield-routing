@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earncatalog"
 	"log/slog"
 	"math"
 	"net/http"
@@ -194,39 +195,17 @@ LIMIT 1`, reserve, dtargetMaxSupplyApy).Scan(&apy)
 	return &apy, nil
 }
 
-type stateProductAsset struct {
-	Mint         string
-	Symbol       string
-	TokenProgram string
+func stateProductAssets(cluster LoyalCluster) []earncatalog.Product {
+	return earncatalog.ForCluster(cluster == LoyalDevnet)
 }
 
-var (
-	stateTokenProgram   = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-	stateToken2022      = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
-	stateDevnetUSDCMint = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
-)
-
-func stateProductAssets(cluster LoyalCluster) []stateProductAsset {
-	if cluster == LoyalDevnet {
-		return []stateProductAsset{{Mint: stateDevnetUSDCMint, Symbol: "USDC", TokenProgram: stateTokenProgram}}
-	}
-	return []stateProductAsset{
-		{Mint: "CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH", Symbol: "CASH", TokenProgram: stateToken2022},
-		{Mint: "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH", Symbol: "USDG", TokenProgram: stateToken2022},
-		{Mint: "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo", Symbol: "PYUSD", TokenProgram: stateToken2022},
-		{Mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", Symbol: "USDC", TokenProgram: stateTokenProgram},
-		{Mint: "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB", Symbol: "USDT", TokenProgram: stateTokenProgram},
-		{Mint: "USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA", Symbol: "USDS", TokenProgram: stateTokenProgram},
-	}
-}
-
-func stateProductAssetFor(cluster LoyalCluster, mint string) (stateProductAsset, error) {
+func stateProductAssetFor(cluster LoyalCluster, mint string) (earncatalog.Product, error) {
 	for _, asset := range stateProductAssets(cluster) {
 		if asset.Mint == mint {
 			return asset, nil
 		}
 	}
-	return stateProductAsset{}, errors.New("mint is not a supported Earn product mint.")
+	return earncatalog.Product{}, errors.New("mint is not a supported Earn product mint.")
 }
 
 var stateKnownMarketName = map[string]string{
@@ -284,7 +263,7 @@ func stateTimescaleReserveForPosition(position stateYieldPositionRow) string {
 	)
 	if position.CurrentReserve == devnetReserve &&
 		position.CurrentMarket != nil && *position.CurrentMarket == devnetMarket &&
-		position.CurrentLiquidityMint == stateDevnetUSDCMint {
+		position.CurrentLiquidityMint == earncatalog.DevnetUSDC {
 		return mainnetTwinReserve
 	}
 	return position.CurrentReserve

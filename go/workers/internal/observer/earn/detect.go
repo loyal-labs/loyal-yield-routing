@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earncatalog"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	kaminocatalog "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/watch"
@@ -16,7 +17,7 @@ import (
 
 var (
 	loyalHubProgram      = solana.MustPublicKeyFromBase58("LHUB3MMwYEwXqbfMdr1AQ8vkrJoubH37qoBxiy38smH")
-	subscriptionsProgram = solana.MustPublicKeyFromBase58("De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44")
+	subscriptionsProgram = solana.MustPublicKeyFromBase58(earncatalog.SubscriptionsProgram)
 	tokenProgram         = solana.TokenProgramID
 	token2022Program     = solana.Token2022ProgramID
 	usdcMint             = solana.MustPublicKeyFromBase58(fleet.USDCMint)

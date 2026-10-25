@@ -7,7 +7,7 @@ import (
 
 	pb "github.com/helius-labs/laserstream-sdk/go/proto"
 
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/autodeposit"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earncatalog"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
@@ -69,7 +69,7 @@ func Build(spec Spec) (*pb.SubscribeRequest, error) {
 			EarnMaxPolicyTransactions: {
 				Vote:           &vote,
 				Failed:         &failed,
-				AccountInclude: []string{squads.ProgramID.String(), autodeposit.SubscriptionsProgramID},
+				AccountInclude: []string{squads.ProgramID.String(), earncatalog.SubscriptionsProgram},
 			},
 		},
 		Slots: map[string]*pb.SubscribeRequestFilterSlots{

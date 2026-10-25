@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"testing"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earncatalog"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/solana-foundation/solana-go/v2"
 )
@@ -109,17 +110,17 @@ func TestDelegationBindsSubscriptionAuthorityAndNonce(t *testing.T) {
 	}
 	identity := DelegationIdentity{Account: base58Key(address[:]), Delegator: wallet, Delegatee: vault, Mint: USDCMint, Nonce: nonce}
 	data := testDelegationData(wallet, vault, USDCMint, 10, 2)
-	if amount, err := RemainingDelegationAllowance(SubscriptionsProgramID, data, identity); err != nil || amount != 8 {
+	if amount, err := RemainingDelegationAllowance(earncatalog.SubscriptionsProgram, data, identity); err != nil || amount != 8 {
 		t.Fatalf("valid frozen delegation %d %v", amount, err)
 	}
 	foreign := mustKey(fixedKey("foreign-subscription-authority"))
-	copy(data[delegationAuthorityOffset:], foreign[:])
-	if _, err = RemainingDelegationAllowance(SubscriptionsProgramID, data, identity); err == nil {
+	copy(data[earncatalog.DelegationAuthorityOffset:], foreign[:])
+	if _, err = RemainingDelegationAllowance(earncatalog.SubscriptionsProgram, data, identity); err == nil {
 		t.Fatal("foreign subscription authority passed")
 	}
 	data = testDelegationData(wallet, vault, USDCMint, 10, 2)
 	identity.Nonce = 8
-	if _, err = RemainingDelegationAllowance(SubscriptionsProgramID, data, identity); err == nil {
+	if _, err = RemainingDelegationAllowance(earncatalog.SubscriptionsProgram, data, identity); err == nil {
 		t.Fatal("another delegation nonce authorized this target")
 	}
 }

@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earncatalog"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
 
@@ -323,7 +324,7 @@ func TestSVMActualGoPullExecutesRealProgramsAndExactReceipt(t *testing.T) {
 				if err := svm.call("simulateTransaction", []any{wire.SignedTransactionBase64, map[string]any{"encoding": "base64", "sigVerify": true, "replaceRecentBlockhash": false}}, &actual); err != nil {
 					t.Fatal(err)
 				}
-				if len(actual.Value.Err) == 0 || string(actual.Value.Err) == "null" || !strings.Contains(strings.Join(actual.Value.Logs, "\n"), "Program "+SubscriptionsProgramID+" invoke") {
+				if len(actual.Value.Err) == 0 || string(actual.Value.Err) == "null" || !strings.Contains(strings.Join(actual.Value.Logs, "\n"), "Program "+earncatalog.SubscriptionsProgram+" invoke") {
 					t.Fatalf("budget rejection must come from real Subscriptions CPI: err=%s logs=%v", actual.Value.Err, actual.Value.Logs)
 				}
 			}
@@ -374,7 +375,7 @@ func TestSVMActualGoPullExecutesRealProgramsAndExactReceipt(t *testing.T) {
 			t.Fatal(err)
 		}
 		logs := strings.Join(simulation.Value.Logs, "\n")
-		if len(simulation.Value.Err) == 0 || string(simulation.Value.Err) == "null" || !strings.Contains(logs, "Program "+squads.ProgramID.String()+" invoke") || strings.Contains(logs, "Program "+SubscriptionsProgramID+" invoke") {
+		if len(simulation.Value.Err) == 0 || string(simulation.Value.Err) == "null" || !strings.Contains(logs, "Program "+squads.ProgramID.String()+" invoke") || strings.Contains(logs, "Program "+earncatalog.SubscriptionsProgram+" invoke") {
 			t.Fatalf("unauthorized signer must be rejected by real Squads before asset CPI: err=%s logs=%s", simulation.Value.Err, logs)
 		}
 		if balance, err := rpcChain.ConfirmedTokenBalanceRaw(t.Context(), f.WalletATA, f.Wallet); err != nil || balance != f.WalletBeforeRaw {
@@ -468,7 +469,7 @@ func TestSVMActualGoPullExecutesRealProgramsAndExactReceipt(t *testing.T) {
 		t.Fatalf("actual collateral readback: %v", e)
 	}
 	for _, account := range collateral {
-		if account.Owner.String() != splTokenID {
+		if account.Owner.String() != earncatalog.SPLTokenProgram {
 			t.Fatalf("actual SPL owner changed: %s", account.Key)
 		}
 		switch account.Key.String() {
