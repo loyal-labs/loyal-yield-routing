@@ -329,11 +329,19 @@ type forecastApySample struct {
 	observedAt string
 }
 
+// forecastApySource is the closed value set of EarnForecastResponse["source"].
+type forecastApySource string
+
+const (
+	forecastSourceLive       forecastApySource = "live"
+	forecastSourceRealized7d forecastApySource = "realized_7d"
+)
+
 type forecastRealizedResult struct {
 	realized7dBps         *int64
 	liveBps               *int64
 	headlineBps           int64
-	source                string // "realized_7d" | "live"
+	source                forecastApySource
 	loyalSeries           []forecastApySample
 	mainUsdcReserveSeries []forecastApySample
 	measuredAtMS          int64
@@ -431,11 +439,11 @@ func forecastComputeRealizedApy(input forecastRealizedInput) *forecastRealizedRe
 		loyalSeries:           forecastBuildLoyalSeries(boundedInput, timeline),
 		mainUsdcReserveSeries: forecastBuildReserveSeries(bounded[KaminoMainMarketUSDCReserve], input.nowMS),
 		measuredAtMS:          measurementEndMS,
-		source:                "live",
+		source:                forecastSourceLive,
 	}
 	if realized7dBps != nil {
 		result.headlineBps = *realized7dBps
-		result.source = "realized_7d"
+		result.source = forecastSourceRealized7d
 	} else {
 		result.headlineBps = *liveBps
 	}

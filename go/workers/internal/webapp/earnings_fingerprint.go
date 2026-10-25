@@ -48,7 +48,7 @@ func writeEarningsEventJSON(w *jsonWriter, e earningsEvent) {
 		w.optBool(e.settlesPosition)
 	}
 	w.raw(`,"type":`)
-	w.str(e.eventType)
+	w.str(string(e.eventType))
 	w.raw("}")
 }
 
@@ -78,7 +78,7 @@ func getMaterialEarningsHistoryRevision(pathEvents []earningsPathEvent) string {
 			w.raw(",")
 		}
 		w.raw(`[`)
-		w.str(event.eventType)
+		w.str(string(event.eventType))
 		w.raw(",")
 		w.str(isoMS(event.confirmedAt))
 		w.raw(",")
@@ -106,7 +106,7 @@ func getPortfolioEarningsHistoryRevision(sorted []earningsEvent, snapshots []ear
 			w.raw(",")
 		}
 		w.raw(`[`)
-		w.str(event.eventType)
+		w.str(string(event.eventType))
 		w.raw(",")
 		w.str(isoMS(event.confirmedAt))
 		w.raw(",")
@@ -144,7 +144,7 @@ func getPortfolioEarningsHistoryRevision(sorted []earningsEvent, snapshots []ear
 			w.raw(`[`)
 			w.str(exposure.sourceID)
 			w.raw(",")
-			w.str(exposure.kind)
+			w.str(string(exposure.kind))
 			w.raw(",")
 			w.str(exposure.liquidityMint)
 			w.raw(",")

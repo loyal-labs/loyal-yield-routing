@@ -35,12 +35,12 @@ type earningsEvent struct {
 	initializesPosition *bool
 	principalDeltaRaw   *int64
 	settlesPosition     *bool
-	eventType           string // "deposit" | "withdrawal"
+	eventType           earningsEventType
 }
 
 type earningsPortfolioExposure struct {
 	amountRaw     int64
-	kind          string // "idle" | "kamino"
+	kind          earningsExposureKind
 	liquidityMint string
 	reserve       *string
 	sourceID      string
@@ -59,7 +59,7 @@ type earningsPathEvent struct {
 	market             *string
 	principalAmountRaw int64
 	reserve            string
-	eventType          string // "deposit" | "reconciliation" | "rebalance" | "withdrawal"
+	eventType          earningsEventType
 }
 
 type reserveApySample struct {

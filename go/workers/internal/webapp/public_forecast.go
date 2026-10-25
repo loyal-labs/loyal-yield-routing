@@ -156,7 +156,7 @@ func realizedResultToForecast(result *forecastRealizedResult, now time.Time) *fo
 			Availability: "available",
 			RangeHighBps: rangeHigh,
 			RangeLowBps:  rangeLow,
-			Source:       result.source,
+			Source:       string(result.source),
 			Strategy:     forecastRealizedStrategy,
 			UpdatedAt:    window.EndedAt,
 			Window:       window,

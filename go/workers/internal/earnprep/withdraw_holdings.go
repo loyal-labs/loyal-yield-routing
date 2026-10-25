@@ -161,12 +161,38 @@ func withdrawObservedAt(now func() time.Time) string {
 	return now().UTC().Format("2006-01-02T15:04:05.000Z")
 }
 
+// WithdrawHoldingKind is the closed value set of EarnRpcHolding["kind"]:
+// "idle" or "kamino".
+type WithdrawHoldingKind string
+
+const (
+	WithdrawHoldingIdle   WithdrawHoldingKind = "idle"
+	WithdrawHoldingKamino WithdrawHoldingKind = "kamino"
+)
+
+// WithdrawWatchedAccountKind is the closed value set of
+// EarnRpcWatchedAccount["kind"]: "idle", "obligation" or "reserve".
+type WithdrawWatchedAccountKind string
+
+const (
+	WatchedAccountIdle       WithdrawWatchedAccountKind = "idle"
+	WatchedAccountObligation WithdrawWatchedAccountKind = "obligation"
+	WatchedAccountReserve    WithdrawWatchedAccountKind = "reserve"
+)
+
+// WithdrawSnapshotCompleteness is the closed value set of
+// EarnRpcHoldingsSnapshot["completeness"].
+type WithdrawSnapshotCompleteness string
+
+// WithdrawSnapshotComplete: the read saw every watched account.
+const WithdrawSnapshotComplete WithdrawSnapshotCompleteness = "complete"
+
 // WithdrawHolding mirrors EarnRpcHolding: one
 // withdrawable position, the amount in raw integer units. Market, reserve and
 // the keys stay public keys here; the route serializes them as base58.
 type WithdrawHolding struct {
 	AmountRaw     uint64
-	Kind          string // "idle" or "kamino"
+	Kind          WithdrawHoldingKind
 	Label         string
 	LiquidityMint solana.PublicKey
 	Market        *solana.PublicKey
@@ -179,7 +205,7 @@ type WithdrawHolding struct {
 }
 
 type WithdrawWatchedAccount struct {
-	Kind   string // "idle", "obligation" or "reserve"
+	Kind   WithdrawWatchedAccountKind
 	Pubkey string
 }
 
@@ -192,7 +218,7 @@ type WithdrawSnapshotProvenance struct {
 }
 
 type WithdrawSnapshot struct {
-	Completeness          string // always "complete"
+	Completeness          WithdrawSnapshotCompleteness
 	CurrentTotalAmountRaw uint64
 	Holdings              []WithdrawHolding
 	ObservedAt            string
@@ -214,7 +240,7 @@ type WithdrawHoldingsArgs struct {
 }
 
 type withdrawAccountRole struct {
-	kind   string // "idle" or "obligation"
+	kind   WithdrawWatchedAccountKind
 	asset  withdrawProductAsset
 	market solana.PublicKey
 	pubkey solana.PublicKey
@@ -500,8 +526,8 @@ func readWithdrawAccountsInChunks(ctx context.Context, rpc RPC, keys []solana.Pu
 func withdrawWatchedAccounts(roles []withdrawAccountRole, reserves []solana.PublicKey) []WithdrawWatchedAccount {
 	seen := map[string]bool{}
 	var accounts []WithdrawWatchedAccount
-	add := func(kind string, pubkey solana.PublicKey) {
-		key := kind + ":" + pubkey.String()
+	add := func(kind WithdrawWatchedAccountKind, pubkey solana.PublicKey) {
+		key := string(kind) + ":" + pubkey.String()
 		if seen[key] {
 			return
 		}

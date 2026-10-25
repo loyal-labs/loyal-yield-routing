@@ -225,7 +225,7 @@ func buildOtlpErrorPayload(event *obsNormalizedError) otlpLogsPayload {
 
 	timeUnixNano := obsToUnixNano(event.timestamp)
 	severityNumber, severityText := 17, "ERROR"
-	if event.severity == "WARN" {
+	if event.severity == obsSeverityWarn {
 		severityNumber, severityText = 13, "WARN"
 	}
 	scopeName := "loyal.frontend.errors"

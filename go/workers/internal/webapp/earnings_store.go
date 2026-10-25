@@ -706,14 +706,14 @@ WHERE position_id = $1`
 	var principalAmountRaw int64
 	history := make([]earningsHoldingEvent, 0, len(chronological))
 	for _, event := range chronological {
-		eventKind := "deposit"
+		eventKind := earningsEventDeposit
 		switch event.eventType {
 		case "rebalance_confirmed":
-			eventKind = "rebalance"
+			eventKind = earningsEventRebalance
 		case "snapshot_reconciled":
-			eventKind = "reconciliation"
+			eventKind = earningsEventReconciliation
 		case "withdrawal_partial", "withdrawal_full":
-			eventKind = "withdrawal"
+			eventKind = earningsEventWithdrawal
 		}
 		converted := earningsHoldingEvent{
 			amountRaw:         event.amountRaw,
@@ -789,7 +789,7 @@ WHERE position_id = $1`
 			converted.signature = *event.signature
 		} else {
 			converted.signature = strings.Join(earningsNonEmpty([]string{
-				eventKind,
+				string(eventKind),
 				earningsIDString(event.sourceDeposit),
 				earningsIDString(event.sourceWithdrawal),
 				earningsIDString(event.rebalanceID),

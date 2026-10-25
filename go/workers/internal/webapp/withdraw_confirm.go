@@ -164,7 +164,7 @@ func withdrawFullExitResponse(proof withdrawFullExitZeroProof, position EarnWith
 	for _, holding := range proof.RemainingHoldings {
 		entry := EarnWithdrawConfirmRemainingHolding{
 			AmountRaw:     strconv.FormatUint(holding.AmountRaw, 10),
-			Kind:          holding.Kind,
+			Kind:          string(holding.Kind),
 			LiquidityMint: holding.LiquidityMint.String(),
 		}
 		if holding.Market != nil {

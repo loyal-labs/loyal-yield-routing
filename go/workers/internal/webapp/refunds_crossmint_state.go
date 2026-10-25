@@ -75,9 +75,20 @@ type crossMintProjectedPolicy struct {
 	SourceShard                string
 }
 
+// crossMintPolicyIndexState is the closed value set of
+// EarnCrossMintPolicyIndex["state"]: ambiguous, complete, empty and partial.
+type crossMintPolicyIndexState string
+
+const (
+	crossMintStateAmbiguous crossMintPolicyIndexState = "ambiguous"
+	crossMintStateComplete  crossMintPolicyIndexState = "complete"
+	crossMintStateEmpty     crossMintPolicyIndexState = "empty"
+	crossMintStatePartial   crossMintPolicyIndexState = "partial"
+)
+
 type crossMintPolicyIndex struct {
 	Policies []crossMintProjectedPolicy
-	State    string // ambiguous, complete, empty, partial
+	State    crossMintPolicyIndexState
 }
 
 func isCrossMintPolicyShard(value *string) bool {
@@ -96,7 +107,7 @@ func deriveCrossMintPolicyIndex(rows []crossMintPolicyRow) crossMintPolicyIndex 
 		}
 	}
 	if len(active) == 0 {
-		return crossMintPolicyIndex{State: "empty"}
+		return crossMintPolicyIndex{State: crossMintStateEmpty}
 	}
 
 	var candidates []crossMintProjectedPolicy
@@ -104,13 +115,13 @@ func deriveCrossMintPolicyIndex(rows []crossMintPolicyRow) crossMintPolicyIndex 
 		if !row.StartEligible || !isCrossMintPolicyShard(row.SourceShard) || !isCrossMintCommitment(row.SourceCommitment) ||
 			row.PolicySeed == nil || row.MaxSlippageBps == nil || row.DailyCap == nil ||
 			row.DelegatedSigner == nil || *row.DelegatedSigner == "" {
-			return crossMintPolicyIndex{State: "ambiguous"}
+			return crossMintPolicyIndex{State: crossMintStateAmbiguous}
 		}
 		if *row.PolicySeed < 0 || *row.DailyCap < 0 {
 			// TS carries these as bigint and keeps going; a negative seed or
 			// cap never comes from the enrollment writer, and the uint64 views
 			// below cannot state one.
-			return crossMintPolicyIndex{State: "ambiguous"}
+			return crossMintPolicyIndex{State: crossMintStateAmbiguous}
 		}
 		candidates = append(candidates, crossMintProjectedPolicy{
 			Account:                    row.PolicyAccount,
@@ -142,7 +153,7 @@ func deriveCrossMintPolicyIndex(rows []crossMintPolicyRow) crossMintPolicyIndex 
 	}
 	if len(candidates) > 2 || len(accounts) != len(candidates) || len(seeds) != len(candidates) ||
 		len(shards) != len(candidates) || !parametersMatch {
-		return crossMintPolicyIndex{State: "ambiguous"}
+		return crossMintPolicyIndex{State: crossMintStateAmbiguous}
 	}
 
 	sorted := make([]crossMintProjectedPolicy, 0, len(candidates))
@@ -156,9 +167,9 @@ func deriveCrossMintPolicyIndex(rows []crossMintPolicyRow) crossMintPolicyIndex 
 			sorted = append(sorted, candidate)
 		}
 	}
-	state := "partial"
+	state := crossMintStatePartial
 	if len(sorted) == 2 {
-		state = "complete"
+		state = crossMintStateComplete
 	}
 	return crossMintPolicyIndex{Policies: sorted, State: state}
 }
@@ -217,7 +228,7 @@ func findEarnCrossMintSnapshot(ctx context.Context, yieldDB *pgxpool.Pool, scope
 		return nil, crossMintPolicyIndex{}, err
 	}
 	index := deriveCrossMintPolicyIndex(policyRows)
-	if !found || index.State != "complete" {
+	if !found || index.State != crossMintStateComplete {
 		return nil, index, nil
 	}
 

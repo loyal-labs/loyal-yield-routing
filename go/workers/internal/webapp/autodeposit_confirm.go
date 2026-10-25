@@ -406,7 +406,7 @@ func (h earnRoutes) autodepositFloorConfirm(ctx context.Context, in *autodeposit
 			autodepositSweepScheduledPush(uint64(result.Rebaseline.Sweep.RemainingAmountRaw)))
 	}
 
-	rebaseline := &AutodepositFloorRebaselineSweep{Status: result.Rebaseline.Status}
+	rebaseline := &AutodepositFloorRebaselineSweep{Status: string(result.Rebaseline.Status)}
 	if result.Rebaseline.Reason != nil {
 		rebaseline.Reason = result.Rebaseline.Reason
 	}

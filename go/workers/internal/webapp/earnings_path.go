@@ -26,7 +26,7 @@ type earningsHoldingEvent struct {
 	principalAmountRaw       int64
 	positionID               int64
 	signature                string
-	eventKind                string // "deposit" | "withdrawal" | "rebalance" | "reconciliation"
+	eventKind                earningsEventType
 }
 
 func comparePathEvents(left, right *earningsHoldingEvent) int {
@@ -45,8 +45,7 @@ func comparePathEvents(left, right *earningsHoldingEvent) int {
 		}
 		return 1
 	}
-	order := map[string]int{"deposit": 0, "rebalance": 1, "reconciliation": 2, "withdrawal": 3}
-	return order[left.eventKind] - order[right.eventKind]
+	return earningsPathEventOrder[left.eventKind] - earningsPathEventOrder[right.eventKind]
 }
 
 func sign64(v int64) int64 {
@@ -284,8 +283,7 @@ func comparePathOnPath(left, right *earningsPathEvent) int {
 	if d := left.confirmedAt.UnixMilli() - right.confirmedAt.UnixMilli(); d != 0 {
 		return int(sign64(d))
 	}
-	order := map[string]int{"deposit": 0, "rebalance": 1, "reconciliation": 2, "withdrawal": 3}
-	return order[left.eventType] - order[right.eventType]
+	return earningsPathEventOrder[left.eventType] - earningsPathEventOrder[right.eventType]
 }
 
 type earningsPositionSeed struct {

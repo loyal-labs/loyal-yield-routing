@@ -226,10 +226,20 @@ func (s autodepositSweepRow) isOpen() bool {
 	return s.Status == "scheduled" && s.RemainingAmountRaw > 0
 }
 
-// autodepositBootstrapResult is EarnAutodepositBootstrapSweepResult: status is
-// "scheduled", "already_exists" or "skipped" (skipped carries a reason).
+// autodepositSweepResultStatus is the closed value set of the bootstrap and
+// floor-rebaseline sweep results' status: "scheduled", "already_exists" or
+// "skipped".
+type autodepositSweepResultStatus string
+
+const (
+	autodepositSweepScheduled     autodepositSweepResultStatus = "scheduled"
+	autodepositSweepAlreadyExists autodepositSweepResultStatus = "already_exists"
+	autodepositSweepSkipped       autodepositSweepResultStatus = "skipped"
+)
+
+// autodepositBootstrapResult is EarnAutodepositBootstrapSweepResult.
 type autodepositBootstrapResult struct {
-	Status string
+	Status autodepositSweepResultStatus
 	Reason string
 	Sweep  *autodepositSweepRow
 }
@@ -672,10 +682,9 @@ type autodepositFloorSweep struct {
 	Status                string
 }
 
-// autodepositFloorRebaseline is EarnAutodepositFloorRebaselineSweepResult:
-// status is "scheduled" (with the sweep) or "skipped" (with the reason).
+// autodepositFloorRebaseline is EarnAutodepositFloorRebaselineSweepResult.
 type autodepositFloorRebaseline struct {
-	Status string
+	Status autodepositSweepResultStatus
 	Reason *string
 	Sweep  *autodepositFloorSweep
 }

@@ -310,6 +310,15 @@ func isCapWidgetInternalError(operation, message string) bool {
 	return obsAmbientErrorOperations[operation] && obsCapWidgetPattern.MatchString(message)
 }
 
+// obsErrorSeverity is the closed value set of a normalized error's severity.
+// Construction defaults to ERROR; WARN is the only non-error level.
+type obsErrorSeverity string
+
+const (
+	obsSeverityError obsErrorSeverity = "ERROR"
+	obsSeverityWarn  obsErrorSeverity = "WARN"
+)
+
 type obsNormalizedError struct {
 	browserDiagnostics    *obsChunkDiagnostics
 	clientBuildID         string
@@ -326,7 +335,7 @@ type obsNormalizedError struct {
 	release               string
 	runtime               string
 	serviceName           string
-	severity              string // "" means ERROR
+	severity              obsErrorSeverity
 	timestamp             string
 }
 
@@ -344,6 +353,7 @@ func createNormalizedBrowserErrorEvent(envelope obsErrorEnvelope, deploymentEnvi
 		release:               serverRelease,
 		runtime:               "browser",
 		serviceName:           "loyal-frontend",
+		severity:              obsSeverityError,
 		timestamp:             envelope.timestamp,
 	}
 }
@@ -361,6 +371,7 @@ func normalizedMobileErrorEvent(envelope obsErrorEnvelope) obsNormalizedError {
 		release:               envelope.release,
 		runtime:               "mobile",
 		serviceName:           "loyal-mobile",
+		severity:              obsSeverityError,
 		timestamp:             envelope.timestamp,
 	}
 }

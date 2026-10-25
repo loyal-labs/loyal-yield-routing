@@ -464,8 +464,8 @@ func (h earnRoutes) autodepositSetupConfirm(ctx context.Context, in *autodeposit
 			} else if result.Status == "skipped" {
 				bootstrapSweep = &AutodepositSetupConfirmBootstrapSweep{Reason: &result.Reason, Status: "skipped"}
 			} else {
-				bootstrapSweep = &AutodepositSetupConfirmBootstrapSweep{Status: result.Status, Sweep: serializeAutodepositSweep(result.Sweep)}
-				if result.Status == "scheduled" {
+				bootstrapSweep = &AutodepositSetupConfirmBootstrapSweep{Status: string(result.Status), Sweep: serializeAutodepositSweep(result.Sweep)}
+				if result.Status == autodepositSweepScheduled {
 					scheduledSweep = result.Sweep
 				}
 			}

@@ -31,11 +31,11 @@ type dtargetActivePosition struct {
 	CurrentReserve       string
 }
 
-// dtargetReserveIneligibility mirrors EarnReserveIneligibilityReason
-// ; the empty string means eligible.
+// dtargetReserveIneligibility mirrors EarnReserveIneligibilityReason.
 type dtargetReserveIneligibility string
 
 const (
+	dtargetReserveEligible     dtargetReserveIneligibility = ""
 	dtargetBelowLiquidityFloor dtargetReserveIneligibility = "below_liquidity_floor"
 	dtargetUnsampledReserve    dtargetReserveIneligibility = "unsampled_reserve"
 )

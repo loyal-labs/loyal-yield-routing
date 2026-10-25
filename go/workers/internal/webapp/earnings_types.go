@@ -24,6 +24,34 @@ type EarningsBar struct {
 	StartAt            string  `json:"startAt"`
 }
 
+// earningsEventType is the closed value set carried by ledger and path event
+// types: "deposit", "withdrawal", "rebalance" and "reconciliation".
+type earningsEventType string
+
+const (
+	earningsEventDeposit        earningsEventType = "deposit"
+	earningsEventWithdrawal     earningsEventType = "withdrawal"
+	earningsEventRebalance      earningsEventType = "rebalance"
+	earningsEventReconciliation earningsEventType = "reconciliation"
+)
+
+// earningsPathEventOrder is the deposit < rebalance < reconciliation <
+// withdrawal tiebreak shared by the path comparators.
+var earningsPathEventOrder = map[earningsEventType]int{
+	earningsEventDeposit:        0,
+	earningsEventRebalance:      1,
+	earningsEventReconciliation: 2,
+	earningsEventWithdrawal:     3,
+}
+
+// earningsExposureKind is the closed value set of portfolio exposure kinds.
+type earningsExposureKind string
+
+const (
+	earningsExposureIdle   earningsExposureKind = "idle"
+	earningsExposureKamino earningsExposureKind = "kamino"
+)
+
 type EarningsRange struct {
 	Bars                      []EarningsBar `json:"bars"`
 	CurrentApyBps             *int64        `json:"currentApyBps"`
@@ -120,11 +148,11 @@ type earningsCheckpointWire struct {
 }
 
 type earningsCheckpointSeedExposure struct {
-	AmountRaw     string  `json:"amountRaw"`
-	Kind          string  `json:"kind"`
-	LiquidityMint string  `json:"liquidityMint"`
-	Reserve       *string `json:"reserve"`
-	SourceID      string  `json:"sourceId"`
+	AmountRaw     string               `json:"amountRaw"`
+	Kind          earningsExposureKind `json:"kind"`
+	LiquidityMint string               `json:"liquidityMint"`
+	Reserve       *string              `json:"reserve"`
+	SourceID      string               `json:"sourceId"`
 }
 
 type earningsCheckpointSeed struct {

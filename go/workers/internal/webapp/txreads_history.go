@@ -185,11 +185,21 @@ type txreadsPositionEvent struct {
 	principalAmountRaw       int64
 	positionID               int64
 	signature                string
-	typ                      string // deposit | withdrawal | rebalance | reconciliation
+	typ                      earningsEventType
 }
 
+// txreadsAutodepositActionType is the closed value set of autodeposit history
+// event actions: balance_sweep, close and create.
+type txreadsAutodepositActionType string
+
+const (
+	txreadsAutodepositActionBalanceSweep txreadsAutodepositActionType = "balance_sweep"
+	txreadsAutodepositActionClose        txreadsAutodepositActionType = "close"
+	txreadsAutodepositActionCreate       txreadsAutodepositActionType = "create"
+)
+
 type txreadsAutodepositEvent struct {
-	actionType            string // balance_sweep | close | create
+	actionType            txreadsAutodepositActionType
 	amountRaw             int64
 	confirmedAt           time.Time
 	confirmedSlot         int64
@@ -409,14 +419,14 @@ func replayPositionHistory(seed txreadsPositionSeed, events []txreadsHoldingEven
 
 	history := make([]txreadsPositionEvent, 0, len(events))
 	for _, event := range events {
-		typ := "deposit"
+		typ := earningsEventDeposit
 		switch event.eventType {
 		case "rebalance_confirmed":
-			typ = "rebalance"
+			typ = earningsEventRebalance
 		case "snapshot_reconciled":
-			typ = "reconciliation"
+			typ = earningsEventReconciliation
 		case "withdrawal_partial", "withdrawal_full":
-			typ = "withdrawal"
+			typ = earningsEventWithdrawal
 		}
 		record := txreadsPositionEvent{
 			amountRaw:         event.amountRaw,
@@ -505,8 +515,8 @@ func replayPositionHistory(seed txreadsPositionSeed, events []txreadsHoldingEven
 	return history
 }
 
-func txreadsSyntheticSignature(typ string, event txreadsHoldingEvent) string {
-	parts := []string{typ}
+func txreadsSyntheticSignature(typ earningsEventType, event txreadsHoldingEvent) string {
+	parts := []string{string(typ)}
 	for _, id := range []*int64{event.sourceDepositID, event.sourceWithdrawalID, event.sourceRebalanceDecision, event.sourceSnapshotID} {
 		if id != nil {
 			parts = append(parts, pgidString(*id))
