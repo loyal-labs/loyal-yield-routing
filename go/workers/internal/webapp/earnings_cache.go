@@ -69,16 +69,17 @@ func itoa4(v int) string { return formatInt64(int64(v)) }
 // withEarningsRefreshLock ports withEarnEarningsRefreshLock (cache:30). The
 // advisory lock is transaction-scoped on its own connection, opened outside
 // the pool so a held lock never takes a connection the refresh reads need;
-// closing the connection, or the process dying, releases it. Wait, connect and
-// task together fit earningsRefreshBudget, so no holder outlives it.
+// closing the connection, or the process dying, releases it. A full slot set
+// or a held lock answers false at once; connect and task together fit
+// earningsRefreshBudget, so no holder outlives it.
 func withEarningsRefreshLock(ctx context.Context, pool *pgxpool.Pool, key string, task func(context.Context) error) (bool, error) {
-	ctx, cancel := context.WithTimeout(ctx, earningsRefreshBudget)
-	defer cancel()
 	select {
 	case earningsRefreshLockSlots <- struct{}{}:
-	case <-ctx.Done():
-		return false, ctx.Err()
+	default:
+		return false, nil
 	}
+	ctx, cancel := context.WithTimeout(ctx, earningsRefreshBudget)
+	defer cancel()
 	defer func() { <-earningsRefreshLockSlots }()
 	conn, err := pgx.ConnectConfig(ctx, pool.Config().ConnConfig)
 	if err != nil {
@@ -115,6 +116,7 @@ type earningsScheduleRefresh func(func(context.Context))
 
 // readCachedEarnEarningsRangeSet ports cache:80.
 func readCachedEarnEarningsRangeSet(ctx context.Context, pool *pgxpool.Pool, input earningsReadInput, schedule earningsScheduleRefresh, deps earningsReadDeps) (EarningsRangeSet, error) {
+	startedAt := time.Now()
 	timezone := normalizeEarningsTimezone(input.timezone)
 	input.timezone = timezone
 	key := earningsRefreshLockKey(input, timezone)
@@ -135,7 +137,6 @@ func readCachedEarnEarningsRangeSet(ctx context.Context, pool *pgxpool.Pool, inp
 
 	refresh := func(ctx context.Context) (EarningsRangeSet, bool, error) {
 		var result EarningsRangeSet
-		found := false
 		acquired, err := withEarningsRefreshLock(ctx, pool, key, func(ctx context.Context) error {
 			latest, err := deps.loadSnapshot(ctx, input, timezone)
 			if err != nil {
@@ -154,29 +155,23 @@ func readCachedEarnEarningsRangeSet(ctx context.Context, pool *pgxpool.Pool, inp
 					return err
 				}
 			}
-			found = true
 			return nil
 		})
 		if err != nil {
 			return EarningsRangeSet{}, false, err
 		}
-		_ = acquired
-		return result, found, nil
+		return result, acquired, nil
 	}
 
 	if !usable {
-		result, found, err := refresh(ctx)
+		result, acquired, err := refresh(ctx)
 		if err != nil {
 			return EarningsRangeSet{}, err
 		}
-		if found {
+		if acquired {
 			return result, nil
 		}
-		return EarningsRangeSet{}, &earningsUnavailableError{
-			code:       earningsUnavailableCode,
-			message:    "Earnings history refresh is in progress.",
-			detailCode: earningsUnavailableCode,
-		}
+		return earningsReadFailure(errEarningsRefreshInProgress, snapshot, now, startedAt)
 	}
 
 	stored := *snapshot
