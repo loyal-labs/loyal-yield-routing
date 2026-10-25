@@ -18,6 +18,11 @@ type APYPoint struct {
 	Date   string `json:"date"`
 }
 
+type HistoryPoint struct {
+	APYBps     int64  `json:"apyBps"`
+	ObservedAt string `json:"observedAt"`
+}
+
 type DayEnd struct {
 	At    time.Time
 	Price float64
@@ -26,7 +31,7 @@ type DayEnd struct {
 type APY struct {
 	Bps        *int64
 	WindowDays *int64
-	Daily      []APYPoint
+	History    []HistoryPoint
 	DayEnd     []DayEnd
 }
 
@@ -50,7 +55,7 @@ func ShareAPY(days []DailyStat, live *LiveShare, now time.Time) APY {
 		}
 	}
 	today := now.UTC().Format(time.DateOnly)
-	out := APY{Daily: []APYPoint{}, DayEnd: []DayEnd{}}
+	out := APY{History: []HistoryPoint{}, DayEnd: []DayEnd{}}
 	for _, p := range points {
 		if p.date < today {
 			out.DayEnd = append(out.DayEnd, DayEnd{At: time.UnixMilli(p.atMs).UTC(), Price: p.price})
@@ -74,30 +79,55 @@ func ShareAPY(days []DailyStat, live *LiveShare, now time.Time) APY {
 		rounded := roundHalfUp(growth)
 		return &rounded, true
 	}
-	for i := 1; i < len(points); i++ {
-		if bps, defined := annualize(points[i-1], points[i]); defined {
-			out.Daily = append(out.Daily, APYPoint{APYBps: bps, Date: points[i].date})
+	trailing := func(i int) (bps *int64, windowDays int64, defined bool) {
+		latest, from := points[i], points[0]
+		for j := i; j >= 0; j-- {
+			if latest.atMs-points[j].atMs >= apyWindowDays*dayMs-dayMs/2 {
+				from = points[j]
+				break
+			}
 		}
-	}
-	if len(points) == 0 {
-		return out
-	}
-	latest, from := points[len(points)-1], points[0]
-	for i := len(points) - 1; i >= 0; i-- {
-		if latest.atMs-points[i].atMs >= apyWindowDays*dayMs-dayMs/2 {
-			from = points[i]
-			break
+		if latest.atMs-from.atMs < dayMs/2 {
+			return nil, 0, false
 		}
+		bps, defined = annualize(from, latest)
+		return bps, min(apyWindowDays, roundHalfUp(float64(latest.atMs-from.atMs)/dayMs)), defined
 	}
-	defined := false
-	if latest.atMs-from.atMs >= dayMs/2 {
-		out.Bps, defined = annualize(from, latest)
-	}
-	if defined {
-		window := min(apyWindowDays, roundHalfUp(float64(latest.atMs-from.atMs)/dayMs))
-		out.WindowDays = &window
+	for i := range points {
+		bps, window, defined := trailing(i)
+		if !defined {
+			continue
+		}
+		if i == len(points)-1 {
+			out.Bps, out.WindowDays = bps, &window
+		}
+		if bps != nil {
+			out.History = append(out.History, HistoryPoint{APYBps: *bps, ObservedAt: time.UnixMilli(points[i].atMs).UTC().Format(time.RFC3339)})
+		}
 	}
 	return out
+}
+
+func (a APY) RNHistory() []APYPoint {
+	out := make([]APYPoint, 0, len(a.History))
+	for _, p := range a.History {
+		bps := p.APYBps
+		out = append(out, APYPoint{APYBps: &bps, Date: p.ObservedAt[:len(time.DateOnly)]})
+	}
+	return out
+}
+
+type EarnMaxAPY struct {
+	APYBps        *int64         `json:"apyBps"`
+	APYWindowDays *int64         `json:"apyWindowDays"`
+	CurrentApyBps *int64         `json:"currentApyBps"`
+	History       []HistoryPoint `json:"history" nullable:"false"`
+}
+
+func (r *Reader) PublicAPY(ctx context.Context) EarnMaxAPY {
+	apy := r.APY()
+	current, _ := r.CurrentApyBps(ctx, r.now())
+	return EarnMaxAPY{APYBps: apy.Bps, APYWindowDays: apy.WindowDays, CurrentApyBps: current, History: apy.History}
 }
 
 func (r *Reader) APY() APY {
@@ -105,7 +135,7 @@ func (r *Reader) APY() APY {
 		return loadAPY(ctx, r.now())
 	})
 	if !have {
-		return APY{Daily: []APYPoint{}, DayEnd: []DayEnd{}}
+		return APY{History: []HistoryPoint{}, DayEnd: []DayEnd{}}
 	}
 	return value
 }

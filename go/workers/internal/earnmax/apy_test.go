@@ -15,8 +15,8 @@ func TestShareAPYLastPointIsTrailingWeek(t *testing.T) {
 	if got.Bps == nil {
 		t.Fatal("headline undefined")
 	}
-	last := got.Daily[len(got.Daily)-1]
-	if *last.APYBps != *got.Bps {
-		t.Fatalf("last point %d, headline %d", *last.APYBps, *got.Bps)
+	last := got.History[len(got.History)-1]
+	if last.APYBps != *got.Bps {
+		t.Fatalf("last point %d, headline %d", last.APYBps, *got.Bps)
 	}
 }

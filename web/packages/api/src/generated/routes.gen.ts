@@ -1,6 +1,7 @@
 import type * as Types from "./types.gen";
 
 export type Get = {
+  "/api/earn-max/apy": Types.EarnMaxAPY;
   "/api/earn/stats": Types.EarnPublicStats;
   "/api/mobile/dapps": Types.MobileTrustedDappsResponse;
   "/api/mobile/library": Types.MobileLibraryResponse;

@@ -524,6 +524,13 @@ export type EarnForecastSummaryResponse = {
     history: EarnForecastApyHistoryResponse;
 };
 
+export type EarnMaxApy = {
+    apyBps: number | null;
+    apyWindowDays: number | null;
+    currentApyBps: number | null;
+    history: Array<HistoryPoint>;
+};
+
 export type EarnMaxActivity = {
     operations: Array<ActivityItem>;
     performance: Array<PerformancePoint>;
@@ -1430,6 +1437,11 @@ export type HealthView = {
     status: string;
 };
 
+export type HistoryPoint = {
+    apyBps: number;
+    observedAt: string;
+};
+
 export type InviteRequest = {
     code?: string;
     [key: string]: unknown;
@@ -1797,6 +1809,31 @@ export type PostAuthPrivyCompleteResponses = {
 };
 
 export type PostAuthPrivyCompleteResponse = PostAuthPrivyCompleteResponses[keyof PostAuthPrivyCompleteResponses];
+
+export type GetEarnMaxApyData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/earn-max/apy';
+};
+
+export type GetEarnMaxApyErrors = {
+    /**
+     * Error
+     */
+    default: ErrorModel;
+};
+
+export type GetEarnMaxApyError = GetEarnMaxApyErrors[keyof GetEarnMaxApyErrors];
+
+export type GetEarnMaxApyResponses = {
+    /**
+     * OK
+     */
+    200: EarnMaxApy;
+};
+
+export type GetEarnMaxApyResponse = GetEarnMaxApyResponses[keyof GetEarnMaxApyResponses];
 
 export type GetEarnStatsData = {
     body?: never;
