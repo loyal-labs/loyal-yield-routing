@@ -132,10 +132,8 @@ func crossMintExpectedPolicy(vault solana.PublicKey, shard string, maxSlippageBp
 	return squads.Policy{VaultIndex: earnprep.EarnVaultIndex, Constraints: []squads.InstructionConstraintView{routeV2, sharedAccounts}, SpendingLimits: limits}, nil
 }
 
-// crossMintLimitsSorted orders spending limits the way
-// programInteractionPolicySecurity does before comparing
-// : mint base58 localeCompare,
-// the collationLess order.
+// crossMintLimitsSorted orders spending limits before comparing: by mint,
+// base58 localeCompare, the collationLess order.
 func crossMintLimitsSorted(limits []squads.SpendingLimitView) []squads.SpendingLimitView {
 	sorted := append([]squads.SpendingLimitView(nil), limits...)
 	for i := 1; i < len(sorted); i++ {
@@ -219,8 +217,8 @@ func assertEarnCrossMintCanonicalArtifacts(ctx context.Context, client *chain.Cl
 	return nil
 }
 
-// assertCanonicalCrossMintPolicy ports assertCanonicalEarnPolicy
-// , message for message.
+// assertCanonicalCrossMintPolicy checks the canonical Earn policy; its errors
+// match the Next route's message for message.
 func assertCanonicalCrossMintPolicy(decoded squads.DecodedPolicy, settings solana.PublicKey, bound crossMintBoundPolicy, expected squads.Policy, signer solana.PublicKey, label string) error {
 	if bound.Seed > crossMintMaxSafeSeed {
 		return fmt.Errorf("%s seed is too large for this client.", label)

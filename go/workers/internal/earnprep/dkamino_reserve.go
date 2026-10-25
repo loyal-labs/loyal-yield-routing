@@ -17,14 +17,13 @@ type KaminoEarnReserveExpectation struct {
 	LiquidityTokenProgram solana.PublicKey
 }
 
-// ValidateKaminoEarnReserveAccount ports validateKaminoEarnReserveAccount
-// (CL:1141-1182) over kamino.DecodeReserve: the reserve account must be owned
-// by the lending program and carry the target's market, liquidity mint and
-// liquidity token program; the decoded reserve is returned for the farm and
-// collateral checks downstream (CL:7875-7966). Only mainnet runs it
-// (CL:7819-7822 skips devnet); account is the getAccountInfo result, whose
-// absence the caller reports (CL:7803-7805). Error strings are the TS's,
-// they surface in the route's prepare_failed body.
+// ValidateKaminoEarnReserveAccount decodes the reserve with
+// kamino.DecodeReserve and checks it: the reserve account must be owned by the
+// lending program and carry the target's market, liquidity mint and liquidity
+// token program; the decoded reserve is returned for the farm and collateral
+// checks downstream. Only mainnet runs it; account is the getAccountInfo
+// result, whose absence the caller reports. Error strings are the TS's, they
+// surface in the route's prepare_failed body.
 func ValidateKaminoEarnReserveAccount(account *chain.Account, target KaminoEarnReserveExpectation) (kamino.Reserve, error) {
 	if account == nil {
 		return kamino.Reserve{}, errors.New("Selected Kamino reserve account was not found.")

@@ -13,9 +13,9 @@ import (
 
 // Privy sign-in, part 2 of 3: the session cookie the minted JWT lands in.
 // Ports web/apps/web/src/features/identity/server/session-cookie.ts
-// resolveCookieOptions (:109-176) and getSessionCookieName (:291-295) — the
-// same name rules, domain rules and cookie attributes the Next route sets —
-// plus the AUTH_JWT_TTL_SECONDS default of one week (:154-157).
+// resolveCookieOptions and getSessionCookieName — the same name rules,
+// domain rules and cookie attributes the Next route sets — plus the
+// AUTH_JWT_TTL_SECONDS default of one week.
 
 var (
 	privyIPv4Hosts = [...]*regexp.Regexp{

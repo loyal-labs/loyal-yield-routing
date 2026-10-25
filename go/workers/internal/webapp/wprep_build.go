@@ -135,8 +135,8 @@ func wprepIx(ix solana.Instruction) squads.Instruction {
 	return out
 }
 
-// wprepVaultTransfer is makeSignerWritable(createTransferCheckedInstruction(…))
-// (CL:2984): the vault signs the inner transfer and must be writable.
+// wprepVaultTransfer builds the checked inner transfer; the vault signs it
+// and must be writable.
 func wprepVaultTransfer(tokenProgram, vaultAta, mint, walletAta, vault solana.PublicKey, amountRaw uint64) squads.Instruction {
 	ix := wprepIx(spl.TransferChecked(tokenProgram, vaultAta, mint, walletAta, vault, amountRaw, wprepDecimals))
 	for i := range ix.Accounts {

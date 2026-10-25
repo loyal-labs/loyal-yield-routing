@@ -732,9 +732,8 @@ func txreadsVaultHoldsChainFunds(snapshot txreadsVaultSnapshot) bool {
 	return false
 }
 
-// txreadsVaultSnapshot reads the vault at confirmed. The SOL balance mirrors
-// getVaultSweepLamportsOrZero (:3134): a failed read contributes zero instead
-// of failing the scan.
+// txreadsVaultSnapshot reads the vault at confirmed. A failed SOL balance
+// read contributes zero instead of failing the scan.
 func (h earnRoutes) txreadsVaultSnapshot(ctx context.Context, vault, usdcMint solana.PublicKey) (txreadsVaultSnapshot, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -774,11 +773,10 @@ func (h earnRoutes) txreadsVaultSnapshot(ctx context.Context, vault, usdcMint so
 	return snapshot, nil
 }
 
-// txreadsVaultHoldsKaminoCollateral is vaultHoldsKaminoCollateral
-// : every Safe market for every product
-// mint, read through the shared holdings snapshot with no dependence on DB
-// policy rows (they may be missing, ASK-2252), failing closed on unreadable
-// reserves.
+// txreadsVaultHoldsKaminoCollateral checks every Safe market for every
+// product mint, read through the shared holdings snapshot with no dependence
+// on DB policy rows (they may be missing, ASK-2252), failing closed on
+// unreadable reserves.
 func (h earnRoutes) txreadsVaultHoldsKaminoCollateral(ctx context.Context, account EarnAccount, index uint8) (bool, error) {
 	mints := make([]string, 0, 6)
 	for _, product := range dtargetProductMintsForCluster(account.Cluster) {
@@ -838,10 +836,9 @@ func txreadsVaultBlockedReason(snapshot txreadsVaultSnapshot, flags txreadsVault
 	}
 }
 
-// txreadsVaultRefundEntry is buildVaultRefundEntry
-// : everything here is chain-derived, so it
-// surfaces even when the DB rows for the position are long gone. The scan's
-// copy is never null; NextResponse.json always carries the entry.
+// txreadsVaultRefundEntry: everything here is chain-derived, so it surfaces
+// even when the DB rows for the position are long gone. The scan's copy is
+// never null; the response always carries the entry.
 func txreadsVaultRefundEntry(account EarnAccount, snapshot txreadsVaultSnapshot, flags txreadsVaultDBFlags) *EarnPolicyRefundVaultEntry {
 	blockedReason := txreadsVaultBlockedReason(snapshot, flags)
 	total := snapshot.lamports

@@ -124,8 +124,8 @@ func cleanupPolicyUniverse(cluster string, route RoutePolicy) *earnprep.Withdraw
 	}
 }
 
-// cleanupVaultSweepLamports ports getVaultSweepLamportsOrZero
-// : the vault PDA's SOL, every failure folded to zero.
+// cleanupVaultSweepLamports returns the vault PDA's SOL, every failure folded
+// to zero.
 func cleanupVaultSweepLamports(ctx context.Context, client *chain.Client, vault solana.PublicKey) uint64 {
 	_, accounts, err := client.Accounts(ctx, []solana.PublicKey{vault}, rpc.CommitmentConfirmed, 0)
 	if err != nil || len(accounts) == 0 || accounts[0] == nil {

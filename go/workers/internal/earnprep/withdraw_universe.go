@@ -30,10 +30,9 @@ func WithdrawResolveProductAsset(cluster string, mint solana.PublicKey) (Withdra
 	return WithdrawProductAsset{}, fmt.Errorf("mint is not a supported Earn product mint.")
 }
 
-// WithdrawCanonicalUniverse mirrors resolveFullExitPolicyMetadata
-// : the full-exit proof always
-// reads with the canonical product mints and the Safe basket, never with
-// request metadata, because the canonical withdrawal input carries none.
+// WithdrawCanonicalUniverse: the full-exit proof always reads with the
+// canonical product mints and the Safe basket, never with request metadata,
+// because the canonical withdrawal input carries none.
 func WithdrawCanonicalUniverse(cluster string) *WithdrawPolicyUniverse {
 	assets := withdrawProductAssets(cluster)
 	mints := make([]string, 0, len(assets))

@@ -28,10 +28,9 @@ import (
 // (EARN.md, Decided).
 const earnDepositsConfirmPath = "/api/smart-accounts/yield-optimization/deposits/confirm"
 
-// RPC_VERIFY_ATTEMPTS and RPC_VERIFY_DELAY_MS
-// : verification reads can land on
-// lagging RPC nodes, so each read polls six times half a second apart before
-// the deposit is rejected.
+// RPC_VERIFY_ATTEMPTS and RPC_VERIFY_DELAY_MS bound verification: reads can
+// land on lagging RPC nodes, so each read polls six times half a second apart
+// before the deposit is rejected.
 const (
 	depositConfirmVerifyAttempts = 6
 	depositConfirmVerifyRetry    = 500 * time.Millisecond
@@ -47,9 +46,8 @@ const (
 	depositQuestRetiredReason = "Seeker Summer round 1 ended — Solana-side reporting retired"
 )
 
-// EarnDepositConfirmPosition is serializeVerifiedDepositPosition
-// : the acknowledged deposit as the
-// active position the LaserStream projection will soon record.
+// EarnDepositConfirmPosition is the acknowledged deposit as the active
+// position the LaserStream projection will soon record.
 type EarnDepositConfirmPosition struct {
 	CurrentHolding EarnDepositConfirmCurrentHolding `json:"currentHolding"`
 	ID             string                           `json:"id"`
@@ -169,9 +167,8 @@ func depositCiteUnresolved(policyAccount string, body earnDepositConfirmBody, wa
 		"We couldn't verify your Earn policy on-chain. Your deposit is safe — please try again in a moment.")
 }
 
-// earnDepositConfirmBody is parseEarnDepositConfirmRequestBody's output
-// . Whole numbers ride in big.Int
-// because the TS body carries BigInts that only later steps bound.
+// earnDepositConfirmBody is the parsed confirm body. Whole numbers ride in
+// big.Int because the TS body carries BigInts that only later steps bound.
 type earnDepositConfirmBody struct {
 	Cluster                  string
 	ConfirmedSlot            *big.Int

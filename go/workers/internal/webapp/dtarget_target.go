@@ -73,10 +73,10 @@ func dtargetResolveEarnProductAsset(cluster LoyalCluster, mint string) (earncata
 	return earncatalog.Product{}, errors.New("mint is not a supported Earn product mint.")
 }
 
-// dtargetSupplyApyToBps mirrors supplyApyToBps
-// . Math.round rounds halves toward
-// +Infinity and math.Round away from zero; the eligible-reserve query only
-// admits non-negative APYs, where the two agree.
+// dtargetSupplyApyToBps rounds the APY ratio to whole basis points.
+// math.Round rounds halves away from zero while Math.round rounds them toward
+// +Infinity; the eligible-reserve query only admits non-negative APYs, where
+// the two agree.
 func dtargetSupplyApyToBps(supplyApy float64) int64 {
 	return int64(math.Round(supplyApy * 10_000))
 }
@@ -114,10 +114,9 @@ func dtargetEarnReserveTargetFromActivePosition(position dtargetActivePosition, 
 	}, nil
 }
 
-// dtargetBestApyReserveByStablecoin mirrors selectCurrentBestApyReserveByStablecoin
-// : the highest supply APY per
+// dtargetBestApyReserveByStablecoin picks the highest supply APY per
 // stablecoin, unknown mints dropped, ties keeping the earlier row, output in
-// STABLECOINS order. Rows arrive ordered by supply_apy DESC (:769).
+// STABLECOINS order. Rows arrive ordered by supply_apy DESC.
 func dtargetBestApyReserveByStablecoin(rows []dtargetReserveRow) []dtargetReserveRow {
 	mintToSymbol := make(map[string]string, len(earncatalog.Mainnet()))
 	for _, product := range earncatalog.Mainnet() {
@@ -173,9 +172,8 @@ func dtargetReserveRowToTarget(product earncatalog.Product, row dtargetReserveRo
 	}, nil
 }
 
-// dtargetFindBestSafeEarnReserveTarget mirrors findBestSafeEarnReserveTarget
-// : devnet falls back to the static
-// USDC venue and never samples Timescale (the feed only tracks mainnet).
+// dtargetFindBestSafeEarnReserveTarget: devnet falls back to the static USDC
+// venue and never samples Timescale (the feed only tracks mainnet).
 func dtargetFindBestSafeEarnReserveTarget(ctx context.Context, q dtargetQuerier, getBlockTime dtargetBlockTimeFunc, cluster LoyalCluster, product earncatalog.Product) (*dtargetEarnReserveTarget, error) {
 	if cluster == LoyalDevnet {
 		if product.Symbol != "USDC" {

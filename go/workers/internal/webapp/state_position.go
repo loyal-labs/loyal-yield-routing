@@ -252,10 +252,9 @@ func statePositionDisplay(liquidityMint string, market *string) EarnPositionDisp
 	return EarnPositionDisplay{Label: marketName + " · " + mintSymbol, MarketName: marketName, MintSymbol: mintSymbol}
 }
 
-// stateTimescaleReserveForPosition ports resolveTimescaleReserveForPosition
-// : the devnet Earn venue (the devnet USDC target's
-// reserve, market and liquidity mint together) is read through its mainnet
-// twin reserve, which is what the Timescale feed samples.
+// stateTimescaleReserveForPosition reads the devnet Earn venue (the devnet
+// USDC target's reserve, market and liquidity mint together) through its
+// mainnet twin reserve, which is what the Timescale feed samples.
 func stateTimescaleReserveForPosition(position stateYieldPositionRow) string {
 	const (
 		devnetReserve      = "9uKMtFU9UJ9DfbwzCReGENb31appi79KTEeDGdCnvMjy"

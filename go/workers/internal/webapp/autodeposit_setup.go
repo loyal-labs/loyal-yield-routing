@@ -91,11 +91,9 @@ type AutodepositSetupConfirmResponse struct {
 	Target         *AutodepositSetupConfirmTarget         `json:"target,omitempty"`
 }
 
-// parseAutodepositSetupConfirmBody ports
-// parseEarnAutodepositSetupConfirmRequestBody
-// : fields evaluate in the
-// TS object-literal order and every failure names its key, so the first bad
-// field matches Next's error message exactly.
+// parseAutodepositSetupConfirmBody parses the confirm body: fields evaluate
+// in the TS object-literal order and every failure names its key, so the
+// first bad field matches Next's error message exactly.
 func parseAutodepositSetupConfirmBody(raw []byte) (autodepositSetupInput, error) {
 	object, err := autodepositBodyObject(raw)
 	if err != nil {

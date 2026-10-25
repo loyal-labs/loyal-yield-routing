@@ -97,11 +97,9 @@ func readAutodepositVaultIndex(object map[string]any, into *int) error {
 	return nil
 }
 
-// parseAutodepositCloseConfirmBody ports
-// parseEarnAutodepositCloseConfirmRequestBody
-// : fields evaluate in the
-// TS object-literal order and every failure names its key, so the first bad
-// field matches Next's error message exactly.
+// parseAutodepositCloseConfirmBody parses the confirm body: fields evaluate
+// in the TS object-literal order and every failure names its key, so the
+// first bad field matches Next's error message exactly.
 func parseAutodepositCloseConfirmBody(raw []byte) (autodepositCloseInput, error) {
 	object, err := autodepositBodyObject(raw)
 	if err != nil {

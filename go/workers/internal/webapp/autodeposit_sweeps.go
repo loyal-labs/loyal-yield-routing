@@ -33,8 +33,8 @@ type AutodepositSweepsExecuteRequest struct {
 	SlotID *string `json:"slotId,omitempty"`
 }
 
-// AutodepositSweepRequestResult mirrors serializeRequestResult
-// ; every id and amount renders as a decimal string.
+// AutodepositSweepRequestResult: every id and amount renders as a decimal
+// string.
 type AutodepositSweepRequestResult struct {
 	AcceleratedAmountRaw string `json:"acceleratedAmountRaw"`
 	AcceleratedLotCount  int64  `json:"acceleratedLotCount"`

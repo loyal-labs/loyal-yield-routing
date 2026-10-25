@@ -36,9 +36,8 @@ type WithdrawPolicyUniverse struct {
 	KaminoMarkets        []string
 }
 
-// withdrawProductAsset mirrors EarnProductAsset.
-// The token program follows the stablecoin, not the cluster
-// : CASH, USDG and PYUSD are Token-2022.
+// withdrawProductAsset: the token program follows the stablecoin, not the
+// cluster, because CASH, USDG and PYUSD are Token-2022.
 type withdrawProductAsset struct {
 	Mint         solana.PublicKey
 	Symbol       string
@@ -225,13 +224,13 @@ type WithdrawSnapshot struct {
 type WithdrawHoldingsArgs struct {
 	Cluster string
 	// MinContextSlot, when set, demands a node at or past this slot on every
-	// underlying read, so no stage answers with pre-deposit state (:425-430).
+	// underlying read, so no stage answers with pre-deposit state.
 	MinContextSlot uint64
 	Now            func() time.Time
 	Policy         *WithdrawPolicyUniverse
 	SettingsPda    solana.PublicKey
 	// RequireCompleteReserveReads fails closed when a reserve behind a
-	// positive obligation deposit is unreadable (:433-436).
+	// positive obligation deposit is unreadable.
 	RequireCompleteReserveReads bool
 }
 

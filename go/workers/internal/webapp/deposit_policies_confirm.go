@@ -27,9 +27,9 @@ import (
 // reference. No database access, nothing signed, nothing sent.
 const earnPoliciesConfirmPath = "/api/smart-accounts/yield-optimization/policies/confirm"
 
-// CONFIRMED_SIGNATURE_STATUS_ATTEMPTS, _RETRY_MS and _RETRY_MAX_MS
-// : the RPC status index can trail the browser, so the
-// request stays open through the same bounded lag window (ASK-2005).
+// CONFIRMED_SIGNATURE_STATUS_ATTEMPTS, _RETRY_MS and _RETRY_MAX_MS bound the
+// status poll: the RPC status index can trail the browser, so the request
+// stays open through the same bounded lag window (ASK-2005).
 const (
 	confirmSignatureAttempts = 12
 	confirmSignatureRetryMS  = 350 * time.Millisecond
@@ -41,8 +41,8 @@ const (
 	confirmStageSetup = "setup_policy"
 )
 
-// EarnPolicyConfirmPolicy is serializeVerifiedPolicy's shape
-// : ids and seeds are decimal strings, vaultIndex a number.
+// EarnPolicyConfirmPolicy: ids and seeds are decimal strings, vaultIndex a
+// number.
 type EarnPolicyConfirmPolicy struct {
 	Account     string `json:"account"`
 	ID          string `json:"id"`

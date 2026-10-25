@@ -21,19 +21,17 @@ import (
 
 const KaminoDepositInstructionsURL = "https://api.kamino.finance/ktx/klend/deposit-instructions"
 
-// KaminoDepositUSDCDecimals is EARN_DEPOSIT_USDC_DECIMALS (CL:327), the
-// decimals every Earn product mint has on the Kamino API wire today.
+// KaminoDepositUSDCDecimals is the decimals every Earn product mint has on
+// the Kamino API wire today.
 const KaminoDepositUSDCDecimals = 6
 
-// KaminoAPIDepositDiscriminator is KAMINO_DEPOSIT_RESERVE_LIQUIDITY_DISCRIMINATOR
-// : mainnet KLend's
+// KaminoAPIDepositDiscriminator is mainnet KLend's
 // deposit_reserve_liquidity_and_obligation_collateral_v2, the instruction the
 // API answers with; the same bytes as kamino.DepositV2Discriminator.
 var KaminoAPIDepositDiscriminator = kamino.DepositV2Discriminator
 
-// KaminoAPIDevnetDepositDiscriminator is
-// KAMINO_DEVNET_DEPOSIT_RESERVE_LIQUIDITY_DISCRIMINATOR
-// : devnet KLend's older deposit_reserve_liquidity.
+// KaminoAPIDevnetDepositDiscriminator is devnet KLend's older
+// deposit_reserve_liquidity.
 var KaminoAPIDevnetDepositDiscriminator = anchor.Instruction("deposit_reserve_liquidity")
 
 type KaminoUpstreamError struct {
@@ -43,10 +41,9 @@ type KaminoUpstreamError struct {
 
 func (e *KaminoUpstreamError) Error() string { return e.Message }
 
-// FormatRawTokenAmountForAPI ports formatRawTokenAmountForApi (CL:2400-2416):
-// the raw integer amount as whole.fraction with the fraction zero-padded to
-// decimals and its trailing zeros trimmed; no fraction at all when it is zero
-// ("1000000", 6) -> "1"; (1500000, 6) -> "1.5").
+// FormatRawTokenAmountForAPI renders the raw integer amount as whole.fraction
+// with the fraction zero-padded to decimals and its trailing zeros trimmed; no
+// fraction at all when it is zero ("1000000", 6) -> "1"; (1500000, 6) -> "1.5".
 func FormatRawTokenAmountForAPI(amountRaw uint64, decimals int) string {
 	base := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(decimals)), nil)
 	whole, fraction := new(big.Int).QuoRem(new(big.Int).SetUint64(amountRaw), base, new(big.Int))
@@ -60,8 +57,6 @@ func FormatRawTokenAmountForAPI(amountRaw uint64, decimals int) string {
 	return whole.String() + "." + strings.TrimRight(string(digits), "0")
 }
 
-// KaminoDepositInstructionArgs carries fetchKaminoDepositInstruction's args
-// (CL:2691-2698).
 type KaminoDepositInstructionArgs struct {
 	AmountRaw            uint64
 	DepositDiscriminator [8]byte
@@ -111,13 +106,12 @@ func KaminoDepositInstructions(ctx context.Context, client *http.Client, endpoin
 	return DecodeKaminoDepositBundle(payload, args.LendProgramID, args.DepositDiscriminator)
 }
 
-// KaminoInstructionBundle ports KaminoInstructionBundle (CL:2573-2578):
-// Instruction is the first KLend instruction whose data starts with the
-// deposit discriminator, Instructions is every KLend instruction up to and
-// including it (the prefix a deposit route embeds), MatchingInstructions is
-// every discriminator match. The API's lutsByAddress (CL:416-419) is dropped:
-// the Earn deposit op compiles with no lookup tables, and a missing table
-// only costs size, so nothing downstream needs the addresses.
+// KaminoInstructionBundle: Instruction is the first KLend instruction whose
+// data starts with the deposit discriminator, Instructions is every KLend
+// instruction up to and including it (the prefix a deposit route embeds),
+// MatchingInstructions is every discriminator match. The API's lutsByAddress
+// is dropped: the Earn deposit op compiles with no lookup tables, and a
+// missing table only costs size, so nothing downstream needs the addresses.
 type KaminoInstructionBundle struct {
 	Instruction          squads.Instruction
 	Instructions         []squads.Instruction
@@ -283,7 +277,6 @@ func parseKaminoInstructionRole(role *string) (signer, writable bool) {
 
 // decodeKaminoBase64 mirrors Buffer.from(value, "base64") on a JSON string:
 // padded or unpadded both decode. A field that was absent or not a string
-// (instructionDataStartsWith's neither-string-nor-bytes case, CL:2434-2441)
 // decodes to nothing.
 func decodeKaminoBase64(data *string) ([]byte, bool) {
 	if data == nil {

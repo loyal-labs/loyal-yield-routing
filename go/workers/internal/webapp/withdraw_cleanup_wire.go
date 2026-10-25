@@ -21,8 +21,7 @@ type EarnCleanupPrepareResponse struct {
 	PreparedCleanup EarnCleanupPrepareWire `json:"preparedCleanup"`
 }
 
-// EarnCleanupPrepareWire is WireSmartAccountPreparedEarnUsdcCleanup
-// . autodepositClosePrepared and
+// EarnCleanupPrepareWire: autodepositClosePrepared and
 // estimatedRefundLamports are always present, null when unknown; setupPolicy
 // is dropped when the vault has none.
 type EarnCleanupPrepareWire struct {
@@ -47,9 +46,8 @@ type EarnCleanupVaultWire struct {
 	UsdcAta      string `json:"usdcAta"`
 }
 
-// EarnCleanupPersistenceWire is SmartAccountEarnUsdcCleanupMetadata
-// . setupPolicy* ride only when a setup policy exists;
-// autodepositClose is the literal null when the vault has none.
+// EarnCleanupPersistenceWire: setupPolicy* ride only when a setup policy
+// exists; autodepositClose is the literal null when the vault has none.
 type EarnCleanupPersistenceWire struct {
 	Cluster               string                           `json:"cluster"`
 	WalletAddress         string                           `json:"walletAddress"`

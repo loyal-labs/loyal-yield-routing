@@ -60,10 +60,9 @@ type WirePreparedEarnPolicyRefund struct {
 	VaultIndex              uint8                      `json:"vaultIndex"`
 }
 
-// WirePreparedEarnRecurringDelegationRefund mirrors
-// WireSmartAccountPreparedEarnRecurringDelegationRefund
-// . The estimated lamports ride the delegation's
-// own nullable rent read, so they serialize as null when the account is gone.
+// WirePreparedEarnRecurringDelegationRefund: the estimated lamports ride the
+// delegation's own nullable rent read, so they serialize as null when the
+// account is gone.
 type WirePreparedEarnRecurringDelegationRefund struct {
 	EstimatedRefundLamports *uint64                             `json:"estimatedRefundLamports"`
 	Prepared                WirePreparedOperation               `json:"prepared"`
@@ -72,8 +71,7 @@ type WirePreparedEarnRecurringDelegationRefund struct {
 	VaultIndex              uint8                               `json:"vaultIndex"`
 }
 
-// EarnPolicyRefundPrepareResponse mirrors EarnPolicyRefundPrepareResponse
-// : exactly one branch key per request kind.
+// EarnPolicyRefundPrepareResponse: exactly one branch key per request kind.
 type EarnPolicyRefundPrepareResponse struct {
 	PreparedVaultRefund               *PreparedEarnVaultRefund                   `json:"preparedVaultRefund,omitempty"`
 	PreparedRecurringDelegationRefund *WirePreparedEarnRecurringDelegationRefund `json:"preparedRecurringDelegationRefund,omitempty"`

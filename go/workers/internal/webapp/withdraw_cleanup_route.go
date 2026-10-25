@@ -249,11 +249,10 @@ func (h earnRoutes) cleanupAutodepositClose(ctx context.Context, account EarnAcc
 	return &cleanupAutodepositCloseInput{Policy: policyAccount, RecurringDelegation: delegation}, nil
 }
 
-// reconcileMissingAutodepositPolicy ports reconcileMissingOnChainEarnAutodepositPolicy
-// : the target whose sweep
-// policy vanished from chain closes in place — its scheduled sweeps cancelled
-// and both the sweep policy row and the target flipped closed. The TS runs
-// the three writes as separate pool statements; one transaction here cannot
+// reconcileMissingAutodepositPolicy closes in place the target whose sweep
+// policy vanished from chain — its scheduled sweeps cancelled and both the
+// sweep policy row and the target flipped closed. The TS runs the three
+// writes as separate pool statements; one transaction here cannot
 // leave an open target behind a closed policy after a crash, and a second run
 // finds the closed target and changes nothing (the conflict-free re-run key
 // is the target's id, resolved by its unique policy_account).

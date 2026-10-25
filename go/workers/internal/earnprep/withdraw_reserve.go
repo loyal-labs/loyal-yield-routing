@@ -12,17 +12,14 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
-// The Kamino reserve and obligation readers for the withdraw family, mirrors
-// of the TS parsers (CL = web/packages/smart-account-vaults/src/client.ts):
-// parseKaminoReserveSnapshot (CL:1249), parseKaminoReserveTokenAccounts
-// (CL:1095), parseKaminoObligationAccount (CL:1184) and the redeemable math
-// (CL:1312-1354). The TS math clamps a reserve whose fees exceed its liquidity
-// to a zero rate and falls back to the 1:1 identity when the rate is
-// unavailable; kamino.Reserve.TotalLiquiditySF and kamino.CollateralToLiquidity
-// error in those cases instead, so this path never calls them.
+// The Kamino reserve and obligation readers for the withdraw family. The math
+// clamps a reserve whose fees exceed its liquidity to a zero rate and falls
+// back to the 1:1 identity when the rate is unavailable;
+// kamino.Reserve.TotalLiquiditySF and kamino.CollateralToLiquidity error in
+// those cases instead, so this path never calls them.
 
 // Reserve layout offsets, each from the account start so they include the
-// 8-byte anchor discriminator (KAMINO_RESERVE_LAYOUT_OFFSETS, CL:366-385).
+// 8-byte anchor discriminator.
 const (
 	withdrawReserveLendingMarketOffset   = 32
 	withdrawReserveFarmCollateralOffset  = 64
@@ -173,10 +170,9 @@ func WithdrawRedeemableLiquidityRaw(collateralAmountRaw uint64, snapshot Withdra
 	return liquidity.Uint64(), nil
 }
 
-// WithdrawCollateralForRedeemableLiquidityRaw mirrors
-// calculateKaminoCollateralAmountForRedeemableLiquidityRaw (CL:1332): zero
-// liquidity needs no collateral, an unavailable rate prices it 1:1, otherwise
-// the collateral CEILs so it redeems at least the liquidity.
+// WithdrawCollateralForRedeemableLiquidityRaw: zero liquidity needs no
+// collateral, an unavailable rate prices it 1:1, otherwise the collateral
+// CEILs so it redeems at least the liquidity.
 func WithdrawCollateralForRedeemableLiquidityRaw(liquidityAmountRaw uint64, snapshot WithdrawReserveSnapshot) (uint64, error) {
 	if liquidityAmountRaw == 0 {
 		return 0, nil

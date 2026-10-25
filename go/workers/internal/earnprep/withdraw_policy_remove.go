@@ -20,12 +20,10 @@ func WithdrawPolicyRemoveSync(settings, rentPayer, signer solana.PublicKey, poli
 	}.Instruction()
 }
 
-// WithdrawCloseAccount ports makeSignerWritable(
-// createCloseAccountInstruction(account, destination, owner, [], tokenProgram))
-// (CL:2984-2996, spl-token close-account): data [9], metas [account w,
-// destination w, authority s], with the authority meta flipped to writable
-// because the vault authority signs the inner instruction by CPI and every
-// vault-signed meta must carry signer and writable.
+// WithdrawCloseAccount is the spl-token close-account instruction: data [9],
+// metas [account w, destination w, authority s], with the authority meta
+// flipped to writable because the vault authority signs the inner instruction
+// by CPI and every vault-signed meta must carry signer and writable.
 func WithdrawCloseAccount(tokenProgram, account, destination, authority solana.PublicKey) squads.Instruction {
 	return squads.Instruction{
 		ProgramID: tokenProgram,

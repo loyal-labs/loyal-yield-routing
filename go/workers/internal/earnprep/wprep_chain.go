@@ -58,9 +58,8 @@ func parseWithdrawLookupTable(key solana.PublicKey, data []byte) (WithdrawLookup
 	return table, nil
 }
 
-// WithdrawLookupTables mirrors resolveKaminoLookupTableAccounts
-// (CL:2227-2253): one read per unique address, a missing or unreadable table
-// dropped, since a table only ever saves transaction size.
+// WithdrawLookupTables reads one lookup table per unique address, a missing
+// or unreadable table dropped, since a table only ever saves transaction size.
 func WithdrawLookupTables(ctx context.Context, c RPC, addresses []solana.PublicKey) []WithdrawLookupTable {
 	var tables []WithdrawLookupTable
 	seen := map[solana.PublicKey]bool{}

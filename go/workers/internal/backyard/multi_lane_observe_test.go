@@ -238,7 +238,7 @@ func TestPYUSDNoLaneOwesIsCountedOnceAndConverts(t *testing.T) {
 	}{
 		// Squads 6 + 9_000_000 idle PYUSD.
 		"flat vault": {flatten, "", 9_000_006},
-		// ... + Ethena's 10_000_000 collateral - 2_000_000 PYUSD debt.
+		// plus Ethena's 10_000_000 collateral - 2_000_000 PYUSD debt.
 		"only Ethena": {func(a *[]ConfirmedAccount) {
 			flatten(a)
 			fundLane(t, a, ethenaUSDePYUSD.Lane, 10_000_000, 2_000_000)

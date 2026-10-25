@@ -38,8 +38,8 @@ type refundPrepareBody struct {
 	recurringDelegation string
 }
 
-// parseRefundPrepareBody ports parseEarnPolicyRefundPrepareRequestBody
-// , message for message.
+// parseRefundPrepareBody parses the prepare request body; its errors match
+// the Next route's message for message.
 func parseRefundPrepareBody(raw []byte) (refundPrepareBody, error) {
 	parsed, err := parseJSONBody(raw)
 	if err != nil {

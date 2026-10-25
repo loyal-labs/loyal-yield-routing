@@ -8,9 +8,9 @@ import (
 	"errors"
 )
 
-// RealtimeClaims is the Earn realtime token payload
-// . The field order is the JSON key order: the token
-// signs the exact encoded payload, so the marshal order is contract.
+// RealtimeClaims is the Earn realtime token payload. The field order is the
+// JSON key order: the token signs the exact encoded payload, so the marshal
+// order is contract.
 type RealtimeClaims struct {
 	Aud              string   `json:"aud"`
 	ClientKind       string   `json:"clientKind"`

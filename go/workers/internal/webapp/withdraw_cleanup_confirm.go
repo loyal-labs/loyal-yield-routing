@@ -85,8 +85,7 @@ func cleanupRetryable(err error) *cleanupConfirmError {
 	return &cleanupConfirmError{http.StatusServiceUnavailable, "full_exit_verification_retryable", err.Error()}
 }
 
-// cleanupConfirmBody is parseEarnWithdrawCleanupConfirmRequestBody
-// . preparedCleanup stays
+// cleanupConfirmBody parses the confirm request body. preparedCleanup stays
 // the raw object the client echoed; the route reads only the persistence
 // fields it proves against.
 type cleanupConfirmBody struct {
@@ -97,8 +96,8 @@ type cleanupConfirmBody struct {
 	AutodepositCloseConfirmedSlot *string
 }
 
-// cleanupConfirmRecord is assertRecord (:117-123) with JavaScript's typing: a
-// top-level array is an object whose field reads all miss, like Next's.
+// cleanupConfirmRecord applies JavaScript's typing: a top-level array is an
+// object whose field reads all miss, like Next's.
 func cleanupConfirmRecord(raw []byte) (map[string]any, error) {
 	parsed, err := parseJSONBody(raw)
 	if err != nil {
@@ -165,9 +164,9 @@ func cleanupWireText(object map[string]any, key string) (string, bool) {
 	return text, ok
 }
 
-// cleanupWireOptionalText reads one optional persistence string (:61-68):
-// absent and null are the same null; a present non-string keeps its own type,
-// which no DB string or null ever equals.
+// cleanupWireOptionalText reads one optional persistence string: absent and
+// null are the same null; a present non-string keeps its own type, which no
+// DB string or null ever equals.
 func cleanupWireOptionalText(object map[string]any, key string) *string {
 	value, present := object[key]
 	if !present || value == nil {
@@ -282,8 +281,7 @@ type cleanupConfirmStore interface {
 }
 
 // cleanupConfirmSlotText compares the client's decimal slot with the
-// resolved one at BigInt precision (:117): digit strings beyond uint64 never
-// match.
+// resolved one at BigInt precision: digit strings beyond uint64 never match.
 func cleanupConfirmSlotText(text string, slot uint64) int {
 	client, ok := new(big.Int).SetString(text, 10)
 	if !ok {
@@ -375,9 +373,9 @@ func cleanupConfirmVerify(ctx context.Context, client withdrawConfirmChain, stor
 }
 
 // cleanupCloseIntentInput maps the echoed autodepositClose persistence into
-// the close-intent write (:226-237); a field that is not a string is a plain
-// confirm failure, where Next feeds the undefined into the write and fails
-// the same catch-all.
+// the close-intent write; a field that is not a string is a plain confirm
+// failure, where Next feeds the undefined into the write and fails the same
+// catch-all.
 func cleanupCloseIntentInput(cluster string, closeMeta map[string]any, signature, slotText, settings, vaultPubkey, wallet string) (autodepositCloseInput, error) {
 	delegatedSigner, ok := cleanupWireText(closeMeta, "delegatedSigner")
 	if !ok {

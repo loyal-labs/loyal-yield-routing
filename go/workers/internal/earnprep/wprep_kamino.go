@@ -20,7 +20,6 @@ type KaminoWithdrawBundle struct {
 	LookupTables []solana.PublicKey
 }
 
-// KaminoWithdrawInstructions ports fetchKaminoWithdrawInstruction (CL:2742-2791).
 func KaminoWithdrawInstructions(ctx context.Context, client *http.Client, endpoint string, vault, market, reserve solana.PublicKey, liquidityAmountRaw uint64) (KaminoWithdrawBundle, error) {
 	body, err := json.Marshal(kaminoDepositRequestBody{
 		Vault:   vault.String(),

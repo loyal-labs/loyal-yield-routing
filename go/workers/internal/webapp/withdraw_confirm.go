@@ -61,10 +61,9 @@ type EarnWithdrawConfirmRequest struct {
 	WithdrawnAmountRaw         *string                                 `json:"withdrawnAmountRaw,omitempty"`
 }
 
-// EarnWithdrawConfirmPosition is serializeVerifiedWithdrawPosition
-// : the read-model row the
-// LaserStream projection would hold for the withdrawal, with ids and slots as
-// decimal strings and market null on idle withdrawals.
+// EarnWithdrawConfirmPosition is the read-model row the LaserStream
+// projection would hold for the withdrawal, with ids and slots as decimal
+// strings and market null on idle withdrawals.
 type EarnWithdrawConfirmPosition struct {
 	CurrentHolding        EarnWithdrawConfirmedHolding `json:"currentHolding"`
 	ID                    string                       `json:"id"`
@@ -96,8 +95,8 @@ type EarnWithdrawConfirmedInitial struct {
 	SupplyApyBps  *string `json:"supplyApyBps"`
 }
 
-// EarnWithdrawConfirmRemainingHolding is the response's remainingHoldings entry
-// (:727-733): the five fields the route maps out of the holdings snapshot.
+// EarnWithdrawConfirmRemainingHolding is the response's remainingHoldings
+// entry: the five fields the route maps out of the holdings snapshot.
 type EarnWithdrawConfirmRemainingHolding struct {
 	AmountRaw     string  `json:"amountRaw"`
 	Kind          string  `json:"kind"`
@@ -106,10 +105,8 @@ type EarnWithdrawConfirmRemainingHolding struct {
 	Reserve       *string `json:"reserve"`
 }
 
-// EarnWithdrawConfirmResponse is EarnWithdrawConfirmationResult
-// . The zero proof's blocking entries
-// serialize as they are, tokenProgramId included (:725), so the field names
-// come from the Next runtime objects, not the wider result type comment.
+// EarnWithdrawConfirmResponse is the confirm route's response body. The zero
+// proof's blocking entries serialize as they are, tokenProgramId included.
 type EarnWithdrawConfirmResponse struct {
 	BlockingTokenAccounts []withdrawBlockingTokenAccount        `json:"blockingTokenAccounts"`
 	Position              EarnWithdrawConfirmPosition           `json:"position"`
@@ -250,7 +247,7 @@ func withdrawConfirmVerify(ctx context.Context, client withdrawConfirmChain, acc
 	if canonical.ConfirmedSlot.Cmp(slot) != 0 {
 		// The client-supplied slot can be its confirmation context slot
 		// (RPC-lag fallback), not the landing slot; the server-resolved status
-		// slot is canonical (:635-646). Rejecting here would strand the
+		// slot is canonical. Rejecting here would strand the
 		// withdrawal out of the read-model.
 		slog.Warn("[earn-withdraw-confirm] corrected client slot",
 			"clientSlot", canonical.ConfirmedSlot.String(),
@@ -294,8 +291,8 @@ func withdrawConfirmVerify(ctx context.Context, client withdrawConfirmChain, acc
 }
 
 // EarnWithdrawConfirmReserveWithdrawal documents one reserveWithdrawals entry
-// of the confirm body: the SDK's SmartAccountEarnUsdcReserveWithdrawalMetadata
-// , echoed from prepare.
+// of the confirm body: the SDK's SmartAccountEarnUsdcReserveWithdrawalMetadata,
+// echoed from prepare.
 type EarnWithdrawConfirmReserveWithdrawal struct {
 	AccountingReserve       string  `json:"accountingReserve"`
 	CollateralAta           string  `json:"collateralAta"`

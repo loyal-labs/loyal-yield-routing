@@ -31,9 +31,8 @@ const earnMaxContextPath = "/api/smart-accounts/earn-max/context"
 // in raw USDC base units (6 decimals).
 const earnMaxContextMinUsdc = uint64(1_000_000)
 
-// earnMaxContextUsdcMint is VOLTR_ASSET_MINT
-// , the mainnet USDC whose
-// spendable balance the gate reads.
+// earnMaxContextUsdcMint is the mainnet USDC whose spendable balance the
+// gate reads.
 var earnMaxContextUsdcMint = solana.MustPublicKeyFromBase58(earncatalog.USDC)
 
 // EarnMaxContextRequest is the POST body. The Next route dispatches
