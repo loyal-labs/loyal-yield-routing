@@ -29,8 +29,7 @@ func refundPrepareFailed(err error) error {
 	return earnError(http.StatusInternalServerError, "prepare_failed", message)
 }
 
-// SUBSCRIPTIONS_REVOKE_DELEGATION (loyal-actions constants.ts:283); the revoke
-// instruction's whole data is this one tag byte.
+// The revoke instruction's whole data is this one tag byte.
 const subscriptionsRevokeDelegationTag = byte(3)
 
 func buildRecurringDelegationRefundOperation(feePayer, delegation solana.PublicKey) squads.Instruction {

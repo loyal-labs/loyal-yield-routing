@@ -104,8 +104,8 @@ func txreadsFormatExactUSDC(amount int64) string {
 		fmt.Sprintf("%06d", absolute%1_000_000)
 }
 
-// txreadsFormatDisplayUSDC mirrors formatDisplayUsdcAmount: the sign comes
-// from the direction alone, cents round half away from zero in whole cents.
+// txreadsFormatDisplayUSDC: the sign comes from the direction alone; cents
+// round up to whole cents, matching the TS.
 func txreadsFormatDisplayUSDC(amount int64, direction string) string {
 	sign := ""
 	switch direction {

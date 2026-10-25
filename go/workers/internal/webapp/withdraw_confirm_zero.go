@@ -57,10 +57,9 @@ type withdrawVaultSnapshot struct {
 	VaultUsdcATA  solana.PublicKey
 }
 
-// fetchWithdrawVaultSnapshot ports fetchEarnVaultRefundSnapshot
-// with the minContextSlot the confirm proof passes.
-// The SOL read folds a failure into zero (getVaultSweepLamportsOrZero,
-// client.ts:3134-3146); the token-account reads fail the proof.
+// fetchWithdrawVaultSnapshot reads the vault with the minContextSlot the
+// confirm proof passes. The SOL read folds a failure into zero; the
+// token-account reads fail the proof.
 func fetchWithdrawVaultSnapshot(ctx context.Context, client withdrawConfirmChain, settings, usdcMint solana.PublicKey, minContextSlot uint64) (withdrawVaultSnapshot, error) {
 	vault, _, err := squads.SmartAccountAddress(settings, earnprep.EarnVaultIndex)
 	if err != nil {

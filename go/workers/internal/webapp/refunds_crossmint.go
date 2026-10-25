@@ -20,11 +20,9 @@ const (
 
 var crossMintDigitsOnly = regexp.MustCompile(`^\d+$`)
 
-// parseCrossMintGeneration ports the shared generation check (toggle
-// route.ts:50-57, delete readiness route.ts:46-59): a /^\d+$/ string greater
-// than zero. A value past int64 can never match the bigint column, so the
-// caller takes the stale-or-missing shortcut instead of sending it to
-// Postgres.
+// parseCrossMintGeneration accepts a /^\d+$/ string greater than zero. A
+// value past int64 can never match the bigint column, so the caller takes
+// the stale-or-missing shortcut instead of sending it to Postgres.
 func parseCrossMintGeneration(value any) (uint64, bool, bool) {
 	text, isText := value.(string)
 	if !isText || !crossMintDigitsOnly.MatchString(text) {

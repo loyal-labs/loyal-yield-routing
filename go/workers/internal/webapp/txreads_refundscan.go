@@ -18,12 +18,7 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
-// Ports the Next policy-refunds scan
-// (web/apps/web/src/app/api/smart-accounts/yield-optimization/policy-refunds/
-// scan/route.ts -> earn-policy-refund.server.ts scanEarnPolicyRefunds :228 and
-// earn-policy-refund-state.server.ts): the chain and DB liveness facts each
-// route policy and the Earn vault need before a refund may run. A read-only
-// unit: no DB writes, so re-running it changes nothing.
+// Read-only unit: no DB writes, so re-running it changes nothing.
 
 var txreadsSubscriptionsProgramKey = solana.MustPublicKeyFromBase58(autodeposit.SubscriptionsProgramID)
 
@@ -730,9 +725,6 @@ func txreadsCollectDelegations(byPolicyAccount map[string][]EarnPolicyRefundRecu
 	return collected
 }
 
-// txreadsUSDCMint is getStablecoinMintForCluster(cluster, USDC)
-// (@loyal-labs/actions constants.ts:136-146); dtarget_target.go carries the
-// same two addresses.
 func txreadsUSDCMint(cluster LoyalCluster) solana.PublicKey {
 	if cluster == LoyalDevnet {
 		return solana.MustPublicKeyFromBase58(dtargetDevnetUSDCMint)

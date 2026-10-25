@@ -19,14 +19,8 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
-// POST /api/smart-accounts/yield-optimization/withdrawals/cleanup/prepare ports
-// web/apps/web/src/app/api/smart-accounts/yield-optimization/withdrawals/
-// cleanup/prepare/route.ts plus prepareEarnUsdcCleanup
-// and the zero-proof read it depends on. The route reads the Earn policy pair,
-// proves the vault is at a full exit, then hands the client one
-// execute-per-operation instruction list; it never writes money rows. The one
-// DB write (a stale autodeposit row reconciled closed) is idempotent by
-// policy account.
+// Never writes money rows; the one DB write (a stale autodeposit row
+// reconciled closed) is idempotent by policy account.
 
 var cleanupProjectionRetries = []time.Duration{0, 100 * time.Millisecond, 250 * time.Millisecond, 500 * time.Millisecond, 1 * time.Second}
 

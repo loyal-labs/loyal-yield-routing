@@ -19,14 +19,10 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnprep"
 )
 
-// POST /api/smart-accounts/yield-optimization/withdrawals/cleanup/confirm
-// ports web/apps/web/src/app/api/smart-accounts/yield-optimization/withdrawals/
-// cleanup/confirm/route.ts:71-273 plus assertEarnFullExitProven
-// . The route proves the cleanup
-// landed — zero balances, every prepared policy account closed, the client's
-// slot matching the chain — and records the one close intent for the
-// LaserStream projection; it never writes a money row (the single-writer
-// check forbids recordConfirmedEarnCleanup here).
+// The route proves the cleanup landed — zero balances, every prepared policy
+// account closed, the client's slot matching the chain — and records the one
+// close intent for the LaserStream projection; it never writes a money row
+// (the single-writer check forbids recordConfirmedEarnCleanup here).
 const earnCleanupConfirmPath = "/api/smart-accounts/yield-optimization/withdrawals/cleanup/confirm"
 
 type earnCleanupConfirmInput struct {

@@ -11,10 +11,7 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
-// WireSmartAccountPreparedEarnUsdcWithdraw as serializePreparedEarnUsdcWithdraw
-// emits it (wire/earn-prepare-wire.shared.ts:99-152, 369-444). The persistence
-// objects are the SDK's own (client.ts:8876-8921, 10000-10036, 10125-10164),
-// echoed verbatim to confirm.
+// EarnWithdrawPrepareResponse echoes the persisted prepare wire verbatim.
 type EarnWithdrawPrepareResponse struct {
 	PreparedWithdraw EarnWithdrawPrepareWire `json:"preparedWithdraw"`
 }

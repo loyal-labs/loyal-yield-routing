@@ -10,12 +10,9 @@ import (
 	"github.com/solana-foundation/solana-go/v2"
 )
 
-// privyGetOrCreateUser ports getOrCreateCurrentUser:
-// find by (provider, subject_address), else insert with ON CONFLICT DO
-// NOTHING and re-read after a lost race, then refresh metadata and upsert the
-// wallet row in every branch. TS commits each statement separately; here the
-// four statements share one short transaction so a crash cannot leave a user
-// row without its wallet row — the re-run writes the same rows either way.
+// privyGetOrCreateUser commits the four statements in one short transaction
+// so a crash cannot leave a user row without its wallet row; a re-run writes
+// the same rows either way.
 func (h earnRoutes) privyGetOrCreateUser(ctx context.Context, wallet solana.PublicKey, email string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()

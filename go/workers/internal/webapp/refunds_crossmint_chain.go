@@ -21,13 +21,12 @@ const (
 	jupiterSwapDiscriminator                  = "\xbb\x64\xfa\xcc\x31\xc4\xaf\x14"
 	jupiterSharedAccountsRouteV2Discriminator = "\xd1\x98\x53\x93\x7c\xfe\xd8\xe9"
 
-	// loyal-actions constants.ts:241-247.
 	jupiterSwapSlippageBPSOffset           = 24
 	jupiterSwapPlatformFeeBPSOffset        = 26
 	jupiterSharedAccountsSlippageBPSOffset = 25
 	jupiterSharedAccountsPlatformFeeOffset = 27
 
-	// client.ts:6348 — Number(seed) loses precision past MAX_SAFE_INTEGER.
+	// a float64 seed loses precision past 2^53 - 1.
 	crossMintMaxSafeSeed = uint64(1)<<53 - 1
 )
 

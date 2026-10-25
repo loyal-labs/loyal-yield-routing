@@ -1,9 +1,7 @@
 package webapp
 
-// Pure port of web/apps/web/src/lib/kamino/earn-realized-apy.shared.ts and
-// earn-fleet-allocation.shared.ts: realized Earn APY from Kamino reserve share
-// prices. Signed share-price growth measures realized reserve returns; the
-// headline annualizes the observed fleet allocation's return.
+// Signed share-price growth measures realized reserve returns; the headline
+// annualizes the observed fleet allocation's return.
 
 import (
 	"cmp"
