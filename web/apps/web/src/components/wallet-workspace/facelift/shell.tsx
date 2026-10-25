@@ -331,6 +331,29 @@ export function WorkspaceFaceliftShell() {
       !earnMax.view.isLoading &&
       !isEarnMaxUntouched(earnMax.view));
 
+  const showEarnBanners =
+    activePage === "earn" ||
+    activePage === "activity" ||
+    (EARN_MAX_VISIBLE && activePage === "earnmax");
+  const contentColumnRef = useRef<HTMLDivElement>(null);
+  const bannerSlotRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const column = contentColumnRef.current;
+    const slot = bannerSlotRef.current;
+    if (!column || !slot) return;
+    const observer = new ResizeObserver(() => {
+      column.style.setProperty(
+        "--earn-banner-room",
+        `${slot.offsetHeight + 8}px`
+      );
+    });
+    observer.observe(slot);
+    return () => {
+      observer.disconnect();
+      column.style.removeProperty("--earn-banner-room");
+    };
+  }, [showEarnBanners, isHydrated]);
+
   if (!isHydrated) return <WorkspaceSkeleton />;
 
   return (
@@ -375,7 +398,6 @@ export function WorkspaceFaceliftShell() {
           activePage={activePage}
           earnBalanceUsd={earnData.earnBalanceUsd}
           earnMaxBalanceUsd={earnMax.view.balanceUsd}
-          earnMaxForecastApyBps={earnMax.view.forecastApyBps}
           flashedShortcut={flashedShortcut}
           isEarnBalanceLoading={isPositionLoading}
           isEarnMaxBalanceLoading={earnMax.view.isLoading}
@@ -384,10 +406,24 @@ export function WorkspaceFaceliftShell() {
           showEarnMax={EARN_MAX_VISIBLE}
         />
         <div
-          className={`flex h-full min-w-0 flex-1 flex-col ${
+          className={`relative flex h-full min-w-0 flex-1 flex-col min-[1204px]:[&_[data-earn-banner-room]]:pb-[var(--earn-banner-room,0px)] ${
             isMobileGrayBackground ? "" : "max-[795px]:bg-card"
           }`}
+          ref={contentColumnRef}
         >
+          {showEarnBanners ? (
+            <div
+              className="absolute right-2 bottom-2 z-10 hidden w-[400px] min-[1204px]:block"
+              ref={bannerSlotRef}
+            >
+              <EarnBanners
+                onSetUpAutodeposit={() => {
+                  setActivePage("earn");
+                  setMiddleView("autodeposit");
+                }}
+              />
+            </div>
+          ) : null}
           {activePage === "wallet" ? (
             <WalletHomePage
               earnBalanceUsd={earnData.earnBalanceUsd}
@@ -511,11 +547,6 @@ export function WorkspaceFaceliftShell() {
                   )}
                 </MiddlePaneSlide>
                 <EarnChartPane
-                  banner={
-                    <EarnBanners
-                      onSetUpAutodeposit={() => setMiddleView("autodeposit")}
-                    />
-                  }
                   earnData={earnData}
                   isExpanded={isChartExpanded}
                   isLoggedOut={isHydrated && !isSignedIn}

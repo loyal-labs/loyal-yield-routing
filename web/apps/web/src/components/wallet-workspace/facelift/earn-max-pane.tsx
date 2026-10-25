@@ -988,7 +988,7 @@ export function EarnMaxWorkspace({
         ) : null}
       </SheetReveal>
       {screen !== "main" ? null : selectedTransaction && transactionDetail ? (
-        <aside className="hidden h-full w-[400px] shrink-0 flex-col overflow-clip rounded-3xl bg-card min-[1204px]:flex">
+        <aside data-earn-banner-room className="hidden h-full w-[400px] shrink-0 flex-col overflow-clip rounded-3xl bg-card min-[1204px]:flex">
           <PaneReveal key={transactionDetail.id}>
             <EarnMaxTransactionDetailPane
               item={transactionDetail}
@@ -1007,7 +1007,7 @@ export function EarnMaxWorkspace({
           onSelectTab={setChartTab}
           selectedTab={chartTab}
           statsPanel={
-            <EarnMaxInfoFaqsCard className="flex min-h-[240px] w-full flex-1" />
+            <EarnMaxInfoFaqsCard className="flex w-full shrink-0" />
           }
         />
       )}

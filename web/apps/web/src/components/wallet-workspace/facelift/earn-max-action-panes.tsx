@@ -96,9 +96,18 @@ const EARN_MAX_FLOW_STEPS: readonly FlowStep[] = [
   },
 ];
 
-export function EarnMaxInfoFaqsCard({ className }: { className: string }) {
+export function EarnMaxInfoFaqsCard({
+  bannerRoom,
+  className,
+}: {
+  bannerRoom?: boolean;
+  className: string;
+}) {
   return (
-    <div className={`flex-col overflow-clip rounded-3xl bg-card ${className}`}>
+    <div
+      className={`flex-col rounded-3xl bg-card ${bannerRoom ? "overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden" : "overflow-clip"} ${className}`}
+      data-earn-banner-room={bannerRoom ? "" : undefined}
+    >
       <header className="flex w-full items-center p-2">
         <h2 className="min-w-0 flex-1 truncate py-2.5 pl-4 font-semibold text-[20px] text-foreground leading-6">
           How Earn MAX works
@@ -408,7 +417,10 @@ export function EarnMaxDepositPane({
         />
       </section>
 
-      <EarnMaxInfoFaqsCard className="hidden h-full w-[400px] shrink-0 min-[1204px]:flex" />
+      <EarnMaxInfoFaqsCard
+        bannerRoom
+        className="hidden h-full w-[400px] shrink-0 min-[1204px]:flex"
+      />
     </>
   );
 }
@@ -579,7 +591,10 @@ export function EarnMaxWithdrawPane({
       />
       </section>
 
-      <EarnMaxInfoFaqsCard className="hidden h-full w-[400px] shrink-0 min-[1204px]:flex" />
+      <EarnMaxInfoFaqsCard
+        bannerRoom
+        className="hidden h-full w-[400px] shrink-0 min-[1204px]:flex"
+      />
     </>
   );
 }

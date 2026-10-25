@@ -152,7 +152,6 @@ export function FaceliftSidebar({
   activePage: WorkspacePage;
   earnBalanceUsd: number;
   earnMaxBalanceUsd: number;
-  earnMaxForecastApyBps: number | null;
   flashedShortcut: WorkspacePage | null;
   isEarnBalanceLoading: boolean;
   isEarnMaxBalanceLoading: boolean;
@@ -239,7 +238,8 @@ export function FaceliftSidebar({
   const cryptoBalance = splitUsdBalance(cryptoUsd);
   const earnBalance = splitUsdBalance(earnBalanceUsd);
   const earnMaxBalance = splitUsdBalance(earnMaxBalanceUsd);
-  const earnMaxApyBps = useEarnMaxApy().apy?.apyBps ?? null;
+  const earnMaxApyBps =
+    useEarnMaxApy({ enabled: showEarnMax }).apy?.apyBps ?? null;
   const earnMaxApyLabel =
     earnMaxApyBps === null ? null : formatEarnMaxApyLabel(earnMaxApyBps);
   const totalBalance = splitUsdBalance(
