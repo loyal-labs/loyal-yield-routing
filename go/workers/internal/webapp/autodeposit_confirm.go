@@ -11,6 +11,7 @@ import (
 	"github.com/solana-foundation/solana-go/v2"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnprep"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
@@ -232,7 +233,7 @@ func canonicalizeAutodepositCloseInput(in autodepositCloseInput, policySigner so
 	if err != nil {
 		return in, fmt.Errorf("settings is not a valid public key: %w", err)
 	}
-	vault, _, err := squads.SmartAccountAddress(settings, earnVaultIndex)
+	vault, _, err := squads.SmartAccountAddress(settings, earnprep.EarnVaultIndex)
 	if err != nil {
 		return in, err
 	}
@@ -248,7 +249,7 @@ func canonicalizeAutodepositCloseInput(in autodepositCloseInput, policySigner so
 	if err := assert(in.DelegatedSigner, policySigner.String(), "delegatedSigner"); err != nil {
 		return in, err
 	}
-	if in.VaultIndex != int(earnVaultIndex) {
+	if in.VaultIndex != int(earnprep.EarnVaultIndex) {
 		return in, errors.New("vaultIndex does not match canonical Earn autodeposit metadata.")
 	}
 	if err := assert(in.VaultPubkey, vault.String(), "vaultPubkey"); err != nil {
@@ -262,7 +263,7 @@ func canonicalizeAutodepositCloseInput(in autodepositCloseInput, policySigner so
 	}
 	in.Cluster = cluster
 	in.DelegatedSigner = policySigner.String()
-	in.VaultIndex = int(earnVaultIndex)
+	in.VaultIndex = int(earnprep.EarnVaultIndex)
 	in.VaultPubkey = vault.String()
 	return in, nil
 }

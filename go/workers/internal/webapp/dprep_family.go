@@ -13,6 +13,7 @@ import (
 	"github.com/solana-foundation/solana-go/v2"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnprep"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
@@ -22,7 +23,7 @@ var earnDprepFamily = earnFamily{
 	appGrants:   earnPrivyFamily.appGrants,
 	yieldGrants: append(append([]Grant{}, earnStateYieldGrants...), TableGrant("loyal_yield.earn_deposit_onboarding_attempts", "SELECT")),
 	ready: func(h earnRoutes) bool {
-		return h.signedIn() && h.Chain != nil && !h.PolicySigner.IsZero() && h.TimescaleURL != ""
+		return h.signedIn() && h.Chain != nil && !h.PolicySigner.IsZero() && h.Timescale != nil
 	},
 	register: func(h earnRoutes, api huma.API) { dprepRoutesFor(h).register(api) },
 }
@@ -36,13 +37,7 @@ type dprepRoutes struct {
 }
 
 func dprepRoutesFor(h earnRoutes) dprepRoutes {
-	routes := dprepRoutes{earnRoutes: h, blockTime: dprepChainBlockTime(h.Chain)}
-	if pool, err := stateTimescaleDB(h.TimescaleURL); err != nil {
-		slog.Warn("earn deposit prepare reads no reserve feed", "error", err)
-	} else if pool != nil {
-		routes.reserves = pool
-	}
-	return routes
+	return dprepRoutes{earnRoutes: h, reserves: h.Timescale, blockTime: dprepChainBlockTime(h.Chain)}
 }
 
 func dprepChainBlockTime(client *chain.Client) dtargetBlockTimeFunc {
@@ -109,7 +104,7 @@ func (h dprepRoutes) prepare(ctx context.Context, in *dprepInput) (*dprepOutput,
 	if err != nil {
 		return nil, err
 	}
-	vault, _, err := squads.SmartAccountAddress(principal.Settings, earnVaultIndex)
+	vault, _, err := squads.SmartAccountAddress(principal.Settings, earnprep.EarnVaultIndex)
 	if err != nil {
 		return nil, depositPrepareFailed(err)
 	}

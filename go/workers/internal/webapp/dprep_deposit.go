@@ -260,7 +260,7 @@ func (h dprepRoutes) prepareEarnDeposit(ctx context.Context, account EarnAccount
 	}
 
 	sync, err := earnprep.ExecuteMemberSync(earnprep.MemberSync{
-		Settings: account.Settings, Vault: vault, AccountIndex: earnVaultIndex, Members: []solana.PublicKey{wallet}, Inner: instructions,
+		Settings: account.Settings, Vault: vault, AccountIndex: earnprep.EarnVaultIndex, Members: []solana.PublicKey{wallet}, Inner: instructions,
 	})
 	if err != nil {
 		return nil, err
@@ -349,7 +349,7 @@ func (h dprepRoutes) preparedDeposit(account EarnAccount, amount uint64, target 
 		WalletAddress:        account.Wallet.String(),
 		DelegatedSigner:      h.PolicySigner.String(),
 		Settings:             account.Settings.String(),
-		VaultIndex:           earnVaultIndex,
+		VaultIndex:           earnprep.EarnVaultIndex,
 		VaultPubkey:          account.Vault.String(),
 		PolicyID:             seedText,
 		PolicyAccount:        policy.account.String(),
@@ -405,7 +405,7 @@ func (h dprepRoutes) preparedDeposit(account EarnAccount, amount uint64, target 
 			LiquidityMint: target.liquidityMint.String(), LiquidityTokenProgram: target.tokenProgram.String(), Market: target.market.String(),
 			Obligation: obligation.String(), Reserve: target.reserve.String(), SupplyApyBps: supplyApy,
 		},
-		Vault: dprepVault{AccountIndex: earnVaultIndex, CollateralAta: collateralAta, Pubkey: account.Vault.String(), UsdcAta: vaultAta.String()},
+		Vault: dprepVault{AccountIndex: earnprep.EarnVaultIndex, CollateralAta: collateralAta, Pubkey: account.Vault.String(), UsdcAta: vaultAta.String()},
 	}, nil
 }
 

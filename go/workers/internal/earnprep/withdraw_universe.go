@@ -59,7 +59,7 @@ func WithdrawCanonicalUniverse(cluster string) *WithdrawPolicyUniverse {
 		markets = append(markets, market.String())
 	}
 	return &WithdrawPolicyUniverse{
-		VaultIndex:           WithdrawVaultIndex,
+		VaultIndex:           EarnVaultIndex,
 		StableMints:          mints,
 		KaminoLiquidityMints: mints,
 		KaminoMarkets:        markets,

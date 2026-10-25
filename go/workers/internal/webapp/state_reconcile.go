@@ -139,7 +139,7 @@ func (h earnRoutes) reconcileEarnVaultPosition(ctx context.Context, account Earn
 		Cluster: string(account.Cluster),
 		Now:     func() time.Time { return now },
 		Policy: &earnprep.WithdrawPolicyUniverse{
-			VaultIndex:           earnVaultIndex,
+			VaultIndex:           earnprep.EarnVaultIndex,
 			StableMints:          pair.Route.StableMints,
 			KaminoLiquidityMints: pair.Route.KaminoLiquidityMints,
 			KaminoMarkets:        pair.Route.KaminoMarkets,
@@ -206,7 +206,7 @@ func (h earnRoutes) stateManagedVaultRow(ctx context.Context, settings, vaultPub
 FROM loyal_yield.managed_vaults
 WHERE active = TRUE AND settings = $1 AND vault_index = $2 AND vault_pubkey = $3
 ORDER BY last_seen_at DESC, id DESC
-LIMIT 1`, settings, int16(earnVaultIndex), vaultPubkey).Scan(&vault.ID, &vault.ActivePolicyID,
+LIMIT 1`, settings, int16(earnprep.EarnVaultIndex), vaultPubkey).Scan(&vault.ID, &vault.ActivePolicyID,
 		&vault.LastReconciledAt, &vault.LastReconciledSlot)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil

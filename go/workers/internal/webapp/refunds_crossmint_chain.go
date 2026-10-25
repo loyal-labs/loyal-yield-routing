@@ -10,6 +10,7 @@ import (
 	"github.com/solana-foundation/solana-go/v2/rpc"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnprep"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
@@ -148,7 +149,7 @@ func crossMintExpectedPolicy(vault solana.PublicKey, shard string, maxSlippageBp
 	for _, mint := range crossMintSourceMints(shard) {
 		limits = append(limits, squads.SpendingLimitView{Mint: mint, Period: squads.PeriodDaily, MaxPerPeriod: dailyCap})
 	}
-	return squads.Policy{VaultIndex: earnVaultIndex, Constraints: []squads.InstructionConstraintView{routeV2, sharedAccounts}, SpendingLimits: limits}, nil
+	return squads.Policy{VaultIndex: earnprep.EarnVaultIndex, Constraints: []squads.InstructionConstraintView{routeV2, sharedAccounts}, SpendingLimits: limits}, nil
 }
 
 // crossMintLimitsSorted orders spending limits the way
@@ -195,7 +196,7 @@ func assertEarnCrossMintCanonicalArtifacts(ctx context.Context, client *chain.Cl
 	if err != nil {
 		return fmt.Errorf("Autoswap daily source mint spending cap is invalid.")
 	}
-	vault, _, err := squads.SmartAccountAddress(settings, earnVaultIndex)
+	vault, _, err := squads.SmartAccountAddress(settings, earnprep.EarnVaultIndex)
 	if err != nil {
 		return err
 	}

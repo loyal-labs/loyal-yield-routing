@@ -64,6 +64,8 @@ func unavailableErr(detailCode, message string) *earningsUnavailableError {
 	return &earningsUnavailableError{code: "history_incomplete", message: message, detailCode: detailCode}
 }
 
+var errEarningsRefreshInProgress = errors.New("earnings refresh is in progress")
+
 type earningsApyTimeoutError struct{}
 
 func (e *earningsApyTimeoutError) Error() string { return "earnings_timescale_timeout" }
@@ -93,6 +95,8 @@ func normalizedErrorKind(err error) (errorCode, errorName, errorDetailCode strin
 func earningsErrorCause(err error) string {
 	var pgErr *pgconn.PgError
 	switch {
+	case errors.Is(err, errEarningsRefreshInProgress):
+		return "refresh_in_progress"
 	case errors.Is(err, context.DeadlineExceeded):
 		return "deadline_exceeded"
 	case errors.Is(err, context.Canceled):
@@ -286,46 +290,50 @@ func readEarningsRangeSet(ctx context.Context, input earningsReadInput, deps ear
 	return rebuildEarningsRangeSet(ctx, input, deps, useCheckpoint, timezone, now, snapshot, time.Now())
 }
 
+// earningsReadFailure answers a read that could not rebuild: the stored
+// snapshot re-marked stale when there is one, else the 503 envelope.
+func earningsReadFailure(err error, snapshot *earningsSnapshotRecord, now, startedAt time.Time) (EarningsRangeSet, error) {
+	var history *earningsHistoryError
+	unavailable, isUnavailable := err.(*earningsUnavailableError)
+	if errors.As(err, &history) {
+		unavailable = &earningsUnavailableError{
+			code:       "history_incomplete",
+			message:    history.Error(),
+			detailCode: "principal_history_ambiguous",
+		}
+		isUnavailable = true
+	}
+	reason := "dependency_unavailable"
+	switch {
+	case isUnavailable:
+		reason = unavailable.code
+	case errors.Is(err, errEarningsRefreshInProgress):
+		reason = "refresh_in_progress"
+	}
+	if snapshot != nil {
+		slog.Warn("earnings-read stale",
+			"staleReason", reason,
+			"outcome", snapshot.payload.Outcome,
+			"staleAgeMs", time.Since(startedAt).Milliseconds())
+		return staleSnapshotOverlay(*snapshot, now, reason), nil
+	}
+	if isUnavailable {
+		return EarningsRangeSet{}, unavailable
+	}
+	code, name, _ := normalizedErrorKind(err)
+	slog.Warn("earnings-read unavailable",
+		"errorCode", code,
+		"errorName", name,
+		"cause", earningsErrorCause(err),
+		"elapsedMs", time.Since(startedAt).Milliseconds())
+	return EarningsRangeSet{}, &earningsUnavailableError{code: "earnings_unavailable", message: "Earn earnings are unavailable.", detailCode: "earnings_unavailable"}
+}
+
 func rebuildEarningsRangeSet(ctx context.Context, input earningsReadInput, deps earningsReadDeps, useCheckpoint bool, timezone string, now time.Time, snapshot *earningsSnapshotRecord, startedAt time.Time) (payload EarningsRangeSet, err error) {
 	defer func() {
-		if err == nil {
-			return
+		if err != nil {
+			payload, err = earningsReadFailure(err, snapshot, now, startedAt)
 		}
-		var history *earningsHistoryError
-		unavailable, isUnavailable := err.(*earningsUnavailableError)
-		if errors.As(err, &history) {
-			unavailable = &earningsUnavailableError{
-				code:       "history_incomplete",
-				message:    history.Error(),
-				detailCode: "principal_history_ambiguous",
-			}
-			err = unavailable
-			isUnavailable = true
-		}
-		reason := "dependency_unavailable"
-		if isUnavailable {
-			reason = unavailable.code
-		}
-		if snapshot != nil {
-			slog.Warn("earnings-read stale",
-				"staleReason", reason,
-				"outcome", snapshot.payload.Outcome,
-				"staleAgeMs", time.Since(startedAt).Milliseconds())
-			payload = staleSnapshotOverlay(*snapshot, now, reason)
-			err = nil
-			return
-		}
-		if isUnavailable {
-			err = unavailable
-			return
-		}
-		code, name, _ := normalizedErrorKind(err)
-		slog.Warn("earnings-read unavailable",
-			"errorCode", code,
-			"errorName", name,
-			"cause", earningsErrorCause(err),
-			"elapsedMs", time.Since(startedAt).Milliseconds())
-		err = &earningsUnavailableError{code: "earnings_unavailable", message: "Earn earnings are unavailable.", detailCode: "earnings_unavailable"}
 	}()
 
 	var sourceRevision string

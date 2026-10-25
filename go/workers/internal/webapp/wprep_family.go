@@ -108,7 +108,7 @@ JOIN loyal_yield.route_policies rp ON rp.id = mv.active_policy_id
 WHERE mv.settings = $1 AND mv.vault_index = $2 AND mv.vault_pubkey = $3
   AND rp.authority = $4 AND rp.cluster = $5 AND rp.settings = $1 AND rp.vault_index = $2 AND rp.vault_pubkey = $3
   AND (NOT mv.active OR NOT rp.active)
-LIMIT 1`, account.Settings.String(), int16(earnVaultIndex), account.Vault.String(), account.Wallet.String(), string(account.Cluster)).Scan(&id)
+LIMIT 1`, account.Settings.String(), int16(earnprep.EarnVaultIndex), account.Vault.String(), account.Wallet.String(), string(account.Cluster)).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
@@ -335,7 +335,7 @@ func wprepResolve(ctx context.Context, policies wprepPolicies, chain earnprep.Wi
 	snapshot, err := earnprep.FetchWithdrawHoldingsSnapshot(ctx, chain, earnprep.WithdrawHoldingsArgs{
 		Cluster: string(account.Cluster),
 		Policy: &earnprep.WithdrawPolicyUniverse{
-			VaultIndex:           earnVaultIndex,
+			VaultIndex:           earnprep.EarnVaultIndex,
 			StableMints:          pair.Route.StableMints,
 			KaminoLiquidityMints: pair.Route.KaminoLiquidityMints,
 			KaminoMarkets:        pair.Route.KaminoMarkets,

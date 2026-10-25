@@ -15,12 +15,10 @@ import (
 	"math"
 	"net/http"
 	"strconv"
-	"sync"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 const statePositionPath = "/api/smart-accounts/yield-optimization/position"
@@ -188,45 +186,15 @@ func (h earnRoutes) stateCurrentSupplyApyBps(ctx context.Context, position state
 	return &bps
 }
 
-// stateTimescalePool is the TIMESCALEDB_URL feed behind the supply APY, built
-// once on first use like the Next client built per call
-// (getTimescaleReserveDatabaseUrl :225-227): an unset URL is an unconfigured
-// feed, which Next answers with no rows.
-var stateTimescalePool struct {
-	once   sync.Once
-	pool   *pgxpool.Pool
-	failed error
-}
-
-func stateTimescaleDB(url string) (*pgxpool.Pool, error) {
-	stateTimescalePool.once.Do(func() {
-		if url == "" {
-			return
-		}
-		cfg, err := pgxpool.ParseConfig(url)
-		if err != nil {
-			stateTimescalePool.failed = fmt.Errorf("TIMESCALEDB_URL: %w", err)
-			return
-		}
-		cfg.MaxConns = 2
-		stateTimescalePool.pool, stateTimescalePool.failed = pgxpool.NewWithConfig(context.Background(), cfg)
-	})
-	return stateTimescalePool.pool, stateTimescalePool.failed
-}
-
 // stateTimescaleSupplyApy ports TimescaleReserveClient
 // .getCurrentReserveUpdatesByReserve (:651-683) narrowed to the one reserve
 // the route looks up: the latest non-stale update with an in-bounds supply
 // APY, joined to the latest-per-reserve pointer table.
 func (h earnRoutes) stateTimescaleSupplyApy(ctx context.Context, reserve string) (*float64, error) {
-	db, err := stateTimescaleDB(h.TimescaleURL)
-	if err != nil || db == nil {
-		return nil, err
-	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	var apy float64
-	err = db.QueryRow(ctx, `SELECT updates.supply_apy
+	err := h.Timescale.QueryRow(ctx, `SELECT updates.supply_apy
 FROM kamino.reserve_updates AS updates
 JOIN kamino.latest_reserve_updates AS latest
   ON updates.reserve = latest.reserve AND updates.slot = latest.slot

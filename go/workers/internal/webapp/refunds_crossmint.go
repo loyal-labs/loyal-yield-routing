@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"regexp"
 	"strconv"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnprep"
 )
 
 // Ports web/apps/web/src/app/api/smart-accounts/yield-optimization/
@@ -155,7 +157,7 @@ func (h earnRoutes) earnCrossMintToggle(ctx context.Context, in *crossMintToggle
 		Authority:   account.Wallet.String(),
 		Cluster:     string(account.Cluster),
 		Settings:    account.Settings.String(),
-		VaultIndex:  int16(earnVaultIndex),
+		VaultIndex:  int16(earnprep.EarnVaultIndex),
 		VaultPubkey: account.Vault.String(),
 	}
 
@@ -243,7 +245,7 @@ func (h earnRoutes) earnCrossMintDeleteReadiness(ctx context.Context, in *crossM
 		Authority:   account.Wallet.String(),
 		Cluster:     string(account.Cluster),
 		Settings:    account.Settings.String(),
-		VaultIndex:  int16(earnVaultIndex),
+		VaultIndex:  int16(earnprep.EarnVaultIndex),
 		VaultPubkey: account.Vault.String(),
 	}
 

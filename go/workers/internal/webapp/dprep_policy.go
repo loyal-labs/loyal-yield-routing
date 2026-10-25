@@ -11,6 +11,7 @@ import (
 	"github.com/solana-foundation/solana-go/v2"
 	"github.com/solana-foundation/solana-go/v2/rpc"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnprep"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
@@ -65,9 +66,9 @@ func dprepShapesFor(account EarnAccount) (dprepPolicyShapes, error) {
 		return dprepPolicyShapes{}, err
 	}
 	return dprepPolicyShapes{
-		route:       squads.Policy{VaultIndex: earnVaultIndex, Constraints: route},
-		legacyRoute: squads.Policy{VaultIndex: earnVaultIndex, Constraints: legacy},
-		setup:       squads.Policy{VaultIndex: earnVaultIndex, Constraints: setup},
+		route:       squads.Policy{VaultIndex: earnprep.EarnVaultIndex, Constraints: route},
+		legacyRoute: squads.Policy{VaultIndex: earnprep.EarnVaultIndex, Constraints: legacy},
+		setup:       squads.Policy{VaultIndex: earnprep.EarnVaultIndex, Constraints: setup},
 	}, nil
 }
 
@@ -246,7 +247,7 @@ func (h dprepRoutes) scanPolicies(ctx context.Context, account EarnAccount, toke
 	setups := map[uint64]solana.PublicKey{}
 	for _, entry := range installed {
 		decoded := entry.decoded
-		if decoded.VaultIndex != earnVaultIndex || len(decoded.Constraints) == 0 {
+		if decoded.VaultIndex != earnprep.EarnVaultIndex || len(decoded.Constraints) == 0 {
 			continue
 		}
 		if !dprepAllKLend(decoded.Constraints) {

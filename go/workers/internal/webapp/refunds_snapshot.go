@@ -13,6 +13,7 @@ import (
 	"github.com/solana-foundation/solana-go/v2/rpc"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnprep"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 )
 
@@ -185,7 +186,7 @@ func findEarnVaultRefundDbState(ctx context.Context, yieldDB *pgxpool.Pool, sett
 	  EXISTS (SELECT 1 FROM loyal_yield.user_yield_positions WHERE settings = $1 AND vault_index = $2 AND status = 'active'),
 	  EXISTS (SELECT 1 FROM loyal_yield.managed_vaults WHERE active AND settings = $1 AND vault_index = $2),
 	  EXISTS (SELECT 1 FROM loyal_yield.balance_sweep_targets WHERE settings = $1 AND vault_index = $2 AND chain_status <> 'closed')`,
-		settings, int16(earnVaultIndex)).Scan(&state.HasActivePosition, &state.HasActiveManagedVault, &state.HasActiveAutodeposit)
+		settings, int16(earnprep.EarnVaultIndex)).Scan(&state.HasActivePosition, &state.HasActiveManagedVault, &state.HasActiveAutodeposit)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return vaultRefundDbState{}, nil
 	}

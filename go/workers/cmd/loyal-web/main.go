@@ -200,13 +200,13 @@ func earnMax(rpcClient *chain.Client, grants grantVerdicts, yieldDB *pgxpool.Poo
 	return &webapp.EarnMax{Reader: earnmax.NewReader(rpcClient, yield), Cluster: cluster, Invites: invites}
 }
 
-func earn(ctx context.Context, rpcClient *chain.Client, appDB, yieldDB *pgxpool.Pool) *webapp.Earn {
+func earn(ctx context.Context, rpcClient *chain.Client, appDB, yieldDB, timescaleDB *pgxpool.Pool) *webapp.Earn {
 	cluster, err := webapp.ParseSolanaCluster(os.Getenv("LOYAL_WEB_SOLANA_CLUSTER"))
 	if err != nil {
 		degraded("Earn routes", err)
 		return nil
 	}
-	e := &webapp.Earn{YieldDB: yieldDB, Chain: rpcClient, Cluster: cluster}
+	e := &webapp.Earn{YieldDB: yieldDB, Chain: rpcClient, Cluster: cluster, Timescale: timescaleDB}
 	if raw, ok := optionalCredential("Earn transaction routes", "EARN_YIELD_ROUTER_PUBLIC_KEY"); ok && raw != "" {
 		if e.PolicySigner, err = earnprep.ParsePolicySigner(raw); err != nil {
 			degraded("Earn transaction routes", err)
@@ -248,10 +248,8 @@ func earn(ctx context.Context, rpcClient *chain.Client, appDB, yieldDB *pgxpool.
 		}
 		e.Privy = &webapp.Privy{AppID: strings.TrimSpace(appID), AppSecret: strings.TrimSpace(appSecret), CookieParentDomains: domains}
 	}
-	if url, ok := optionalCredential("Earn earnings, state and deposit prepare", "TIMESCALEDB_URL"); ok {
-		if e.TimescaleURL = url; url == "" {
-			degraded("Earn earnings, state and deposit prepare", errors.New("TIMESCALEDB_URL is not installed"))
-		}
+	if timescaleDB == nil {
+		degraded(timescaleRoutes, errors.New("no TIMESCALEDB_URL pool"))
 	}
 	e.Push = walletPush()
 	grantCtx, cancel := context.WithTimeout(ctx, grantBound)
@@ -290,6 +288,10 @@ func run(ctx context.Context) error {
 	if yieldDB != nil {
 		defer yieldDB.Close()
 	}
+	timescaleDB := openDB(ctx, timescaleRoutes, "TIMESCALEDB_URL")
+	if timescaleDB != nil {
+		defer timescaleDB.Close()
+	}
 	grants := checkGrants(ctx, appDB, yieldDB)
 	if appDB != nil {
 		cfg.AppDB = appDB
@@ -302,11 +304,13 @@ func run(ctx context.Context) error {
 		cfg.EarnMax = earnMax(rpcClient, grants, yieldDB)
 		cfg.PushDB = grants.Push
 	}
-	cfg.Earn = earn(ctx, rpcClient, appDB, yieldDB)
+	cfg.Earn = earn(ctx, rpcClient, appDB, yieldDB, timescaleDB)
 	server := &http.Server{
 		Addr:              cfg.Addr,
 		Handler:           webapp.New(cfg),
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      webapp.WriteTimeout,
 		IdleTimeout:       2 * time.Minute,
 	}
 	failed := make(chan error, 1)
@@ -350,3 +354,5 @@ func main() {
 }
 
 var grantBound = 8 * time.Second
+
+const timescaleRoutes = "Earn earnings, state and deposit prepare"

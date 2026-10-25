@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnprep"
 )
 
 func scanStateOnboardingAttempt(row pgx.Row) (*stateOnboardingAttemptRow, error) {
@@ -44,7 +45,7 @@ FROM loyal_yield.earn_deposit_onboarding_attempts
 WHERE settings = $1 AND vault_index = $2 AND wallet_address = $3 AND vault_pubkey = $4
   AND status <> 'complete'
 ORDER BY updated_at DESC, id DESC
-LIMIT 1`, settings, int16(earnVaultIndex), wallet, vaultPubkey))
+LIMIT 1`, settings, int16(earnprep.EarnVaultIndex), wallet, vaultPubkey))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -81,7 +82,7 @@ WHERE t.wallet = $1 AND t.settings = $2 AND t.vault_index = $3
   AND t.chain_status <> 'closed'
 ORDER BY CASE WHEN t.desired_active = TRUE AND t.chain_status = 'active' THEN 0 ELSE 1 END,
   t.last_seen_slot DESC
-LIMIT 1`, wallet, settings, int16(earnVaultIndex)).Scan(&target.ID, &target.BalanceSweepPolicyID,
+LIMIT 1`, wallet, settings, int16(earnprep.EarnVaultIndex)).Scan(&target.ID, &target.BalanceSweepPolicyID,
 		&target.Settings, &target.PolicySeed, &target.PolicyAccount, &target.VaultIndex,
 		&target.VaultPubkey, &target.Wallet, &target.WalletUsdcAta, &target.VaultUsdcAta,
 		&target.DelegatedSigners, &target.Cluster, &target.MaxAmountPerPeriod,
@@ -213,7 +214,7 @@ func (h earnRoutes) stateCrossMintSnapshot(ctx context.Context, cluster, setting
 	var optIn *stateCrossMintOptInRow
 	rows, err := h.YieldDB.Query(ctx, `SELECT enabled, generation FROM loyal_yield.cross_mint_vault_opt_ins
 WHERE cluster = $1 AND settings = $2 AND vault_index = $3 AND vault_pubkey = $4
-LIMIT 1`, cluster, settings, int16(earnVaultIndex), vaultPubkey)
+LIMIT 1`, cluster, settings, int16(earnprep.EarnVaultIndex), vaultPubkey)
 	if err != nil {
 		return nil, nil, fmt.Errorf("read earn cross-mint opt-in: %w", err)
 	}
@@ -236,7 +237,7 @@ LIMIT 1`, cluster, settings, int16(earnVaultIndex), vaultPubkey)
   policy_account, policy_seed, source_commitment, source_shard, start_eligible
 FROM loyal_yield.cross_mint_swap_policies
 WHERE cluster = $1 AND settings = $2 AND authority = $3 AND vault_index = $4 AND vault_pubkey = $5
-ORDER BY last_seen_slot DESC`, cluster, settings, authority, int16(earnVaultIndex), vaultPubkey)
+ORDER BY last_seen_slot DESC`, cluster, settings, authority, int16(earnprep.EarnVaultIndex), vaultPubkey)
 	if err != nil {
 		return nil, nil, fmt.Errorf("read earn cross-mint policies: %w", err)
 	}

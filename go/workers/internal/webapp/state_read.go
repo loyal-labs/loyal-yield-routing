@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnprep"
 )
 
 const statePositionColumns = `id, settings, vault_index, vault_pubkey, initial_reserve,
@@ -57,7 +58,7 @@ func (h earnRoutes) activeYieldPositionForVault(ctx context.Context, settings, w
 FROM loyal_yield.user_yield_positions
 WHERE settings = $1 AND vault_index = $2 AND wallet_address = $3 AND status = 'active'
 ORDER BY updated_at DESC, id DESC
-LIMIT 1`, settings, int16(earnVaultIndex), wallet))
+LIMIT 1`, settings, int16(earnprep.EarnVaultIndex), wallet))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -76,7 +77,7 @@ func (h earnRoutes) stateManagedVaultID(ctx context.Context, settings, vaultPubk
 	err := h.YieldDB.QueryRow(ctx, `SELECT id FROM loyal_yield.managed_vaults
 WHERE active = TRUE AND settings = $1 AND vault_index = $2 AND vault_pubkey = $3
 ORDER BY last_seen_at DESC, id DESC
-LIMIT 1`, settings, int16(earnVaultIndex), vaultPubkey).Scan(&id)
+LIMIT 1`, settings, int16(earnprep.EarnVaultIndex), vaultPubkey).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}

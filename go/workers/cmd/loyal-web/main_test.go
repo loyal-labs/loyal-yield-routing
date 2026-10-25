@@ -50,21 +50,3 @@ func TestAMalformedYieldDatabaseURLStillServesEarnMaxWithoutAPY(t *testing.T) {
 		t.Fatal("a malformed yield database URL only costs APY; Earn MAX must still be served")
 	}
 }
-
-func TestEarningsReadTheTimescaleURLFromTheCredentialStore(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "TIMESCALEDB_URL"), []byte("postgres://timescale.fixture/db\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("CREDENTIALS_DIRECTORY", dir)
-	t.Setenv("TIMESCALEDB_URL", "")
-
-	e := earn(t.Context(), nil, nil, nil)
-
-	if e == nil {
-		t.Fatal("earn returned nil")
-	}
-	if e.TimescaleURL != "postgres://timescale.fixture/db" {
-		t.Fatalf("TimescaleURL = %q, want the installed credential so earnings rebuilds do not fail missing_timescale_database_url", e.TimescaleURL)
-	}
-}

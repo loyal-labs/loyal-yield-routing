@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humachi"
@@ -19,6 +20,8 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnstats"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/webserve"
 )
+
+const WriteTimeout = max(earningsRefreshBudget, ensureSmartAccountBudget) + time.Minute
 
 type Config struct {
 	Addr        string

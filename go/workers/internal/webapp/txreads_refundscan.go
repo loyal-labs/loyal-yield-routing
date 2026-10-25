@@ -492,7 +492,7 @@ func (h earnRoutes) txreadsVaultDBFlags(ctx context.Context, account EarnAccount
 	defer cancel()
 	var flags txreadsVaultDBFlags
 	err := h.YieldDB.QueryRow(ctx, txreadsVaultFlagsSQL,
-		account.Settings.String(), int16(earnVaultIndex)).Scan(
+		account.Settings.String(), int16(earnprep.EarnVaultIndex)).Scan(
 		&flags.hasActivePosition, &flags.hasActiveManagedVault, &flags.hasActiveAutodeposit)
 	return flags, err
 }
@@ -970,7 +970,7 @@ func txreadsPolicyVaultIndex(policy txreadsPolicySeed) uint8 {
 	if policy.accountIndex != nil {
 		return *policy.accountIndex
 	}
-	return earnVaultIndex
+	return earnprep.EarnVaultIndex
 }
 
 // txreadsScanPolicy is one policy's scan entry, judged by the facts of the
@@ -1011,7 +1011,7 @@ func (h earnRoutes) txreadsScanPolicyRefunds(ctx context.Context, account EarnAc
 	if err != nil {
 		return EarnPolicyRefundScanResponse{}, err
 	}
-	addressesByVault := map[uint8][]string{earnVaultIndex: {}}
+	addressesByVault := map[uint8][]string{earnprep.EarnVaultIndex: {}}
 	for _, policy := range policies {
 		index := txreadsPolicyVaultIndex(policy)
 		addressesByVault[index] = append(addressesByVault[index], policy.address.String())
@@ -1024,7 +1024,7 @@ func (h earnRoutes) txreadsScanPolicyRefunds(ctx context.Context, account EarnAc
 		}
 		vaults[index] = facts
 	}
-	earnFacts := vaults[earnVaultIndex]
+	earnFacts := vaults[earnprep.EarnVaultIndex]
 	vaultFlags, err := h.txreadsVaultDBFlags(ctx, account)
 	if err != nil {
 		return EarnPolicyRefundScanResponse{}, err
@@ -1040,7 +1040,7 @@ func (h earnRoutes) txreadsScanPolicyRefunds(ctx context.Context, account EarnAc
 		RecurringDelegations: txreadsCollectDelegations(earnFacts.db.byPolicyAccount, earnFacts.openDelegations),
 		SettingsPDA:          account.Settings.String(),
 		Vault:                txreadsVaultRefundEntry(account, earnFacts.snapshot, vaultFlags),
-		VaultIndex:           earnVaultIndex,
+		VaultIndex:           earnprep.EarnVaultIndex,
 		VaultPubkey:          account.Vault.String(),
 	}, nil
 }

@@ -45,7 +45,7 @@ func (h earnRoutes) findCleanupVaultState(ctx context.Context, includeInactive b
 FROM loyal_yield.managed_vaults
 WHERE (`+"$4::boolean OR active"+`) AND settings = $1 AND vault_index = $2 AND vault_pubkey = $3
 ORDER BY last_seen_at DESC, id DESC LIMIT 1`,
-		settings, int16(earnVaultIndex), vault.String(), includeInactive).Scan(&vaultID, &activePolicyID, &setupPolicyID)
+		settings, int16(earnprep.EarnVaultIndex), vault.String(), includeInactive).Scan(&vaultID, &activePolicyID, &setupPolicyID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -59,7 +59,7 @@ ORDER BY last_seen_at DESC, id DESC LIMIT 1`,
   swap_lanes, first_seen_at, last_seen_at, last_seen_slot, last_seen_signature
 FROM loyal_yield.route_policies
 WHERE ($6::boolean OR active) AND authority = $4 AND id = $5 AND settings = $1 AND vault_index = $2 AND vault_pubkey = $3`,
-			settings, int16(earnVaultIndex), vault.String(), authority, id, includeInactive).Scan(&p.ID, &p.Cluster, &p.PolicySeed, &p.PolicyAccount, &p.DelegatedSigners, &p.Threshold, &p.RouteModes,
+			settings, int16(earnprep.EarnVaultIndex), vault.String(), authority, id, includeInactive).Scan(&p.ID, &p.Cluster, &p.PolicySeed, &p.PolicyAccount, &p.DelegatedSigners, &p.Threshold, &p.RouteModes,
 			&p.StableMints, &p.KaminoMarkets, &p.KaminoLiquidityMints, &p.UniversePreset, &p.RiskProfile,
 			&p.SwapLanes, &p.FirstSeenAt, &p.LastSeenAt, &p.LastSeenSlot, &p.LastSeenSignature)
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -95,7 +95,7 @@ func (h earnRoutes) cleanupLatestFullWithdrawalSlot(ctx context.Context, account
 FROM loyal_yield.user_yield_position_withdrawals
 WHERE mode = 'full' AND settings = $1 AND vault_index = $2 AND vault_pubkey = $3 AND wallet_address = $4
 ORDER BY confirmed_slot DESC, id DESC LIMIT 1`,
-		account.Settings.String(), int16(earnVaultIndex), account.Vault.String(), account.Wallet.String()).Scan(&slot)
+		account.Settings.String(), int16(earnprep.EarnVaultIndex), account.Vault.String(), account.Wallet.String()).Scan(&slot)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, nil
 	}
@@ -132,7 +132,7 @@ func cleanupPolicyUniverse(cluster string, route RoutePolicy) *earnprep.Withdraw
 		policyMarkets = canonical.KaminoMarkets
 	}
 	return &earnprep.WithdrawPolicyUniverse{
-		VaultIndex:           earnprep.WithdrawVaultIndex,
+		VaultIndex:           earnprep.EarnVaultIndex,
 		StableMints:          stable,
 		KaminoLiquidityMints: liquidity,
 		KaminoMarkets:        policyMarkets,
@@ -240,7 +240,7 @@ func buildEarnUsdcCleanup(ctx context.Context, client *chain.Client, in cleanupC
 		execute, err := earnprep.ExecuteMemberSync(earnprep.MemberSync{
 			Settings:     in.SettingsPda,
 			Vault:        in.Vault,
-			AccountIndex: earnVaultIndex,
+			AccountIndex: earnprep.EarnVaultIndex,
 			Members:      []solana.PublicKey{in.Wallet},
 			Inner:        tokenInstructions,
 		})
@@ -281,7 +281,7 @@ func buildEarnUsdcCleanup(ctx context.Context, client *chain.Client, in cleanupC
 		WalletAddress:         in.Wallet.String(),
 		DelegatedSigner:       in.PolicySigner.String(),
 		Settings:              in.SettingsPda.String(),
-		VaultIndex:            earnVaultIndex,
+		VaultIndex:            earnprep.EarnVaultIndex,
 		VaultPubkey:           in.Vault.String(),
 		PolicyID:              strconv.FormatUint(in.RoutePolicySeed, 10),
 		PolicyAccount:         in.RoutePolicyAccount.String(),
@@ -317,7 +317,7 @@ func buildEarnUsdcCleanup(ctx context.Context, client *chain.Client, in cleanupC
 			RequiresConfirmation: true,
 		},
 		Vault: EarnCleanupVaultWire{
-			AccountIndex: earnVaultIndex,
+			AccountIndex: earnprep.EarnVaultIndex,
 			Pubkey:       in.Vault.String(),
 			UsdcAta:      vaultUsdcAta.String(),
 		},
@@ -390,7 +390,7 @@ func buildCleanupPolicyCloseOperation(ctx context.Context, client *chain.Client,
 // (client.ts:4461-4473): a ProgramInteraction policy on the Earn vault whose
 // every instruction constraint targets the subscriptions program.
 func cleanupIsSubscriptionSweepPolicy(decoded squads.DecodedPolicy) bool {
-	if decoded.VaultIndex != earnVaultIndex || len(decoded.Constraints) == 0 {
+	if decoded.VaultIndex != earnprep.EarnVaultIndex || len(decoded.Constraints) == 0 {
 		return false
 	}
 	for _, constraint := range decoded.Constraints {
@@ -474,7 +474,7 @@ func buildAutodepositClosePrepared(ctx context.Context, client *chain.Client, in
 			WalletAddress:       in.Wallet.String(),
 			DelegatedSigner:     in.PolicySigner.String(),
 			Settings:            in.SettingsPda.String(),
-			VaultIndex:          earnVaultIndex,
+			VaultIndex:          earnprep.EarnVaultIndex,
 			VaultPubkey:         in.Vault.String(),
 			PolicyAccount:       close_.Policy.String(),
 			RecurringDelegation: close_.RecurringDelegation.String(),
@@ -490,7 +490,7 @@ func buildAutodepositClosePrepared(ctx context.Context, client *chain.Client, in
 	}
 	wire.Policy.Account = close_.Policy.String()
 	wire.Subscription.RecurringDelegation = close_.RecurringDelegation.String()
-	wire.Vault.AccountIndex = earnVaultIndex
+	wire.Vault.AccountIndex = earnprep.EarnVaultIndex
 	wire.Vault.Pubkey = in.Vault.String()
 	return wire, nil
 }
