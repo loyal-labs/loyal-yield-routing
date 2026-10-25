@@ -12,15 +12,12 @@ import (
 // served JSON carries them as JS numbers and every sum must round-trip the
 // same IEEE-754 arithmetic as the TS.
 
-// earningsRangeIDs is EARNINGS_RANGE_IDS (earnings.shared.ts:1) in order; the
-// response object keys follow this insertion order in both languages.
 var earningsRangeIDs = [...]string{"7D", "30D", "1Y", "ALL"}
 
 const (
 	earningsStablecoinMicros = 1_000_000.0
 	earningsSecondsPerYear   = 365.0 * 24 * 60 * 60
-	// earningsMaxSampleGapMs flags reserves whose APY sampling has a hole.
-	earningsMaxSampleGapMs = int64(36 * 60 * 60 * 1000)
+	earningsMaxSampleGapMs   = int64(36 * 60 * 60 * 1000)
 )
 
 // Earnings event, portfolio snapshot and path-event values, mirroring
@@ -71,8 +68,6 @@ type reserveApySample struct {
 	supplyApy  float64
 }
 
-// earningsHistoryError mirrors EarningsPrincipalHistoryError: an input whose
-// principal history cannot be replayed deterministically.
 type earningsHistoryError struct{ detail string }
 
 func (e *earningsHistoryError) Error() string { return e.detail }
@@ -87,10 +82,6 @@ func firstEarningsInt64(v *int64) int64 {
 	return *v
 }
 
-// sortEarningsEvents ports earnings-calculator.server.ts:34. Timestamps order
-// chart boundaries; slots and holding-event IDs order transitions inside one
-// timestamp. Missing evidence on distinguishable events is an error, not a
-// guess.
 func sortEarningsEvents(events []earningsEvent) ([]earningsEvent, error) {
 	ordered := make([]earningsEvent, len(events))
 	copy(ordered, events)
@@ -144,8 +135,6 @@ func clampedSubtract(current, amount int64) int64 {
 	return 0
 }
 
-// principalClamp names how withdrawals clamp at zero; see the TS comment at
-// earnings-calculator.server.ts:545.
 type principalClamp string
 
 const (
@@ -161,8 +150,6 @@ type principalIndex struct {
 	totals []int64
 }
 
-// buildPrincipalIndex ports getPrincipalIndex (earnings-calculator.server.ts:575)
-// minus the WeakMap cache; callers keep one index per clamp per request.
 func buildPrincipalIndex(sorted []earningsEvent, clamp principalClamp) (*principalIndex, error) {
 	index := &principalIndex{times: make([]int64, 0, len(sorted)), totals: make([]int64, 0, len(sorted))}
 	byMint := map[string]int64{}
@@ -221,7 +208,6 @@ func buildPrincipalIndex(sorted []earningsEvent, clamp principalClamp) (*princip
 	return index, nil
 }
 
-// principalAt returns the clamped running principal at the given instant.
 func principalAt(sorted []earningsEvent, indexes map[principalClamp]*principalIndex, at time.Time, clamp principalClamp) (int64, error) {
 	index := indexes[clamp]
 	if index == nil {
@@ -250,9 +236,6 @@ func deriveApyBps(avgPrincipalUsd float64, bucketSeconds, earnedUsd float64) *in
 	return &bps
 }
 
-// ---- Sorted-array lookup indexes (ASK-2209) ----
-
-// apySeries is a time-ascending view of one slice of the APY samples.
 type apySeries struct {
 	apys      []float64
 	positions []int
@@ -333,7 +316,6 @@ type earningsWindow struct {
 	principalAmountRaw int64
 }
 
-// portfolioSnapshotIndex answers "state at instant" over time-sorted snapshots.
 type portfolioSnapshotIndex struct {
 	snapshots []earningsPortfolioSnapshot
 	times     []int64
@@ -383,8 +365,6 @@ func sortedKeys(set map[int64]struct{}) []int64 {
 	return keys
 }
 
-// calculateWindow ports earnings-calculator.server.ts:467: path-event earning
-// against the reserve of the last path state.
 func calculateWindow(apy *apyIndex, pathIdx *pathEventIndex, samples []reserveApySample, startAt, endAt time.Time) earningsWindow {
 	startMs, endMs := startAt.UnixMilli(), endAt.UnixMilli()
 	endPrincipal := int64(0)
@@ -433,8 +413,6 @@ func calculateWindow(apy *apyIndex, pathIdx *pathEventIndex, samples []reserveAp
 	return earningsWindow{avgPrincipalUsd: avg, earnedUsd: earnedUsd, principalAmountRaw: endPrincipal}
 }
 
-// portfolioApyAt ports earnings-calculator.server.ts:678: exposure-weighted
-// APY over the current snapshot, null when any kamino exposure lacks coverage.
 func portfolioApyAt(apy *apyIndex, at time.Time, snapshot *earningsPortfolioSnapshot) *float64 {
 	if snapshot == nil {
 		return nil
@@ -525,8 +503,6 @@ func calculatePortfolioWindow(apy *apyIndex, events []earningsEvent, principalIn
 	return earningsWindow{avgPrincipalUsd: avg, earnedUsd: earnedUsd, principalAmountRaw: principal}, nil
 }
 
-// legacyEventsToPathEvents ports earnings-calculator.server.ts:331: the
-// fallback path when no holding history exists.
 func legacyEventsToPathEvents(sorted []earningsEvent) []earningsPathEvent {
 	var principal int64
 	events := make([]earningsPathEvent, 0, len(sorted))
@@ -549,8 +525,6 @@ func legacyEventsToPathEvents(sorted []earningsEvent) []earningsPathEvent {
 	return events
 }
 
-// earningsCheckpointResponse is the checkpoint resume handle: the previous
-// incremental result computed at `at`.
 type earningsCheckpointResponse struct {
 	at       time.Time
 	response EarningsRange
@@ -568,9 +542,6 @@ type calculateEarnEarningsArgs struct {
 	checkpoint         *earningsCheckpointResponse
 }
 
-// calculateEarnEarnings ports earnings-calculator.server.ts:784. Callers pass
-// ledger events and either portfolio snapshots or nothing; the function sorts
-// once, builds each lookup index once, and fills the range's bars.
 func calculateEarnEarnings(args calculateEarnEarningsArgs) (EarningsRange, error) {
 	clamp := args.principalClamp
 	if clamp == "" {

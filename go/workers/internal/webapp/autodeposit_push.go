@@ -63,7 +63,6 @@ func (p *WalletPush) send(ctx context.Context, walletAddress string, payload aut
 	}
 }
 
-// autodepositEnabledPush copy comes from the mobile confirm route.
 func autodepositEnabledPush() autodepositWalletPush {
 	return autodepositWalletPush{
 		Body:  "Your idle USDC will be moved to Earn automatically, roughly once an hour.",
@@ -71,8 +70,6 @@ func autodepositEnabledPush() autodepositWalletPush {
 	}
 }
 
-// autodepositSweepScheduledPush announces the bootstrap sweep; a null or
-// non-positive amount renders as the plain token symbol.
 func autodepositSweepScheduledPush(amountRaw uint64) autodepositWalletPush {
 	amount := "USDC"
 	if amountRaw > 0 {

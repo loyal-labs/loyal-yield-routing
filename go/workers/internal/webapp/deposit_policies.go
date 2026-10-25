@@ -105,7 +105,7 @@ type EarnPolicyPersistence struct {
 }
 
 // EarnPolicyPrepareWire is serializePreparedEarnUsdcYieldRoutingPolicy's
-// shape (earn-policy-prepare-contracts.shared.ts:9-76).
+// shape.
 type EarnPolicyPrepareWire struct {
 	FinalizePrepared *DepositWirePreparedOperation `json:"finalizePrepared,omitempty"`
 	Persistence      EarnPolicyPersistence         `json:"persistence"`
@@ -171,10 +171,6 @@ func depositPrepareUnavailable(account EarnAccount, err error) error {
 	return depositPrepareFailed(err)
 }
 
-// depositSettingsFor is fetchSettings (client.ts:8282-8285): one getAccountInfo
-// read at confirmed, decoded as a Squads Settings. A missing account carries the
-// generated fetcher's own message (Settings.ts:110), which the Next route
-// surfaces verbatim as 500 prepare_failed.
 func depositSettingsFor(ctx context.Context, client *chain.Client, settings solana.PublicKey) (squads.Settings, error) {
 	_, read, err := client.Accounts(ctx, []solana.PublicKey{settings}, rpc.CommitmentConfirmed, 0)
 	if err != nil {
@@ -187,8 +183,6 @@ func depositSettingsFor(ctx context.Context, client *chain.Client, settings sola
 	return squads.DecodeSettings(read[0])
 }
 
-// depositPrepareFailed is route.ts:101-105: an unexpected failure becomes 500
-// prepare_failed carrying the error's own message.
 func depositPrepareFailed(err error) error {
 	message := err.Error()
 	if message == "" {
@@ -197,9 +191,6 @@ func depositPrepareFailed(err error) error {
 	return earnError(http.StatusInternalServerError, "prepare_failed", message)
 }
 
-// depositPreparePolicyResponse is prepareEarnUsdcYieldRoutingPolicy minus the
-// auth and RPC reads: seed resolution, both ops, the packet guards and the
-// serialized response.
 func depositPreparePolicyResponse(account EarnAccount, settings squads.Settings, policySigner solana.PublicKey) (*EarnPolicyPrepareResponse, error) {
 	seed := squads.NextPolicySeed(settings)
 	if seed > depositMaxPolicySeed {
@@ -262,8 +253,6 @@ func depositPreparePolicyResponse(account EarnAccount, settings squads.Settings,
 		return nil, err
 	}
 
-	// Packet guards (client.ts:6531-6555): each op must compile into one
-	// Solana packet against the all-ones blockhash.
 	routeLength, err := depositPacketLength(account.Wallet, routeInstruction)
 	if err != nil || depositPacketOverLimit(routeLength) {
 		return nil, earnError(http.StatusInternalServerError, "prepare_failed", "Earn route policy setup exceeds the Solana transaction size limit.")

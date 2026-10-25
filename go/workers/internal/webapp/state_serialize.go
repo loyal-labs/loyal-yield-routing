@@ -1,12 +1,5 @@
 package webapp
 
-// Pure serializers for GET /api/smart-accounts/yield-optimization/earn-state.
-// Ports L/earn-state-serializers.server.ts, deriveEarnDepositOnboardingNextStep
-// and deriveEarnCrossMintPolicyIndex (L/earn-cross-mint-policy-index.shared.ts),
-// isEarnAutoswapEnrollmentEnabled (L/earn-autoswap-rollout.server.ts) and the
-// reserve planning-metadata filters of L/yield-deposit-repository.server.ts.
-// Input row shapes mirror the loyal_yield tables the TS Drizzle client selects.
-
 import (
 	"errors"
 	"strconv"
@@ -20,8 +13,6 @@ func strconvFormatInt(v int64) string {
 	return strconv.FormatInt(v, 10)
 }
 
-// stateYieldPositionRow mirrors loyal_yield.user_yield_positions for the
-// position serializer (only the columns the response reads).
 type stateYieldPositionRow struct {
 	ID                      int64
 	Settings                string
@@ -43,7 +34,6 @@ type stateYieldPositionRow struct {
 	Status                  string
 }
 
-// stateHoldingEventRow mirrors loyal_yield.user_yield_position_holding_events.
 type stateHoldingEventRow struct {
 	ID                        int64
 	PositionID                int64
@@ -58,7 +48,6 @@ type stateHoldingEventRow struct {
 	SourceSnapshotID          *int64
 }
 
-// stateOnboardingAttemptRow mirrors loyal_yield.earn_deposit_onboarding_attempts.
 type stateOnboardingAttemptRow struct {
 	PolicyID                 int64
 	PolicyAccount            string
@@ -77,7 +66,6 @@ type stateOnboardingAttemptRow struct {
 	UpdatedAt                time.Time
 }
 
-// stateAutodepositTargetRow mirrors loyal_yield.balance_sweep_targets.
 type stateAutodepositTargetRow struct {
 	ID                                 int64
 	BalanceSweepPolicyID               *int64
@@ -110,7 +98,6 @@ type stateAutodepositTargetRow struct {
 	ChainStatus                        string
 }
 
-// stateBalanceSweepPolicyRow mirrors loyal_yield.balance_sweep_policies.
 type stateBalanceSweepPolicyRow struct {
 	ID                    int64
 	PolicySeed            int64
@@ -120,8 +107,6 @@ type stateBalanceSweepPolicyRow struct {
 	SubscriptionDelegatee *string
 }
 
-// statePendingSweepRow mirrors one aggregated row of
-// findPendingEarnAutodepositScheduledSweeps.
 type statePendingSweepRow struct {
 	Classification        string
 	Confidence            string
@@ -136,7 +121,6 @@ type statePendingSweepRow struct {
 	Status                string
 }
 
-// stateCrossMintPolicyRow mirrors loyal_yield.cross_mint_swap_policies.
 type stateCrossMintPolicyRow struct {
 	Active                     bool
 	DailySourceMintSpendingCap *int64
@@ -152,13 +136,11 @@ type stateCrossMintPolicyRow struct {
 	StartEligible              bool
 }
 
-// stateCrossMintOptInRow mirrors loyal_yield.cross_mint_vault_opt_ins.
 type stateCrossMintOptInRow struct {
 	Enabled    bool
 	Generation int64
 }
 
-// stateVaultReserveRow mirrors loyal_yield.vault_reserve_positions_current.
 type stateVaultReserveRow struct {
 	Reserve          string
 	Market           *string
@@ -171,7 +153,6 @@ type stateVaultReserveRow struct {
 	PlanningMetadata map[string]any
 }
 
-// stateVaultIdleRow mirrors loyal_yield.vault_idle_token_balances_current.
 type stateVaultIdleRow struct {
 	Mint             string
 	AmountRaw        int64
@@ -182,16 +163,12 @@ type stateVaultIdleRow struct {
 	ObservedAt       time.Time
 }
 
-// stateRebalanceDecisionRow mirrors the rebalance_decisions columns the
-// reconciled-position read uses.
 type stateRebalanceDecisionRow struct {
 	ID            int64
 	Signature     *string
 	ConfirmedSlot *int64
 }
 
-// stateAutodepositStatus mirrors resolveEarnAutodepositStatus: chain_status
-// 'pending' (and the folded paused_missing_position) reads as paused/pending.
 func stateAutodepositStatus(active bool, chainStatus string) string {
 	switch chainStatus {
 	case "active":
@@ -205,9 +182,6 @@ func stateAutodepositStatus(active bool, chainStatus string) string {
 	return "pending"
 }
 
-// stateAutodepositPeriodStart mirrors
-// resolveEarnAutodepositCurrentPeriodStart: nil when the target has no
-// start_timestamp (the deposits sum then covers all executions).
 func stateAutodepositPeriodStart(startTimestamp, periodLengthSeconds *int64, now time.Time) *time.Time {
 	if startTimestamp == nil {
 		return nil
@@ -228,8 +202,6 @@ func stateAutodepositPeriodStart(startTimestamp, periodLengthSeconds *int64, now
 	return &start
 }
 
-// stateAutodepositDelegationReadyAt mirrors
-// resolveEarnAutodepositDelegationReadyAt with a zero readiness margin.
 func stateAutodepositDelegationReadyAt(startTimestamp *int64) *time.Time {
 	if startTimestamp == nil {
 		return nil
@@ -238,9 +210,6 @@ func stateAutodepositDelegationReadyAt(startTimestamp *int64) *time.Time {
 	return &ready
 }
 
-// stateDisplayableSweeps mirrors getDisplayableEarnAutodepositScheduledSweeps:
-// sweeps show only while the subscription is active, and scheduled rows hide
-// while a sibling execution is in flight.
 func stateDisplayableSweeps(status string, sweeps []statePendingSweepRow) []statePendingSweepRow {
 	if status != "active" {
 		return []statePendingSweepRow{}
@@ -264,8 +233,6 @@ func stateDisplayableSweeps(status string, sweeps []statePendingSweepRow) []stat
 	return filtered
 }
 
-// stateMetadataStringValue mirrors metadataStringValue: the first non-empty
-// string value among the keys.
 func stateMetadataStringValue(metadata map[string]any, keys ...string) (string, bool) {
 	if metadata == nil {
 		return "", false
@@ -278,15 +245,11 @@ func stateMetadataStringValue(metadata map[string]any, keys ...string) (string, 
 	return "", false
 }
 
-// stateUserFacingReserveMetadata mirrors isUserFacingReserveAmountMetadata:
-// only redeemable-liquidity rows are user-facing amounts.
 func stateUserFacingReserveMetadata(metadata map[string]any) bool {
 	semantics, ok := stateMetadataStringValue(metadata, "amountSemantics", "amount_semantics")
 	return ok && semantics == "kamino_redeemable_liquidity"
 }
 
-// stateCollateralUnitMetadata mirrors hasCollateralUnitAmountSemantics:
-// snapshot rows whose amount is an obligation collateral unit amount.
 func stateCollateralUnitMetadata(metadata map[string]any) bool {
 	semantics, ok := stateMetadataStringValue(metadata, "amountSemantics", "amount_semantics")
 	return ok && semantics == "kamino_obligation_collateral_deposited_amount"
@@ -296,7 +259,6 @@ func stateTruthy(s *string) bool {
 	return s != nil && *s != ""
 }
 
-// stateOnboardingNextStep mirrors deriveEarnDepositOnboardingNextStep.
 func stateOnboardingNextStep(attempt *stateOnboardingAttemptRow, hasActivePosition, hasRoutePolicy, hasSetupPolicy bool) string {
 	if hasActivePosition {
 		return "complete"
@@ -335,7 +297,6 @@ func stateStringPtr(v *string) *string {
 	return &s
 }
 
-// serializeEarnStatePosition mirrors serializePosition in the Next route.
 func serializeEarnStatePosition(position stateYieldPositionRow, currentTotalAmountRaw int64) EarnStatePosition {
 	total := strconvFormatInt(currentTotalAmountRaw)
 	return EarnStatePosition{
@@ -399,7 +360,6 @@ func serializeEarnStatePolicy(route RoutePolicy, setup *RoutePolicy, vaultIndex 
 	return serialized
 }
 
-// serializeEarnStateOnboarding mirrors serializeEarnDepositOnboardingState.
 func serializeEarnStateOnboarding(attempt *stateOnboardingAttemptRow, nextStep string) EarnStateOnboarding {
 	out := EarnStateOnboarding{NextStep: nextStep}
 	if attempt == nil {
@@ -434,8 +394,6 @@ func serializeEarnStateOnboarding(attempt *stateOnboardingAttemptRow, nextStep s
 	return out
 }
 
-// serializeEarnStateScheduledSweeps mirrors serializeScheduledSweep and the
-// getDisplayableEarnAutodepositScheduledSweeps filter.
 func serializeEarnStateScheduledSweeps(status string, sweeps []statePendingSweepRow) []EarnStateScheduledSweep {
 	visible := stateDisplayableSweeps(status, sweeps)
 	out := make([]EarnStateScheduledSweep, 0, len(visible))
@@ -457,8 +415,6 @@ func serializeEarnStateScheduledSweeps(status string, sweeps []statePendingSweep
 	return out
 }
 
-// serializeEarnStateAutodeposit mirrors serializeAutodepositState plus the
-// lifecycleStatus field the pathmap adds (autodeposit/state row).
 func serializeEarnStateAutodeposit(target stateAutodepositTargetRow, policy *stateBalanceSweepPolicyRow, depositedThisPeriodRaw int64, sweeps []statePendingSweepRow) EarnStateAutodeposit {
 	status := stateAutodepositStatus(target.Active, target.ChainStatus)
 
@@ -540,9 +496,6 @@ func stateTimePtr(t *time.Time) *string {
 	return &s
 }
 
-// deriveEarnCrossMintIndex mirrors deriveEarnCrossMintPolicyIndex: project the
-// active cross-mint policy rows into classic/token-2022 shards, or an
-// ambiguous/empty/partial state when the pair does not line up.
 func deriveEarnCrossMintIndex(rows []stateCrossMintPolicyRow) EarnStateAutoswapIndex {
 	empty := func(state string) EarnStateAutoswapIndex {
 		return EarnStateAutoswapIndex{Policies: []EarnStateAutoswapIndexPolicy{}, State: state}
@@ -627,8 +580,6 @@ func stateIsSupportedCommitment(commitment string) bool {
 	return commitment == "confirmed" || commitment == "finalized"
 }
 
-// buildEarnStateAutoswap mirrors findEarnCrossMintSnapshot: the enrollment is
-// surfaced only once the opt-in exists and the projected pair is complete.
 func buildEarnStateAutoswap(optIn *stateCrossMintOptInRow, index EarnStateAutoswapIndex) *EarnStateAutoswap {
 	if optIn == nil || index.State != "complete" {
 		return nil
@@ -676,8 +627,6 @@ func buildEarnStateAutoswap(optIn *stateCrossMintOptInRow, index EarnStateAutosw
 	}
 }
 
-// earnAutoswapEnrollmentEnabled mirrors isEarnAutoswapEnrollmentEnabled: the
-// allowlist env is "*" or a comma-separated list of canonical wallet addresses.
 func earnAutoswapEnrollmentEnabled(raw string, wallet string) (bool, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {

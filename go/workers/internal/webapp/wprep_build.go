@@ -18,20 +18,12 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
-// prepareEarnUsdcWithdraw (web/packages/smart-account-vaults/src/client.ts,
-// CL:8648-10166) for the two shapes the route can reach on mainnet: an idle
-// source (CL:8793-8950) and a partial reserve source (CL:8956-10052). The
-// route always passes closePoliciesOnFullWithdrawal:false, so no final exit,
-// cleanup, sweep, policy close or autodeposit close is ever built here.
-
 const (
 	wprepDecimals        = 6
 	wprepMaxLegsPerBatch = 2
 	wprepMaxAdjustments  = 2
 )
 
-// wprepSource is SelectedEarnWithdrawSource
-// (earn-withdraw-input-resolution.server.ts:99-118).
 type wprepSource struct {
 	AmountRaw    uint64
 	ID           string
@@ -67,7 +59,6 @@ type wprepDeps struct {
 	KaminoURL string
 }
 
-// wprepLeg is ProvisionalReserveWithdrawal (CL:9061-9077).
 type wprepLeg struct {
 	AmountRaw               uint64
 	CollateralAta           solana.PublicKey
@@ -166,7 +157,6 @@ func (in wprepInput) memberSync(inner []squads.Instruction) (squads.Instruction,
 	})
 }
 
-// prepareIdle is the idle-source branch (CL:8710-8726, 8793-8950).
 func (in wprepInput) prepareIdle() (EarnWithdrawPrepareWire, error) {
 	source, vault, wallet := in.Source, in.Account.Vault, in.Account.Wallet
 	vaultAta, err := spl.AssociatedTokenAddress(vault, source.Mint, source.TokenProgram)
@@ -217,9 +207,6 @@ func (in wprepInput) prepareIdle() (EarnWithdrawPrepareWire, error) {
 	return wire, nil
 }
 
-// prepareReserve is the mainnet partial reserve branch (CL:8956-10052): one
-// plan for the source reserve, legs from Kamino's withdraw instructions,
-// batches of at most two legs, each simulated to size the wallet transfer.
 func (in wprepInput) prepareReserve(ctx context.Context, deps wprepDeps) (EarnWithdrawPrepareWire, error) {
 	source, vault := in.Source, in.Account.Vault
 	vaultAta, err := spl.AssociatedTokenAddress(vault, source.Mint, source.TokenProgram)
@@ -274,9 +261,6 @@ func (in wprepInput) prepareReserve(ctx context.Context, deps wprepDeps) (EarnWi
 	return wire, nil
 }
 
-// collectLegs is collectReserveWithdrawalsForPlan (CL:9178-9580) on mainnet
-// partial: no local amount resolution, no collateral reconcile (the target
-// names no collateral mint, so localCollateralAta is null), no snapshot.
 func (in wprepInput) collectLegs(ctx context.Context, deps wprepDeps, vaultAta, obligation solana.PublicKey) ([]wprepLeg, error) {
 	source := in.Source
 	bundle, err := earnprep.KaminoWithdrawInstructions(ctx, deps.HTTP, deps.KaminoURL, in.Account.Vault, source.Market, source.Reserve, in.AmountRaw)
@@ -324,9 +308,6 @@ func (in wprepInput) collectLegs(ctx context.Context, deps wprepDeps, vaultAta, 
 	return legs, nil
 }
 
-// rebuildForReserve is the executionReserve != reserve branch (CL:9273-9332):
-// Kamino routed the withdraw through another reserve, so the withdraw is
-// rebuilt locally against the selected reserve behind Kamino's refresh prefix.
 func (in wprepInput) rebuildForReserve(ctx context.Context, deps wprepDeps, bundle earnprep.KaminoWithdrawBundle, obligation, vaultAta solana.PublicKey, kaminoAmount uint64) (earnprep.KaminoWithdrawBundle, error) {
 	source, vault := in.Source, in.Account.Vault
 	reserve, _, err := wprepReadReserve(ctx, deps.Chain, source, "Selected Kamino reserve account was not found.")
@@ -363,8 +344,6 @@ func (in wprepInput) rebuildForReserve(ctx context.Context, deps wprepDeps, bund
 	return bundle, nil
 }
 
-// wprepReadReserve is getAccountInfo + validateKaminoEarnReserveAccount
-// (CL:1141-1182) against the source's market, mint and token program.
 func wprepReadReserve(ctx context.Context, chain earnprep.WithdrawChain, source wprepSource, missing string) (earnprep.WithdrawReserveTokenAccounts, []byte, error) {
 	_, accounts, err := chain.Accounts(ctx, []solana.PublicKey{source.Reserve}, rpc.CommitmentConfirmed, 0)
 	if err != nil {
@@ -395,8 +374,6 @@ func wprepReadReserve(ctx context.Context, chain earnprep.WithdrawChain, source 
 	return parsed, accounts[0].Data, nil
 }
 
-// validateWithdraw is validateKaminoWithdrawInstruction (CL:2817-2945),
-// returning the leg's execution and collateral accounts.
 func (in wprepInput) validateWithdraw(ix squads.Instruction, vaultAta solana.PublicKey) (wprepLeg, error) {
 	unexpected := func(label string) error {
 		return errors.New("Kamino withdraw instruction has an unexpected " + label + ".")
@@ -477,8 +454,6 @@ func wprepWithdrawAmount(ix squads.Instruction, fallback uint64) uint64 {
 	return binary.LittleEndian.Uint64(ix.Data[8:16])
 }
 
-// wprepChunk is chunkReserveWithdrawals (CL:9122-9174) for one mint: every
-// leg here shares the source mint, so the groups collapse to one, chunked.
 func wprepChunk(legs []wprepLeg) [][]wprepLeg {
 	var batches [][]wprepLeg
 	for start := 0; start < len(legs); start += wprepMaxLegsPerBatch {
@@ -487,7 +462,6 @@ func wprepChunk(legs []wprepLeg) [][]wprepLeg {
 	return batches
 }
 
-// buildBatch is buildWithdrawBatch (CL:9608-10052) for a partial withdraw.
 func (in wprepInput) buildBatch(ctx context.Context, deps wprepDeps, batch []wprepLeg, vaultAta, obligation solana.PublicKey) (EarnWithdrawStepWire, error) {
 	source, vault, wallet := in.Source, in.Account.Vault, in.Account.Wallet
 	walletAta, err := spl.AssociatedTokenAddress(wallet, source.Mint, source.TokenProgram)
@@ -618,8 +592,6 @@ func (in wprepInput) buildBatch(ctx context.Context, deps wprepDeps, batch []wpr
 	}, nil
 }
 
-// adjustLeg is one rounding adjustment (CL:9763-9824): add the collateral the
-// shortfall needs plus one to the leg's single withdraw instruction.
 func (in wprepInput) adjustLeg(ctx context.Context, deps wprepDeps, leg *wprepLeg, shortfall uint64) error {
 	if leg.Snapshot == nil {
 		_, data, err := wprepReadReserve(ctx, deps.Chain, in.Source, "Kamino reserve account was not found.")
@@ -663,7 +635,6 @@ func wprepWithAmount(ix squads.Instruction, amountRaw uint64) squads.Instruction
 	return ix
 }
 
-// wprepSimulatedRedeemed is resolveSimulatedRedeemedAmountRaw (CL:3291-3304).
 func wprepSimulatedRedeemed(current, simulated uint64) uint64 {
 	if current == 0 || simulated < current {
 		return simulated

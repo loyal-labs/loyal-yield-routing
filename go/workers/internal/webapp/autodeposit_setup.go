@@ -94,7 +94,7 @@ type AutodepositSetupConfirmResponse struct {
 
 // parseAutodepositSetupConfirmBody ports
 // parseEarnAutodepositSetupConfirmRequestBody
-// (earn-autodeposit-prepare-contracts.shared.ts:466): fields evaluate in the
+// : fields evaluate in the
 // TS object-literal order and every failure names its key, so the first bad
 // field matches Next's error message exactly.
 func parseAutodepositSetupConfirmBody(raw []byte) (autodepositSetupInput, error) {
@@ -215,9 +215,6 @@ func readAutodepositString(object map[string]any, key string, into *string) erro
 	return nil
 }
 
-// readAutodepositUint ports readBigIntString: a trimmed decimal string, parsed
-// strictly. A value beyond uint64 is rejected with the same message the TS
-// reader uses for malformed input.
 func readAutodepositUint(object map[string]any, key string, into *uint64) error {
 	value, ok := object[key].(string)
 	if !ok {
@@ -263,7 +260,6 @@ func serializeAutodepositSweep(sweep *autodepositSweepRow) *AutodepositSetupConf
 	return out
 }
 
-// serializeAutodepositTarget ports serializeTarget (route.ts:265).
 func serializeAutodepositTarget(target autodepositTargetRow) *AutodepositSetupConfirmTarget {
 	out := &AutodepositSetupConfirmTarget{
 		Active:              target.Active,
@@ -283,8 +279,6 @@ func serializeAutodepositTarget(target autodepositTargetRow) *AutodepositSetupCo
 	return out
 }
 
-// readAutodepositBootstrapSnapshot ports readBootstrapWalletBalanceSnapshot
-// (route.ts:309): the wallet USDC balance at confirm time, or a skip reason.
 func (h earnRoutes) readAutodepositBootstrapSnapshot(ctx context.Context, in autodepositSetupInput) (autodepositBootstrapSnapshot, *string, error) {
 	skip := func(reason string) (autodepositBootstrapSnapshot, *string, error) {
 		return autodepositBootstrapSnapshot{}, &reason, nil
@@ -358,33 +352,26 @@ func (h earnRoutes) autodepositSetupConfirm(ctx context.Context, in *autodeposit
 		return nil, earnUnavailable("load Earn account", err, "account_unavailable", "Earn account is unavailable.")
 	}
 
-	// route.ts:415-424 — parse errors pass their message through under
-	// invalid_request.
 	input, err := parseAutodepositSetupConfirmBody(in.Raw.data)
 	if err != nil {
 		return nil, earnError(http.StatusBadRequest, "invalid_request", err.Error())
 	}
 
-	// route.ts:426-435 — the echoed wallet/settings must be the session's.
 	if input.WalletAddress != account.Wallet.String() || input.Settings != account.Settings.String() {
 		return nil, earnError(http.StatusForbidden, "principal_mismatch",
 			"Confirmed autodeposit setup does not match the authenticated wallet session.")
 	}
 
-	// route.ts:437-447 — rebuild every address canonically.
 	canonical, err := canonicalizeAutodepositSetupInput(input, h.PolicySigner)
 	if err != nil {
 		return nil, earnError(http.StatusBadRequest, "metadata_mismatch", err.Error())
 	}
 
-	// route.ts:449-459.
 	if canonical.Cluster != string(account.Cluster) {
 		return nil, earnError(http.StatusBadRequest, "cluster_mismatch",
 			"Confirmed autodeposit setup cluster does not match the configured Solana environment.")
 	}
 
-	// route.ts:461-487 — the setup transaction must be confirmed; the client's
-	// non-zero slot must match the observed one.
 	confirmedSlot, err := autodepositConfirmedSlot(ctx, h.Chain, canonical.SetupSignature)
 	if err != nil {
 		return nil, earnError(http.StatusBadRequest, "unconfirmed_signature", err.Error())
@@ -398,8 +385,6 @@ func (h earnRoutes) autodepositSetupConfirm(ctx context.Context, in *autodeposit
 	requirePolicy := canonical.SetupStage == "create_policy" || canonical.SetupStage == "approve_token_delegate"
 	requireDelegation := canonical.SetupStage == "create_recurring_delegation" || canonical.SetupStage == "approve_token_delegate"
 
-	// route.ts:489-541 — the created policy and delegation must exist, be
-	// owned correctly and match the canonical layout byte for byte.
 	if requirePolicy || requireDelegation {
 		policyKey, keyErr := solana.PublicKeyFromBase58(canonical.PolicyAccount)
 		if keyErr != nil {
@@ -424,7 +409,6 @@ func (h earnRoutes) autodepositSetupConfirm(ctx context.Context, in *autodeposit
 		}
 	}
 
-	// route.ts:543-560 — the wallet must have approved the delegation pull.
 	if requireDelegation {
 		walletAta, keyErr := solana.PublicKeyFromBase58(canonical.WalletUsdcAta)
 		if keyErr != nil {
@@ -442,14 +426,12 @@ func (h earnRoutes) autodepositSetupConfirm(ctx context.Context, in *autodeposit
 		}
 	}
 
-	// route.ts:562-566 — the first stage only proves the authority landed.
 	if canonical.SetupStage == "initialize_subscription_authority" {
 		return &autodepositSetupConfirmOutput{Body: AutodepositSetupConfirmResponse{
 			ConfirmedSlot: strconv.FormatUint(confirmedSlot, 10),
 		}}, nil
 	}
 
-	// route.ts:568-585.
 	target, err := h.recordAutodepositSetupIntent(ctx, canonical)
 	if err != nil {
 		if strings.Contains(err.Error(), "Closed autodeposit targets cannot be reactivated") {
@@ -459,8 +441,6 @@ func (h earnRoutes) autodepositSetupConfirm(ctx context.Context, in *autodeposit
 		return nil, earnError(http.StatusBadRequest, "record_failed", err.Error())
 	}
 
-	// route.ts:586-625 — only an already-active target bootstraps a sweep;
-	// any failure is reported in the response, never the status.
 	var bootstrapSweep *AutodepositSetupConfirmBootstrapSweep
 	var scheduledSweep *autodepositSweepRow
 	if target.Active && target.LifecycleStatus == "active" {

@@ -19,9 +19,6 @@ type zonedParts struct {
 	second int
 }
 
-// normalizeEarningsTimezone mirrors normalizeEarningsTimezone
-// (earnings-calculator.server.ts:119): an unset or unparseable zone falls back
-// to UTC.
 func normalizeEarningsTimezone(timezone string) string {
 	if timezone == "" {
 		return "UTC"
@@ -52,7 +49,6 @@ func getZonedParts(t time.Time, timezone string) zonedParts {
 	}
 }
 
-// asUTCMillis is JS Date.UTC: the wall clock read as if it were UTC.
 func (p zonedParts) asUTCMillis() int64 {
 	return time.Date(p.year, time.Month(p.month), p.day, p.hour, p.minute, p.second, 0, time.UTC).UnixMilli()
 }
@@ -90,7 +86,6 @@ func startOfLocalMonth(t time.Time, timezone string) time.Time {
 	return zonedDateTimeToUtc(timezone, zonedParts{year: p.year, month: p.month, day: 1})
 }
 
-// englishMonthShort is Intl.DateTimeFormat("en-US", {month: "short"}).
 func englishMonthShort(month int) string {
 	return time.Month(month).String()[:3]
 }

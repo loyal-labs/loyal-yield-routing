@@ -19,21 +19,12 @@ import (
 const (
 	// dtargetReserveStreamMaxAgeMS bounds both receipt age and the frontier's
 	// actual chain age; the observer timestamps replays when received
-	// (timescale-reserve-client.server.ts:162-165).
-	dtargetReserveStreamMaxAgeMS = 240_000
-	// DEFAULT_MIN_DELIBERATE_VENUE_TOTAL_SUPPLY_USD_ESTIMATE
-	// (timescale-reserve-client.server.ts:162).
-	dtargetMinVenueTotalSupplyUSD = 100_000.0
-	// DEFAULT_MAX_SUPPLY_APY (web/apps/web/src/lib/kamino/max-supply-apy.ts:1).
-	dtargetMaxSupplyApy = 0.5
-	// dtargetFrontierBlockTimeTimeout is the RPC fetch timeout the web client
-	// puts on its reserve block-time connection
-	// (timescale-reserve-client.server.ts:169-184).
+	dtargetReserveStreamMaxAgeMS    = 240_000
+	dtargetMinVenueTotalSupplyUSD   = 100_000.0
+	dtargetMaxSupplyApy             = 0.5
 	dtargetFrontierBlockTimeTimeout = 5 * time.Second
 )
 
-// dtargetQuerier is the read surface the deposit-target SQL needs; a
-// *pgxpool.Pool or pgx.Tx satisfies it, and tests inject fixtures.
 type dtargetQuerier interface {
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 }
@@ -59,7 +50,6 @@ type dtargetReserveObservation struct {
 // observer's current state to its update by the complete observation identity,
 // including observed_at for Timescale chunk pruning, and the active supported
 // reserve by (reserve, market, liquidity mint)
-// (timescale-reserve-client.server.ts:353-395).
 const dtargetConfirmedCurrentReservesSQL = `
 confirmed_current_reserves AS (
 	SELECT updates.*
@@ -86,18 +76,12 @@ reserve_stream_frontier AS (
 	LIMIT 1
 )`
 
-// dtargetFrontierFreshnessSQL keeps only observations at or behind the
-// statement-clock frontier inside the max stream age
-// (timescale-reserve-client.server.ts:396-415).
 const dtargetFrontierFreshnessSQL = `
 		JOIN reserve_stream_frontier AS frontier
 		  ON frontier.observed_at >= statement_timestamp() - $1::bigint * interval '1 millisecond'
 		 AND frontier.observed_at <= statement_timestamp()
 		 AND latest.observed_at <= statement_timestamp()`
 
-// dtargetCurrentEligibleSafeReserves returns the highest-APY candidate rows
-// feeding findBestSafeEarnReserveTarget, before the per-stablecoin and
-// product-mint picks (getCurrentEligibleSafeReserves :734-779).
 func dtargetCurrentEligibleSafeReserves(ctx context.Context, q dtargetQuerier, getBlockTime dtargetBlockTimeFunc, safeMarkets, stableMints []string) ([]dtargetReserveRow, error) {
 	if q == nil {
 		return nil, nil
@@ -189,10 +173,6 @@ func dtargetLatestReserveObservations(ctx context.Context, q dtargetQuerier, get
 	return out, nil
 }
 
-// dtargetRecentChainFrontier mirrors isRecentChainFrontier
-// (timescale-reserve-client.server.ts:327-351): a positive slot whose block
-// time is between 0 and the max stream age old proves the feed caught up to
-// the chain; a failed or null block time is not recent.
 func dtargetRecentChainFrontier(ctx context.Context, getBlockTime dtargetBlockTimeFunc, slot *int64) bool {
 	if slot == nil || *slot <= 0 {
 		return false

@@ -1,9 +1,5 @@
 package webapp
 
-// Lifecycle event contract, porting
-// web/apps/web/src/features/observability/lifecycle-contract.ts,
-// trace-context.ts and the classification half of otlp.ts.
-
 import (
 	"math"
 	"strings"
@@ -153,9 +149,6 @@ var (
 	obsLifecycleRuntimeKinds = []string{"browser", "node", "mobile"}
 )
 
-// obsNormalizedLifecycle is NormalizedLifecycleEvent
-// (lifecycle-contract.ts:386): the envelope plus the enrichment the ingest
-// route adds before export.
 type obsNormalizedLifecycle struct {
 	authProofKind            string
 	attemptNumber            *int64
@@ -212,7 +205,6 @@ type obsNormalizedLifecycle struct {
 	reviewBypassed           *bool
 }
 
-// mapExecuteNowState ports lifecycle-contract.ts:1060.
 func mapExecuteNowState(state string) (outcome string, stage string) {
 	switch state {
 	case "completed":
@@ -225,7 +217,6 @@ func mapExecuteNowState(state string) (outcome string, stage string) {
 	return "observed", "state_observed"
 }
 
-// lifecycleFailureCategory ports lifecycle-contract.ts:1073.
 func lifecycleFailureCategory(event *obsNormalizedLifecycle) string {
 	switch {
 	case event.outcome == "timed_out" || event.errorCode == "unconfirmed_signature":
@@ -261,8 +252,6 @@ func lifecycleFailureCategory(event *obsNormalizedLifecycle) string {
 	return "none"
 }
 
-// obsExpectedLocalFailures ports otlp.ts:37: expected device/session failures
-// stay observable at INFO instead of the error alert.
 var obsExpectedLocalFailures = map[string]bool{
 	"insufficient_native_sol":      true,
 	"wallet_account_mismatch":      true,
@@ -273,7 +262,6 @@ var obsExpectedLocalFailures = map[string]bool{
 	"wallet_unavailable":           true,
 }
 
-// isAlertableLifecycleEvent ports otlp.ts:53.
 func isAlertableLifecycleEvent(event *obsNormalizedLifecycle) bool {
 	if event.trafficKind == "synthetic" {
 		return false
@@ -370,8 +358,6 @@ func obsRequiredIntField(record map[string]any, key string, min, max int64) (int
 	return *value, nil
 }
 
-// obsBrowserLifecycleKeys is the browser envelope allowed-keys set
-// (lifecycle-contract.ts:471).
 var obsBrowserLifecycleKeys = []string{
 	"traceId", "spanId", "parentSpanId", "rumSessionId", "journeyId",
 	"attemptNumber", "eventId", "clientBuildId", "pageSessionId", "retryCount",
@@ -385,8 +371,6 @@ var obsBrowserLifecycleKeys = []string{
 	"stageIndex", "timestamp", "transactionVersion", "walletProvider",
 }
 
-// parseBrowserLifecycleEnvelope ports parseBrowserLifecycleEnvelope
-// (lifecycle-contract.ts:463).
 func parseBrowserLifecycleEnvelope(raw []byte, now time.Time) (obsNormalizedLifecycle, error) {
 	record, err := obsObjectBody(raw)
 	if err != nil {
@@ -696,9 +680,6 @@ func obsStringField(record map[string]any, key string) string {
 	return s
 }
 
-// parseMobileLifecycleEnvelope ports parseMobileLifecycleEnvelope
-// (lifecycle-contract.ts:770): the mobile wrapper fields are pulled off before
-// the browser envelope parse sees the remainder.
 func parseMobileLifecycleEnvelope(raw []byte, now time.Time) (obsNormalizedLifecycle, error) {
 	record, err := obsObjectBody(raw)
 	if err != nil {

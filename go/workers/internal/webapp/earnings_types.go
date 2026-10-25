@@ -36,8 +36,6 @@ type EarningsRange struct {
 	TodayEarnedUsd            float64       `json:"todayEarnedUsd"`
 }
 
-// EarningsRanges keeps the TS insertion order (EARNINGS_RANGE_IDS) instead of a
-// Go map, whose marshal order would differ.
 type EarningsRanges struct {
 	SevenD  EarningsRange `json:"7D"`
 	ThirtyD EarningsRange `json:"30D"`
@@ -99,7 +97,7 @@ type EarningsRangeSet struct {
 
 // storedEarningsSnapshot is the JSONB of earn_earnings_snapshots.payload: the
 // response plus the two private keys loadEarnEarningsSnapshot strips before a
-// snapshot is served (earnings-read-service.server.ts:680).
+// snapshot is served.
 type storedEarningsSnapshot struct {
 	EarningsRangeSet
 	SourceRevision *string                 `json:"_sourceRevision,omitempty"`
@@ -107,7 +105,7 @@ type storedEarningsSnapshot struct {
 }
 
 // earningsCheckpointWire mirrors EarningsCheckpoint
-// (earnings-checkpoint.server.ts:10) field for field so snapshots written by
+// field for field so snapshots written by
 // Next stay verifiable here and the other way around.
 type earningsCheckpointWire struct {
 	Version            int                    `json:"version"`
@@ -134,17 +132,12 @@ type earningsCheckpointSeed struct {
 	Exposures    []earningsCheckpointSeedExposure `json:"exposures"`
 }
 
-// earningsUnavailableDetail is the error object of the 503 envelope.
 type earningsUnavailableDetail struct {
 	Code       string  `json:"code"`
 	DetailCode *string `json:"detailCode,omitempty"`
 	Message    string  `json:"message"`
 }
 
-// earningsError is the 503 envelope of the Next earnings route itself (the
-// push.go pattern): huma marshals the returned error value, so the wire
-// fields are exported — an error object with an optional detailCode plus
-// freshness/outcome markers.
 type earningsError struct {
 	Detail    earningsUnavailableDetail `json:"error"`
 	Freshness string                    `json:"freshness"`
@@ -154,10 +147,6 @@ type earningsError struct {
 func (e *earningsError) Error() string  { return e.Detail.Code }
 func (e *earningsError) GetStatus() int { return 503 }
 
-// newEarningsError builds the route's 503 body the way
-// yield-optimization/earnings/route.ts does: message from the code alone, and
-// detailCode present exactly when the failure is a classified unavailable
-// error (the TS error constructor always sets one).
 func newEarningsError(code string, detailCode *string) *earningsError {
 	e := earningsError{Freshness: "unavailable", Outcome: "unavailable"}
 	e.Detail.Code = code
@@ -170,13 +159,10 @@ func newEarningsError(code string, detailCode *string) *earningsError {
 	return &e
 }
 
-// Earnings unavailable classifications from earnings-read-service.server.ts.
 const (
 	earningsUnavailableCode = "earnings_unavailable"
 	earningsIncompleteCode  = "history_incomplete"
 )
-
-// ---- JS-compatible canonical JSON (fingerprints and revisions) ----
 
 type jsonWriter struct{ buf bytes.Buffer }
 
@@ -279,7 +265,6 @@ func appendJSONString(buf *bytes.Buffer, s string) {
 	buf.WriteByte('"')
 }
 
-// isoMS formats a time like JS Date.toISOString (millisecond UTC).
 func isoMS(t time.Time) string {
 	return time.UnixMilli(t.UnixMilli()).UTC().Format("2006-01-02T15:04:05.000Z07:00")
 }

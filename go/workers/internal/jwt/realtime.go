@@ -9,7 +9,7 @@ import (
 )
 
 // RealtimeClaims is the Earn realtime token payload
-// (token.server.ts:17-29). The field order is the JSON key order: the token
+// . The field order is the JSON key order: the token
 // signs the exact encoded payload, so the marshal order is contract.
 type RealtimeClaims struct {
 	Aud              string   `json:"aud"`
@@ -27,12 +27,12 @@ type RealtimeClaims struct {
 
 // RealtimeIssuer mints the Earn realtime event-stream token: a bare
 // base64url-encoded claims payload HMAC'd under the raw secret, not a
-// three-segment JWT (token.server.ts:95-98). loyal-yield-realtime verifies
+// three-segment JWT. loyal-yield-realtime verifies
 // the token with the same shared secret.
 type RealtimeIssuer struct{ secret []byte }
 
 // NewRealtimeIssuer rejects secrets shorter than the realtime protocol
-// minimum (token.server.ts:66-68) at construction, so a misconfigured
+// minimum at construction, so a misconfigured
 // loyal-web degrades at startup instead of minting weak tokens.
 func NewRealtimeIssuer(secret string) (*RealtimeIssuer, error) {
 	if len(secret) < 32 {
@@ -41,7 +41,7 @@ func NewRealtimeIssuer(secret string) (*RealtimeIssuer, error) {
 	return &RealtimeIssuer{secret: []byte(secret)}, nil
 }
 
-// IssueRealtime encodes and signs claims (token.server.ts:82-98); the caller
+// IssueRealtime encodes and signs claims; the caller
 // fills every claim, including iat and exp.
 func (r *RealtimeIssuer) IssueRealtime(claims RealtimeClaims) (token string, err error) {
 	if claims.SolanaEnv != "devnet" && claims.SolanaEnv != "mainnet-beta" {

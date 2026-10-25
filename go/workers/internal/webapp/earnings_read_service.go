@@ -11,11 +11,6 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-// Port of the orchestration half of earnings-read-service.server.ts: the
-// rebuild path (readEarnEarningsRangeSet) and the cache entry
-// (readCachedEarnEarningsRangeSet, earnings_cache.go). Database access is
-// injected so the rebuild logic stays testable against fixtures.
-
 type earningsReadInput struct {
 	cluster       string
 	settings      string
@@ -40,8 +35,6 @@ func (p earningsPosition) seed() earningsPositionSeed {
 	}
 }
 
-// earningsSnapshotRecord is EarnEarningsSnapshotRecord: the stored payload with
-// its private columns split out.
 type earningsSnapshotRecord struct {
 	generatedAt    time.Time
 	payload        EarningsRangeSet
@@ -49,8 +42,6 @@ type earningsSnapshotRecord struct {
 	checkpoint     *earningsCheckpointWire
 }
 
-// earningsUnavailableError mirrors EarnEarningsUnavailableError; the route
-// layer (unit 2) maps it to the 503 envelope.
 type earningsUnavailableError struct {
 	code       string // "earnings_unavailable" | "history_incomplete"
 	message    string
@@ -70,7 +61,6 @@ type earningsApyTimeoutError struct{}
 
 func (e *earningsApyTimeoutError) Error() string { return "earnings_timescale_timeout" }
 
-// normalizedErrorKind ports normalizedError (read-service:824) for logs.
 func normalizedErrorKind(err error) (errorCode, errorName, errorDetailCode string) {
 	errorDetailCode = ""
 	errorName = errorNameOf(err)
@@ -135,7 +125,6 @@ func indexOf(haystack, needle string) int {
 	return -1
 }
 
-// earningsApyArgs is loadApySamples' argument bundle.
 type earningsApyArgs struct {
 	end                time.Time
 	pathEvents         []earningsPathEvent
@@ -144,7 +133,6 @@ type earningsApyArgs struct {
 	start              time.Time
 }
 
-// earningsSaveArgs is saveSnapshot's argument bundle.
 type earningsSaveArgs struct {
 	input          earningsReadInput
 	payload        EarningsRangeSet
@@ -168,12 +156,10 @@ type earningsReadDeps struct {
 	now                    func() time.Time
 }
 
-// parseI64 reads a JS-bigint-stringified field back.
 func parseI64(v string) (int64, error) {
 	return strconv.ParseInt(v, 10, 64)
 }
 
-// mustParseISO reads an ISO millisecond timestamp written by the TS side.
 func mustParseISO(v string) time.Time {
 	t, err := time.Parse("2006-01-02T15:04:05.000Z07:00", v)
 	if err != nil {
@@ -182,8 +168,6 @@ func mustParseISO(v string) time.Time {
 	return t
 }
 
-// earningsCheckpointTime ports earnings-checkpoint.server.ts:54: the most
-// recent absolute UTC day boundary that closed a full APY period.
 func earningsCheckpointTime(firstDepositAt, now time.Time) time.Time {
 	const day = int64(86_400_000)
 	first := firstDepositAt.UnixMilli()
@@ -191,7 +175,6 @@ func earningsCheckpointTime(firstDepositAt, now time.Time) time.Time {
 	return msTimeMillis((closedApyPeriod / day) * day)
 }
 
-// checkpointSeedSnapshot ports checkpointSeed (earnings-checkpoint.server.ts:41).
 func checkpointSeedSnapshot(checkpoint earningsCheckpointWire) (earningsPortfolioSnapshot, error) {
 	slot, err := parseI64(checkpoint.Seed.ObservedSlot)
 	if err != nil {
@@ -218,7 +201,6 @@ func checkpointSeedSnapshot(checkpoint earningsCheckpointWire) (earningsPortfoli
 	return snapshot, nil
 }
 
-// createEmptyEarnEarningsRangeSet ports read-service:864.
 func createEmptyEarnEarningsRangeSet(now time.Time, timezone string) (EarningsRangeSet, error) {
 	timezone = normalizeEarningsTimezone(timezone)
 	ranges := EarningsRanges{}
@@ -256,8 +238,6 @@ func createEmptyEarnEarningsRangeSet(now time.Time, timezone string) (EarningsRa
 	}, nil
 }
 
-// staleSnapshotOverlay ports staleSnapshot (read-service:811): the stored
-// payload re-marked stale with a reason.
 func staleSnapshotOverlay(snapshot earningsSnapshotRecord, now time.Time, staleReason string) EarningsRangeSet {
 	payload := snapshot.payload
 	ageMs := now.UnixMilli() - snapshot.generatedAt.UnixMilli()
@@ -290,8 +270,6 @@ func readEarningsRangeSet(ctx context.Context, input earningsReadInput, deps ear
 	return rebuildEarningsRangeSet(ctx, input, deps, useCheckpoint, timezone, now, snapshot, time.Now())
 }
 
-// earningsReadFailure answers a read that could not rebuild: the stored
-// snapshot re-marked stale when there is one, else the 503 envelope.
 func earningsReadFailure(err error, snapshot *earningsSnapshotRecord, now, startedAt time.Time) (EarningsRangeSet, error) {
 	var history *earningsHistoryError
 	unavailable, isUnavailable := err.(*earningsUnavailableError)
@@ -738,8 +716,6 @@ func checkpointReservesOrNil(checkpoint *earningsCheckpointWire) []string {
 	return checkpoint.Reserves
 }
 
-// buildCheckpointWire serializes the next incremental checkpoint the way the
-// TS object literal orders its keys.
 func buildCheckpointWire(at time.Time, firstDepositAt time.Time, historyFingerprint, ledgerFingerprint, apyFingerprint string, apySamples []reserveApySample, ranges EarningsRanges, seed earningsPortfolioSnapshot) (*earningsCheckpointWire, error) {
 	reserveSet := map[string]bool{}
 	var reserves []string

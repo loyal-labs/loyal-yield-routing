@@ -1,9 +1,5 @@
 package webapp
 
-// Loading-metric contract, porting
-// web/apps/web/src/features/observability/metrics-contract.ts and the
-// reportLoadingMetric mappings in features/observability/server.ts.
-
 import (
 	"math"
 	"strings"
@@ -48,8 +44,6 @@ var (
 	obsMobileMetricPhases = []string{"app_ready", "interaction_to_ui"}
 )
 
-// obsNormalizedMetric is NormalizedLoadingMetric (metrics-contract.ts:100)
-// after the server's release/environment enrichment.
 type obsNormalizedMetric struct {
 	appSessionID          string
 	dependency            string
@@ -77,7 +71,6 @@ func obsRoundMillis(value float64) float64 {
 	return math.Round(value*1000) / 1000
 }
 
-// parseBrowserLoadingMetricEnvelope ports metrics-contract.ts:197.
 func parseBrowserLoadingMetricEnvelope(raw []byte, now time.Time) (obsNormalizedMetric, error) {
 	record, err := obsObjectBody(raw)
 	if err != nil {
@@ -186,7 +179,6 @@ func parseBrowserLoadingMetricEnvelope(raw []byte, now time.Time) (obsNormalized
 	}, nil
 }
 
-// parseMobileLoadingMetricEnvelope ports metrics-contract.ts:325.
 func parseMobileLoadingMetricEnvelope(raw []byte, now time.Time) (obsNormalizedMetric, error) {
 	record, err := obsObjectBody(raw)
 	if err != nil {

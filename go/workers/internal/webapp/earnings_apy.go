@@ -8,11 +8,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// Timescale APY reader behind loadApySamples, ported from
-// kamino/timescale-reserve-client.server.ts getReserveApyHistorySamplesForReserves
-// (:481). One bucketed query per load.
-
-// earningsDefaultMaxSupplyApy is DEFAULT_MAX_SUPPLY_APY (max-supply-apy.ts:1):
+// earningsDefaultMaxSupplyApy is DEFAULT_MAX_SUPPLY_APY:
 // rows at or above it are curated-API sentinels, not real yields.
 const earningsDefaultMaxSupplyApy = 0.5
 
@@ -137,9 +133,6 @@ FROM (
 ) samples
 ORDER BY observed_at ASC, reserve ASC`
 
-// earningsApyReserves ports loadApySamples' reserve union (read-service:766):
-// the call-site reserve list plus every reserve a positive path principal or
-// kamino snapshot exposure touches, deduplicated and sorted.
 func earningsApyReserves(args earningsApyArgs) []string {
 	seen := map[string]bool{}
 	var reserves []string
@@ -169,7 +162,6 @@ func earningsApyReserves(args earningsApyArgs) []string {
 	return reserves
 }
 
-// newEarningsApyLoader returns the read-service loadApySamples dependency.
 func newEarningsApyLoader(timescale *pgxpool.Pool) func(context.Context, earningsReadInput, earningsApyArgs) ([]reserveApySample, error) {
 	return func(ctx context.Context, _ earningsReadInput, args earningsApyArgs) ([]reserveApySample, error) {
 		reserves := earningsApyReserves(args)

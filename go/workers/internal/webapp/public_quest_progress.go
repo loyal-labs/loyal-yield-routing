@@ -1,11 +1,5 @@
 package webapp
 
-// GET /api/solana-week/progress, porting
-// web/apps/web/src/app/api/solana-week/progress/route.ts +
-// web/apps/web/src/features/solana-week/server/quest-completion-service.ts:376-410.
-// Next authenticated by a walletAddress query param; here identity is the
-// Principal (bearer loyal-mobile-earn JWT or the web cookie).
-
 import (
 	"context"
 	"errors"
@@ -18,8 +12,6 @@ import (
 
 const solanaWeekProgressPath = "/api/solana-week/progress"
 
-// questKinds is QUEST_KINDS (quest-completion-service.ts:358): the fixed kind
-// order the response always lists, started or not.
 var questKinds = [2]string{"earn_deposit", "first_autodeposit_sweep"}
 
 type SolanaWeekQuestProgressItem struct {
@@ -71,8 +63,6 @@ func (h earnRoutes) questProgress(ctx context.Context, in *questProgressRequest)
 	return &questProgressOutput{Body: questProgressResponse(account.Wallet.String(), rows)}, nil
 }
 
-// questProgressFailure keeps auth refusals in the earn envelope and folds
-// every other failure into Next's 500 internal_error body.
 func questProgressFailure(err error) error {
 	var refused *routeError
 	if errors.As(err, &refused) {
@@ -107,10 +97,6 @@ WHERE wallet_address = $1`, wallet)
 	return out, rows.Err()
 }
 
-// questProgressResponse ports getQuestProgress
-// (quest-completion-service.ts:376-410): one item per known kind, rows folded
-// by kind with the last row winning, unexpected statuses collapsing to
-// "pending" so the UI never shows a raw value.
 func questProgressResponse(wallet string, rows []questCompletionRow) SolanaWeekQuestProgressResponse {
 	rowByKind := map[string]questCompletionRow{}
 	for _, row := range rows {

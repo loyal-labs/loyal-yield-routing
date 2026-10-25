@@ -103,10 +103,6 @@ func (h earnRoutes) earnEarnings(ctx context.Context, in *earningsRequest) (*ear
 	return &earningsOutput{CacheControl: "no-store", Body: payload}, nil
 }
 
-// earningsRouteError maps a read-service failure onto the route's 503
-// envelope exactly as the TS catch block does: a classified unavailable error
-// keeps its code and detailCode, anything else degrades to
-// earnings_unavailable.
 func earningsRouteError(err error) error {
 	var unavailable *earningsUnavailableError
 	if errors.As(err, &unavailable) {

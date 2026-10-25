@@ -8,8 +8,6 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 )
 
-// GET  /api/smart-accounts/earn-transactions                       <- web/apps/web/src/app/api/smart-accounts/earn-transactions/route.ts (mobile twin web/apps/web/src/app/api/smart-accounts/mobile/earn/transactions)
-// POST /api/smart-accounts/yield-optimization/policy-refunds/scan  <- web/apps/web/src/app/api/smart-accounts/yield-optimization/policy-refunds/scan/route.ts (mobile twin web/apps/web/src/app/api/smart-accounts/mobile/earn/policy-refunds/scan, GET)
 var earnTransactionsFamily = earnFamily{
 	name:        "earn transactions",
 	appGrants:   nil,
@@ -95,9 +93,6 @@ func (h earnRoutes) registerTransactions(api huma.API) {
 	}, h.earnPolicyRefundScan)
 }
 
-// earnTransactions ports the Next earn-transactions route: sync the confirmed
-// rebalance holding events, then serve the position and autodeposit history
-// through the formatter's serializer, collapse and ordering.
 func (h earnRoutes) earnTransactions(ctx context.Context, in *sessionRequest) (*earnTransactionsOutput, error) {
 	const unavailableCode = "earn_transactions_unavailable"
 	const unavailableMessage = "Earn transactions are unavailable."
@@ -212,7 +207,6 @@ func (h earnRoutes) earnPolicyRefundScan(ctx context.Context, in *sessionRequest
 	if err != nil {
 		slog.Warn("earn policy refund scan failed", "settings", account.Settings.String(),
 			"wallet", account.Wallet.String(), "error", err)
-		// Next surfaces the underlying error.message in this envelope.
 		return nil, earnError(http.StatusInternalServerError, "scan_failed", err.Error())
 	}
 	return &earnPolicyRefundScanOutput{Body: scan}, nil

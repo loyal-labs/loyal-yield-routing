@@ -2,8 +2,6 @@ package webapp
 
 import "github.com/danielgtaylor/huma/v2"
 
-// POST /api/smart-accounts/yield-optimization/withdrawals/prepare  <- web/apps/web/src/app/api/smart-accounts/yield-optimization/withdrawals/prepare/route.ts
-// POST /api/smart-accounts/yield-optimization/withdrawals/confirm  <- web/apps/web/src/app/api/smart-accounts/yield-optimization/withdrawals/confirm/route.ts
 var earnWithdrawFamily = earnFamily{
 	name: "earn withdraw",
 	// Confirm reads auth and chain state only. The cleanup pair adds the

@@ -1,13 +1,5 @@
 package webapp
 
-// DB reads for GET /api/smart-accounts/yield-optimization/earn-state.
-// Ports L/yield-deposit-repository.server.ts findActiveYieldPositionForVault
-// :2679, findReconciledActiveYieldPositionForVault :2849 (whose reconcile
-// writers applyHoldingEventToPosition :2169, recordConfirmedYieldRebalance
-// :4216 and recordSnapshotReconciledYieldHolding :4384 are ported verbatim),
-// findCurrentNonzeroYieldVaultReservePositions :2973 and
-// findCurrentYieldVaultIdleTokenBalances :3014.
-
 import (
 	"context"
 	"errors"
@@ -50,7 +42,6 @@ func scanStateEvent(row pgx.Row) (*stateHoldingEventRow, error) {
 	return &e, nil
 }
 
-// activeYieldPositionForVault ports findActiveYieldPositionForVault.
 func (h earnRoutes) activeYieldPositionForVault(ctx context.Context, settings, wallet string) (*stateYieldPositionRow, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -68,8 +59,6 @@ LIMIT 1`, settings, int16(earnprep.EarnVaultIndex), wallet))
 	return position, nil
 }
 
-// stateManagedVaultID ports the managedVaults.findFirst lookup shared by the
-// reconcile read, the reserve/idle readers and the policy pair fallbacks.
 func (h earnRoutes) stateManagedVaultID(ctx context.Context, settings, vaultPubkey string) (*int64, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -87,7 +76,6 @@ LIMIT 1`, settings, int16(earnprep.EarnVaultIndex), vaultPubkey).Scan(&id)
 	return &id, nil
 }
 
-// latestHoldingEventForPosition ports findLatestHoldingEventForPosition.
 func (h earnRoutes) latestHoldingEventForPosition(ctx context.Context, positionID int64) (*stateHoldingEventRow, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -105,7 +93,6 @@ LIMIT 1`, positionID))
 	return event, nil
 }
 
-// holdingEventUsesCollateralUnitSnapshot ports holdingEventUsesCollateralUnitSnapshot.
 func (h earnRoutes) holdingEventUsesCollateralUnitSnapshot(ctx context.Context, event *stateHoldingEventRow) (bool, error) {
 	if event == nil || event.EventType != "snapshot_reconciled" || event.SourceSnapshotID == nil {
 		return false, nil
@@ -126,9 +113,6 @@ LIMIT 1`, *event.SourceSnapshotID, event.Reserve, event.LiquidityMint, event.Amo
 	return stateCollateralUnitMetadata(metadata), nil
 }
 
-// projectPositionForUserFacingRead ports projectPositionForUserFacingRead and
-// principalBackedPositionProjection: a collateral-unit snapshot event shows the
-// principal as the holding instead of the collateral amount.
 func (h earnRoutes) projectPositionForUserFacingRead(ctx context.Context, position *stateYieldPositionRow, event *stateHoldingEventRow) (*stateYieldPositionRow, error) {
 	collateral, err := h.holdingEventUsesCollateralUnitSnapshot(ctx, event)
 	if err != nil {
@@ -177,9 +161,6 @@ func stateStringPtrEqual(a, b *string) bool {
 	return *a == *b
 }
 
-// stateApplyHoldingEventToPosition ports applyHoldingEventToPosition. A nil
-// lastRebalanceDecisionID leaves the stored decision id untouched, exactly as
-// the TS omits the field from its update set.
 func (h earnRoutes) stateApplyHoldingEventToPosition(ctx context.Context, event *stateHoldingEventRow, lastRebalanceDecisionID *int64, now time.Time) (*stateYieldPositionRow, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -208,9 +189,6 @@ func stateHoldingEventIsAtOrAfterCurrentPosition(position *stateYieldPositionRow
 	return event.ObservedAt.UnixMilli() >= position.CurrentObservedAt.UnixMilli()
 }
 
-// stateApplyRebalanceHoldingEventToPosition ports
-// applyRebalanceHoldingEventToPosition: a newer event moves the position, an
-// older one only advances last_rebalance_decision_id.
 func (h earnRoutes) stateApplyRebalanceHoldingEventToPosition(ctx context.Context, event *stateHoldingEventRow, lastRebalanceDecisionID int64, now time.Time) (*stateYieldPositionRow, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -234,9 +212,6 @@ RETURNING `+statePositionColumns, event.PositionID, lastRebalanceDecisionID, now
 	return updated, nil
 }
 
-// stateInsertRebalanceHoldingEvent ports insertIdempotentRebalanceHoldingEvent:
-// the partial unique index on source_rebalance_decision_id makes a repeated
-// confirmed-rebalance read reuse the existing event instead of duplicating it.
 func (h earnRoutes) stateInsertRebalanceHoldingEvent(ctx context.Context, event stateHoldingEventRow, sourceSignature string, sourceRebalanceDecisionID, sourceSnapshotID int64, createdAt time.Time, positionID int64) (*stateHoldingEventRow, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -266,8 +241,6 @@ LIMIT 1`, sourceRebalanceDecisionID))
 	return inserted, nil
 }
 
-// stateInsertSnapshotHoldingEvent ports insertHoldingEvent for
-// recordSnapshotReconciledYieldHolding: a fresh event per reconciliation.
 func (h earnRoutes) stateInsertSnapshotHoldingEvent(ctx context.Context, event stateHoldingEventRow, sourceSnapshotID int64, createdAt time.Time) (*stateHoldingEventRow, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -285,8 +258,6 @@ RETURNING `+stateEventColumns, event.PositionID, event.Reserve, event.Market, ev
 	return inserted, nil
 }
 
-// stateVaultReserveRows ports the vaultReservePositionsCurrent read shared by
-// the reconcile read and the current-total loader.
 func (h earnRoutes) stateVaultReserveRows(ctx context.Context, vaultID int64) ([]stateVaultReserveRow, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -314,8 +285,6 @@ ORDER BY observed_slot DESC, amount_raw DESC, snapshot_id DESC`, vaultID)
 	return out, nil
 }
 
-// stateCurrentReserveRows ports findCurrentNonzeroYieldVaultReservePositions
-// (position and vault lookups included, user-facing metadata filter applied).
 func (h earnRoutes) stateCurrentReserveRows(ctx context.Context, settings, wallet, vaultPubkey string) ([]stateVaultReserveRow, error) {
 	position, err := h.activeYieldPositionForVault(ctx, settings, wallet)
 	if err != nil || position == nil {
@@ -338,7 +307,6 @@ func (h earnRoutes) stateCurrentReserveRows(ctx context.Context, settings, walle
 	return filtered, nil
 }
 
-// stateCurrentIdleRows ports findCurrentYieldVaultIdleTokenBalances.
 func (h earnRoutes) stateCurrentIdleRows(ctx context.Context, settings, wallet, vaultPubkey string) ([]stateVaultIdleRow, error) {
 	position, err := h.activeYieldPositionForVault(ctx, settings, wallet)
 	if err != nil || position == nil {
@@ -374,11 +342,6 @@ ORDER BY observed_slot DESC, updated_at DESC`, *vaultID)
 	return out, nil
 }
 
-// reconciledActiveYieldPosition ports findReconciledActiveYieldPositionForVault
-// including its three reconcile writers. The vault has no newer
-// user-facing reserve row than the position: the stored position is returned
-// untouched. A newer row reconciles the position through a confirmed rebalance
-// event (idempotent by decision id) or a snapshot reconciliation event.
 func (h earnRoutes) reconciledActiveYieldPosition(ctx context.Context, account EarnAccount) (*stateYieldPositionRow, error) {
 	position, err := h.activeYieldPositionForVault(ctx, account.Settings.String(), account.Wallet.String())
 	if err != nil || position == nil {
@@ -467,8 +430,6 @@ func (h earnRoutes) reconciledActiveYieldPosition(ctx context.Context, account E
 	return h.stateApplyHoldingEventToPosition(ctx, inserted, nil, now)
 }
 
-// stateConfirmedRebalanceDecision ports the rebalanceDecisions.findFirst of
-// findReconciledActiveYieldPositionForVault.
 func (h earnRoutes) stateConfirmedRebalanceDecision(ctx context.Context, vaultID int64, reserve string, snapshotID int64) (*stateRebalanceDecisionRow, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()

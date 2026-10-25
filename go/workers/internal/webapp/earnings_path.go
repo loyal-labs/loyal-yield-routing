@@ -5,13 +5,6 @@ import (
 	"time"
 )
 
-// Port of the path-assembly half of earnings-read-service.server.ts: portfolio
-// snapshot normalization, holding-backed snapshots and the canonical earnings
-// path fed to the legacy calculator.
-
-// earningsHoldingEvent is UserYieldPositionHistoryEventRecord
-// (yield-deposit-repository.server.ts:99) as findYieldPositionHistoryEventsForVault
-// builds it.
 type earningsHoldingEvent struct {
 	amountRaw                int64
 	confirmedAt              time.Time
@@ -36,8 +29,6 @@ type earningsHoldingEvent struct {
 	eventKind                string // "deposit" | "withdrawal" | "rebalance" | "reconciliation"
 }
 
-// comparePathEvents ports read-service:178: time, then slot, then id, then the
-// deposit < rebalance < reconciliation < withdrawal tiebreak.
 func comparePathEvents(left, right *earningsHoldingEvent) int {
 	if d := left.confirmedAt.UnixMilli() - right.confirmedAt.UnixMilli(); d != 0 {
 		return int(sign64(d))
@@ -81,7 +72,6 @@ func findHoldingAt(events []earningsHoldingEvent, at time.Time) *earningsHolding
 	return current
 }
 
-// sortHoldingEventsAscending orders holding events with comparePathEvents.
 func sortHoldingEventsAscending(events []earningsHoldingEvent) []earningsHoldingEvent {
 	ordered := make([]earningsHoldingEvent, len(events))
 	copy(ordered, events)
@@ -156,9 +146,6 @@ func sortedPortfolioSnapshots(snapshots []earningsPortfolioSnapshot) []earningsP
 	return ordered
 }
 
-// normalizeEarningsPortfolioSnapshots ports read-service:152: observations can
-// precede the persisted deposit confirmation, so carry the last pre-window
-// state into the interval start without earning before it.
 func normalizeEarningsPortfolioSnapshots(snapshots []earningsPortfolioSnapshot, start, end time.Time) []earningsPortfolioSnapshot {
 	sorted := sortedPortfolioSnapshots(snapshots)
 	normalized := []earningsPortfolioSnapshot{}
@@ -181,9 +168,6 @@ func normalizeEarningsPortfolioSnapshots(snapshots []earningsPortfolioSnapshot, 
 	return normalized
 }
 
-// buildCanonicalEarningsPath ports read-service:272: the ledger replay with
-// holding events providing reserve context and principal deltas, rebalance and
-// reconciliation transitions spliced in, routine reconciliations dropped.
 func buildCanonicalEarningsPath(holdingEvents []earningsHoldingEvent, ledgerEvents []earningsEvent, position earningsPositionSeed) ([]earningsPathEvent, error) {
 	holdings := sortHoldingEventsAscending(holdingEvents)
 
@@ -300,7 +284,6 @@ func buildCanonicalEarningsPath(holdingEvents []earningsHoldingEvent, ledgerEven
 	return material, nil
 }
 
-// comparePathOnPath is comparePathEvents over path events (all fields set).
 func comparePathOnPath(left, right *earningsPathEvent) int {
 	if d := left.confirmedAt.UnixMilli() - right.confirmedAt.UnixMilli(); d != 0 {
 		return int(sign64(d))
@@ -309,7 +292,6 @@ func comparePathOnPath(left, right *earningsPathEvent) int {
 	return order[left.eventType] - order[right.eventType]
 }
 
-// earningsPositionSeed is the EarningsPosition slice of the position row.
 type earningsPositionSeed struct {
 	initialReserve       string
 	initialMarket        *string
@@ -352,7 +334,6 @@ func kaminoReservesOf(snapshot earningsPortfolioSnapshot) []string {
 	return reserves
 }
 
-// getPortfolioEarningsCoverage ports read-service:430.
 func getPortfolioEarningsCoverage(apySamples []reserveApySample, now time.Time, snapshots []earningsPortfolioSnapshot) EarningsCoverage {
 	required := map[string]int64{}
 	var requiredOrder []string
@@ -527,7 +508,6 @@ func getPortfolioEarningsCoverage(apySamples []reserveApySample, now time.Time, 
 	}
 }
 
-// getEarningsCoverage ports read-service:555 over path events.
 func getEarningsCoverage(apySamples []reserveApySample, now time.Time, pathEvents []earningsPathEvent) EarningsCoverage {
 	required := map[string]int64{}
 	var requiredOrder []string

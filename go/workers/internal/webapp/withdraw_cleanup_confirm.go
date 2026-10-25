@@ -22,7 +22,7 @@ import (
 // POST /api/smart-accounts/yield-optimization/withdrawals/cleanup/confirm
 // ports web/apps/web/src/app/api/smart-accounts/yield-optimization/withdrawals/
 // cleanup/confirm/route.ts:71-273 plus assertEarnFullExitProven
-// (earn-cleanup-confirm.server.ts:118-158). The route proves the cleanup
+// . The route proves the cleanup
 // landed — zero balances, every prepared policy account closed, the client's
 // slot matching the chain — and records the one close intent for the
 // LaserStream projection; it never writes a money row (the single-writer
@@ -64,16 +64,11 @@ func (h earnRoutes) earnCleanupConfirm(ctx context.Context, in *earnCleanupConfi
 	return &earnCleanupConfirmOutput{Body: *body}, nil
 }
 
-// cleanupConfirmFailed is the route's catch-all (:256-272): log, then 500
-// confirm_failed carrying the error's message verbatim.
 func cleanupConfirmFailed(err error) error {
 	slog.Error("[earn-withdraw-cleanup-confirm] failed", "error", err)
 	return earnError(http.StatusInternalServerError, "confirm_failed", err.Error())
 }
 
-// cleanupConfirmAnswer maps a thrown verification error the way :252-255
-// does — EarnCleanupConfirmError answers verbatim, anything else is the
-// catch-all's 500.
 func cleanupConfirmAnswer(err error) error {
 	var refused *cleanupConfirmError
 	if errors.As(err, &refused) {
@@ -82,9 +77,6 @@ func cleanupConfirmAnswer(err error) error {
 	return cleanupConfirmFailed(err)
 }
 
-// cleanupConfirmError is EarnCleanupConfirmError
-// (earn-cleanup-confirm.server.ts:10-20): the status/code/message triple the
-// route answers verbatim.
 type cleanupConfirmError struct {
 	status  int
 	code    string
@@ -93,14 +85,12 @@ type cleanupConfirmError struct {
 
 func (e *cleanupConfirmError) Error() string { return e.message }
 
-// cleanupRetryable is retryableVerificationError (:22-30): any verification
-// failure becomes the 503 the client is told to retry.
 func cleanupRetryable(err error) *cleanupConfirmError {
 	return &cleanupConfirmError{http.StatusServiceUnavailable, "full_exit_verification_retryable", err.Error()}
 }
 
 // cleanupConfirmBody is parseEarnWithdrawCleanupConfirmRequestBody
-// (earn-withdraw-cleanup-contracts.shared.ts:147-171). preparedCleanup stays
+// . preparedCleanup stays
 // the raw object the client echoed; the route reads only the persistence
 // fields it proves against.
 type cleanupConfirmBody struct {
@@ -174,8 +164,6 @@ func parseCleanupConfirmBody(raw []byte) (cleanupConfirmBody, error) {
 	return body, nil
 }
 
-// cleanupWireText reads one required persistence string; ok=false means the
-// value is absent or not a string, which never matches.
 func cleanupWireText(object map[string]any, key string) (string, bool) {
 	text, ok := object[key].(string)
 	return text, ok
@@ -205,10 +193,6 @@ func cleanupConfirmPersistence(body cleanupConfirmBody) map[string]any {
 	return persistence
 }
 
-// cleanupConfirmedSignatureSlot ports resolveConfirmedSignatureSlot
-// (earn-cleanup-confirm.server.ts:32-83): the status slot once the signature
-// is confirmed or finalized, else the transaction's own slot, else the
-// retryable refusal. One status read and one transaction read — no polling.
 func cleanupConfirmedSignatureSlot(ctx context.Context, client withdrawConfirmChain, signature string) (uint64, error) {
 	state, err := client.SignatureState(ctx, signature)
 	if err != nil {
@@ -240,9 +224,6 @@ func cleanupConfirmedSignatureSlot(ctx context.Context, client withdrawConfirmCh
 	return 0, cleanupRetryable(errors.New("Confirmed transaction slot is unavailable."))
 }
 
-// cleanupPolicyAccountsClosed ports verifyPolicyAccountsClosed
-// (earn-cleanup-confirm.server.ts:85-116): every named policy account must be
-// gone, read at a slot that has caught up with the cleanup confirmation.
 func cleanupPolicyAccountsClosed(ctx context.Context, client withdrawConfirmChain, accounts []string, minContextSlot uint64) error {
 	keys := make([]solana.PublicKey, 0, len(accounts))
 	for _, text := range accounts {
@@ -267,9 +248,6 @@ func cleanupPolicyAccountsClosed(ctx context.Context, client withdrawConfirmChai
 	return nil
 }
 
-// cleanupAssertFullExitProven ports assertEarnFullExitProven
-// (earn-cleanup-confirm.server.ts:118-158): the zero proof must still demand
-// only the policy close, and every prepared policy account must be gone.
 func cleanupAssertFullExitProven(ctx context.Context, client withdrawConfirmChain, now func() time.Time, cluster string, state *RoutePolicyPair, settings solana.PublicKey, policyAccounts []string, minContextSlot uint64) error {
 	proof, err := verifyFullExitZeroBalances(ctx, client, withdrawSleep, now, cluster, cleanupPolicyUniverse(cluster, state.Route), settings, minContextSlot)
 	if err != nil {
@@ -281,9 +259,6 @@ func cleanupAssertFullExitProven(ctx context.Context, client withdrawConfirmChai
 	return cleanupPolicyAccountsClosed(ctx, client, policyAccounts, minContextSlot)
 }
 
-// cleanupConfirmMetadataMatches ports cleanupPolicyMetadataMatches
-// (confirm/route.ts:50-69): the prepared policy account and seed, and the
-// setup pair with each side null when absent, must equal the persisted state.
 func cleanupConfirmMetadataMatches(state *RoutePolicyPair, persistence map[string]any) bool {
 	var setupAccount, setupSeed *string
 	if state.Setup != nil {
@@ -305,8 +280,6 @@ func cleanupOptionalTextEqual(a, b *string) bool {
 	return *a == *b
 }
 
-// cleanupConfirmStore is the DB surface the confirm flow touches: the vault
-// state read and the one close-intent write. earnRoutes satisfies it.
 type cleanupConfirmStore interface {
 	findCleanupVaultState(ctx context.Context, includeInactive bool, authority, settings string, vault solana.PublicKey) (*RoutePolicyPair, error)
 	recordAutodepositCloseIntent(ctx context.Context, in autodepositCloseInput) (autodepositTargetRow, error)
@@ -323,11 +296,6 @@ func cleanupConfirmSlotText(text string, slot uint64) int {
 	return client.Cmp(new(big.Int).SetUint64(slot))
 }
 
-// cleanupConfirmVerify is the route body in Next order (:78-251): parse,
-// owner, cluster, the cleanup signature's slot, the persisted policy pair,
-// the autodeposit gates, the full-exit proof, then the close intent. `store`
-// is the DB seam and `now` the proof clock so the scratch test can drive the
-// flow offline.
 func cleanupConfirmVerify(ctx context.Context, client withdrawConfirmChain, store cleanupConfirmStore, account EarnAccount, raw []byte, now func() time.Time) (*EarnCleanupConfirmResponse, error) {
 	body, err := parseCleanupConfirmBody(raw)
 	if err != nil {

@@ -17,7 +17,6 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
-// POST /api/smart-accounts/yield-optimization/deposits/prepare <- web/apps/web/src/app/api/smart-accounts/yield-optimization/deposits/prepare/route.ts (+ the account gate of web/apps/web/src/app/api/smart-accounts/mobile/earn/deposit/prepare/route.ts for bearer sessions)
 var earnDprepFamily = earnFamily{
 	name:        "earn deposit prepare",
 	appGrants:   earnPrivyFamily.appGrants,

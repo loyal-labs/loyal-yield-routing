@@ -8,14 +8,6 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnprep"
 )
 
-// Reads the Earn history the Next earn-transactions route serves, including
-// the sync write it performs first. Ported from
-// web/apps/web/src/lib/yield-optimization/yield-deposit-repository.server.ts
-// (syncConfirmedRebalanceHoldingEventsForVault :4245,
-// findYieldPositionHistoryEventsForVault :3775) and
-// earn-autodeposit-repository.server.ts (findEarnAutodepositHistoryEvents
-// :1256).
-
 // syncConfirmedRebalanceHoldingEventsForVault verbatim: one statement, so a
 // crash mid-way either committed all of it or none of it, and re-running is
 // idempotent on the partial unique index
@@ -147,7 +139,6 @@ func (h earnRoutes) syncRebalanceHoldingEvents(ctx context.Context, account Earn
 	return err
 }
 
-// txreadsPositionSeed carries the position columns the history walk needs.
 type txreadsPositionSeed struct {
 	id                   int64
 	initialReserve       string
@@ -173,7 +164,6 @@ type txreadsHoldingEvent struct {
 	sourceWithdrawalID      *int64
 }
 
-// txreadsPositionEvent mirrors UserYieldPositionHistoryEventRecord.
 type txreadsPositionEvent struct {
 	amountRaw                int64
 	confirmedAt              time.Time
@@ -198,7 +188,6 @@ type txreadsPositionEvent struct {
 	typ                      string // deposit | withdrawal | rebalance | reconciliation
 }
 
-// txreadsAutodepositEvent mirrors EarnAutodepositHistoryEventRecord.
 type txreadsAutodepositEvent struct {
 	actionType            string // balance_sweep | close | create
 	amountRaw             int64
@@ -234,10 +223,6 @@ FROM loyal_yield.rebalance_decisions WHERE id = ANY($1)`
 const txreadswithdrawalsSQL = `SELECT id, mode, withdrawn_amount_raw
 FROM loyal_yield.user_yield_position_withdrawals WHERE id = ANY($1)`
 
-// yieldPositionHistoryEvents ports findYieldPositionHistoryEventsForVault:
-// the positions of the vault, then each position's holding events replayed in
-// chronological order to rebuild the running principal and the movement
-// source/destination columns, then sorted descending.
 func (h earnRoutes) yieldPositionHistoryEvents(ctx context.Context, account EarnAccount) ([]txreadsPositionEvent, error) {
 	seeds, err := h.positionSeeds(ctx, account)
 	if err != nil {
@@ -414,8 +399,6 @@ func (h earnRoutes) withdrawalsByID(ctx context.Context, eventsByPosition map[in
 	return byID, rows.Err()
 }
 
-// replayPositionHistory is findYieldPositionHistoryEventsForPosition's map:
-// chronological walk, running principal, movement provenance.
 func replayPositionHistory(seed txreadsPositionSeed, events []txreadsHoldingEvent,
 	depositPrincipal, rebalanceAmount map[int64]int64, withdrawalByID map[int64]txreadsWithdrawal) []txreadsPositionEvent {
 	sortHoldingEventsChronologically(events)
@@ -522,8 +505,6 @@ func replayPositionHistory(seed txreadsPositionSeed, events []txreadsHoldingEven
 	return history
 }
 
-// txreadsSyntheticSignature is the formatter's fallback
-// [type, depositId, withdrawalId, decisionId, snapshotId].filter(Boolean).join(":").
 func txreadsSyntheticSignature(typ string, event txreadsHoldingEvent) string {
 	parts := []string{typ}
 	for _, id := range []*int64{event.sourceDepositID, event.sourceWithdrawalID, event.sourceRebalanceDecision, event.sourceSnapshotID} {

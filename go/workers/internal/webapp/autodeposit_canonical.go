@@ -18,11 +18,6 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
-// Canonical Earn autodeposit derivations, ported from the web confirm route
-// (web/apps/web/src/app/api/smart-accounts/yield-optimization/autodeposit/setup/confirm/route.ts
-// and @loyal-labs/actions): every address the device echoes is rebuilt
-// server-side and asserted, so a confirm can only ever record what the
-// deployment would have prepared itself.
 const (
 	autodepositMonthPeriodSeconds uint64 = 30 * 24 * 60 * 60
 	autodepositMaxSafePolicySeed  uint64 = 1<<53 - 1
@@ -91,7 +86,6 @@ func autodepositUSDCMint(cluster LoyalCluster) solana.PublicKey {
 	return solana.MustPublicKeyFromBase58("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v")
 }
 
-// normalizeLoyalCluster ports @loyal-labs/actions normalizeLoyalCluster.
 func normalizeLoyalCluster(cluster string) (string, error) {
 	switch cluster {
 	case string(LoyalDevnet):
@@ -237,8 +231,6 @@ func canonicalizeAutodepositSetupInput(in autodepositSetupInput, policySigner so
 	return in, nil
 }
 
-// autodepositConfirmedSlot ports resolveConfirmedSignatureSlot: the setup
-// transaction must be confirmed or finalized, and its slot is what we record.
 func autodepositConfirmedSlot(ctx context.Context, client *chain.Client, signature string) (uint64, error) {
 	state, err := client.SignatureState(ctx, signature)
 	if err != nil {
@@ -291,7 +283,6 @@ type autodepositArtifactProbe struct {
 	invalidOwner bool
 }
 
-// assertAutodepositArtifactsExist ports assertEarnAutodepositArtifactsExist.
 func assertAutodepositArtifactsExist(accounts []*chain.Account, requirePolicy, requireDelegation bool) error {
 	policy := autodepositArtifactProbe{exists: accounts[0] != nil}
 	if accounts[0] != nil && accounts[0].Owner != squads.ProgramID {
@@ -319,9 +310,6 @@ func assertAutodepositArtifactsExist(accounts []*chain.Account, requirePolicy, r
 	return nil
 }
 
-// autodepositCanonicalTransferConstraint is the subscription-sweep
-// ProgramInteraction payload the deployment creates, ported from
-// createSubscriptionSweepProgramInteractionPolicyCreationPayload.
 func autodepositCanonicalTransferConstraint(in autodepositSetupInput, eventAuthority solana.PublicKey, vault, subscriptionAuthority, walletUsdcAta, vaultUsdcAta, usdcMint solana.PublicKey) squads.InstructionConstraintView {
 	bytesAt := func(offset int, key solana.PublicKey) squads.DataConstraintView {
 		return squads.DataConstraintView{DataOffset: uint64(offset), Operator: squads.OpEquals, DataValue: squads.DataValueView{Kind: squads.ValueBytes, Bytes: key.Bytes()}}
@@ -377,9 +365,6 @@ func vaultFromInput(in autodepositSetupInput) solana.PublicKey {
 	return key
 }
 
-// assertAutodepositCanonicalArtifacts ports the route's
-// assertEarnUsdcAutodepositCanonicalArtifacts: the created policy and
-// delegation must be exactly what the deployment's prepare step writes.
 func assertAutodepositCanonicalArtifacts(accounts []*chain.Account, in autodepositSetupInput, policySigner solana.PublicKey, requirePolicy, requireDelegation bool) error {
 	if in.PolicySeed == 0 || in.PolicySeed > autodepositMaxSafePolicySeed {
 		return errors.New("Autodeposit policy seed is outside the supported range.")
@@ -479,9 +464,6 @@ func decodeAutodepositPolicy(account *chain.Account) (squads.DecodedPolicy, erro
 	return squads.DecodeProgramInteractionPolicy(account)
 }
 
-// assertAutodepositWalletTokenApproval ports assertWalletTokenApproval: the
-// wallet must have approved the subscription authority to pull the period
-// amount from its USDC ATA.
 func assertAutodepositWalletTokenApproval(account *chain.Account, in autodepositSetupInput) error {
 	if account == nil {
 		return errors.New("Wallet USDC ATA does not exist.")
@@ -505,7 +487,7 @@ func assertAutodepositWalletTokenApproval(account *chain.Account, in autodeposit
 // Number(amountRaw)/1e6 with toLocaleString("en-US", {maximumFractionDigits: 2})
 // — thousands grouping, at most two decimals, no trailing zeros.
 func formatAutodepositUSDC(amountRaw uint64) string {
-	cents := (amountRaw + 5_000) / 10_000 // round half-up to two decimals
+	cents := (amountRaw + 5_000) / 10_000
 	whole := cents / 100
 	grouped := strconv.FormatUint(whole, 10)
 	for end := len(grouped) - 3; end > 0; end -= 3 {

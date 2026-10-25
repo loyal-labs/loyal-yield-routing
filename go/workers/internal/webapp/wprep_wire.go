@@ -91,7 +91,7 @@ type EarnWithdrawReserveMetadata struct {
 	WithdrawnAmountRaw      string `json:"withdrawnAmountRaw"`
 }
 
-// EarnWithdrawSourceMetadata is the nested sourceMetadata (client.ts:8743-8769):
+// EarnWithdrawSourceMetadata is the nested sourceMetadata:
 // {mint, tokenAccount} for an idle source, {liquidityMint, market, reserve}
 // for a reserve source.
 type EarnWithdrawSourceMetadata struct {
@@ -147,8 +147,6 @@ var wprepNull = json.RawMessage("null")
 
 const wprepOperation = "earnUsdcWithdraw"
 
-// wprepWireOperation is serializePreparedOperation for an earnUsdcWithdraw
-// op: the instruction list, its lookup tables, payer and program.
 func wprepWireOperation(payer solana.PublicKey, instructions []squads.Instruction, tables []earnprep.WithdrawLookupTable) DepositWirePreparedOperation {
 	wire := DepositWirePreparedOperation{
 		Instructions:         make([]DepositWireInstruction, 0, len(instructions)),

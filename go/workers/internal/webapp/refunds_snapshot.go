@@ -17,10 +17,6 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 )
 
-// Ports web/packages/smart-account-vaults/src/client.ts:10339-10422
-// (fetchEarnVaultRefundSnapshot) and web/apps/web/src/lib/yield-optimization/
-// earn-policy-refund-state.server.ts:711-752 (findEarnVaultRefundDbState).
-
 const tokenAccountDataLen = 165
 
 var (
@@ -43,9 +39,6 @@ func earnUSDCMint(cluster LoyalCluster) solana.PublicKey {
 // before uppercase ("aB" < "Ab"). Byte order differs on both counts, and the
 // wire sort feeds both the response array and the close-account order.
 
-// base58PrimaryRank maps a character to its case-folded primary weight; a
-// miss (rank 0) can only come from a non-base58 byte, which never reaches this
-// code from a pubkey.
 var base58PrimaryRank = func() map[byte]int {
 	const alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 	ranks := make(map[byte]int, len(alphabet))
@@ -97,9 +90,6 @@ type earnVaultRefundSnapshot struct {
 	VaultUsdcATA  solana.PublicKey
 }
 
-// fetchEarnVaultRefundSnapshot ports client.ts:10339-10422: the vault PDA's
-// confirmed balance plus its token accounts under both token programs, sorted
-// in localeCompare order of the base58 address.
 func fetchEarnVaultRefundSnapshot(ctx context.Context, client *chain.Client, vault solana.PublicKey, usdcMint solana.PublicKey) (earnVaultRefundSnapshot, error) {
 	vaultUsdcAta, err := spl.AssociatedTokenAddress(vault, usdcMint, solana.TokenProgramID)
 	if err != nil {
@@ -107,7 +97,7 @@ func fetchEarnVaultRefundSnapshot(ctx context.Context, client *chain.Client, vau
 	}
 	snapshot := earnVaultRefundSnapshot{Vault: vault, VaultUsdcATA: vaultUsdcAta}
 
-	// getVaultSweepLamportsOrZero (client.ts:3134-3146) folds a getBalance
+	// getVaultSweepLamportsOrZero folds a getBalance
 	// failure into zero; here a missing account is zero and a failed read is an
 	// error, so an RPC outage never reports a refundable vault as empty.
 	_, accounts, err := client.Accounts(ctx, []solana.PublicKey{vault}, rpc.CommitmentConfirmed, 0)
@@ -131,9 +121,6 @@ func fetchEarnVaultRefundSnapshot(ctx context.Context, client *chain.Client, vau
 			snapshot.TokenAccounts = append(snapshot.TokenAccounts, decoded)
 		}
 	}
-	// client.ts:10407-10409 sorts by address.toBase58().localeCompare.
-	// Stable sort keeps the token-program accounts ahead of token-2022 ones on
-	// the (impossible) duplicate address, matching the TS concat order.
 	sortVaultTokenAccounts(snapshot.TokenAccounts)
 	return snapshot, nil
 }
@@ -166,9 +153,6 @@ func decodeVaultTokenAccount(account *chain.Account, usdcMint solana.PublicKey) 
 	}, nil
 }
 
-// vaultRefundDbState mirrors findEarnVaultRefundDbState
-// (earn-policy-refund-state.server.ts:711-752). Any non-closed autodeposit
-// target counts, including pending_delegation rows mid-setup.
 type vaultRefundDbState struct {
 	HasActivePosition     bool
 	HasActiveManagedVault bool
@@ -179,9 +163,6 @@ func findEarnVaultRefundDbState(ctx context.Context, yieldDB *pgxpool.Pool, sett
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	var state vaultRefundDbState
-	// user_yield_positions.status / managed_vaults.active /
-	// balance_sweep_targets.chain_status are the columns the Drizzle read
-	// filters on (yield-neon-client.server.ts:327-371, 283-308, 766-817).
 	err := yieldDB.QueryRow(ctx, `SELECT
 	  EXISTS (SELECT 1 FROM loyal_yield.user_yield_positions WHERE settings = $1 AND vault_index = $2 AND status = 'active'),
 	  EXISTS (SELECT 1 FROM loyal_yield.managed_vaults WHERE active AND settings = $1 AND vault_index = $2),
@@ -196,9 +177,6 @@ func findEarnVaultRefundDbState(ctx context.Context, yieldDB *pgxpool.Pool, sett
 	return state, nil
 }
 
-// buildEarnVaultRefundEntry ports buildVaultRefundEntry
-// (earn-policy-refund.server.ts:141-181): the blocked reason precedence and
-// the rent totals are part of the response contract.
 func buildEarnVaultRefundEntry(state vaultRefundDbState, snapshot earnVaultRefundSnapshot) EarnVaultRefundEntry {
 	entry := EarnVaultRefundEntry{
 		Account:       snapshot.Vault.String(),

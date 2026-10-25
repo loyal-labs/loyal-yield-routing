@@ -13,13 +13,8 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
-// KaminoWithdrawInstructionsURL is KAMINO_WITHDRAW_INSTRUCTIONS_URL, the
-// server-side endpoint fetchKaminoWithdrawInstruction posts to (CL:2742-2791).
 const KaminoWithdrawInstructionsURL = "https://api.kamino.finance/ktx/klend/withdraw-instructions"
 
-// KaminoWithdrawBundle is readKaminoInstructionBundle's withdraw result
-// (CL:2514-2579): the KLend prefix up to the first withdraw, every withdraw
-// match, and the lookup table keys Kamino named (CL:2589-2619).
 type KaminoWithdrawBundle struct {
 	KaminoInstructionBundle
 	LookupTables []solana.PublicKey
@@ -65,9 +60,6 @@ func KaminoWithdrawInstructions(ctx context.Context, client *http.Client, endpoi
 	return KaminoWithdrawBundle{KaminoInstructionBundle: bundle, LookupTables: kaminoLookupTableKeys(payload)}, nil
 }
 
-// kaminoLookupTableKeys ports readKaminoLookupTableAddresses (CL:2589-2619):
-// the keys of lutsByAddress in document order, or a bare address array;
-// anything that is not a valid address is skipped, duplicates dropped.
 func kaminoLookupTableKeys(payload []byte) []solana.PublicKey {
 	var wire struct {
 		LutsByAddress json.RawMessage `json:"lutsByAddress"`

@@ -52,8 +52,6 @@ func writeEarningsEventJSON(w *jsonWriter, e earningsEvent) {
 	w.raw("}")
 }
 
-// earningsLedgerFingerprint is ledgerFingerprint (read-service:981): the
-// fingerprint over time-sorted ledger events strictly before `before`.
 func earningsLedgerFingerprint(sorted []earningsEvent, before int64) string {
 	var w jsonWriter
 	w.raw("[")
@@ -72,7 +70,6 @@ func earningsLedgerFingerprint(sorted []earningsEvent, before int64) string {
 	return fingerprintHex(w.String())
 }
 
-// getMaterialEarningsHistoryRevision ports read-service:381 over path events.
 func getMaterialEarningsHistoryRevision(pathEvents []earningsPathEvent) string {
 	var w jsonWriter
 	w.raw("[")
@@ -183,8 +180,6 @@ func eventArrayBool(v *bool) string {
 	return w.String()
 }
 
-// earningsApyFingerprint is apyFingerprint (read-service:1161) over the
-// reserve-scoped sample objects.
 func earningsApyFingerprint(samples []reserveApySample, before int64, reserves []string) string {
 	var w jsonWriter
 	w.raw("[")
@@ -227,8 +222,6 @@ func earningsApyFingerprint(samples []reserveApySample, before int64, reserves [
 	return fingerprintHex(w.String())
 }
 
-// earningsSourceRevisionRow is one user_yield_positions row as
-// getEarnEarningsSourceRevision selects it (read-service:693).
 type earningsSourceRevisionRow struct {
 	ID        int64
 	Status    string
@@ -265,8 +258,6 @@ func getEarnEarningsSourceRevision(rows []earningsSourceRevisionRow) string {
 	return "earnings-v1:" + fingerprintHex(w.String())
 }
 
-// isServerVerifiedEarnEarningsPayload ports earnings.shared.ts:74: the minimum
-// shape a stored snapshot must have before the cache will serve it.
 func isServerVerifiedEarnEarningsPayload(payload *EarningsRangeSet) bool {
 	if payload == nil {
 		return false

@@ -15,14 +15,6 @@ import (
 	"github.com/solana-foundation/solana-go/v2/rpc"
 )
 
-// POST /api/smart-accounts/yield-optimization/withdrawals/cleanup/prepare
-// ports web/apps/web/src/app/api/smart-accounts/yield-optimization/withdrawals/
-// cleanup/prepare/route.ts:75-322: the vault state read, the projected or
-// client-sent minimum context slot, the zero proof, the autodeposit close
-// decision, and the prepared cleanup wire. h.account covers the principal and
-// the wallet-controls assert (service.ts:177-219); every remaining failure
-// folds into 500 prepare_failed with the error's own text, like the Next
-// catch-all.
 const earnCleanupPreparePath = "/api/smart-accounts/yield-optimization/withdrawals/cleanup/prepare"
 
 type earnCleanupPrepareInput struct {
@@ -60,17 +52,11 @@ func (h earnRoutes) earnCleanupPrepare(ctx context.Context, in *earnCleanupPrepa
 	return &earnCleanupPrepareOutput{Body: *body}, nil
 }
 
-// cleanupPrepareFailed is the route's catch-all (:303-321): log, then 500
-// prepare_failed carrying the error's message verbatim.
 func cleanupPrepareFailed(err error) error {
 	slog.Error("[earn-withdraw-cleanup-prepare] prepare failed", "error", err)
 	return earnError(http.StatusInternalServerError, "prepare_failed", err.Error())
 }
 
-// cleanupPrepare is the route body in Next order (:99-302): vault state, body
-// parse, slot decision, zero proof, autodeposit close decision, then the
-// builder. The estimated refund lamports ride on last, summed from the policy
-// accounts the route reads (:291-302).
 func (h earnRoutes) cleanupPrepare(ctx context.Context, account EarnAccount, raw []byte) (*EarnCleanupPrepareResponse, error) {
 	state, err := h.findCleanupVaultState(ctx, false, account.Wallet.String(), account.Settings.String(), account.Vault)
 	if err != nil {
@@ -161,9 +147,6 @@ func (h earnRoutes) cleanupPrepare(ctx context.Context, account EarnAccount, raw
 	return &EarnCleanupPrepareResponse{PreparedCleanup: *wire}, nil
 }
 
-// cleanupVaultTokenAccountOf maps one zero-proof cleanup entry into the
-// builder's input shape (route.ts:269-275); a malformed entry is a plain
-// builder failure.
 func cleanupVaultTokenAccountOf(entry withdrawCleanupTokenAccount) (cleanupVaultTokenAccount, error) {
 	address, err := solana.PublicKeyFromBase58(entry.Address)
 	if err != nil {
@@ -186,9 +169,6 @@ func cleanupVaultTokenAccountOf(entry withdrawCleanupTokenAccount) (cleanupVault
 
 var cleanupDigits = regexp.MustCompile(`^[0-9]+$`)
 
-// cleanupMinContextSlot ports parseMinContextSlot and the route's branch
-// (:120-136): a present minContextSlot must be a digit string naming a safe
-// integer; nil means the body carried none and the projection read decides.
 func cleanupMinContextSlot(body any) (*uint64, error) {
 	object, ok := body.(map[string]any)
 	if !ok {
@@ -209,9 +189,6 @@ func cleanupMinContextSlot(body any) (*uint64, error) {
 	return &value, nil
 }
 
-// cleanupProjectedSlot ports the PROJECTION_RETRY_DELAYS_MS loop (:138-167):
-// the newest full withdrawal's confirmed slot is the minimum context slot,
-// and a projection that has not landed answers 503 with Retry-After: 1.
 func (h earnRoutes) cleanupProjectedSlot(ctx context.Context, account EarnAccount) (*uint64, error) {
 	pending := func() (*uint64, error) {
 		return nil, &wprepRetryError{routeError{Detail: EarnMaxErrorDetail{
@@ -243,10 +220,6 @@ func (h earnRoutes) cleanupProjectedSlot(ctx context.Context, account EarnAccoun
 	return &value, nil
 }
 
-// cleanupAutodepositClose ports the route's autodeposit decision (:209-248):
-// a live target with its sweep policy still on chain closes ahead of the
-// cleanup; a vanished policy row is reconciled closed instead. No target, no
-// policy account or no delegation means nothing rides.
 func (h earnRoutes) cleanupAutodepositClose(ctx context.Context, account EarnAccount) (*cleanupAutodepositCloseInput, error) {
 	target, _, err := h.stateAutodepositState(ctx, account.Settings.String(), account.Wallet.String())
 	if err != nil {
@@ -277,7 +250,7 @@ func (h earnRoutes) cleanupAutodepositClose(ctx context.Context, account EarnAcc
 }
 
 // reconcileMissingAutodepositPolicy ports reconcileMissingOnChainEarnAutodepositPolicy
-// (earn-autodeposit-repository.server.ts:1689-1758): the target whose sweep
+// : the target whose sweep
 // policy vanished from chain closes in place — its scheduled sweeps cancelled
 // and both the sweep policy row and the target flipped closed. The TS runs
 // the three writes as separate pool statements; one transaction here cannot

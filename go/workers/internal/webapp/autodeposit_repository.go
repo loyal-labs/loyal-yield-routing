@@ -111,9 +111,6 @@ func (h earnRoutes) findAutodepositTargetForSetup(ctx context.Context, policyAcc
 	return h.findAutodepositTargetByDelegation(ctx, recurringDelegation)
 }
 
-// assertAutodepositTargetCanResume ports assertTargetCanResumeAutodepositSetup:
-// an existing target may only resume when the confirmed setup matches what is
-// already recorded, field by field, and the failure names every mismatch.
 func assertAutodepositTargetCanResume(existing autodepositTargetRow, in autodepositSetupInput) error {
 	var mismatches []string
 	add := func(mismatch bool, label string) {
@@ -139,10 +136,6 @@ func assertAutodepositTargetCanResume(existing autodepositTargetRow, in autodepo
 	return nil
 }
 
-// recordAutodepositSetupIntent ports recordAutodepositSetupIntent
-// (earn-autodeposit-repository.server.ts:1501). The INSERT is idempotent on
-// policy_account: a double confirm re-applies the same seven configuration
-// fields and returns the row; chain-observed columns stay untouched.
 func (h earnRoutes) recordAutodepositSetupIntent(ctx context.Context, in autodepositSetupInput) (autodepositTargetRow, error) {
 	if in.PolicyAccount == "" || in.PolicySeed == 0 {
 		return autodepositTargetRow{}, errors.New("Confirmed autodeposit setup has no policy.")
@@ -206,10 +199,6 @@ func (h earnRoutes) recordAutodepositSetupIntent(ctx context.Context, in autodep
 	return target, nil
 }
 
-// ---- bootstrap sweep scheduling (earn-autodeposit-repository.server.ts:989) ----
-
-// autodepositBootstrapSnapshot is the wallet USDC balance observed at confirm
-// time (route.ts readBootstrapWalletBalanceSnapshot :309).
 type autodepositBootstrapSnapshot struct {
 	AmountRaw        uint64
 	ObservedSlot     uint64
@@ -224,7 +213,6 @@ type autodepositBootstrapSnapshot struct {
 	SourceCommitment string
 }
 
-// autodepositSweepRow mirrors PendingEarnAutodepositScheduledSweepRecord.
 type autodepositSweepRow struct {
 	Classification        string
 	Confidence            string
@@ -272,9 +260,6 @@ func isAppAutodepositBootstrapEventSource(source string) bool {
 	return false
 }
 
-// resolveEarnAutodepositDelegationReadyAt ports
-// resolveEarnAutodepositDelegationReadyAt (:385): start seconds to a wall
-// clock; nil when the target never set a start.
 func resolveEarnAutodepositDelegationReadyAt(startTimestamp uint64) *time.Time {
 	if startTimestamp == 0 {
 		return nil
@@ -310,10 +295,6 @@ func (s autodepositBootstrapSnapshot) evidence(setupSignature string) ([]byte, e
 	})
 }
 
-// scheduleBootstrapAutodepositSweep ports scheduleBootstrapEarnAutodepositSweep
-// (earn-autodeposit-repository.server.ts:989-1254). The TS runs each batch as
-// its own transaction; here the whole schedule runs in one tx, which is
-// strictly more atomic (a crash cannot leave a projection without its event).
 func (h earnRoutes) scheduleBootstrapAutodepositSweep(ctx context.Context, snapshot autodepositBootstrapSnapshot, target autodepositTargetRow) (autodepositBootstrapResult, error) {
 	tx, err := h.YieldDB.Begin(ctx)
 	if err != nil {
@@ -527,14 +508,6 @@ func startTimestampOf(target autodepositTargetRow) uint64 {
 	return target.StartTimestamp
 }
 
-// ---- close and toggle confirm writes (:1556, :2057) ----
-
-// recordAutodepositCloseIntent ports recordAutodepositCloseIntent
-// (earn-autodeposit-repository.server.ts:1556): verify the row belongs to the
-// confirming wallet, release its selected claims and open lots, then flip
-// desired_active off. The TS runs the cancel and the flip as two pool
-// statements; one tx here cannot leave suppressed lots behind a still-active
-// target after a crash, and a re-run converges either way.
 func (h earnRoutes) recordAutodepositCloseIntent(ctx context.Context, in autodepositCloseInput) (autodepositTargetRow, error) {
 	existing, err := h.findAutodepositTargetByPolicy(ctx, in.PolicyAccount)
 	if err != nil {
@@ -579,10 +552,6 @@ func (h earnRoutes) recordAutodepositCloseIntent(ctx context.Context, in autodep
 	return updated, nil
 }
 
-// cancelScheduledAutodepositTransactionsForCloseTx ports
-// cancelScheduledAutodepositTransactionsForClose (:537): restore amounts from
-// the target's selected claims, release those claims, then suppress every
-// still-open scoped lot so no sweep can move them after the close intent.
 func cancelScheduledAutodepositTransactionsForCloseTx(ctx context.Context, tx pgx.Tx, now time.Time, targetID int64) error {
 	_, err := tx.Exec(ctx, `WITH scheduled_slots AS (
   SELECT DISTINCT event.observed_slot
@@ -662,10 +631,6 @@ WHERE lot.target_id = $1
 	return err
 }
 
-// updateAutodepositTargetActive ports updateAutodepositTargetActive
-// (earn-autodeposit-repository.server.ts:2057): a DB-only flag flip on the
-// one row behind the policy account; the delegation stays in place and the
-// sweep worker honors desired_active.
 func (h earnRoutes) updateAutodepositTargetActive(ctx context.Context, in autodepositToggleInput) (autodepositTargetRow, error) {
 	existing, err := h.findAutodepositTargetByPolicy(ctx, in.PolicyAccount)
 	if err != nil {
@@ -700,10 +665,6 @@ func (h earnRoutes) updateAutodepositTargetActive(ctx context.Context, in autode
 	return updated, nil
 }
 
-// ---- floor rebaseline write (:1759) ----
-
-// autodepositFloorSweep is the raw scheduled rebaseline sweep, mirroring the
-// columns the floor CTE's inserted_lot CTE returns.
 type autodepositFloorSweep struct {
 	Classification        string
 	Confidence            string
@@ -729,12 +690,6 @@ type autodepositFloorUpdateResult struct {
 	Target     autodepositTargetRow
 }
 
-// updateAutodepositWalletBalanceFloor ports updateAutodepositWalletBalanceFloor
-// (earn-autodeposit-repository.server.ts:1759). One CTE statement locks the
-// active target row, flips the floor, suppresses the open lots the old floor
-// allowed, and — only when the projected wallet balance still clears the new
-// floor — books the rebaseline event, its scheduled slot and the surplus lot.
-// A crash mid-statement rolls the whole chain back.
 func (h earnRoutes) updateAutodepositWalletBalanceFloor(ctx context.Context, in autodepositFloorInput) (autodepositFloorUpdateResult, error) {
 	existing, err := h.findAutodepositTargetByPolicy(ctx, in.PolicyAccount)
 	if err != nil {
@@ -1062,9 +1017,6 @@ func ensureScheduledAutodepositSlotTx(ctx context.Context, tx pgx.Tx, now time.T
 	return slotID, nil
 }
 
-// findScheduledAutodepositSweepBySlotID ports
-// findScheduledAutodepositSweepBySlotId (:517), reading the same aggregation
-// as findPendingEarnAutodepositScheduledSweeps (:768) inside the open tx.
 func findScheduledAutodepositSweepBySlotID(ctx context.Context, tx pgx.Tx, target autodepositTargetRow, slotID int64) (*autodepositSweepRow, error) {
 	// The sweep aggregation runs on the caller's pool in TS; inside the
 	// bootstrap tx the same rows are visible, so read them here directly.

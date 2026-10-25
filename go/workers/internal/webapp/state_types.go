@@ -86,8 +86,7 @@ type EarnStateOnboardingPolicy struct {
 // spreads the attempt, so absent attempt fields are omitted rather than null;
 // the web client types them optional and reads them with ?. and ??.
 type EarnStateOnboarding struct {
-	NextStep string `json:"nextStep"`
-	// Present only when a non-complete attempt exists.
+	NextStep             string                     `json:"nextStep"`
 	DepositConfirmedSlot *string                    `json:"depositConfirmedSlot,omitempty"`
 	DepositSignature     *string                    `json:"depositSignature,omitempty"`
 	LastErrorCode        *string                    `json:"lastErrorCode,omitempty"`

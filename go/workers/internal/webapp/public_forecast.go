@@ -26,9 +26,6 @@ type EarnForecastApyWindow struct {
 	StartedAt string `json:"startedAt"`
 }
 
-// EarnForecastResponse is EarnForecastResponse (@loyal-labs/shared) as
-// realizedResultToForecast builds it: apyBps, availability, rangeHighBps,
-// rangeLowBps, source, strategy, updatedAt, window.
 type EarnForecastResponse struct {
 	APYBps       int64                 `json:"apyBps"`
 	Availability string                `json:"availability"`
@@ -104,8 +101,6 @@ type forecastResult struct {
 	measuredAtMS int64
 }
 
-// realizedResultToForecast ports realizedResultToForecast
-// (earn-forecast.server.ts:83-131).
 func realizedResultToForecast(result *forecastRealizedResult, now time.Time) *forecastResult {
 	generatedAt := isoMilliseconds(now)
 	window := EarnForecastApyWindow{
@@ -169,8 +164,6 @@ func realizedResultToForecast(result *forecastRealizedResult, now time.Time) *fo
 	}
 }
 
-// forecastDeps mirrors RealizedEarnForecastDependencies
-// (earn-forecast.server.ts:58-69): the seam the scratch test drives.
 type forecastDeps struct {
 	hasRecentPrices func(ctx context.Context, cluster string, sinceMS int64) (bool, error)
 	loadAllocations func(ctx context.Context, cluster string, sinceMS, nowMS int64) (forecastAllocationHistory, error)
@@ -192,8 +185,6 @@ func yieldForecastDeps(pool *pgxpool.Pool) forecastDeps {
 	}
 }
 
-// realizedEarnForecast ports getRealizedEarnForecastFromDependencies
-// (earn-forecast.server.ts:133-181).
 func (h earnRoutes) realizedEarnForecast(ctx context.Context, deps forecastDeps, now time.Time) (*forecastResult, error) {
 	cluster := string(h.Cluster.Loyal())
 	nowMS := now.UnixMilli()
@@ -221,7 +212,6 @@ func (h earnRoutes) realizedEarnForecast(ctx context.Context, deps forecastDeps,
 	return realizedResultToForecast(result, now), nil
 }
 
-// forecastReservesFor is the deduplicated reserve set of earn-forecast.server.ts:146-153.
 func forecastReservesFor(allocations forecastAllocationHistory) []string {
 	seen := map[string]bool{}
 	var reserves []string
@@ -255,7 +245,7 @@ func resetEarnForecastCacheForTests() {
 }
 
 // mediumFeeAwareEarnForecast ports getMediumFeeAwareEarnForecast
-// (earn-forecast.server.ts:183-231): a 5-minute cache with a 3-hour stale
+// : a 5-minute cache with a 3-hour stale
 // fallback, served as availability "stale". The lock also single-flights the
 // DB reads the TS would race.
 func (h earnRoutes) mediumFeeAwareEarnForecast(ctx context.Context, deps forecastDeps, now time.Time) *forecastResult {
@@ -293,8 +283,6 @@ func (h earnRoutes) mediumFeeAwareEarnForecast(ctx context.Context, deps forecas
 	return value
 }
 
-// hasEarnSharePriceHistory ports hasEarnSharePriceHistory
-// (earn-reserve-share-price-repository.server.ts:18-34).
 func hasEarnSharePriceHistory(ctx context.Context, pool *pgxpool.Pool, cluster string, sinceMS int64) (bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -306,9 +294,6 @@ func hasEarnSharePriceHistory(ctx context.Context, pool *pgxpool.Pool, cluster s
 	return exists, err
 }
 
-// loadEarnAllocationHistory ports loadEarnAllocationHistory
-// (earn-reserve-share-price-repository.server.ts:39-74): an hourly-range read
-// on the primary key, ordered by observed_hour.
 func loadEarnAllocationHistory(ctx context.Context, pool *pgxpool.Pool, cluster string, sinceMS, nowMS int64) (forecastAllocationHistory, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -369,7 +354,6 @@ func parseReserveAmounts(raw []byte) ([]fleetReserveAmount, bool) {
 		}
 		var value string
 		if err := dec.Decode(&value); err != nil {
-			// Non-string amount: keep the other reserves, mark unsupported.
 			allStrings = false
 			var skip any
 			if err := dec.Decode(&skip); err != nil {
@@ -379,14 +363,12 @@ func parseReserveAmounts(raw []byte) ([]fleetReserveAmount, bool) {
 		}
 		amounts = append(amounts, fleetReserveAmount{reserve: key, amountRaw: value})
 	}
-	if _, err := dec.Token(); err != nil { // closing '}'
+	if _, err := dec.Token(); err != nil {
 		return nil, false
 	}
 	return amounts, allStrings
 }
 
-// loadReserveSharePriceHistories ports loadReserveSharePriceHistories
-// (earn-reserve-share-price-repository.server.ts:76-112).
 func loadReserveSharePriceHistories(ctx context.Context, pool *pgxpool.Pool, cluster string, reserves []string, sinceMS int64) (map[string][]forecastSharePricePoint, error) {
 	histories := map[string][]forecastSharePricePoint{}
 	if len(reserves) == 0 {

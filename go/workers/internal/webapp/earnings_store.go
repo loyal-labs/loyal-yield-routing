@@ -12,15 +12,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// Postgres readers and writers behind the earnings read-service dependencies,
-// ported from yield-deposit-repository.server.ts and the snapshot store in
-// earnings-read-service.server.ts. All tables live in the loyal_yield schema.
-
 const earningsSchema = "loyal_yield"
 
-// loadEarningsSnapshot ports loadEarnEarningsSnapshot (read-service:665): one
-// scoped row, private payload keys split back out, checkpoints older than
-// version 1 dropped.
 func loadEarningsSnapshot(ctx context.Context, pool *pgxpool.Pool, input earningsReadInput, timezone string) (*earningsSnapshotRecord, error) {
 	const q = `SELECT payload, generated_at
 FROM ` + earningsSchema + `.earn_earnings_snapshots
@@ -51,9 +44,6 @@ WHERE cluster = $1 AND wallet_address = $2 AND settings = $3 AND vault_index = $
 	return record, nil
 }
 
-// marshalEarningsPayload writes the stored payload the way JSON.stringify
-// spread it in saveSnapshot: response fields in struct order, then the private
-// keys only when present.
 func marshalEarningsPayload(payload EarningsRangeSet, sourceRevision *string, checkpoint *earningsCheckpointWire) (string, error) {
 	stored := storedEarningsSnapshot{
 		EarningsRangeSet: payload,
@@ -106,8 +96,6 @@ WHERE ` + earningsSchema + `.earn_earnings_snapshots.generated_at <= EXCLUDED.ge
 	return nil
 }
 
-// loadEarningsSourceRevision ports getEarnEarningsSourceRevision
-// (read-service:693): all position rows for the wallet scope in id order.
 func loadEarningsSourceRevision(ctx context.Context, pool *pgxpool.Pool, input earningsReadInput) (string, error) {
 	const q = `SELECT id, status, principal_amount_raw, last_holding_event_id, updated_at
 FROM ` + earningsSchema + `.user_yield_positions
@@ -139,9 +127,6 @@ ORDER BY id ASC`
 	return getEarnEarningsSourceRevision(revisionRows), nil
 }
 
-// loadEarningsHistoryFingerprint ports loadEarningsHistoryFingerprint
-// (earnings-checkpoint.server.ts:63): md5 over the per-day revision chain
-// strictly before `before`.
 func loadEarningsHistoryFingerprint(ctx context.Context, pool *pgxpool.Pool, input earningsReadInput, before time.Time) (string, error) {
 	const q = `SELECT md5(coalesce(string_agg(history_day::text || ':' || revision::text, ',' ORDER BY history_day), ''))
 FROM ` + earningsSchema + `.earn_history_day_revisions
@@ -153,8 +138,6 @@ WHERE settings = $1 AND vault_index = $2
 	}
 	return fingerprint, nil
 }
-
-// ---- Ledger events (findYieldPositionEvents, repository:3559) ----
 
 type earningsSourceRow struct {
 	id            int64
@@ -174,10 +157,6 @@ type earningsHoldingRef struct {
 	sourceWithdrawal *int64
 }
 
-// loadEarningsLedgerEvents replays deposits, withdrawals and their holding
-// records into the sorted ledger the calculator consumes. Ambiguous holding
-// links (two records for one cash event, or a record whose kind contradicts
-// its source) refuse the ledger rather than guess a principal path.
 func loadEarningsLedgerEvents(ctx context.Context, pool *pgxpool.Pool, input earningsReadInput) ([]earningsEvent, error) {
 	const depositsQ = `SELECT id, confirmed_slot, principal_amount_raw, confirmed_at, liquidity_mint
 FROM ` + earningsSchema + `.user_yield_position_deposits
@@ -385,15 +364,11 @@ func scanEarningsSourceRows(ctx context.Context, pool *pgxpool.Pool, q string, i
 	return out, rows.Err()
 }
 
-// ---- Positions and vault exposure snapshots ----
-
 type earningsVaultRef struct {
 	id          int64
 	vaultPubkey string
 }
 
-// loadEarningsPositions ports findActiveYieldPositionsForVault
-// (repository:2705): active rows for the wallet scope, newest-updated first.
 func loadEarningsPositions(ctx context.Context, pool *pgxpool.Pool, input earningsReadInput) ([]earningsPosition, error) {
 	const q = `SELECT id, initial_reserve, initial_market, initial_liquidity_mint, principal_amount_raw
 FROM ` + earningsSchema + `.user_yield_positions
@@ -421,10 +396,6 @@ type earningsSnapshotRow struct {
 	observedSlot int64
 }
 
-// loadCompleteEarningsVaultSnapshots ports
-// findCompleteYieldVaultExposureSnapshots (repository:2725): the vault's
-// complete-product snapshots with kamino position rows plus idle balances on
-// the latest snapshot only.
 func loadCompleteEarningsVaultSnapshots(ctx context.Context, pool *pgxpool.Pool, input earningsReadInput, observedSince *time.Time) ([]earningsPortfolioSnapshot, error) {
 	positions, err := loadEarningsPositions(ctx, pool, input)
 	if err != nil {
@@ -485,7 +456,6 @@ WHERE vault_id = $1
 	if len(snapshotRows) == 0 {
 		return nil, nil
 	}
-	// TS re-sorts by (observedSlot, id) after the SQL fetch.
 	sort.SliceStable(snapshotRows, func(i, j int) bool {
 		if snapshotRows[i].observedSlot != snapshotRows[j].observedSlot {
 			return snapshotRows[i].observedSlot < snapshotRows[j].observedSlot
@@ -583,8 +553,6 @@ WHERE vault_id = $1`, vaultRef.id)
 	return out, nil
 }
 
-// ---- Holding-event history (findYieldPositionHistoryEventsForVault) ----
-
 type earningsPositionRow struct {
 	id                   int64
 	initialReserve       string
@@ -592,9 +560,6 @@ type earningsPositionRow struct {
 	initialLiquidityMint string
 }
 
-// loadEarningsHoldingEvents ports findYieldPositionHistoryEventsForVault
-// (repository:3775): every holding event across the scope's positions replayed
-// into the descending history the checkpoint path builder consumes.
 func loadEarningsHoldingEvents(ctx context.Context, pool *pgxpool.Pool, input earningsReadInput) ([]earningsHoldingEvent, error) {
 	const positionsQ = `SELECT id, initial_reserve, initial_market, initial_liquidity_mint
 FROM ` + earningsSchema + `.user_yield_positions
@@ -631,9 +596,6 @@ ORDER BY updated_at DESC, id DESC`
 	return history, nil
 }
 
-// loadPositionHoldingEvents ports findYieldPositionHistoryEventsForPosition
-// (repository:3815): one position's events in chronological order, enriched
-// with the cash amounts behind their source links and a running principal.
 func loadPositionHoldingEvents(ctx context.Context, pool *pgxpool.Pool, position earningsPositionRow) ([]earningsHoldingEvent, error) {
 	const eventsQ = `SELECT amount_raw, observed_at, observed_slot, event_type, id, liquidity_mint,
   market, principal_delta_raw, reserve, source_signature, source_deposit_id,
@@ -866,7 +828,6 @@ func earningsIDString(id *int64) string {
 	return formatInt64(*id)
 }
 
-// earningsNonEmpty drops empty entries, as the TS filter(Boolean) does.
 func earningsNonEmpty(values []string) []string {
 	out := make([]string, 0, len(values))
 	for _, value := range values {
@@ -877,9 +838,6 @@ func earningsNonEmpty(values []string) []string {
 	return out
 }
 
-// sortEarningsHoldingEventsDescending ports
-// sortYieldPositionHistoryEventsDescending (repository:436): newest first,
-// then signature ascending, then id ascending.
 func sortEarningsHoldingEventsDescending(events []earningsHoldingEvent) {
 	sort.SliceStable(events, func(i, j int) bool {
 		if !events[i].confirmedAt.Equal(events[j].confirmedAt) {
@@ -892,12 +850,6 @@ func sortEarningsHoldingEventsDescending(events []earningsHoldingEvent) {
 	})
 }
 
-// ---- Read-dependency wiring (createEarnEarningsReadDependencies) ----
-
-// newEarningsReadDependencies ports createEarnEarningsReadDependencies
-// (read-service:916): the real store loaders over the yield pool, the
-// timescale APY reader over the Timescale pool, and the 8s APY budget. readOnly
-// mirrors the TS flag: no snapshot reads or writes.
 func newEarningsReadDependencies(pool, timescale *pgxpool.Pool, readOnly bool) earningsReadDeps {
 	deps := earningsReadDeps{
 		apyTimeout:     8 * time.Second,

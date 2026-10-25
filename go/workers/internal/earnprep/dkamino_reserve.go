@@ -10,10 +10,6 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
-// KaminoEarnReserveExpectation is the target fields
-// validateKaminoEarnReserveAccount picks off the Earn target
-// (CL:1143-1146): the lending program the reserve must be owned by and the
-// three reserve fields that must equal it.
 type KaminoEarnReserveExpectation struct {
 	LendProgramID         solana.PublicKey
 	Market                solana.PublicKey

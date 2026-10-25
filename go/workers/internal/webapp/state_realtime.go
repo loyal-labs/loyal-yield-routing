@@ -9,7 +9,7 @@ package webapp
 // via web/apps/web/src/features/earn-realtime/server/token.server.ts. The
 // op registers with the family unconditionally: without
 // REALTIME_AUTH_SECRET it still answers 503 realtime_unavailable itself
-// instead of falling through to Next (route.ts:44-54).
+// instead of falling through to Next.
 
 import (
 	"context"
@@ -29,7 +29,6 @@ const (
 	earnRealtimeTokenPath     = "/api/smart-accounts/yield-optimization/realtime/token"
 	earnRealtimeTokenLifetime = 300 * time.Second
 
-	// Earn realtime token constants (token.server.ts:11-14,82-93).
 	earnRealtimeTokenIssuer    = "loyal-apps"
 	earnRealtimeTokenAudience  = "loyal-yield-realtime"
 	earnRealtimeTokenClient    = "web"
@@ -39,11 +38,6 @@ const (
 	earnRealtimeEventsLocalURL = "http://127.0.0.1:10000/events"
 )
 
-// ResolveRealtimeEventsURL ports resolveEarnRealtimeEventsUrl
-// (web/apps/web/src/lib/core/config/earn-realtime.ts:11-26): an explicit
-// trimmed REALTIME_EVENTS_URL wins, otherwise the local decoder URL applies
-// only to a local app environment outside Vercel and the deployed URL
-// everywhere else.
 func ResolveRealtimeEventsURL(appEnvironment string) string {
 	if configured := strings.TrimSpace(os.Getenv("REALTIME_EVENTS_URL")); configured != "" {
 		return configured
@@ -93,9 +87,6 @@ func (h earnRoutes) realtimeToken(ctx context.Context, in *realtimeTokenInput) (
 	return h.realtimeIssue(account, in.ContentType, in.Raw.data)
 }
 
-// realtimeIssue is the post-auth body of the route (route.ts:33-86): a
-// client-controlled body is a 400, a missing issuer or a minting failure is
-// a 503, and everything else mints from the authenticated identity.
 func (h earnRoutes) realtimeIssue(account EarnAccount, contentType string, body []byte) (*realtimeTokenOutput, error) {
 	if realtimeHasClientControlledClaims(contentType, body) {
 		return nil, earnError(http.StatusBadRequest, "invalid_request", "Realtime identity is derived from the authenticated session.")
@@ -133,10 +124,6 @@ func (h earnRoutes) realtimeIssue(account EarnAccount, contentType string, body 
 	}}, nil
 }
 
-// realtimeHasClientControlledClaims ports hasClientControlledClaims
-// (route.ts:14-25): an application/json body carrying a JSON object or array
-// with at least one key. Invalid JSON reads as no body, like the
-// request.json().catch(() => null) fallback.
 func realtimeHasClientControlledClaims(contentType string, body []byte) bool {
 	if !strings.Contains(strings.ToLower(contentType), "application/json") {
 		return false

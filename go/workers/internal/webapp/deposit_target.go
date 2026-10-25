@@ -51,9 +51,6 @@ var (
 	depositInitObligationDiscriminator  = []byte{251, 10, 231, 76, 27, 11, 159, 96}
 )
 
-// depositEarnTarget is the Kamino reserve Earn deposits route into
-// (getKaminoUsdcEarnTargetForCluster, constants.ts:173-205): the default USDC
-// reserve of the cluster's main market.
 type depositEarnTarget struct {
 	DepositDiscriminator        []byte
 	InitObligationDiscriminator []byte
@@ -121,7 +118,7 @@ func depositDataEquals(value []byte) squads.DataConstraintView {
 // KLend withdraw at account 2 over the Safe markets, then KLend deposit at
 // account 2 with the liquidity mints at account 5. liquidityMintOwner is nil
 // for a fresh creation (policies/prepare) and the token program when matching
-// a legacy-generation policy (client.ts:6812-6817).
+// a legacy-generation policy.
 func EarnRoutePayload(cluster LoyalCluster, vault solana.PublicKey, liquidityMintOwner *solana.PublicKey) ([]squads.InstructionConstraintView, error) {
 	target, err := depositEarnTargetFor(cluster)
 	if err != nil {

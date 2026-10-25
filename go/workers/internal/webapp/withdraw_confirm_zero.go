@@ -15,17 +15,11 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
-// Ports the post-withdrawal full-exit proof: verifyEarnFullExitZeroBalances
-// (earn-full-exit-zero-proof.server.ts:208-285), its classifier (:124-206),
-// the slot-lag retry (:92-114), and the vault token inventory read it depends
-// on (fetchEarnVaultRefundSnapshot, client.ts:10339-10422).
-
 const (
 	withdrawSlotLagAttempts = 3
-	// SLOT_LAG_RETRY_DELAY_MS (earn-full-exit-zero-proof.server.ts:87).
+	// SLOT_LAG_RETRY_DELAY_MS.
 	withdrawSlotLagDelay = 500 * time.Millisecond
 	// EARN_FINAL_EXIT_IDLE_DUST_TOLERANCE_RAW
-	// (yield-deposit-repository.server.ts:302).
 	withdrawFinalExitDustRaw = 10_000
 )
 
@@ -35,9 +29,6 @@ func withdrawIsMinContextSlotError(err error) bool {
 	return errors.Is(err, chain.ErrBehind)
 }
 
-// withdrawSlotLagRetry ports readWithSlotLagRetry
-// (earn-full-exit-zero-proof.server.ts:92-114): only minimum-context-slot
-// failures retry, three attempts half a second apart.
 func withdrawSlotLagRetry(ctx context.Context, sleep func(context.Context) error, read func() error) error {
 	var lastErr error
 	for attempt := 0; attempt < withdrawSlotLagAttempts; attempt++ {
@@ -58,9 +49,6 @@ func withdrawSlotLagRetry(ctx context.Context, sleep func(context.Context) error
 	return lastErr
 }
 
-// withdrawVaultSnapshot mirrors SmartAccountEarnVaultRefundSnapshot: the vault
-// PDA's SOL and every token account under both token programs, in
-// localeCompare order, with the slot the read observed.
 type withdrawVaultSnapshot struct {
 	Lamports      uint64
 	ObservedSlot  uint64
@@ -70,7 +58,7 @@ type withdrawVaultSnapshot struct {
 }
 
 // fetchWithdrawVaultSnapshot ports fetchEarnVaultRefundSnapshot
-// (client.ts:10339-10422) with the minContextSlot the confirm proof passes.
+// with the minContextSlot the confirm proof passes.
 // The SOL read folds a failure into zero (getVaultSweepLamportsOrZero,
 // client.ts:3134-3146); the token-account reads fail the proof.
 func fetchWithdrawVaultSnapshot(ctx context.Context, client withdrawConfirmChain, settings, usdcMint solana.PublicKey, minContextSlot uint64) (withdrawVaultSnapshot, error) {
@@ -83,8 +71,6 @@ func fetchWithdrawVaultSnapshot(ctx context.Context, client withdrawConfirmChain
 		return withdrawVaultSnapshot{}, err
 	}
 	snapshot := withdrawVaultSnapshot{VaultPda: vault, VaultUsdcATA: vaultUsdcAta}
-	// A missing account reads as zero lamports and a failed read folds to
-	// zero; neither fails the proof.
 	if _, accounts, err := client.Accounts(ctx, []solana.PublicKey{vault}, rpc.CommitmentConfirmed, minContextSlot); err == nil && len(accounts) > 0 && accounts[0] != nil {
 		snapshot.Lamports = accounts[0].Lamports
 	}
@@ -140,8 +126,6 @@ type withdrawFullExitZeroProof struct {
 	Status                string
 }
 
-// classifyWithdrawZeroProof ports classifyZeroProof
-// (earn-full-exit-zero-proof.server.ts:124-206).
 func classifyWithdrawZeroProof(cluster string, holdingsSnapshot earnprep.WithdrawSnapshot, vaultSnapshot withdrawVaultSnapshot, minContextSlot uint64) (withdrawFullExitZeroProof, error) {
 	if holdingsSnapshot.ObservedSlot < minContextSlot {
 		return withdrawFullExitZeroProof{}, errors.New("Earn full-exit proof was observed before the withdrawal confirmation slot.")
@@ -207,8 +191,6 @@ func classifyWithdrawZeroProof(cluster string, holdingsSnapshot earnprep.Withdra
 	}, nil
 }
 
-// verifyWithdrawFullExitZeroBalances is the withdraw confirm's call of
-// verifyEarnFullExitZeroBalances, over the canonical universe.
 func verifyWithdrawFullExitZeroBalances(ctx context.Context, client withdrawConfirmChain, sleep func(context.Context) error, now func() time.Time, cluster string, in withdrawCanonicalInput, minContextSlot uint64) (withdrawFullExitZeroProof, error) {
 	settings, err := withdrawPublicKeyInput(in.Settings)
 	if err != nil {
@@ -217,11 +199,6 @@ func verifyWithdrawFullExitZeroBalances(ctx context.Context, client withdrawConf
 	return verifyFullExitZeroBalances(ctx, client, sleep, now, cluster, earnprep.WithdrawCanonicalUniverse(cluster), settings, minContextSlot)
 }
 
-// verifyFullExitZeroBalances ports verifyEarnFullExitZeroBalances
-// (earn-full-exit-zero-proof.server.ts:208-285): the holdings snapshot through
-// the given policy universe and the vault token inventory under one slot-lag
-// retry, then the classification. Withdraw confirm and both cleanup routes
-// share it.
 func verifyFullExitZeroBalances(ctx context.Context, client withdrawConfirmChain, sleep func(context.Context) error, now func() time.Time, cluster string, policy *earnprep.WithdrawPolicyUniverse, settings solana.PublicKey, minContextSlot uint64) (withdrawFullExitZeroProof, error) {
 	var proof withdrawFullExitZeroProof
 	usdcMint := earnUSDCMint(LoyalCluster(cluster))

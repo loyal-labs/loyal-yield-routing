@@ -71,8 +71,6 @@ type earnStateOutput struct {
 	Body         EarnStateResponse
 }
 
-// stateLoad mirrors loadEarnStatePart: a failed part logs, sets its
-// loadErrors key and falls back to nil. The data is captured by the closure.
 func stateLoad(name string, failed *bool, load func() error) {
 	if err := load(); err != nil {
 		slog.Warn("earn-state failed to load part; returning null", "part", name, "error", err)
@@ -93,9 +91,6 @@ func (h earnRoutes) registerState(api huma.API) {
 	h.registerRealtime(api)
 }
 
-// stateCurrentTotalAmountRaw ports loadCurrentTotalAmountRaw: the sum of the
-// vault's user-facing reserve rows and all idle balances, falling back to the
-// stored position holding when it is zero.
 func (h earnRoutes) stateCurrentTotalAmountRaw(ctx context.Context, settings, wallet, vaultPubkey string) (int64, error) {
 	reserveRows, err := h.stateCurrentReserveRows(ctx, settings, wallet, vaultPubkey)
 	if err != nil {

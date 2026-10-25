@@ -78,7 +78,6 @@ var (
 	obsErrInvalidRequest  = &obsIngestRejected{Message: "invalid_request", status: http.StatusBadRequest}
 )
 
-// obsIngestInput carries everything the Next routes read off the Request.
 type obsIngestInput struct {
 	SessionInput
 	Raw                 rawJSON
@@ -94,7 +93,6 @@ type obsIngestInput struct {
 	SyntheticProbe      string `header:"X-Loyal-Synthetic-Probe"`
 }
 
-// obsHeader gives the rate limiter the same lookup Next does by header name.
 func (in *obsIngestInput) obsHeader(name string) string {
 	switch name {
 	case "X-Forwarded-For":
@@ -125,7 +123,6 @@ func obsAcceptedOutput() *obsIngestOutput {
 	return &obsIngestOutput{Status: http.StatusAccepted, CacheControl: "no-store", Body: obsIngestAccepted{Accepted: true}}
 }
 
-// obsReject maps the shared body-read errors onto their Next statuses.
 func obsReject(err error) error {
 	if err == errObservabilityTooLarge {
 		return obsErrTooLarge
@@ -133,9 +130,6 @@ func obsReject(err error) error {
 	return obsErrInvalidRequest
 }
 
-// obsAdmit runs the shared admission checks: the native gate or the browser
-// same-origin check, then the JSON content type, then the per-signal rate
-// limit. The returned requestOrigin is what Next computes from request.url.
 func obsAdmit(in *obsIngestInput, limiter *obsRateLimiter) (requestOrigin string, refused error) {
 	requestOrigin = obsRequestOrigin(in.host, in.ForwardedProto)
 	if !obsNativeAppRequest(in.Origin, in.SecFetchSite) &&
@@ -151,8 +145,6 @@ func obsAdmit(in *obsIngestInput, limiter *obsRateLimiter) (requestOrigin string
 	return requestOrigin, nil
 }
 
-// obsWallet is resolveWalletAddress (events/route.ts:70-79): the Principal's
-// wallet when a session resolves, undefined otherwise, never an error.
 func (h earnRoutes) obsWallet(ctx context.Context, in SessionInput) string {
 	if h.auth == nil {
 		return ""
@@ -164,8 +156,6 @@ func (h earnRoutes) obsWallet(ctx context.Context, in SessionInput) string {
 	return session.Wallet.String()
 }
 
-// The export helpers take the normalized events by pointer, matching the
-// committed payload builders.
 func browserErrorEventPtr(envelope obsErrorEnvelope, deploymentEnvironment, serverRelease string) *obsNormalizedError {
 	event := createNormalizedBrowserErrorEvent(envelope, deploymentEnvironment, serverRelease)
 	return &event

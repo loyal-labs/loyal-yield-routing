@@ -16,12 +16,6 @@ import (
 	"time"
 )
 
-// Privy sign-in, part 1 of 3: verifying the `privy-id-token` header. Ports
-// web/apps/web/src/features/identity/server/privy-auth.ts
-// verifyPrivyIdentityToken, whose @privy-io/node client verifies the identity
-// token locally (node/lib/auth.js verifyIdentityToken): an ES256 JWT with
-// iss "privy.io" and aud = the Privy app id, keyed by a remote JWKS with a
-// 60 minute cache. Ported with stdlib crypto only; no jose dependency.
 var privyJWKSBase = "https://api.privy.io/v1/apps/"
 
 const (
@@ -38,8 +32,6 @@ type PrivyLinkedWallet struct {
 	Embedded bool
 }
 
-// PrivyIdentity mirrors privy-auth.ts PrivyIdentity: the Privy user id, a
-// preferred email ("" when absent) and the Solana wallets linked in Privy.
 type PrivyIdentity struct {
 	PrivyUserID string
 	Email       string
@@ -145,9 +137,6 @@ type privyLinkedAccount struct {
 	Email            string `json:"email"`
 }
 
-// verifyPrivyIdentityToken ports privy-auth.ts verifyPrivyIdentityToken: any
-// verification failure is 401 privy_identity_token_invalid, exactly as the TS
-// route maps a throwing SDK call.
 func (h earnRoutes) verifyPrivyIdentityToken(ctx context.Context, identityToken string) (PrivyIdentity, error) {
 	if h.Privy == nil || h.Privy.AppID == "" {
 		return PrivyIdentity{}, earnError(http.StatusServiceUnavailable, "privy_not_configured", "Privy is not configured.")

@@ -21,18 +21,17 @@ import (
 
 // POST /api/smart-accounts/yield-optimization/withdrawals/cleanup/prepare ports
 // web/apps/web/src/app/api/smart-accounts/yield-optimization/withdrawals/
-// cleanup/prepare/route.ts plus prepareEarnUsdcCleanup (client.ts:10168-10331)
+// cleanup/prepare/route.ts plus prepareEarnUsdcCleanup
 // and the zero-proof read it depends on. The route reads the Earn policy pair,
 // proves the vault is at a full exit, then hands the client one
 // execute-per-operation instruction list; it never writes money rows. The one
 // DB write (a stale autodeposit row reconciled closed) is idempotent by
 // policy account.
 
-// cleanupProjectionRetries is PROJECTION_RETRY_DELAYS_MS (route.ts:33).
 var cleanupProjectionRetries = []time.Duration{0, 100 * time.Millisecond, 250 * time.Millisecond, 500 * time.Millisecond, 1 * time.Second}
 
 // findCleanupVaultState ports findEarnCleanupVaultState
-// (yield-deposit-repository.server.ts:3153-3239) down to the rows the cleanup
+// down to the rows the cleanup
 // routes read: the vault's active (or recorded, when includeInactive) policy
 // pair. The idle and reserve row lists the TS also selects are unused by both
 // routes, so the read stops at the policies. Nil means the TS null.
@@ -84,9 +83,6 @@ WHERE ($6::boolean OR active) AND authority = $4 AND id = $5 AND settings = $1 A
 	return &RoutePolicyPair{Route: *route, Setup: setup}, nil
 }
 
-// cleanupLatestFullWithdrawalSlot ports findLatestFullYieldWithdrawalForVault
-// (yield-deposit-repository.server.ts:3241-3266): the newest full-mode
-// withdrawal's confirmed slot, 0 when the projection has not landed.
 func (h earnRoutes) cleanupLatestFullWithdrawalSlot(ctx context.Context, account EarnAccount) (int64, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -105,8 +101,6 @@ ORDER BY confirmed_slot DESC, id DESC LIMIT 1`,
 	return slot, nil
 }
 
-// withdrawCleanupTokenAccount is the proof's cleanup entry (earn-full-exit-
-// zero-proof.server.ts:183-191): decimals is the literal 6 the TS pins.
 type withdrawCleanupTokenAccount struct {
 	Address        string
 	AmountRaw      string
@@ -115,10 +109,6 @@ type withdrawCleanupTokenAccount struct {
 	TokenProgramID string
 }
 
-// cleanupPolicyUniverse ports resolveFullExitPolicyMetadata
-// (earn-full-exit-zero-proof.server.ts:58-75): the DB policy's mints and
-// markets, with the canonical product mints and the Safe basket filling a
-// null list.
 func cleanupPolicyUniverse(cluster string, route RoutePolicy) *earnprep.WithdrawPolicyUniverse {
 	canonical := earnprep.WithdrawCanonicalUniverse(cluster)
 	stable, liquidity, policyMarkets := route.StableMints, route.KaminoLiquidityMints, route.KaminoMarkets
@@ -140,7 +130,7 @@ func cleanupPolicyUniverse(cluster string, route RoutePolicy) *earnprep.Withdraw
 }
 
 // cleanupVaultSweepLamports ports getVaultSweepLamportsOrZero
-// (client.ts:3134-3146): the vault PDA's SOL, every failure folded to zero.
+// : the vault PDA's SOL, every failure folded to zero.
 func cleanupVaultSweepLamports(ctx context.Context, client *chain.Client, vault solana.PublicKey) uint64 {
 	_, accounts, err := client.Accounts(ctx, []solana.PublicKey{vault}, rpc.CommitmentConfirmed, 0)
 	if err != nil || len(accounts) == 0 || accounts[0] == nil {
@@ -149,8 +139,6 @@ func cleanupVaultSweepLamports(ctx context.Context, client *chain.Client, vault 
 	return accounts[0].Lamports
 }
 
-// cleanupVaultTokenAccount mirrors the vaultTokenAccounts entries the prepare
-// route feeds the builder (route.ts:269-275).
 type cleanupVaultTokenAccount struct {
 	Address        solana.PublicKey
 	AmountRaw      uint64
@@ -159,14 +147,11 @@ type cleanupVaultTokenAccount struct {
 	TokenProgramID solana.PublicKey
 }
 
-// cleanupAutodepositCloseInput is the route's autodepositClose pair
-// (route.ts:214-219, 234-239).
 type cleanupAutodepositCloseInput struct {
 	Policy              solana.PublicKey
 	RecurringDelegation solana.PublicKey
 }
 
-// cleanupCloseInput is SmartAccountEarnUsdcCleanupInput (route.ts:263-289).
 type cleanupCloseInput struct {
 	Cluster            string
 	FeePayer           solana.PublicKey
@@ -182,12 +167,6 @@ type cleanupCloseInput struct {
 	AutodepositClose   *cleanupAutodepositCloseInput
 }
 
-// buildEarnUsdcCleanup ports prepareEarnUsdcCleanup (client.ts:10168-10331):
-// per-account idle transfers and closes wrapped in one member-sync execution,
-// the vault's SOL swept, the live yield-routing policies removed by one
-// settings sync, and the autodeposit close riding ahead when one is open.
-// Every failure is a plain error; the route folds them into 500
-// prepare_failed exactly like the Next catch-all.
 func buildEarnUsdcCleanup(ctx context.Context, client *chain.Client, in cleanupCloseInput) (*EarnCleanupPrepareWire, error) {
 	usdcMint := earnUSDCMint(LoyalCluster(in.Cluster))
 	vaultUsdcAta, err := spl.AssociatedTokenAddress(in.Vault, usdcMint, solana.TokenProgramID)
@@ -336,11 +315,6 @@ func buildEarnUsdcCleanup(ctx context.Context, client *chain.Client, in cleanupC
 	return wire, nil
 }
 
-// buildCleanupPolicyCloseOperation ports prepareCloseLiveYieldRoutingPoliciesSync
-// (client.ts:11868-11886) and its precheck: keep the policies that still
-// exist on chain, refuse when none do (the caller sees a nil operation), then
-// check each live policy's owner and kind through fetchPolicy
-// (client.ts:12188-12212) before removing them with one settings sync.
 func buildCleanupPolicyCloseOperation(ctx context.Context, client *chain.Client, in cleanupCloseInput) (*squads.Instruction, error) {
 	policies := []solana.PublicKey{in.RoutePolicyAccount}
 	if in.SetupPolicyAccount != nil {
@@ -386,9 +360,6 @@ func buildCleanupPolicyCloseOperation(ctx context.Context, client *chain.Client,
 	return &remove, nil
 }
 
-// cleanupIsSubscriptionSweepPolicy ports isSubscriptionSweepPolicy
-// (client.ts:4461-4473): a ProgramInteraction policy on the Earn vault whose
-// every instruction constraint targets the subscriptions program.
 func cleanupIsSubscriptionSweepPolicy(decoded squads.DecodedPolicy) bool {
 	if decoded.VaultIndex != earnprep.EarnVaultIndex || len(decoded.Constraints) == 0 {
 		return false
@@ -401,10 +372,6 @@ func cleanupIsSubscriptionSweepPolicy(decoded squads.DecodedPolicy) bool {
 	return true
 }
 
-// buildAutodepositClosePrepared ports prepareEarnUsdcAutodepositClose
-// (client.ts:11523-11621): the sweep policy is verified on chain, removed by
-// one settings sync, the recurring delegation revoked when it exists, and the
-// wallet's USDC delegate approval revoked when it is still ours.
 func buildAutodepositClosePrepared(ctx context.Context, client *chain.Client, in cleanupCloseInput) (*EarnCleanupAutodepositCloseWire, error) {
 	close_ := in.AutodepositClose
 	_, infos, err := client.Accounts(ctx, []solana.PublicKey{close_.Policy}, rpc.CommitmentConfirmed, 0)

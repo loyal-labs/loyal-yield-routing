@@ -40,7 +40,7 @@ func obsBoolAttribute(key string, value bool) otlpAttribute {
 	return otlpAttribute{Key: key, Value: otlpAttributeValue{BoolValue: &value}}
 }
 
-// obsToUnixNano ports toUnixNano (otlp.ts:33): milliseconds since epoch
+// obsToUnixNano ports toUnixNano: milliseconds since epoch
 // shifted, never a wall-clock nanosecond read.
 func obsToUnixNano(timestamp string) string {
 	parsed, err := time.Parse(time.RFC3339Nano, timestamp)
@@ -50,8 +50,6 @@ func obsToUnixNano(timestamp string) string {
 	return strconv.FormatInt(parsed.UnixMilli()*1_000_000, 10)
 }
 
-// obsUnixNanoFromMillis ports toUnixNano(new Date(ms).toISOString()): the
-// round trip keeps millisecond precision, so the shift applies directly.
 func obsUnixNanoFromMillis(ms int64) string {
 	return strconv.FormatInt(ms*1_000_000, 10)
 }
@@ -174,7 +172,6 @@ func obsEventSpanID(eventID string) string {
 	return hex
 }
 
-// buildOtlpErrorPayload ports buildOtlpErrorPayload (otlp.ts:90).
 func buildOtlpErrorPayload(event *obsNormalizedError) otlpLogsPayload {
 	attributes := []otlpAttribute{
 		obsStringAttribute("loyal.runtime", event.runtime),
@@ -251,8 +248,6 @@ func buildOtlpErrorPayload(event *obsNormalizedError) otlpLogsPayload {
 	}}}
 }
 
-// buildOtlpLifecycleLogRecord ports the attribute assembly of
-// buildOtlpLifecyclePayload (otlp.ts:210); the journey trace reuses it.
 func buildOtlpLifecycleLogRecord(event *obsNormalizedLifecycle) otlpLogRecord {
 	attributes := []otlpAttribute{
 		obsStringAttribute("loyal.event.kind", "flow_lifecycle"),
@@ -311,8 +306,6 @@ func buildOtlpLifecycleLogRecord(event *obsNormalizedLifecycle) otlpLogRecord {
 			attributes = append(attributes, obsIntAttribute(item.key, *item.value))
 		}
 	}
-	// Step spans report flow version 2 once a journey id ties them together
-	// (otlp.ts:259: event.journeyId ? 2 : 1).
 	flowVersion := int64(1)
 	if event.journeyID != "" {
 		flowVersion = 2
@@ -376,7 +369,6 @@ func buildOtlpLifecycleLogRecord(event *obsNormalizedLifecycle) otlpLogRecord {
 	return record
 }
 
-// buildOtlpLifecyclePayload ports buildOtlpLifecyclePayload (otlp.ts:210).
 func buildOtlpLifecyclePayload(event *obsNormalizedLifecycle) otlpLogsPayload {
 	scopeName := "loyal.frontend.lifecycle"
 	if event.serviceName == "loyal-mobile" {
@@ -391,9 +383,6 @@ func buildOtlpLifecyclePayload(event *obsNormalizedLifecycle) otlpLogsPayload {
 	}}}
 }
 
-// buildOtlpJourneyTracePayload ports buildOtlpJourneyTracePayload
-// (otlp.ts:334): the step span plus, on terminal outcomes, the whole-flow
-// attempt span. Null (nil here) without full trace context.
 func buildOtlpJourneyTracePayload(event *obsNormalizedLifecycle) *otlpTracesPayload {
 	if event.traceID == "" || event.spanID == "" || event.eventID == "" {
 		return nil
@@ -452,8 +441,6 @@ func buildOtlpJourneyTracePayload(event *obsNormalizedLifecycle) *otlpTracesPayl
 	}}}
 }
 
-// buildOtlpLoadingMetricPayload ports buildOtlpLoadingMetricPayload
-// (otlp.ts:390).
 func buildOtlpLoadingMetricPayload(event *obsNormalizedMetric) otlpMetricsPayload {
 	attributes := []otlpAttribute{
 		obsStringAttribute("loyal.operation", event.operation),

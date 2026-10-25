@@ -22,19 +22,15 @@ const (
 	obsMaxPathnameLength      = 256
 	obsMaxRawFieldLength      = 12 * 1024
 	obsMaxRequestBytes        = 16 * 1024
-	obsMaxExportBudget        = 1250 // ms, budget-contract.ts OBSERVABILITY_EXPORT_BUDGET_MS
+	obsMaxExportBudget        = 1250
 	obsMaxEventAgeMS          = 60 * 60 * 1000
 	obsMaxEventClockSkewMS    = 5 * 60 * 1000
 	obsInternalWalletDefault  = "BmzZz5VTNU57EHaGwyDcP1vXz9a8RwEDYAcPCdW4nPg1"
 	obsMaxLifecycleMessageLen = 256
 )
 
-// errObservabilityTooLarge stands in for the RangeError the TS readJsonBody
-// throws on oversized bodies; the routes turn it into 413 payload_too_large.
 var errObservabilityTooLarge = errors.New("Observability request is too large.")
 
-// errObservabilityEnvelope stands in for the three Invalid*EnvelopeError
-// classes; every route maps it to 400 invalid_request.
 var errObservabilityEnvelope = errors.New("Invalid observability envelope.")
 
 func truncateUTF16(s string, maxLength int) string {
@@ -63,8 +59,6 @@ func utf16Len(s string) int {
 	return n
 }
 
-// The five lookahead-free sanitizeTelemetryText redactions
-// (error-contract.ts:33-40,153-168), applied in the TS order.
 var (
 	obsURLQueryPattern = regexp.MustCompile(`([?&][^=\s&#]{1,64}=)[^&#\s]*`)
 	obsBearerPattern   = regexp.MustCompile(`(?i)\bbearer\s+[^\s,;]+`)
@@ -73,7 +67,6 @@ var (
 	obsBodyPattern     = regexp.MustCompile(`(?i)\b(request body|response body|request headers|response headers)\b\s*[:=]\s*[^\n]*`)
 )
 
-// sanitizeTelemetryText ports sanitizeTelemetryText (error-contract.ts:153).
 func sanitizeTelemetryText(value string, maxLength int) string {
 	redacted := obsURLQueryPattern.ReplaceAllString(value, "${1}[REDACTED]")
 	redacted = obsBearerPattern.ReplaceAllString(redacted, "Bearer [REDACTED]")
@@ -113,7 +106,7 @@ var (
 func redactLongRun(s string, alphabet obsRunAlphabet, minLen int, prefix string) string {
 	var out strings.Builder
 	out.Grow(len(s))
-	runStart := -1 // start of the current alphabet run, -1 when outside one
+	runStart := -1
 	segmentStart := 0
 	for i := 0; i <= len(s); {
 		if r, width := runeAt(s, i); i < len(s) && alphabet.match(r) {
@@ -176,8 +169,6 @@ func runeLast(s string, end int) (rune, int) {
 
 var obsResourceValuePattern = regexp.MustCompile(`[^A-Za-z0-9._-]`)
 
-// normalizeResourceValue ports normalizeResourceValue (error-contract.ts:337):
-// token-safe characters only, bounded length, empty collapses to null.
 func normalizeResourceValue(value string, maxLength int) string {
 	normalized := obsResourceValuePattern.ReplaceAllString(value, "_")
 	normalized = truncateUTF16(normalized, maxLength)
@@ -215,10 +206,6 @@ func isSpanID(value any) bool {
 	return ok && obsSpanIDPattern.MatchString(s) && !obsAllZeroPattern.MatchString(s)
 }
 
-// normalizeTelemetryPathname ports normalizeTelemetryPathname
-// (error-contract.ts:170): a bounded same-origin absolute path with WHATWG dot
-// segments removed, sanitized as telemetry text. Returns "" where TS returns
-// null.
 func normalizeTelemetryPathname(value string) string {
 	if value == "" || utf16Len(value) > obsMaxRawFieldLength ||
 		!strings.HasPrefix(value, "/") || strings.HasPrefix(value, "//") ||

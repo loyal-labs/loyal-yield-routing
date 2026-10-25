@@ -10,10 +10,6 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 )
 
-// The mobile Earn session (ASK-1846): POST /api/smart-accounts/earn/session
-// trades one wallet-signed auth message for a long-lived loyal-mobile-earn
-// bearer token. Ports web/apps/web/src/app/api/smart-accounts/mobile/earn/session/route.ts
-// and web/apps/web/src/features/identity/server/mobile-earn-session.ts:28-53.
 var earnSessionFamily = earnFamily{
 	name:     "earn session",
 	ready:    func(h earnRoutes) bool { return h.Session != nil },
@@ -41,7 +37,6 @@ type earnSessionInput struct {
 }
 
 type earnSessionOutput struct {
-	// Next serves this route with Cache-Control: no-store (route.ts:48-51).
 	CacheControl string `header:"Cache-Control"`
 	Body         EarnSessionResponse
 }

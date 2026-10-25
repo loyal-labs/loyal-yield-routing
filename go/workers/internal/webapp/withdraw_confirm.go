@@ -14,7 +14,7 @@ import (
 
 // POST /api/smart-accounts/yield-optimization/withdrawals/confirm ports
 // web/apps/web/src/app/api/smart-accounts/yield-optimization/withdrawals/confirm/route.ts
-// plus verifyConfirmedEarnWithdrawal (earn-withdraw-confirm.server.ts:564-759):
+// plus verifyConfirmedEarnWithdrawal:
 // after the client sends the withdrawal from withdrawals/prepare, it confirms
 // the signature here. The route verifies the chain evidence and returns the
 // verified position; it never writes (single-writer rule,
@@ -62,7 +62,7 @@ type EarnWithdrawConfirmRequest struct {
 }
 
 // EarnWithdrawConfirmPosition is serializeVerifiedWithdrawPosition
-// (earn-withdraw-confirm.server.ts:497-532): the read-model row the
+// : the read-model row the
 // LaserStream projection would hold for the withdrawal, with ids and slots as
 // decimal strings and market null on idle withdrawals.
 type EarnWithdrawConfirmPosition struct {
@@ -107,7 +107,7 @@ type EarnWithdrawConfirmRemainingHolding struct {
 }
 
 // EarnWithdrawConfirmResponse is EarnWithdrawConfirmationResult
-// (earn-withdraw-confirm.server.ts:539-554). The zero proof's blocking entries
+// . The zero proof's blocking entries
 // serialize as they are, tokenProgramId included (:725), so the field names
 // come from the Next runtime objects, not the wider result type comment.
 type EarnWithdrawConfirmResponse struct {
@@ -117,9 +117,6 @@ type EarnWithdrawConfirmResponse struct {
 	Status                string                                `json:"status"`
 }
 
-// withdrawVerifiedPosition ports serializeVerifiedWithdrawPosition
-// (:497-532): a full final withdrawal empties the holding; a partial one
-// leaves source minus what the transaction actually transferred.
 func withdrawVerifiedPosition(in withdrawCanonicalInput, verifiedAt time.Time) EarnWithdrawConfirmPosition {
 	sourceAmountRaw := in.SourceAmountRaw
 	if sourceAmountRaw == nil {
@@ -151,8 +148,6 @@ func withdrawVerifiedPosition(in withdrawCanonicalInput, verifiedAt time.Time) E
 	return position
 }
 
-// withdrawSafeContextSlot ports toSafeContextSlot (:556-562): the zero proof
-// demands the slot as a safe RPC integer.
 func withdrawSafeContextSlot(slot *big.Int) (uint64, error) {
 	if !slot.IsUint64() || slot.Cmp(new(big.Int).SetUint64(1<<53-1)) > 0 {
 		return 0, errors.New("Confirmed withdrawal slot is outside the safe RPC range.")
@@ -160,9 +155,6 @@ func withdrawSafeContextSlot(slot *big.Int) (uint64, error) {
 	return slot.Uint64(), nil
 }
 
-// withdrawFullExitResponse serializes the zero proof the way :724-735 does:
-// the proof's blocking entries verbatim, its holdings mapped to the five
-// response fields, nil slices as empty arrays.
 func withdrawFullExitResponse(proof withdrawFullExitZeroProof, position EarnWithdrawConfirmPosition) *EarnWithdrawConfirmResponse {
 	blocking := proof.BlockingTokenAccounts
 	if blocking == nil {
@@ -213,9 +205,6 @@ func (h earnRoutes) registerWithdrawConfirm(api huma.API) {
 	documentJSONBody[EarnWithdrawConfirmRequest](api, earnWithdrawConfirmPath)
 }
 
-// earnWithdrawConfirm is confirm/route.ts:40-86: principal, body, then the
-// verification, with every non-route error folding into 500 record_failed the
-// way the route's catch-all does.
 func (h earnRoutes) earnWithdrawConfirm(ctx context.Context, in *earnWithdrawConfirmInput) (*earnWithdrawConfirmOutput, error) {
 	account, err := h.account(ctx, in.SessionInput)
 	if err != nil {
@@ -243,14 +232,7 @@ func (h earnRoutes) earnWithdrawConfirm(ctx context.Context, in *earnWithdrawCon
 	return &earnWithdrawConfirmOutput{Body: *response}, nil
 }
 
-// withdrawConfirmVerify is verifyConfirmedEarnWithdrawal
-// (earn-withdraw-confirm.server.ts:564-759) minus the EarnWithdrawConfirmError
-// envelope, which earns its status and code here directly. `client` is the
-// chain surface and `now` the verified-at clock; both are parameters so the
-// scratch test can drive the whole flow offline.
 func withdrawConfirmVerify(ctx context.Context, client withdrawConfirmChain, account EarnAccount, body withdrawConfirmInput, now func() time.Time) (*EarnWithdrawConfirmResponse, error) {
-	// Next order (:577-664): principal match, canonical metadata, configured
-	// cluster, signature slot, transaction proof.
 	if body.WalletAddress != account.Wallet.String() || body.Settings != account.Settings.String() {
 		return nil, earnError(http.StatusForbidden, "principal_mismatch", "Confirmed yield withdrawal does not match the authenticated wallet.")
 	}
@@ -282,7 +264,6 @@ func withdrawConfirmVerify(ctx context.Context, client withdrawConfirmChain, acc
 		return nil, earnError(http.StatusBadRequest, "invalid_transaction_proof", confirmErrorText(err, "Confirmed withdrawal transaction proof is invalid."))
 	}
 
-	// The position carries the corrected slot (:668).
 	position := withdrawVerifiedPosition(canonical, now())
 	if canonical.Mode != "full" {
 		return &EarnWithdrawConfirmResponse{
@@ -301,8 +282,6 @@ func withdrawConfirmVerify(ctx context.Context, client withdrawConfirmChain, acc
 		}, nil
 	}
 
-	// Everything in the zero-proof step, including an unsafe slot, folds into
-	// the same retryable 503 (:688-758).
 	minContextSlot, err := withdrawSafeContextSlot(canonical.ConfirmedSlot)
 	if err == nil {
 		var proof withdrawFullExitZeroProof
@@ -316,7 +295,7 @@ func withdrawConfirmVerify(ctx context.Context, client withdrawConfirmChain, acc
 
 // EarnWithdrawConfirmReserveWithdrawal documents one reserveWithdrawals entry
 // of the confirm body: the SDK's SmartAccountEarnUsdcReserveWithdrawalMetadata
-// (smart-account-vaults/src/types.ts:819-829), echoed from prepare.
+// , echoed from prepare.
 type EarnWithdrawConfirmReserveWithdrawal struct {
 	AccountingReserve       string  `json:"accountingReserve"`
 	CollateralAta           string  `json:"collateralAta"`

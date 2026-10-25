@@ -1,12 +1,5 @@
 package webapp
 
-// POST /api/smart-accounts/yield-optimization/position/reconcile
-// <- web/apps/web/src/app/api/smart-accounts/yield-optimization/position/reconcile/route.ts
-// + L/earn-position-reconciliation.server.ts. Reads the managed vault with
-// its active policy pair, then either answers from the five-minute
-// reconciliation cache, or snapshots the vault's on-chain holdings through the
-// RPC read and rewrites the current holdings tables inside one transaction.
-
 import (
 	"context"
 	"encoding/json"
@@ -25,8 +18,6 @@ import (
 
 const stateReconcilePath = "/api/smart-accounts/yield-optimization/position/reconcile"
 
-// stateReconcileCacheMS is RECONCILE_CACHE_MS
-// (earn-position-reconciliation.server.ts:15).
 const stateReconcileCacheMS = 5 * 60 * time.Second
 
 type EarnPositionReconcileRequest struct {
@@ -68,8 +59,6 @@ func (h earnRoutes) earnPositionReconcile(ctx context.Context, in *stateReconcil
 	if err != nil {
 		return nil, earnUnavailable("earn-position-reconcile auth", err, "unauthenticated", "No active auth session.")
 	}
-	// request.json().catch(() => ({})): an unreadable body simply means
-	// force stays false.
 	var body EarnPositionReconcileRequest
 	_ = json.Unmarshal(in.Raw.data, &body)
 
@@ -81,8 +70,6 @@ func (h earnRoutes) earnPositionReconcile(ctx context.Context, in *stateReconcil
 	return &stateReconcileOutput{CacheControl: "no-store", Body: result}, nil
 }
 
-// stateReconcileMissing ports the two "missing" result literals
-// (earn-position-reconciliation.server.ts:62-68 and :77-83).
 func stateReconcileMissing(vault *stateManagedVaultRow) EarnPositionReconcileResponse {
 	if vault == nil {
 		return EarnPositionReconcileResponse{Status: "missing"}
@@ -94,8 +81,6 @@ func stateReconcileMissing(vault *stateManagedVaultRow) EarnPositionReconcileRes
 	}
 }
 
-// reconcileEarnVaultPosition ports reconcileEarnVaultPosition
-// (earn-position-reconciliation.server.ts:49).
 func (h earnRoutes) reconcileEarnVaultPosition(ctx context.Context, account EarnAccount, force bool) (EarnPositionReconcileResponse, error) {
 	now := time.Now()
 	vault, err := h.stateManagedVaultRow(ctx, account.Settings.String(), account.Vault.String())
@@ -187,10 +172,6 @@ func (h earnRoutes) reconcileEarnVaultPosition(ctx context.Context, account Earn
 	}, nil
 }
 
-// stateManagedVaultRow is the vault half of findActiveManagedYieldVaultWithPolicy
-// (yield-deposit-repository.server.ts:3270): the active Earn vault, newest
-// first. The policy half is the shared activePolicyPair read, whose filters
-// match the route policy lookups exactly.
 type stateManagedVaultRow struct {
 	ID                 int64
 	ActivePolicyID     int64
@@ -217,11 +198,6 @@ LIMIT 1`, settings, int16(earnprep.EarnVaultIndex), vaultPubkey).Scan(&vault.ID,
 	return &vault, nil
 }
 
-// stateSnapshotBalances ports the holdings mapping of
-// reconcileEarnVaultPosition (:127-157): Kamino holdings become snapshot
-// positions whose planning metadata is the RPC provenance plus the source id,
-// and idle holdings become idle token balances that must carry their account
-// identity.
 func stateSnapshotBalances(holdings []earnprep.WithdrawHolding) ([]stateSnapshotPosition, []stateSnapshotIdleBalance, error) {
 	var positions []stateSnapshotPosition
 	var idle []stateSnapshotIdleBalance
@@ -270,9 +246,6 @@ func statePubkeyOrNil(key *solana.PublicKey) *string {
 	return &s
 }
 
-// stateSnapshotPosition is one planned row for
-// vault_position_snapshot_positions and vault_reserve_positions_current; the
-// APY columns stay unset exactly as the RPC read leaves them unpriced.
 type stateSnapshotPosition struct {
 	Reserve          string
 	Market           *string
@@ -282,8 +255,6 @@ type stateSnapshotPosition struct {
 	PlanningMetadata map[string]any
 }
 
-// stateSnapshotIdleBalance is one planned row for
-// vault_idle_token_balances_current.
 type stateSnapshotIdleBalance struct {
 	Mint         string
 	AmountRaw    int64
@@ -291,8 +262,6 @@ type stateSnapshotIdleBalance struct {
 	TokenAccount string
 }
 
-// stateReconciledSnapshot carries recordReconciledYieldVaultSnapshot's input
-// (yield-deposit-repository.server.ts:3413).
 type stateReconciledSnapshot struct {
 	VaultID          int64
 	PolicyID         int64
@@ -432,8 +401,6 @@ WHERE id = $1`, in.VaultID, in.ObservedAt, in.ObservedSlot, in.Now); err != nil 
 	return tx.Commit(ctx)
 }
 
-// mergeStateSnapshotSource ports snapshotPositionValues' planning metadata
-// spread: the recorder's own source first, the RPC provenance over it.
 func mergeStateSnapshotSource(metadata map[string]any) map[string]any {
 	merged := make(map[string]any, len(metadata)+1)
 	merged["source"] = "frontend_position_reconcile"

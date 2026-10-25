@@ -43,9 +43,6 @@ const (
 	withdrawReserveSnapshotLength      = withdrawReserveCollateralMintSupply + 8
 )
 
-// Obligation layout offsets (KAMINO_OBLIGATION_LAYOUT_OFFSETS, CL:386-393):
-// eight deposit slots of 136 bytes from offset 96, the deposited amount a u64
-// at slot+32.
 const (
 	withdrawObligationLendingMarketOffset = 32
 	withdrawObligationOwnerOffset         = 64
@@ -57,9 +54,6 @@ const (
 	withdrawObligationMinLength = withdrawObligationDepositsOffset + withdrawObligationDepositCount*withdrawObligationDepositSize
 )
 
-// WithdrawReserveSnapshot is the two numbers the redeemable rate needs
-// (KaminoReserveSnapshot, CL:449 area). TotalLiquidityScaled is the TS
-// snapshot semantics: max(0, (available<<60) + borrowedSf − fees).
 type WithdrawReserveSnapshot struct {
 	CollateralSupplyRaw  uint64
 	TotalLiquidityScaled *big.Int
@@ -72,7 +66,6 @@ func withdrawReserveData(data []byte) ([]byte, error) {
 	return data, nil
 }
 
-// ParseWithdrawReserveSnapshot mirrors parseKaminoReserveSnapshot (CL:1249).
 func ParseWithdrawReserveSnapshot(data []byte) (WithdrawReserveSnapshot, error) {
 	data, err := withdrawReserveData(data)
 	if err != nil {
@@ -98,8 +91,6 @@ func ParseWithdrawReserveSnapshot(data []byte) (WithdrawReserveSnapshot, error) 
 	}, nil
 }
 
-// WithdrawReserveTokenAccounts are the keys parseKaminoReserveTokenAccounts
-// reads off a reserve (CL:1095-1139).
 type WithdrawReserveTokenAccounts struct {
 	FarmCollateral, FarmDebt                       solana.PublicKey
 	LendingMarket                                  solana.PublicKey
@@ -108,8 +99,6 @@ type WithdrawReserveTokenAccounts struct {
 	ReserveLiquidityTokenProgram                   solana.PublicKey
 }
 
-// ParseWithdrawReserveTokenAccounts mirrors parseKaminoReserveTokenAccounts
-// (CL:1095).
 func ParseWithdrawReserveTokenAccounts(data []byte) (WithdrawReserveTokenAccounts, error) {
 	data, err := withdrawReserveData(data)
 	if err != nil {
@@ -130,24 +119,18 @@ func ParseWithdrawReserveTokenAccounts(data []byte) (WithdrawReserveTokenAccount
 	}, nil
 }
 
-// WithdrawObligationDeposit is one funded deposit slot
-// (KaminoObligationDeposit, CL:1209-1217): empty slots and zero amounts do not
-// appear.
 type WithdrawObligationDeposit struct {
 	DepositedAmountRaw uint64
 	Reserve            solana.PublicKey
 	SlotIndex          int
 }
 
-// WithdrawObligation is the parsed obligation head and its funded deposits
-// (KaminoObligationAccount, CL:1184).
 type WithdrawObligation struct {
 	Deposits      []WithdrawObligationDeposit
 	LendingMarket solana.PublicKey
 	Owner         solana.PublicKey
 }
 
-// ParseWithdrawObligation mirrors parseKaminoObligationAccount (CL:1184).
 func ParseWithdrawObligation(data []byte) (WithdrawObligation, error) {
 	if !bytes.HasPrefix(data, kamino.ObligationDiscriminator[:]) {
 		return WithdrawObligation{}, errors.New("Kamino obligation account has an invalid discriminator.")
@@ -175,10 +158,6 @@ func ParseWithdrawObligation(data []byte) (WithdrawObligation, error) {
 	return obligation, nil
 }
 
-// WithdrawRedeemableLiquidityRaw mirrors
-// calculateKaminoRedeemableLiquidityAmountRaw (CL:1312): zero collateral
-// redeems nothing, an unavailable rate (zero supply or zero liquidity) redeems
-// the collateral 1:1, otherwise the rate floors.
 func WithdrawRedeemableLiquidityRaw(collateralAmountRaw uint64, snapshot WithdrawReserveSnapshot) (uint64, error) {
 	if collateralAmountRaw == 0 {
 		return 0, nil

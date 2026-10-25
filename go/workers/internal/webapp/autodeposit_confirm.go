@@ -15,12 +15,6 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
-// Confirm ops for the remaining autodeposit writes, ported from
-// web/apps/web/src/app/api/smart-accounts/yield-optimization/autodeposit/{close,floor,toggle}/confirm/route.ts.
-// Mobile's wallet pushes stay inside the ops (pathmap.md:15-16): floor pushes
-// the scheduled-sweep copy when a rebaseline sweep was scheduled, toggle
-// pushes the enabled copy when the target turns active.
-
 const (
 	autodepositCloseConfirmPath  = "/api/smart-accounts/yield-optimization/autodeposit/close/confirm"
 	autodepositFloorConfirmPath  = "/api/smart-accounts/yield-optimization/autodeposit/floor/confirm"
@@ -56,8 +50,6 @@ type AutodepositToggleConfirmRequest struct {
 	VaultIndex          int    `json:"vaultIndex"`
 }
 
-// autodepositCloseInput is the parsed close body, mirroring
-// ConfirmedEarnAutodepositCloseInput (BigInt fields become uint64).
 type autodepositCloseInput struct {
 	Cluster             string
 	CloseSignature      string
@@ -89,9 +81,6 @@ type autodepositToggleInput struct {
 	WalletAddress       string
 }
 
-// autodepositBodyObject ports assertRequestObject
-// (prepare-contracts.shared.ts:190): anything but a JSON object fails with
-// the same message.
 func autodepositBodyObject(raw []byte) (map[string]any, error) {
 	parsed, err := parseJSONBody(raw)
 	if err != nil {
@@ -104,8 +93,6 @@ func autodepositBodyObject(raw []byte) (map[string]any, error) {
 	return object, nil
 }
 
-// readAutodepositVaultIndex ports readVaultIndex
-// (prepare-contracts.shared.ts:252): the JSON number must be exactly 1.
 func readAutodepositVaultIndex(object map[string]any, into *int) error {
 	if value, ok := object["vaultIndex"]; !ok || value != float64(1) {
 		return errors.New("vaultIndex must be 1 for Earn autodeposit.")
@@ -116,7 +103,7 @@ func readAutodepositVaultIndex(object map[string]any, into *int) error {
 
 // parseAutodepositCloseConfirmBody ports
 // parseEarnAutodepositCloseConfirmRequestBody
-// (earn-autodeposit-prepare-contracts.shared.ts:500): fields evaluate in the
+// : fields evaluate in the
 // TS object-literal order and every failure names its key, so the first bad
 // field matches Next's error message exactly.
 func parseAutodepositCloseConfirmBody(raw []byte) (autodepositCloseInput, error) {
@@ -161,9 +148,6 @@ func parseAutodepositCloseConfirmBody(raw []byte) (autodepositCloseInput, error)
 	return in, nil
 }
 
-// parseAutodepositFloorConfirmBody ports
-// parseEarnAutodepositFloorUpdateConfirmRequestBody
-// (earn-autodeposit-prepare-contracts.shared.ts:370).
 func parseAutodepositFloorConfirmBody(raw []byte) (autodepositFloorInput, error) {
 	object, err := autodepositBodyObject(raw)
 	if err != nil {
@@ -188,9 +172,6 @@ func parseAutodepositFloorConfirmBody(raw []byte) (autodepositFloorInput, error)
 	return in, nil
 }
 
-// parseAutodepositToggleConfirmBody ports
-// parseEarnAutodepositToggleConfirmRequestBody
-// (earn-autodeposit-prepare-contracts.shared.ts:387).
 func parseAutodepositToggleConfirmBody(raw []byte) (autodepositToggleInput, error) {
 	object, err := autodepositBodyObject(raw)
 	if err != nil {
@@ -198,7 +179,6 @@ func parseAutodepositToggleConfirmBody(raw []byte) (autodepositToggleInput, erro
 	}
 	in := autodepositToggleInput{}
 	read := func() error {
-		// readRequiredBoolean (prepare-contracts.shared.ts:241).
 		active, isBool := object["active"].(bool)
 		if !isBool {
 			return errors.New("active must be a boolean.")
@@ -218,12 +198,6 @@ func parseAutodepositToggleConfirmBody(raw []byte) (autodepositToggleInput, erro
 	return in, nil
 }
 
-// ---- canonical close rebuild (close/confirm/route.ts:53-96) ----
-
-// canonicalizeAutodepositCloseInput mirrors
-// createCanonicalAutodepositCloseInput: the cluster, deployment signer, vault
-// index and vault address are rebuilt server-side and asserted in the TS
-// order; the policy and delegation addresses are only checked to parse.
 func canonicalizeAutodepositCloseInput(in autodepositCloseInput, policySigner solana.PublicKey) (autodepositCloseInput, error) {
 	cluster, err := normalizeLoyalCluster(in.Cluster)
 	if err != nil {
@@ -268,9 +242,6 @@ func canonicalizeAutodepositCloseInput(in autodepositCloseInput, policySigner so
 	return in, nil
 }
 
-// autodepositCloseConfirmedSlot ports the close route's
-// resolveConfirmedSignatureSlot (close/confirm/route.ts:115-141): the close
-// transaction must be confirmed or finalized and its slot is what we record.
 func autodepositCloseConfirmedSlot(ctx context.Context, client *chain.Client, signature string) (uint64, error) {
 	state, err := client.SignatureState(ctx, signature)
 	if err != nil {
@@ -284,8 +255,6 @@ func autodepositCloseConfirmedSlot(ctx context.Context, client *chain.Client, si
 	}
 	return state.Slot, nil
 }
-
-// ---- response bodies ----
 
 // AutodepositFloorRebaselineSweep keeps both TS key orders byte-identical:
 // the repository's skipped literal is {reason, status} and the route's
@@ -301,16 +270,10 @@ type AutodepositFloorConfirmResponse struct {
 	Target          *AutodepositSetupConfirmTarget   `json:"target"`
 }
 
-// AutodepositTargetResponse is the close and toggle body:
-// NextResponse.json({ target }).
 type AutodepositTargetResponse struct {
 	Target *AutodepositSetupConfirmTarget `json:"target"`
 }
 
-// serializeAutodepositFloorSweep ports the web floor route's
-// serializeScheduledSweep (floor/confirm/route.ts:36-55): id and slotId both
-// carry the slot id, lotCount is the CTE's fixed 1, and
-// executeNowAvailableAt renders as null while the delegation is not ready.
 func serializeAutodepositFloorSweep(sweep *autodepositFloorSweep) *AutodepositSetupConfirmSweep {
 	out := &AutodepositSetupConfirmSweep{
 		Classification:     sweep.Classification,
@@ -358,7 +321,6 @@ func (h earnRoutes) registerAutodepositClose(api huma.API) {
 }
 
 func (h earnRoutes) autodepositCloseConfirm(ctx context.Context, in *autodepositCloseConfirmInput) (*autodepositTargetOutput, error) {
-	// route.ts:158-162.
 	account, err := h.account(ctx, in.SessionInput)
 	if err != nil {
 		return nil, earnUnavailable("load Earn account", err, "account_unavailable", "Earn account is unavailable.")
@@ -371,37 +333,31 @@ func (h earnRoutes) autodepositCloseConfirm(ctx context.Context, in *autodeposit
 		return nil, earnError(http.StatusBadRequest, "invalid_request", err.Error())
 	}
 
-	// route.ts:175-184.
 	if input.WalletAddress != account.Wallet.String() || input.Settings != account.Settings.String() {
 		return nil, earnError(http.StatusForbidden, "principal_mismatch",
 			"Confirmed autodeposit close does not match the authenticated wallet session.")
 	}
 
-	// route.ts:186-196.
 	canonical, err := canonicalizeAutodepositCloseInput(input, h.PolicySigner)
 	if err != nil {
 		return nil, earnError(http.StatusBadRequest, "metadata_mismatch", err.Error())
 	}
 
-	// route.ts:198-206.
 	if canonical.Cluster != string(account.Cluster) {
 		return nil, earnError(http.StatusBadRequest, "cluster_mismatch",
 			"Confirmed autodeposit close cluster does not match the configured Solana environment.")
 	}
 
-	// route.ts:208-222.
 	confirmedSlot, err := autodepositCloseConfirmedSlot(ctx, h.Chain, canonical.CloseSignature)
 	if err != nil {
 		return nil, earnError(http.StatusBadRequest, "unconfirmed_signature", err.Error())
 	}
 
-	// route.ts:224-230.
 	if canonical.ConfirmedSlot != confirmedSlot {
 		return nil, earnError(http.StatusBadRequest, "slot_mismatch",
 			"Confirmed autodeposit close slot does not match the transaction status.")
 	}
 
-	// route.ts:232-243.
 	target, err := h.recordAutodepositCloseIntent(ctx, canonical)
 	if err != nil {
 		return nil, earnError(http.StatusBadRequest, "record_failed", err.Error())
@@ -426,13 +382,11 @@ func (h earnRoutes) registerAutodepositFloor(api huma.API) {
 }
 
 func (h earnRoutes) autodepositFloorConfirm(ctx context.Context, in *autodepositFloorConfirmInput) (*autodepositFloorConfirmOutput, error) {
-	// route.ts:58-62.
 	account, err := h.account(ctx, in.SessionInput)
 	if err != nil {
 		return nil, earnUnavailable("load Earn account", err, "account_unavailable", "Earn account is unavailable.")
 	}
 
-	// route.ts:64-77.
 	input, err := parseAutodepositFloorConfirmBody(in.Raw.data)
 	if err != nil {
 		return nil, earnError(http.StatusBadRequest, "invalid_request", err.Error())
@@ -489,13 +443,11 @@ func (h earnRoutes) registerAutodepositToggle(api huma.API) {
 }
 
 func (h earnRoutes) autodepositToggleConfirm(ctx context.Context, in *autodepositToggleConfirmInput) (*autodepositTargetOutput, error) {
-	// route.ts:36-40.
 	account, err := h.account(ctx, in.SessionInput)
 	if err != nil {
 		return nil, earnUnavailable("load Earn account", err, "account_unavailable", "Earn account is unavailable.")
 	}
 
-	// route.ts:42-51.
 	input, err := parseAutodepositToggleConfirmBody(in.Raw.data)
 	if err != nil {
 		return nil, earnError(http.StatusBadRequest, "invalid_request", err.Error())
