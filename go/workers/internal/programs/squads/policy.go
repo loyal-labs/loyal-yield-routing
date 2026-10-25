@@ -85,6 +85,60 @@ type FullPayload struct {
 	PreHook, PostHook bool
 	Start             int64
 	HasExpiration     bool
+	Usage             []SpendingLimitUsage
+}
+
+// SpendingLimitUsage is Squads' running counters for one spending limit of
+// the legacy account layout, beside the rule they count against.
+type SpendingLimitUsage struct {
+	Mint              solana.PublicKey
+	Period            uint8
+	CustomPeriod      int64
+	MaxPerPeriod      uint64
+	RemainingInPeriod uint64
+	LastReset         int64
+}
+
+var (
+	ErrSpendingLimitUsageUnavailable = errors.New("policy account layout carries no spending-limit usage")
+	ErrSpendingLimitPeriod           = errors.New("spending limit period has no fixed length")
+)
+
+// PeriodSeconds is how long the limit runs between resets.
+func (u SpendingLimitUsage) PeriodSeconds() (int64, error) {
+	switch u.Period {
+	case PeriodDaily:
+		return 24 * 60 * 60, nil
+	case PeriodWeekly:
+		return 7 * 24 * 60 * 60, nil
+	case PeriodCustom:
+		if u.CustomPeriod > 0 {
+			return u.CustomPeriod, nil
+		}
+	}
+	return 0, ErrSpendingLimitPeriod
+}
+
+// DecodeSpendingLimitUsage returns the usage of the one spending limit on
+// mint, or ErrSpendingLimitUsageUnavailable for the compact layout.
+func DecodeSpendingLimitUsage(account *chain.Account, mint solana.PublicKey) (SpendingLimitUsage, error) {
+	policy, err := DecodeProgramInteractionPolicy(account)
+	if err != nil {
+		return SpendingLimitUsage{}, err
+	}
+	if policy.Full == nil || len(policy.Full.Usage) == 0 {
+		return SpendingLimitUsage{}, ErrSpendingLimitUsageUnavailable
+	}
+	var found []SpendingLimitUsage
+	for _, usage := range policy.Full.Usage {
+		if usage.Mint == mint {
+			found = append(found, usage)
+		}
+	}
+	if len(found) != 1 {
+		return SpendingLimitUsage{}, fmt.Errorf("policy has %d spending limits on %s, want 1", len(found), mint)
+	}
+	return found[0], nil
 }
 
 type borshCursor struct {
@@ -431,19 +485,21 @@ func readLegacyPayload(cursor *borshCursor, accountIndex uint8) (FullPayload, er
 		return FullPayload{}, errors.New("too many ProgramInteraction spending limits")
 	}
 	limits := make([]SpendingLimitView, 0, limitCount)
+	usage := make([]SpendingLimitUsage, 0, limitCount)
 	for i := 0; i < limitCount; i++ {
-		limit, err := readLegacySpendingLimit(cursor)
+		limit, counters, err := readLegacySpendingLimit(cursor)
 		if err != nil {
 			return FullPayload{}, err
 		}
 		limits = append(limits, limit)
+		usage = append(usage, counters)
 	}
 	start, hasExpiration, err := readPolicyAccountTail(cursor)
 	if err != nil {
 		return FullPayload{}, err
 	}
 	payload.SpendingLimits = limits
-	return FullPayload{Payload: payload, PreHook: preHook, PostHook: postHook, Start: start, HasExpiration: hasExpiration}, nil
+	return FullPayload{Payload: payload, PreHook: preHook, PostHook: postHook, Start: start, HasExpiration: hasExpiration, Usage: usage}, nil
 }
 
 func readCompactPayload(cursor *borshCursor, accountIndex uint8) (FullPayload, error) {
@@ -715,41 +771,46 @@ func readDataConstraint(cursor *borshCursor) (DataConstraintView, error) {
 	return view, nil
 }
 
-func readLegacySpendingLimit(cursor *borshCursor) (SpendingLimitView, error) {
+func readLegacySpendingLimit(cursor *borshCursor) (SpendingLimitView, SpendingLimitUsage, error) {
 	var limit SpendingLimitView
 	var err error
 	if limit.Mint, err = cursor.pubkey(); err != nil {
-		return SpendingLimitView{}, err
+		return SpendingLimitView{}, SpendingLimitUsage{}, err
 	}
 	if limit.Start, err = cursor.i64(); err != nil {
-		return SpendingLimitView{}, err
+		return SpendingLimitView{}, SpendingLimitUsage{}, err
 	}
 	if _, err = cursor.option(func() error {
 		value, err := cursor.i64()
 		limit.Expiration = &value
 		return err
 	}); err != nil {
-		return SpendingLimitView{}, err
+		return SpendingLimitView{}, SpendingLimitUsage{}, err
 	}
 	if limit.Period, limit.CustomPeriod, err = readPeriodV2(cursor); err != nil {
-		return SpendingLimitView{}, err
+		return SpendingLimitView{}, SpendingLimitUsage{}, err
 	}
 	if limit.Accumulate, err = cursor.bool(); err != nil {
-		return SpendingLimitView{}, err
+		return SpendingLimitView{}, SpendingLimitUsage{}, err
 	}
 	if limit.MaxPerPeriod, err = cursor.u64(); err != nil {
-		return SpendingLimitView{}, err
+		return SpendingLimitView{}, SpendingLimitUsage{}, err
 	}
 	if limit.MaxPerUse, err = cursor.u64(); err != nil {
-		return SpendingLimitView{}, err
+		return SpendingLimitView{}, SpendingLimitUsage{}, err
 	}
 	if limit.ExactQuantity, err = cursor.bool(); err != nil {
-		return SpendingLimitView{}, err
+		return SpendingLimitView{}, SpendingLimitUsage{}, err
 	}
-	if _, err = cursor.take(remainingInPeriodLen + lastResetLen); err != nil {
-		return SpendingLimitView{}, err
+	var usage SpendingLimitUsage
+	if usage.RemainingInPeriod, err = cursor.u64(); err != nil {
+		return SpendingLimitView{}, SpendingLimitUsage{}, err
 	}
-	return limit, nil
+	if usage.LastReset, err = cursor.i64(); err != nil {
+		return SpendingLimitView{}, SpendingLimitUsage{}, err
+	}
+	usage.Mint, usage.Period, usage.CustomPeriod, usage.MaxPerPeriod = limit.Mint, limit.Period, limit.CustomPeriod, limit.MaxPerPeriod
+	return limit, usage, nil
 }
 
 func readCompactSpendingLimit(cursor *borshCursor, table []solana.PublicKey) (SpendingLimitView, error) {

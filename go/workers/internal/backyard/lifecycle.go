@@ -45,8 +45,20 @@ func simulationRefused(err error) error {
 	if errors.Is(err, errConfirmedObservationUnavailable) {
 		return err
 	}
+	var failure *simulationFailure
+	if errors.As(err, &failure) && confirmedFailureReason(failure.raw, failure.logs) == squadsSpendingLimitReason {
+		return &PreSendHold{Reason: holdSpendingLimit, Details: map[string]string{"simulation": err.Error()}, cause: err}
+	}
 	return &PreSendHold{Reason: holdChainRefused, Details: map[string]string{"simulation": err.Error()}, cause: err}
 }
+
+type simulationFailure struct {
+	raw  json.RawMessage
+	logs []string
+	text string
+}
+
+func (f *simulationFailure) Error() string { return f.text }
 
 func advanceNonterminalWithManifest(ctx context.Context, manifest RouteManifest, database *Database, rpc *chain.Client, operation PersistedOperation) error {
 	if database == nil || rpc == nil || !IsNonterminal(operation.Status) {

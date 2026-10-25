@@ -609,7 +609,11 @@ func outboundStep(s Snapshot, t LaneTarget, d func(Action, string, int64) Decisi
 		return d(SwapDebtToCollateralStep, outboundDebtReason, int64(s.DebtIdleRaw)), true
 	}
 	if s.SquadsIdleRaw > 0 {
-		return d(StageSquadsToVoltr, outboundStageReason, s.SquadsIdleRaw), true
+		amount := s.StageAllowance.cap(s.SquadsIdleRaw)
+		if amount == 0 {
+			return d(Hold, string(holdSpendingLimit), 0), true
+		}
+		return d(StageSquadsToVoltr, outboundStageReason, amount), true
 	}
 	if t.EquityZero && s.PositionDebtRaw == 0 && s.PositionCollateralRaw > partialWithdrawalDustRaw {
 		return d(DeleverRouteStep, exitWithdrawReason, stepDownMarker), true
