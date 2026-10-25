@@ -79,7 +79,7 @@ func withEarningsRefreshLock(ctx context.Context, pool *pgxpool.Pool, key string
 		return false, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err := tx.Exec(ctx, `SET LOCAL statement_timeout = 10000`); err != nil {
+	if _, err := tx.Exec(ctx, `SET LOCAL statement_timeout = 10000; SET LOCAL idle_in_transaction_session_timeout = 0`); err != nil {
 		return false, err
 	}
 	var acquired bool
