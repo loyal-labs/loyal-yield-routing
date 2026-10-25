@@ -76,6 +76,9 @@ func registerAPI(api huma.API, cfg Config) {
 			registerContent(api, cfg.AppDB)
 		}
 	}
+	if cfg.EarnMax != nil {
+		newEarnMaxRoutes(nil, nil, *cfg.EarnMax, cfg.Release).registerPublicAPY(api)
+	}
 	if cfg.Auth != nil && cfg.AppDB != nil {
 		if cfg.EarnMax != nil {
 			routes := newEarnMaxRoutes(cfg.Auth, cfg.AppDB, *cfg.EarnMax, cfg.Release)
@@ -198,6 +201,7 @@ func OpenAPI() *huma.OpenAPI {
 	registerTokens(api, nil)
 	routes := newEarnMaxRoutes(nil, nil, EarnMax{}, "")
 	routes.registerReads(api)
+	routes.registerPublicAPY(api)
 	routes.registerRedeem(api)
 	registerPush(api, nil, nil)
 	documentEarn(api)
