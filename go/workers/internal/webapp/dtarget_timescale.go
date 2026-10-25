@@ -125,7 +125,10 @@ func dtargetCurrentEligibleSafeReserves(ctx context.Context, q dtargetQuerier, g
 	return out, nil
 }
 
-func dtargetReservePresenceOnlyObservations(ctx context.Context, q dtargetQuerier, getBlockTime dtargetBlockTimeFunc, reserves []string) ([]dtargetReserveObservation, error) {
+// dtargetReserveObservations returns each reserve's latest confirmed row. It
+// applies no stale-flag or APY-bounds filter on purpose, because a briefly
+// stale row must not fail deposits as unsampled.
+func dtargetReserveObservations(ctx context.Context, q dtargetQuerier, getBlockTime dtargetBlockTimeFunc, reserves []string) ([]dtargetReserveObservation, error) {
 	if q == nil || len(reserves) == 0 {
 		return nil, nil
 	}
