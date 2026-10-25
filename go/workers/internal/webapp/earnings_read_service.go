@@ -511,8 +511,6 @@ func rebuildEarningsRangeSet(ctx context.Context, input earningsReadInput, deps 
 		return EarningsRangeSet{}, err
 	}
 
-	// TS keeps this slice empty on purpose: portfolio windows do not use it.
-	pathEvents := []earningsPathEvent{}
 	historyRevision := getPortfolioEarningsHistoryRevision(effectiveLedger, portfolioSnapshots)
 
 	if !principalMatchesHistory || len(effectiveLedger) == 0 || (projectedPrincipal > 0 && len(portfolioSnapshots) == 0) {
@@ -538,7 +536,7 @@ func rebuildEarningsRangeSet(ctx context.Context, input earningsReadInput, deps 
 	defer cancelApy()
 	apySamples, err := deps.loadApySamples(apyCtx, input, earningsApyArgs{
 		end:                now,
-		pathEvents:         pathEvents,
+		pathEvents:         []earningsPathEvent{},
 		portfolioSnapshots: portfolioSnapshots,
 		reserves:           checkpointReservesOrNil(checkpoint),
 		start:              *firstDepositAt,
@@ -582,7 +580,7 @@ func rebuildEarningsRangeSet(ctx context.Context, input earningsReadInput, deps 
 			apySamples:         apySamples,
 			events:             effectiveLedger,
 			now:                now,
-			pathEvents:         pathEvents,
+			pathEvents:         []earningsPathEvent{},
 			portfolioSnapshots: portfolioSnapshots,
 			principalClamp:     activeClamp,
 			rangeID:            rangeID,
@@ -638,7 +636,7 @@ func rebuildEarningsRangeSet(ctx context.Context, input earningsReadInput, deps 
 					apySamples:         apySamples,
 					events:             effectiveLedger,
 					now:                *nextCheckpointAt,
-					pathEvents:         pathEvents,
+					pathEvents:         []earningsPathEvent{},
 					portfolioSnapshots: portfolioSnapshots,
 					principalClamp:     activeClamp,
 					rangeID:            rangeID,

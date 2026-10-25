@@ -240,10 +240,6 @@ func withdrawReadOptionalSourceMetadata(record map[string]any) (map[string]any, 
 	}
 	object, isObject := value.(map[string]any)
 	if !isObject {
-		if _, isArray := value.([]any); isArray {
-			return nil, fmt.Errorf("sourceMetadata must be an object when provided.")
-		}
-		// A non-null primitive fails the object check in TS too.
 		return nil, fmt.Errorf("sourceMetadata must be an object when provided.")
 	}
 	return object, nil

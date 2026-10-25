@@ -209,7 +209,7 @@ func (h earnRoutes) earnState(ctx context.Context, in *sessionRequest) (*earnSta
 
 	var policyOut *EarnStatePolicy
 	if pair != nil {
-		policyOut = serializeEarnStatePolicy(pair.Route, pair.Setup, int(earnprep.EarnVaultIndex), vaultPubkey)
+		policyOut = serializeEarnStatePolicy(pair.Route, pair.Setup)
 	}
 	nextStep := stateOnboardingNextStep(attempt, position != nil, pair != nil, pair != nil && pair.Setup != nil)
 
