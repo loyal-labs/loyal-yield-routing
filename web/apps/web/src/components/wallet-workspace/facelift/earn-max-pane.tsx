@@ -1007,7 +1007,7 @@ export function EarnMaxWorkspace({
           onSelectTab={setChartTab}
           selectedTab={chartTab}
           statsPanel={
-            <EarnMaxInfoFaqsCard className="flex min-h-[240px] w-full flex-1" />
+            <EarnMaxInfoFaqsCard className="flex w-full shrink-0" />
           }
         />
       )}
