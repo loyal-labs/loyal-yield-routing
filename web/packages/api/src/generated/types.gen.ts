@@ -524,16 +524,16 @@ export type EarnForecastSummaryResponse = {
     history: EarnForecastApyHistoryResponse;
 };
 
+export type EarnMaxActivity = {
+    operations: Array<ActivityItem>;
+    performance: Array<PerformancePoint>;
+};
+
 export type EarnMaxApy = {
     apyBps: number | null;
     apyWindowDays: number | null;
     currentApyBps: number | null;
     history: Array<HistoryPoint>;
-};
-
-export type EarnMaxActivity = {
-    operations: Array<ActivityItem>;
-    performance: Array<PerformancePoint>;
 };
 
 export type EarnMaxConfig = {

@@ -330,7 +330,7 @@ func (h earnMaxRoutes) registerReads(api huma.API) {
 }
 
 type apyOutput struct {
-	Body earnmax.EarnMaxAPY
+	Body earnmax.EarnMaxApy
 }
 
 func (h earnMaxRoutes) registerPublicAPY(api huma.API) {

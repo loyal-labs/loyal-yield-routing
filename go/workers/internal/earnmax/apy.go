@@ -117,17 +117,17 @@ func (a APY) RNHistory() []APYPoint {
 	return out
 }
 
-type EarnMaxAPY struct {
+type EarnMaxApy struct {
 	APYBps        *int64         `json:"apyBps"`
 	APYWindowDays *int64         `json:"apyWindowDays"`
 	CurrentApyBps *int64         `json:"currentApyBps"`
 	History       []HistoryPoint `json:"history" nullable:"false"`
 }
 
-func (r *Reader) PublicAPY(ctx context.Context) EarnMaxAPY {
+func (r *Reader) PublicAPY(ctx context.Context) EarnMaxApy {
 	apy := r.APY()
 	current, _ := r.CurrentApyBps(ctx, r.now())
-	return EarnMaxAPY{APYBps: apy.Bps, APYWindowDays: apy.WindowDays, CurrentApyBps: current, History: apy.History}
+	return EarnMaxApy{APYBps: apy.Bps, APYWindowDays: apy.WindowDays, CurrentApyBps: current, History: apy.History}
 }
 
 func (r *Reader) APY() APY {
