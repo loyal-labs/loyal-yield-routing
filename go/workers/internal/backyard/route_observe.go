@@ -21,6 +21,10 @@ import (
 )
 
 func ObserveConfirmedRouteSnapshot(ctx context.Context, rpc *chain.Client, view *View, manifest RouteManifest, state *vaultState, ownWriteSlot int64, inputs targetInputs) (Observation, []ConfirmedAccount, error) {
+	return observeQuotingRouteSnapshot(ctx, rpc, view, manifest, state, ownWriteSlot, inputs, nil)
+}
+
+func observeQuotingRouteSnapshot(ctx context.Context, rpc *chain.Client, view *View, manifest RouteManifest, state *vaultState, ownWriteSlot int64, inputs targetInputs, exits *exitQuoter) (Observation, []ConfirmedAccount, error) {
 	if rpc == nil || view == nil {
 		return Observation{}, nil, fmt.Errorf("RPC client and account view are required")
 	}
@@ -38,7 +42,8 @@ func ObserveConfirmedRouteSnapshot(ctx context.Context, rpc *chain.Client, view 
 		stageAllowance: func(ctx context.Context, slot, chainNow int64) (*StageAllowance, error) {
 			return observeStageAllowance(ctx, rpc, v, slot, chainNow)
 		},
-		now: func() time.Time { return time.Now().UTC() },
+		now:   func() time.Time { return time.Now().UTC() },
+		exits: exits,
 	})
 }
 
@@ -192,6 +197,9 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 			refreshExhausted = true
 			runtime.state.events.noteCause(holdDetail(refreshErr))
 		}
+	}
+	if runtime.exits != nil {
+		runtime.inputs.ExitCosts = runtime.exits.quote(ctx, manifest, slot, accounts, valued, runtime.inputs.ExitCosts)
 	}
 	views := make([]Observation, 0, len(viewLanes))
 	for _, lane := range viewLanes {

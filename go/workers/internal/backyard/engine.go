@@ -44,6 +44,7 @@ type Engine struct {
 	config   Config
 	out      io.Writer
 	runtime  EngineConfig
+	exits    map[string]*exitQuoter
 }
 
 func NewEngine(config EngineConfig) (*Engine, error) {
@@ -59,7 +60,7 @@ func NewEngine(config EngineConfig) (*Engine, error) {
 		config.Out = io.Discard
 	}
 	e := &Engine{database: config.Database, rpc: config.RPC, view: config.View, owner: config.Owner, config: config.Config, out: config.Out, runtime: config}
-	routeEvents := map[string]*events{}
+	routeEvents, routeExits := map[string]*events{}, map[string]*exitQuoter{}
 	for _, v := range vaults {
 		state := &vaultState{events: newEvents(config.Logger, config.Facts, v.Name)}
 		worker, err := NewWorker(config.Database, config.RPC, config.View, config.Jupiter, config.Config, config.Credentials, v, state)
@@ -68,18 +69,50 @@ func NewEngine(config EngineConfig) (*Engine, error) {
 		}
 		e.workers, e.states = append(e.workers, worker), append(e.states, state)
 		routeEvents[v.RouteKey] = state.events
+		routeExits[v.RouteKey] = &exitQuoter{
+			price: func(ctx context.Context, b heldExitBasis, slot int64, at time.Time) (ExitCost, error) {
+				pricer, err := newLanePricer(ctx, config.RPC, config.View, config.Jupiter, v.manifest, slot)
+				if err != nil {
+					return ExitCost{}, err
+				}
+				return pricer.priceHeldExit(ctx, b, slot, at)
+			},
+			record: config.Database.RecordExitCost,
+			now:    func() time.Time { return time.Now().UTC() },
+			events: state.events,
+		}
 	}
 	if config.Jupiter == nil {
 		return nil, fmt.Errorf("Backyard engine requires a Jupiter client")
 	}
-	config.Database.events = routeEvents
+	config.Database.events, config.Database.exits, e.exits = routeEvents, routeExits, routeExits
 	return e, nil
+}
+
+func (e *Engine) quoteStartupExits(ctx context.Context) {
+	for i, worker := range e.workers {
+		v, quoter := worker.manifest.vault, e.exits[worker.routeKey]
+		if quoter == nil {
+			continue
+		}
+		quoteCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		refreshObservationLagSlots(quoteCtx, e.rpc)
+		planning, err := e.database.readRoutePlanningState(quoteCtx, v.RouteKey)
+		if err == nil {
+			_, _, err = observeQuotingRouteSnapshot(quoteCtx, e.rpc, e.view, worker.manifest, e.states[i], planning.landedSlot, planning.inputs, quoter)
+		}
+		cancel()
+		if err != nil {
+			_, _ = fmt.Fprintf(e.out, "backyard-rwa-worker: vault=%s startup exit quotes unavailable: %s\n", v.Name, sanitizedSelectorEvaluateFailure(err))
+		}
+	}
 }
 
 func (e *Engine) Run(ctx context.Context) error {
 	if e == nil || len(e.workers) == 0 {
 		return fmt.Errorf("Backyard engine is not constructed")
 	}
+	e.quoteStartupExits(ctx)
 	if e.runtime.Selector != SelectorOff {
 		feed, err := NewEconomicFeed(e.view)
 		if err != nil {
@@ -144,12 +177,11 @@ type selectorSampler struct {
 	levWatch                           *leverageWatch
 	levDecisionLog                     *leverageDecisionLog
 	apyThrottle                        *currentAPYThrottle
-	exitQuoted                         map[string]time.Time
 }
 
 func newSelectorSampler(e *Engine, worker *Worker, state *vaultState) *selectorSampler {
 	return &selectorSampler{engine: e, worker: worker, state: state, identity: newProgramIdentityWatcher(viewProgramIdentity(e.view)).observe,
-		levWatch: &leverageWatch{}, levDecisionLog: &leverageDecisionLog{}, apyThrottle: &currentAPYThrottle{}, exitQuoted: map[string]time.Time{}}
+		levWatch: &leverageWatch{}, levDecisionLog: &leverageDecisionLog{}, apyThrottle: &currentAPYThrottle{}}
 }
 
 func (p *selectorSampler) sample(ctx, feedCtx context.Context, markets []LaneEconomics) {
@@ -195,24 +227,6 @@ func (p *selectorSampler) sample(ctx, feedCtx context.Context, markets []LaneEco
 			if err := database.RecordLaneLevel(ctx, routeKey, decision.Lane, decision.level()); err != nil {
 				printf("lane level not stored: %s\n", sanitizedSelectorEvaluateFailure(err))
 			}
-		}
-	}
-	for _, lane := range observed.lanes {
-		basis, held, err := readHeldExitBasis(worker.manifest, observed, lane)
-		now := time.Now().UTC()
-		if err != nil || !held || !observed.exitCosts().quoteDue(basis, p.exitQuoted[lane.RouteLane], now) {
-			continue
-		}
-		p.exitQuoted[lane.RouteLane] = now
-		pricer, err := newLanePricer(ctx, rpc, view, e.runtime.Jupiter, worker.manifest, lane.Slot)
-		if err == nil {
-			var cost ExitCost
-			if cost, err = pricer.priceHeldExit(ctx, basis, lane.Slot, now); err == nil {
-				err = database.RecordExitCost(ctx, cost)
-			}
-		}
-		if err != nil {
-			printf("exit quote lane=%s not stored: %s\n", lane.RouteLane, sanitizedSelectorEvaluateFailure(err))
 		}
 	}
 	for _, source := range observed.lanes {

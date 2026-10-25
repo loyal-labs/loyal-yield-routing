@@ -172,6 +172,7 @@ type MoveQuote struct {
 	EvidenceID       string    `json:"evidenceId"`
 	SampleSlot       int64     `json:"sampleSlot"`
 	ValidThroughSlot int64     `json:"validThroughSlot"`
+	DestinationExit  *ExitCost `json:"destinationExit,omitempty"`
 }
 
 func (q MoveQuote) storedWindowValid() bool {

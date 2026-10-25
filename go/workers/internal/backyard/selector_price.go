@@ -429,6 +429,11 @@ func (p lanePricer) priceMove(ctx context.Context, o Observation, source *Snapsh
 	}
 	cost.EntrySwapCostMicros = usdMicros(equity) - boughtValue
 	cost.ExitSwapCostMicros = boughtValue - usdMicros(conversionQuotedOutput(exit.Request))
+	destinationExit, err := exitCostOf(lane, exitCostQuote, bought, uint64(max(boughtValue, 0)), conversionQuotedOutput(exit.Request), prices.collateral, slot, o.ObservedAt)
+	if err != nil {
+		return q, staleHoldFrom(err, selectorDestinationExitUnpriced)
+	}
+	q.DestinationExit = &destinationExit
 	blockhash := LatestBlockhash{Blockhash: entry.Request.RecentBlockhash, LastValidBlockHeight: entry.Request.LastValidBlockHeight}
 	deposit, err := p.manifest.kaminoPacketForRoute(p.policies, OpenRouteStep, kaminoLegDeposit, guaranteed, blockhash, lane)
 	if err != nil {
@@ -583,11 +588,24 @@ func (p lanePricer) settleHeld(ctx context.Context, o Observation, s Snapshot, m
 }
 
 func (p lanePricer) priceHeldExit(ctx context.Context, b heldExitBasis, slot int64, at time.Time) (ExitCost, error) {
-	exit, _, err := assembleStep(ctx, p.rpc, p.view, p.client, p.manifest, p.policies, b.st, stepExit, b.st.position.CollateralDepositedRaw, b.heldRaw, slot)
+	receipts, sold, value := b.st.position.CollateralDepositedRaw, b.heldRaw, b.markValue
+	if limit := stepLegCap(b.st.route); limit.exceeded(receipts) {
+		receipts = limit.raw
+		liquidity, err := b.st.collateral.redeemLiquidityRaw(receipts)
+		if err != nil || liquidity > math.MaxUint64-b.st.collateralBalance {
+			return ExitCost{}, staleHoldFrom(err, "exit_quote_unavailable")
+		}
+		sold = liquidity + b.st.collateralBalance
+		scaled := new(big.Int).Mul(new(big.Int).SetUint64(b.markValue), new(big.Int).SetUint64(sold))
+		value = scaled.Quo(scaled, new(big.Int).SetUint64(b.heldRaw)).Uint64()
+	}
+	exit, _, err := assembleStep(ctx, p.rpc, p.view, p.client, p.manifest, p.policies, b.st, stepExit, receipts, sold, slot)
 	if err != nil {
 		return ExitCost{}, err
 	}
-	return exitCostOf(b.st.route.Lane, exitCostQuote, b.heldRaw, b.markValue, conversionQuotedOutput(exit.Request), b.mark, slot, at)
+	cost, err := exitCostOf(b.st.route.Lane, exitCostQuote, sold, value, conversionQuotedOutput(exit.Request), b.mark, slot, at)
+	cost.QuotedCollateralRaw = b.heldRaw
+	return cost, err
 }
 
 func releaseExitMicros(source Snapshot, equity uint64) (usdMicros, error) {

@@ -25,7 +25,7 @@ func observeSelectorShadow(ctx context.Context, database *Database, rpc *chain.C
 	if err != nil {
 		return Observation{}, err
 	}
-	observation, _, err := ObserveConfirmedRouteSnapshot(ctx, rpc, view, manifest, vault, planning.landedSlot, planning.inputs)
+	observation, _, err := observeQuotingRouteSnapshot(ctx, rpc, view, manifest, vault, planning.landedSlot, planning.inputs, database.exits[v.RouteKey])
 	if err != nil {
 		return Observation{}, fmt.Errorf("shadow confirmed observation unavailable: %w", err)
 	}

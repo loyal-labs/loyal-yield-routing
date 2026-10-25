@@ -25,6 +25,8 @@ const microBPSWhole microBPS = 10_000_000_000
 
 const exitQuoteInterval = time.Hour
 
+const selectorDestinationExitUnpriced = "selector_destination_exit_unpriced"
+
 type ExitCost struct {
 	Lane                string
 	BPS                 microBPS
@@ -45,11 +47,14 @@ func newExitCost(c ExitCost) (ExitCost, error) {
 }
 
 func exitCostOf(lane string, source exitCostSource, soldRaw, markValueRaw, returnedRaw uint64, mark kamino.ScaledFraction, slot int64, at time.Time) (ExitCost, error) {
-	if markValueRaw == 0 || returnedRaw >= markValueRaw {
+	if markValueRaw == 0 || (returnedRaw >= markValueRaw && source != exitCostQuote) {
 		return ExitCost{}, fmt.Errorf("exit_cost_not_positive")
 	}
-	bps := new(big.Int).Mul(new(big.Int).SetUint64(markValueRaw-returnedRaw), new(big.Int).SetUint64(uint64(microBPSWhole)))
-	bps.Add(bps, new(big.Int).SetUint64(markValueRaw-1)).Quo(bps, new(big.Int).SetUint64(markValueRaw))
+	bps := big.NewInt(1)
+	if returnedRaw < markValueRaw {
+		bps.Mul(new(big.Int).SetUint64(markValueRaw-returnedRaw), new(big.Int).SetUint64(uint64(microBPSWhole)))
+		bps.Add(bps, new(big.Int).SetUint64(markValueRaw-1)).Quo(bps, new(big.Int).SetUint64(markValueRaw))
+	}
 	if !bps.IsUint64() {
 		return ExitCost{}, fmt.Errorf("invalid_exit_cost")
 	}
@@ -79,20 +84,45 @@ type laneExitCosts struct {
 
 type exitCosts map[string]laneExitCosts
 
+const exitQuoteOutlierRatio = 3
+
 func (e exitCosts) at(lane string, heldRaw uint64, mark kamino.ScaledFraction) (ExitCost, error) {
 	costs := e[lane]
-	if costs.Quote != nil && costs.Quote.fresh(heldRaw, mark) {
+	switch {
+	case costs.Quote != nil && costs.Quote.fresh(heldRaw, mark) && !costs.Quote.outlier(costs.Realized):
+		return *costs.Quote, nil
+	case costs.Realized != nil:
+		return *costs.Realized, nil
+	case costs.Quote != nil:
 		return *costs.Quote, nil
 	}
-	if costs.Realized != nil {
-		return *costs.Realized, nil
-	}
-	return ExitCost{}, fmt.Errorf("lane %s has no fresh exit quote and no realized exit cost", lane)
+	return ExitCost{}, fmt.Errorf("lane %s has no exit quote and no realized exit cost", lane)
+}
+
+func (c ExitCost) outlier(realized *ExitCost) bool {
+	return realized != nil && c.BPS > exitQuoteOutlierRatio*realized.BPS
 }
 
 func (e exitCosts) quoteDue(b heldExitBasis, lastAttempt, now time.Time) bool {
-	quote := e[b.st.route.Lane].Quote
-	return (quote == nil || !quote.fresh(b.heldRaw, b.mark)) && now.Sub(lastAttempt) >= exitQuoteInterval
+	costs := e[b.st.route.Lane]
+	switch {
+	case costs.Quote != nil && costs.Quote.fresh(b.heldRaw, b.mark):
+		return false
+	case costs.Quote == nil && costs.Realized == nil:
+		return true
+	}
+	return now.Sub(lastAttempt) >= exitQuoteInterval
+}
+
+func (e exitCosts) withQuote(c ExitCost) exitCosts {
+	out := make(exitCosts, len(e)+1)
+	for lane, costs := range e {
+		out[lane] = costs
+	}
+	costs := out[c.Lane]
+	costs.Quote = &c
+	out[c.Lane] = costs
+	return out
 }
 
 type exitQuoter struct {
@@ -103,32 +133,74 @@ type exitQuoter struct {
 	attempted map[string]time.Time
 }
 
+func (q *exitQuoter) quote(ctx context.Context, m RouteManifest, slot int64, accounts []ConfirmedAccount, lanes []string, costs exitCosts) exitCosts {
+	if q.attempted == nil {
+		q.attempted = map[string]time.Time{}
+	}
+	for _, lane := range lanes {
+		route, err := m.route(lane)
+		if err != nil {
+			continue
+		}
+		basis, held, err := readHeldExitBasis(m, accounts, route, slot)
+		now := q.now()
+		if err != nil || !held || !costs.quoteDue(basis, q.attempted[lane], now) {
+			continue
+		}
+		q.attempted[lane] = now
+		cost, err := q.price(ctx, basis, slot, now)
+		var stored bool
+		if err == nil {
+			stored, err = q.record(ctx, cost)
+		}
+		if err != nil {
+			q.events.exitQuoteFailed(lane, err)
+			continue
+		}
+		if cost.outlier(costs[lane].Realized) {
+			q.events.exitQuoteOutlier(cost, *costs[lane].Realized)
+		}
+		if stored {
+			costs = costs.withQuote(cost)
+		}
+	}
+	return costs
+}
+
+func (e *events) exitQuoteFailed(lane string, err error) {
+	if e == nil {
+		return
+	}
+	e.log.Warn("backyard_exit_quote_unavailable", "lane", lane, "code", sanitizedSelectorEvaluateFailure(err))
+}
+
+func (e *events) exitQuoteOutlier(quote, realized ExitCost) {
+	if e == nil {
+		return
+	}
+	e.log.Error("backyard_exit_quote_outlier", "lane", quote.Lane, "quote_micro_bps", uint64(quote.BPS), "realized_micro_bps", uint64(realized.BPS), "slot", quote.Slot)
+	e.selectorSampleFailed("exit_quote_outlier")
+}
+
 type heldExitBasis struct {
 	st                 stepState
 	heldRaw, markValue uint64
 	mark               kamino.ScaledFraction
 }
 
-func readHeldExitBasis(m RouteManifest, o Observation, s Snapshot) (heldExitBasis, bool, error) {
-	if o.routeBatch == nil || !s.HasPosition {
-		return heldExitBasis{}, false, nil
-	}
-	route, err := m.route(s.RouteLane)
-	if err != nil {
-		return heldExitBasis{}, false, err
-	}
-	st, err := readStepState(m.vault, o.routeBatch.Accounts, route, s.Slot)
+func readHeldExitBasis(m RouteManifest, accounts []ConfirmedAccount, route RuntimeRoute, slot int64) (heldExitBasis, bool, error) {
+	st, err := readStepState(m.vault, accounts, route, slot)
 	if err != nil || st.position.CollateralDepositedRaw == 0 {
 		return heldExitBasis{}, false, err
 	}
-	if st.cash, err = vaultCustodyRaw(m.vault, o.routeBatch.Accounts, m.vault.cash, fleet.USDCMint, bridgeTokenProgram); err != nil {
+	if st.cash, err = vaultCustodyRaw(m.vault, accounts, m.vault.cash, fleet.USDCMint, bridgeTokenProgram); err != nil {
 		return heldExitBasis{}, false, err
 	}
 	liquidity, err := st.collateral.redeemLiquidityRaw(st.position.CollateralDepositedRaw)
 	if err != nil || liquidity > math.MaxUint64-st.collateralBalance {
 		return heldExitBasis{}, false, staleHoldFrom(err, "exit_quote_unavailable")
 	}
-	prices, err := batchLanePrices(o.routeBatch.Accounts, route)
+	prices, err := batchLanePrices(accounts, route)
 	if err != nil {
 		return heldExitBasis{}, false, err
 	}
@@ -191,19 +263,19 @@ func putScaledInt(dst []byte, value *big.Int) {
 	}
 }
 
-func (d *Database) RecordExitCost(ctx context.Context, cost ExitCost) error {
+func (d *Database) RecordExitCost(ctx context.Context, cost ExitCost) (bool, error) {
 	if _, err := newExitCost(cost); err != nil {
-		return err
+		return false, err
 	}
-	_, err := d.pool.Exec(ctx, recordExitCostSQL, exitCostArgs(cost)...)
-	return err
+	tag, err := d.pool.Exec(ctx, recordExitCostSQL, exitCostArgs(cost)...)
+	return tag.RowsAffected() == 1, err
 }
 
 const recordExitCostSQL = `INSERT INTO loyal_yield.backyard_lane_exit_costs AS c (lane, source, bps_micro, quoted_collateral_raw, mark_sf, slot, recorded_at)
 	VALUES ($1, $2, $3, $4::numeric, $5::numeric, $6, $7)
 	ON CONFLICT (lane, source) DO UPDATE SET bps_micro = EXCLUDED.bps_micro, quoted_collateral_raw = EXCLUDED.quoted_collateral_raw,
 		mark_sf = EXCLUDED.mark_sf, slot = EXCLUDED.slot, recorded_at = EXCLUDED.recorded_at
-	WHERE EXCLUDED.slot >= c.slot AND NOT (c.source = 'quote' AND c.mark_sf = EXCLUDED.mark_sf AND c.quoted_collateral_raw > EXCLUDED.quoted_collateral_raw)`
+	WHERE EXCLUDED.slot >= c.slot AND NOT (c.mark_sf = EXCLUDED.mark_sf AND c.quoted_collateral_raw > EXCLUDED.quoted_collateral_raw)`
 
 func exitCostArgs(cost ExitCost) []any {
 	return []any{cost.Lane, string(cost.Source), int64(cost.BPS), fmt.Sprint(cost.QuotedCollateralRaw), littleInt(cost.MarkSF[:]).String(), cost.Slot, cost.At}
@@ -215,6 +287,13 @@ type ExpectedSale struct {
 	MarkValueRaw  uint64                `json:"markValueRaw"`
 	MarkSF        kamino.ScaledFraction `json:"markSf"`
 	OutputAccount string                `json:"outputAccount"`
+	Proceeds      *saleProceedsMark     `json:"proceeds,omitempty"`
+}
+
+type saleProceedsMark struct {
+	PriceSF  kamino.ScaledFraction `json:"priceSf"`
+	USDCSF   kamino.ScaledFraction `json:"usdcSf"`
+	Decimals uint8                 `json:"decimals"`
 }
 
 type realizedSale struct {
@@ -224,8 +303,11 @@ type realizedSale struct {
 }
 
 func collateralSale(accounts []ConfirmedAccount, route RuntimeRoute, action Action, soldRaw uint64, effects ExpectedEffects) *ExpectedSale {
-	if (action != SwapCollateralToStableStep && action != SwapCollateralToDebtStep) || len(effects.Accounts) != 2 ||
-		effects.Accounts[1].Mint != fleet.USDCMint || soldRaw == 0 {
+	if (action != SwapCollateralToStableStep && action != SwapCollateralToDebtStep) || len(effects.Accounts) != 2 || soldRaw == 0 {
+		return nil
+	}
+	output := effects.Accounts[1].Mint
+	if output != fleet.USDCMint && (action != SwapCollateralToDebtStep || output != route.Kamino.DebtMint) {
 		return nil
 	}
 	prices, err := batchLanePrices(accounts, route)
@@ -236,7 +318,11 @@ func collateralSale(accounts []ConfirmedAccount, route RuntimeRoute, action Acti
 	if err != nil || value <= 0 {
 		return nil
 	}
-	return &ExpectedSale{Lane: route.Lane, SoldRaw: soldRaw, MarkValueRaw: uint64(value), MarkSF: prices.collateral, OutputAccount: effects.Accounts[1].Address}
+	sale := &ExpectedSale{Lane: route.Lane, SoldRaw: soldRaw, MarkValueRaw: uint64(value), MarkSF: prices.collateral, OutputAccount: effects.Accounts[1].Address}
+	if output != fleet.USDCMint {
+		sale.Proceeds = &saleProceedsMark{PriceSF: prices.debt, USDCSF: prices.usdc, Decimals: prices.debtDecimals}
+	}
+	return sale
 }
 
 func withStepSale(accounts []ConfirmedAccount, route RuntimeRoute, evidence StepExecutionEvidence) StepExecutionEvidence {
@@ -250,6 +336,14 @@ func withStepSale(accounts []ConfirmedAccount, route RuntimeRoute, evidence Step
 }
 
 func (s realizedSale) exitCost(at time.Time) (ExitCost, bool) {
-	cost, err := exitCostOf(s.Lane, exitCostRealized, s.SoldRaw, s.MarkValueRaw, s.ReturnedRaw, s.MarkSF, s.Slot, at)
+	returned := s.ReturnedRaw
+	if p := s.Proceeds; p != nil {
+		value, err := centralValue(s.ReturnedRaw, p.Decimals, p.PriceSF, p.USDCSF)
+		if err != nil {
+			return ExitCost{}, false
+		}
+		returned = uint64(value)
+	}
+	cost, err := exitCostOf(s.Lane, exitCostRealized, s.SoldRaw, s.MarkValueRaw, returned, s.MarkSF, s.Slot, at)
 	return cost, err == nil
 }
