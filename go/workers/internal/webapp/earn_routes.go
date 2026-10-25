@@ -26,7 +26,7 @@ type Earn struct {
 	HTTP         *http.Client
 	OTLP         *OTLP
 	Privy        *Privy
-	TimescaleURL string
+	Timescale    *pgxpool.Pool
 	Push         *WalletPush
 	Granted      map[string]bool
 }

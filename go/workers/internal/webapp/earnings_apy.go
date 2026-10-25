@@ -2,7 +2,6 @@ package webapp
 
 import (
 	"context"
-	"fmt"
 	"sort"
 	"time"
 
@@ -11,8 +10,7 @@ import (
 
 // Timescale APY reader behind loadApySamples, ported from
 // kamino/timescale-reserve-client.server.ts getReserveApyHistorySamplesForReserves
-// (:481). One bucketed query per load; the pool lives for the call, like the
-// TS client that opens and closes around the request.
+// (:481). One bucketed query per load.
 
 // earningsDefaultMaxSupplyApy is DEFAULT_MAX_SUPPLY_APY (max-supply-apy.ts:1):
 // rows at or above it are curated-API sentinels, not real yields.
@@ -172,30 +170,14 @@ func earningsApyReserves(args earningsApyArgs) []string {
 }
 
 // newEarningsApyLoader returns the read-service loadApySamples dependency.
-// databaseURL names the timescale pool; without it the loader fails the way
-// getTimescaleReserveDatabaseUrl does.
-func newEarningsApyLoader(databaseURL string) func(context.Context, earningsReadInput, earningsApyArgs) ([]reserveApySample, error) {
+func newEarningsApyLoader(timescale *pgxpool.Pool) func(context.Context, earningsReadInput, earningsApyArgs) ([]reserveApySample, error) {
 	return func(ctx context.Context, _ earningsReadInput, args earningsApyArgs) ([]reserveApySample, error) {
 		reserves := earningsApyReserves(args)
 		if len(reserves) == 0 {
 			return []reserveApySample{}, nil
 		}
-		if databaseURL == "" {
-			return nil, fmt.Errorf("missing_timescale_database_url")
-		}
-		poolCfg, err := pgxpool.ParseConfig(databaseURL)
-		if err != nil {
-			return nil, err
-		}
-		poolCfg.MaxConns = 1
-		pool, err := pgxpool.NewWithConfig(ctx, poolCfg)
-		if err != nil {
-			return nil, err
-		}
-		defer pool.Close()
-
 		const sampleIntervalSeconds = 24 * 60 * 60
-		rows, err := pool.Query(ctx, earningsApyQuery,
+		rows, err := timescale.Query(ctx, earningsApyQuery,
 			reserves, args.start, args.end, earningsDefaultMaxSupplyApy, sampleIntervalSeconds)
 		if err != nil {
 			return nil, err
