@@ -144,11 +144,12 @@ type selectorSampler struct {
 	levWatch                           *leverageWatch
 	levDecisionLog                     *leverageDecisionLog
 	apyThrottle                        *currentAPYThrottle
+	exitQuoted                         map[string]time.Time
 }
 
 func newSelectorSampler(e *Engine, worker *Worker, state *vaultState) *selectorSampler {
 	return &selectorSampler{engine: e, worker: worker, state: state, identity: newProgramIdentityWatcher(viewProgramIdentity(e.view)).observe,
-		levWatch: &leverageWatch{}, levDecisionLog: &leverageDecisionLog{}, apyThrottle: &currentAPYThrottle{}}
+		levWatch: &leverageWatch{}, levDecisionLog: &leverageDecisionLog{}, apyThrottle: &currentAPYThrottle{}, exitQuoted: map[string]time.Time{}}
 }
 
 func (p *selectorSampler) sample(ctx, feedCtx context.Context, markets []LaneEconomics) {
@@ -194,6 +195,24 @@ func (p *selectorSampler) sample(ctx, feedCtx context.Context, markets []LaneEco
 			if err := database.RecordLaneLevel(ctx, routeKey, decision.Lane, decision.level()); err != nil {
 				printf("lane level not stored: %s\n", sanitizedSelectorEvaluateFailure(err))
 			}
+		}
+	}
+	for _, lane := range observed.lanes {
+		basis, held, err := readHeldExitBasis(worker.manifest, observed, lane)
+		now := time.Now().UTC()
+		if err != nil || !held || !observed.exitCosts().quoteDue(basis, p.exitQuoted[lane.RouteLane], now) {
+			continue
+		}
+		p.exitQuoted[lane.RouteLane] = now
+		pricer, err := newLanePricer(ctx, rpc, view, e.runtime.Jupiter, worker.manifest, lane.Slot)
+		if err == nil {
+			var cost ExitCost
+			if cost, err = pricer.priceHeldExit(ctx, basis, lane.Slot, now); err == nil {
+				err = database.RecordExitCost(ctx, cost)
+			}
+		}
+		if err != nil {
+			printf("exit quote lane=%s not stored: %s\n", lane.RouteLane, sanitizedSelectorEvaluateFailure(err))
 		}
 	}
 	for _, source := range observed.lanes {

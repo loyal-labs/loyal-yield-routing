@@ -7,6 +7,7 @@ import (
 	"errors"
 	"math"
 	"math/big"
+	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
@@ -579,6 +580,14 @@ func (p lanePricer) settleHeld(ctx context.Context, o Observation, s Snapshot, m
 		out = heldSettlement{Level: level, CollateralValueRaw: int64(collateral), DebtValueRaw: int64(debt), RateDebtRaw: rateDebt, CostRaw: int64(max(cost.TotalMicros, 0))}
 	}
 	return out, nil
+}
+
+func (p lanePricer) priceHeldExit(ctx context.Context, b heldExitBasis, slot int64, at time.Time) (ExitCost, error) {
+	exit, _, err := assembleStep(ctx, p.rpc, p.view, p.client, p.manifest, p.policies, b.st, stepExit, b.st.position.CollateralDepositedRaw, b.heldRaw, slot)
+	if err != nil {
+		return ExitCost{}, err
+	}
+	return exitCostOf(b.st.route.Lane, exitCostQuote, b.heldRaw, b.markValue, conversionQuotedOutput(exit.Request), b.mark, slot, at)
 }
 
 func releaseExitMicros(source Snapshot, equity uint64) (usdMicros, error) {

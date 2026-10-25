@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"math/big"
 	"time"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
@@ -88,9 +90,46 @@ func (e exitCosts) at(lane string, heldRaw uint64, mark kamino.ScaledFraction) (
 	return ExitCost{}, fmt.Errorf("lane %s has no fresh exit quote and no realized exit cost", lane)
 }
 
-func (e exitCosts) quoteDue(lane string, heldRaw uint64, mark kamino.ScaledFraction, now time.Time) bool {
-	quote := e[lane].Quote
-	return quote == nil || !quote.fresh(heldRaw, mark) && now.Sub(quote.At) >= exitQuoteInterval
+func (e exitCosts) quoteDue(b heldExitBasis, lastAttempt, now time.Time) bool {
+	quote := e[b.st.route.Lane].Quote
+	return (quote == nil || !quote.fresh(b.heldRaw, b.mark)) && now.Sub(lastAttempt) >= exitQuoteInterval
+}
+
+type heldExitBasis struct {
+	st                 stepState
+	heldRaw, markValue uint64
+	mark               kamino.ScaledFraction
+}
+
+func readHeldExitBasis(m RouteManifest, o Observation, s Snapshot) (heldExitBasis, bool, error) {
+	if o.routeBatch == nil || !s.HasPosition {
+		return heldExitBasis{}, false, nil
+	}
+	route, err := m.route(s.RouteLane)
+	if err != nil {
+		return heldExitBasis{}, false, err
+	}
+	st, err := readStepState(m.vault, o.routeBatch.Accounts, route, s.Slot)
+	if err != nil || st.position.CollateralDepositedRaw == 0 {
+		return heldExitBasis{}, false, err
+	}
+	if st.cash, err = vaultCustodyRaw(m.vault, o.routeBatch.Accounts, m.vault.cash, fleet.USDCMint, bridgeTokenProgram); err != nil {
+		return heldExitBasis{}, false, err
+	}
+	liquidity, err := st.collateral.redeemLiquidityRaw(st.position.CollateralDepositedRaw)
+	if err != nil || liquidity > math.MaxUint64-st.collateralBalance {
+		return heldExitBasis{}, false, staleHoldFrom(err, "exit_quote_unavailable")
+	}
+	prices, err := batchLanePrices(o.routeBatch.Accounts, route)
+	if err != nil {
+		return heldExitBasis{}, false, err
+	}
+	held := liquidity + st.collateralBalance
+	value, err := prices.collateralMicros(held)
+	if err != nil {
+		return heldExitBasis{}, false, err
+	}
+	return heldExitBasis{st: st, heldRaw: held, markValue: uint64(value), mark: prices.collateral}, true, nil
 }
 
 type exitCostRow struct {
