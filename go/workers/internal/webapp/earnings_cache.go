@@ -140,7 +140,7 @@ func readCachedEarnEarningsRangeSet(ctx context.Context, pool *pgxpool.Pool, inp
 				isFresh(*latest, latestRevision, deps.now(), timezone) {
 				result = latest.payload
 			} else {
-				result, err = readEarningsRangeSet(ctx, input, deps, true)
+				result, err = readEarningsRangeSetResuming(ctx, input, deps)
 				if err != nil {
 					return err
 				}

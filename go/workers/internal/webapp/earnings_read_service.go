@@ -255,10 +255,17 @@ func warnEarningsRead(step string, err error) {
 	slog.Warn("earnings-read "+step, "errorCode", code, "errorName", name, "errorDetailCode", detail)
 }
 
-// readEarningsRangeSet ports readEarnEarningsRangeSet (read-service:930): the
-// full rebuild. `useCheckpoint` mirrors the TS recursion flag for a retry that
-// must ignore a mismatched stored checkpoint.
-func readEarningsRangeSet(ctx context.Context, input earningsReadInput, deps earningsReadDeps, useCheckpoint bool) (EarningsRangeSet, error) {
+func readEarningsRangeSetResuming(ctx context.Context, input earningsReadInput, deps earningsReadDeps) (EarningsRangeSet, error) {
+	timezone, now, snapshot := loadEarningsSnapshotForRead(ctx, input, deps)
+	return rebuildEarningsRangeSet(ctx, input, deps, snapshot, timezone, now, snapshot, time.Now())
+}
+
+func readEarningsRangeSetFromScratch(ctx context.Context, input earningsReadInput, deps earningsReadDeps) (EarningsRangeSet, error) {
+	timezone, now, snapshot := loadEarningsSnapshotForRead(ctx, input, deps)
+	return rebuildEarningsRangeSet(ctx, input, deps, nil, timezone, now, snapshot, time.Now())
+}
+
+func loadEarningsSnapshotForRead(ctx context.Context, input earningsReadInput, deps earningsReadDeps) (string, time.Time, *earningsSnapshotRecord) {
 	now := deps.now()
 	timezone := normalizeEarningsTimezone(input.timezone)
 	var snapshot *earningsSnapshotRecord
@@ -267,7 +274,7 @@ func readEarningsRangeSet(ctx context.Context, input earningsReadInput, deps ear
 	} else if loaded != nil {
 		snapshot = loaded
 	}
-	return rebuildEarningsRangeSet(ctx, input, deps, useCheckpoint, timezone, now, snapshot, time.Now())
+	return timezone, now, snapshot
 }
 
 func earningsReadFailure(err error, snapshot *earningsSnapshotRecord, now, startedAt time.Time) (EarningsRangeSet, error) {
@@ -307,7 +314,7 @@ func earningsReadFailure(err error, snapshot *earningsSnapshotRecord, now, start
 	return EarningsRangeSet{}, &earningsUnavailableError{code: earningsUnavailableCode, message: "Earn earnings are unavailable.", detailCode: "earnings_unavailable"}
 }
 
-func rebuildEarningsRangeSet(ctx context.Context, input earningsReadInput, deps earningsReadDeps, useCheckpoint bool, timezone string, now time.Time, snapshot *earningsSnapshotRecord, startedAt time.Time) (payload EarningsRangeSet, err error) {
+func rebuildEarningsRangeSet(ctx context.Context, input earningsReadInput, deps earningsReadDeps, resumeFrom *earningsSnapshotRecord, timezone string, now time.Time, snapshot *earningsSnapshotRecord, startedAt time.Time) (payload EarningsRangeSet, err error) {
 	defer func() {
 		if err != nil {
 			payload, err = earningsReadFailure(err, snapshot, now, startedAt)
@@ -359,13 +366,13 @@ func rebuildEarningsRangeSet(ctx context.Context, input earningsReadInput, deps 
 	}
 
 	var checkpoint *earningsCheckpointWire
-	if useCheckpoint && snapshot != nil && snapshot.checkpoint != nil &&
-		snapshot.checkpoint.Version == 1 &&
-		isServerVerifiedEarnEarningsPayload(&snapshot.payload) &&
+	if resumeFrom != nil && resumeFrom.checkpoint != nil &&
+		resumeFrom.checkpoint.Version == 1 &&
+		isServerVerifiedEarnEarningsPayload(&resumeFrom.payload) &&
 		firstLedgerDeposit != nil &&
-		snapshot.checkpoint.FirstDepositAt == isoMS(*firstLedgerDeposit) &&
-		!mustParseISO(snapshot.checkpoint.At).After(now) {
-		checkpoint = snapshot.checkpoint
+		resumeFrom.checkpoint.FirstDepositAt == isoMS(*firstLedgerDeposit) &&
+		!mustParseISO(resumeFrom.checkpoint.At).After(now) {
+		checkpoint = resumeFrom.checkpoint
 	}
 	if checkpoint != nil {
 		broken := deps.loadHistoryFingerprint == nil ||
@@ -554,7 +561,7 @@ func rebuildEarningsRangeSet(ctx context.Context, input earningsReadInput, deps 
 	}
 	if checkpoint != nil &&
 		checkpoint.ApyFingerprint != apyFingerprint(mustParseISO(checkpoint.At), checkpoint.Reserves) {
-		return readEarningsRangeSet(ctx, input, deps, false)
+		return readEarningsRangeSetFromScratch(ctx, input, deps)
 	}
 
 	coverage := getPortfolioEarningsCoverage(apySamples, now, portfolioSnapshots)
@@ -594,7 +601,7 @@ func rebuildEarningsRangeSet(ctx context.Context, input earningsReadInput, deps 
 	}
 	if checkpoint != nil {
 		if fp := historyFingerprint(mustParseISO(checkpoint.At)); fp == nil || checkpoint.HistoryFingerprint != *fp {
-			return readEarningsRangeSet(ctx, input, deps, false)
+			return readEarningsRangeSetFromScratch(ctx, input, deps)
 		}
 	}
 
