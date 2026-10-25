@@ -626,7 +626,7 @@ WHERE lot.target_id = $1
 	return err
 }
 
-func (h earnRoutes) updateAutodepositTargetActive(ctx context.Context, in autodepositToggleInput) (autodepositTargetRow, error) {
+func (h earnRoutes) updateAutodepositTargetActive(ctx context.Context, settings, wallet string, in autodepositToggleInput) (autodepositTargetRow, error) {
 	existing, err := h.findAutodepositTargetByPolicy(ctx, in.PolicyAccount)
 	if err != nil {
 		return autodepositTargetRow{}, err
@@ -635,7 +635,7 @@ func (h earnRoutes) updateAutodepositTargetActive(ctx context.Context, in autode
 		return autodepositTargetRow{}, errors.New("Autodeposit target does not exist.")
 	}
 	target := *existing
-	if target.Settings != in.Settings || target.Wallet != in.WalletAddress || int(target.VaultIndex) != in.VaultIndex {
+	if target.Settings != settings || target.Wallet != wallet || int(target.VaultIndex) != in.VaultIndex {
 		return autodepositTargetRow{}, errors.New("Autodeposit target does not match the wallet.")
 	}
 	if target.LifecycleStatus == "closed" {
@@ -685,7 +685,7 @@ type autodepositFloorUpdateResult struct {
 	Target     autodepositTargetRow
 }
 
-func (h earnRoutes) updateAutodepositWalletBalanceFloor(ctx context.Context, in autodepositFloorInput) (autodepositFloorUpdateResult, error) {
+func (h earnRoutes) updateAutodepositWalletBalanceFloor(ctx context.Context, settings, wallet string, in autodepositFloorInput) (autodepositFloorUpdateResult, error) {
 	existing, err := h.findAutodepositTargetByPolicy(ctx, in.PolicyAccount)
 	if err != nil {
 		return autodepositFloorUpdateResult{}, err
@@ -694,7 +694,7 @@ func (h earnRoutes) updateAutodepositWalletBalanceFloor(ctx context.Context, in 
 		return autodepositFloorUpdateResult{}, errors.New("Autodeposit target does not exist.")
 	}
 	target := *existing
-	if target.Settings != in.Settings || target.Wallet != in.WalletAddress || int(target.VaultIndex) != in.VaultIndex {
+	if target.Settings != settings || target.Wallet != wallet || int(target.VaultIndex) != in.VaultIndex {
 		return autodepositFloorUpdateResult{}, errors.New("Autodeposit target does not match the wallet.")
 	}
 	if target.LifecycleStatus == "closed" {
@@ -730,7 +730,7 @@ func (h earnRoutes) updateAutodepositWalletBalanceFloor(ctx context.Context, in 
 		skippedReason         *string
 	)
 	err = h.YieldDB.QueryRow(ctx, autodepositFloorRebaselineSQL,
-		target.ID, in.PolicyAccount, in.Settings, in.WalletAddress, in.VaultIndex,
+		target.ID, in.PolicyAccount, settings, wallet, in.VaultIndex,
 		in.RecurringDelegation, int64(in.WalletBalanceFloorRaw), now,
 		previousFloor, floorText, eligibleAfter).
 		Scan(&projectionAmountRaw, &lotClassification, &lotConfidence, &lotEligibleAfter,
