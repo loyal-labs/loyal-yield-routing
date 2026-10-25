@@ -1,11 +1,5 @@
 package webapp
 
-// Wire shapes for the cleanup routes. They mirror serializePreparedEarnUsdcCleanup
-// and the parse/serialize pair in
-// web/apps/web/src/lib/yield-optimization/earn-withdraw-cleanup-contracts.shared.ts,
-// with the prepared operation from wire/prepared-operation-wire.shared.ts:31-94
-// (WirePreparedOperation in refunds_wire.go).
-
 // EarnCleanupPrepareRequest documents the prepare body for OpenAPI; the
 // handler parses the raw bytes so the TS error messages carry over verbatim.
 // minContextSlot is a decimal string when present.
@@ -23,14 +17,11 @@ type EarnCleanupConfirmRequest struct {
 	PreparedCleanup               *map[string]any `json:"preparedCleanup,omitempty"`
 }
 
-// EarnCleanupPrepareResponse wraps the wire cleanup one level, like the Next
-// route's { preparedCleanup: ... }.
 type EarnCleanupPrepareResponse struct {
 	PreparedCleanup EarnCleanupPrepareWire `json:"preparedCleanup"`
 }
 
-// EarnCleanupPrepareWire is WireSmartAccountPreparedEarnUsdcCleanup
-// (contracts.shared.ts:13-33). autodepositClosePrepared and
+// EarnCleanupPrepareWire: autodepositClosePrepared and
 // estimatedRefundLamports are always present, null when unknown; setupPolicy
 // is dropped when the vault has none.
 type EarnCleanupPrepareWire struct {
@@ -43,8 +34,6 @@ type EarnCleanupPrepareWire struct {
 	Vault                    EarnCleanupVaultWire             `json:"vault"`
 }
 
-// EarnCleanupPolicyWire is the {account, id, seed} triple; the TS ids are
-// BigInt seed values serialized as decimal strings.
 type EarnCleanupPolicyWire struct {
 	Account string `json:"account"`
 	ID      string `json:"id"`
@@ -57,9 +46,8 @@ type EarnCleanupVaultWire struct {
 	UsdcAta      string `json:"usdcAta"`
 }
 
-// EarnCleanupPersistenceWire is SmartAccountEarnUsdcCleanupMetadata
-// (client.ts:10287-10310). setupPolicy* ride only when a setup policy exists;
-// autodepositClose is the literal null when the vault has none.
+// EarnCleanupPersistenceWire: setupPolicy* ride only when a setup policy
+// exists; autodepositClose is the literal null when the vault has none.
 type EarnCleanupPersistenceWire struct {
 	Cluster               string                           `json:"cluster"`
 	WalletAddress         string                           `json:"walletAddress"`
@@ -79,7 +67,6 @@ type EarnCleanupPersistenceWire struct {
 	AutodepositClose      *EarnCleanupClosePersistenceWire `json:"autodepositClose"`
 }
 
-// EarnCleanupClosePersistenceWire is SmartAccountEarnUsdcAutodepositCloseMetadata.
 type EarnCleanupClosePersistenceWire struct {
 	Cluster             string `json:"cluster"`
 	WalletAddress       string `json:"walletAddress"`
@@ -91,8 +78,6 @@ type EarnCleanupClosePersistenceWire struct {
 	RecurringDelegation string `json:"recurringDelegation"`
 }
 
-// EarnCleanupAutodepositCloseWire is WireSmartAccountPreparedEarnUsdcAutodepositClose
-// (wire/earn-prepare-wire.shared.ts:47-60).
 type EarnCleanupAutodepositCloseWire struct {
 	Persistence EarnCleanupClosePersistenceWire `json:"persistence"`
 	Policy      struct {
@@ -108,7 +93,6 @@ type EarnCleanupAutodepositCloseWire struct {
 	} `json:"vault"`
 }
 
-// EarnCleanupConfirmResponse is the confirm route's verified answer.
 type EarnCleanupConfirmResponse struct {
 	OK     bool   `json:"ok"`
 	Status string `json:"status"`

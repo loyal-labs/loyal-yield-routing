@@ -9,6 +9,7 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earncatalog"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
@@ -48,7 +49,7 @@ func TestTopUpPreflightUsesOfficialBuilderAndActualPolicy(t *testing.T) {
 		plan.Reserve:                   reserve,
 		plan.Market:                    {Address: plan.Market, Owner: kamino.ProgramID.String(), Data: make([]byte, 8)},
 		obligation:                     {Address: obligation, Owner: kamino.ProgramID.String(), Lamports: 1, Data: obligationData},
-		plan.Target.VaultUsdcAta:       {Address: plan.Target.VaultUsdcAta, Owner: splTokenID, Data: custody},
+		plan.Target.VaultUsdcAta:       {Address: plan.Target.VaultUsdcAta, Owner: earncatalog.SPLTokenProgram, Data: custody},
 		plan.Target.RoutePolicyAccount: {Address: plan.Target.RoutePolicyAccount, Owner: squads.ProgramID.String(), Data: policy},
 	}
 	builder, err := NewSweepWireBuilder(key, fixtureReader(100, byAddress))

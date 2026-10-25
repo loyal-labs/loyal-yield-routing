@@ -9,10 +9,11 @@ import (
 	"github.com/solana-foundation/solana-go/v2"
 	"github.com/solana-foundation/solana-go/v2/rpc"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earncatalog"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 )
 
-func (h dprepRoutes) gate(ctx context.Context, wallet solana.PublicKey, amount uint64, product dtargetProductMint) (Principal, error) {
+func (h dprepRoutes) gate(ctx context.Context, wallet solana.PublicKey, amount uint64, product earncatalog.Product) (Principal, error) {
 	principal, err := h.provision(ctx, wallet, amount, product)
 	if err == nil {
 		return principal, nil
@@ -28,7 +29,7 @@ func (h dprepRoutes) gate(ctx context.Context, wallet solana.PublicKey, amount u
 	return Principal{}, earnError(http.StatusBadGateway, "provisioning_failed", "Failed to resolve the smart account for this wallet.")
 }
 
-func (h dprepRoutes) provision(ctx context.Context, wallet solana.PublicKey, amount uint64, product dtargetProductMint) (Principal, error) {
+func (h dprepRoutes) provision(ctx context.Context, wallet solana.PublicKey, amount uint64, product earncatalog.Product) (Principal, error) {
 	userID, err := h.privyGetOrCreateUser(ctx, wallet, "")
 	if err != nil {
 		return Principal{}, err
@@ -55,7 +56,7 @@ func (h dprepRoutes) provision(ctx context.Context, wallet solana.PublicKey, amo
 	return Principal{Wallet: wallet, Settings: settings, SmartAccount: smartAccount}, nil
 }
 
-func (h dprepRoutes) walletMintBalance(ctx context.Context, wallet solana.PublicKey, product dtargetProductMint) (uint64, error) {
+func (h dprepRoutes) walletMintBalance(ctx context.Context, wallet solana.PublicKey, product earncatalog.Product) (uint64, error) {
 	mint, err := solana.PublicKeyFromBase58(product.Mint)
 	if err != nil {
 		return 0, err

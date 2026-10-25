@@ -13,9 +13,9 @@ import (
 
 // Privy sign-in, part 2 of 3: the session cookie the minted JWT lands in.
 // Ports web/apps/web/src/features/identity/server/session-cookie.ts
-// resolveCookieOptions (:109-176) and getSessionCookieName (:291-295) — the
-// same name rules, domain rules and cookie attributes the Next route sets —
-// plus the AUTH_JWT_TTL_SECONDS default of one week (:154-157).
+// resolveCookieOptions and getSessionCookieName — the same name rules,
+// domain rules and cookie attributes the Next route sets — plus the
+// AUTH_JWT_TTL_SECONDS default of one week.
 
 var (
 	privyIPv4Hosts = [...]*regexp.Regexp{
@@ -26,9 +26,6 @@ var (
 	}
 )
 
-// privySessionTTL mirrors session-cookie.ts parsePositiveInteger: an absent
-// AUTH_JWT_TTL_SECONDS means one week; anything present but not a positive
-// integer is an error, as in TS.
 func privySessionTTL() (int, error) {
 	raw := strings.TrimSpace(os.Getenv("AUTH_JWT_TTL_SECONDS"))
 	if raw == "" {
@@ -49,8 +46,6 @@ func privySessionTTLDuration() (time.Duration, error) {
 	return time.Duration(seconds) * time.Second, nil
 }
 
-// privyCookieAllowLocalhost mirrors server.ts:146-148 — strict "true" on the
-// optional AUTH_COOKIE_ALLOW_LOCALHOST env, defaulting to allowed.
 func privyCookieAllowLocalhost() bool {
 	raw := os.Getenv("AUTH_COOKIE_ALLOW_LOCALHOST")
 	if raw == "" {
@@ -59,8 +54,6 @@ func privyCookieAllowLocalhost() bool {
 	return raw == "true"
 }
 
-// ParseCookieParentDomains mirrors parseAuthCookieParentDomains
-// (config/shared.ts:46-66): a normalized, de-duplicated domain list.
 func ParseCookieParentDomains(raw string) []string {
 	if raw == "" {
 		return nil
@@ -78,13 +71,10 @@ func ParseCookieParentDomains(raw string) []string {
 	return domains
 }
 
-// privyCookiePreviewFallback mirrors isVercelPreviewEnv (shared.ts:69-71).
 func privyCookiePreviewFallback() bool {
 	return os.Getenv("VERCEL_ENV") == "preview"
 }
 
-// privyCookiePrimaryValue mirrors getPrimaryHeaderValue
-// (session-cookie.ts:60-68): the first comma-separated entry, trimmed.
 func privyCookiePrimaryValue(value string) string {
 	primary := strings.TrimSpace(strings.Split(value, ",")[0])
 	return primary
@@ -94,8 +84,6 @@ func privyNormalizeHostname(hostname string) string {
 	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(hostname)), ".")
 }
 
-// privyLocalDevHostname mirrors isLocalDevelopmentHostname
-// (session-cookie.ts:96-107).
 func privyLocalDevHostname(hostname string) bool {
 	switch {
 	case hostname == "localhost",
@@ -112,10 +100,6 @@ func privyLocalDevHostname(hostname string) bool {
 	return false
 }
 
-// privySessionCookieName mirrors getSessionCookieName: the cherry-embedded
-// iframe gets its __Host- partitioned cookie, a preview deployment its own
-// name so a prod login is never read as the preview's session (and vice
-// versa), everything else the prod wallet session.
 func privySessionCookieName(cookieHeader, forwardedHost, host string) string {
 	if headerCookie(cookieHeader, cherryContextCookie) == "1" {
 		return cherrySessionCookie
@@ -143,8 +127,6 @@ func privyMatchParentDomain(domains []string, hostname string) (string, bool) {
 	return "", false
 }
 
-// privySessionCookieHeader ports resolveCookieOptions and serializes the
-// Set-Cookie value the Next route attaches to its response.
 func privySessionCookieHeader(domains []string, name, token string, ttl int, forwardedProto, forwardedHost, host, scheme string) (string, error) {
 	proto := privyCookiePrimaryValue(forwardedProto)
 	if proto == "" {

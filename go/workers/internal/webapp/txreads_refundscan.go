@@ -11,39 +11,16 @@ import (
 	"github.com/solana-foundation/solana-go/v2"
 	"github.com/solana-foundation/solana-go/v2/rpc"
 
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/autodeposit"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earncatalog"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnprep"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
-// Ports the Next policy-refunds scan
-// (web/apps/web/src/app/api/smart-accounts/yield-optimization/policy-refunds/
-// scan/route.ts -> earn-policy-refund.server.ts scanEarnPolicyRefunds :228 and
-// earn-policy-refund-state.server.ts): the chain and DB liveness facts each
-// route policy and the Earn vault need before a refund may run. A read-only
-// unit: no DB writes, so re-running it changes nothing.
+// Read-only unit: no DB writes, so re-running it changes nothing.
 
-// txreadsSubscriptionsProgramKey is the Subscriptions program that owns
-// recurring-delegation accounts (SUBSCRIPTIONS_PROGRAM_ID, @loyal-labs/actions
-// constants.ts:14).
-var txreadsSubscriptionsProgramKey = solana.MustPublicKeyFromBase58(autodeposit.SubscriptionsProgramID)
-
-// Subscriptions-program recurring-delegation layout (@loyal-labs/actions
-// constants.ts, same offsets as internal/autodeposit/delegation.go). A
-// delegation is a zero-copy Anchor account: u8 discriminator, then pubkeys and
-// u64 counters.
-const (
-	txreadsDelegationDiscriminator    = 3
-	txreadsDelegationDataLen          = 211
-	txreadsDelegationDelegatorOffset  = 3
-	txreadsDelegationDelegateeOffset  = 35
-	txreadsDelegationAuthorityOffset  = 107
-	txreadsDelegationMintOffset       = 139
-	txreadsDelegationPerPeriodOffset  = 195
-	txreadsDelegationAmountPulledOffs = 203
-)
+var txreadsSubscriptionsProgramKey = solana.MustPublicKeyFromBase58(earncatalog.SubscriptionsProgram)
 
 // txreadsLocaleCompare orders account addresses the way the Next route's
 // Array.sort((left, right) => left.localeCompare(right)) does: ICU collation
@@ -76,7 +53,6 @@ func txreadsCollationRank(a, b byte) int {
 		return 1
 	}
 	if lowerA != lowerB {
-		// Same letter, different case: lowercase sorts first.
 		if lowerA {
 			return -1
 		}
@@ -100,11 +76,6 @@ func txreadsSortAddresses(values []string) {
 	sort.SliceStable(values, func(i, j int) bool { return txreadsLocaleCompare(values[i], values[j]) < 0 })
 }
 
-// txreadsPolicySeed carries the policy-account fields toPolicySnapshot puts in
-// a scan entry: seed, the policy state's kind name, and the state's account
-// index (SpendingLimit's sourceAccountIndex, ProgramInteraction's
-// accountIndex, nothing otherwise). Lamports rides along from the same read
-// where the Next scan re-reads the accounts with getMultipleAccountsInfo.
 type txreadsPolicySeed struct {
 	address      solana.PublicKey
 	lamports     uint64
@@ -213,8 +184,6 @@ func (c *txreadsCursor) u32() (uint32, error) {
 	return binary.LittleEndian.Uint32(taken), nil
 }
 
-// txreadsScanPolicyAccounts ports fetchPolicyAccounts + toPolicySnapshot: the
-// settings' policy accounts read off chain at confirmed, sorted by seed.
 func (h earnRoutes) txreadsScanPolicyAccounts(ctx context.Context, settings solana.PublicKey) ([]txreadsPolicySeed, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -240,9 +209,6 @@ func (h earnRoutes) txreadsScanPolicyAccounts(ctx context.Context, settings sola
 	return policies, nil
 }
 
-// txreadsAutodepositRow is one balance_sweep_targets row joined to its
-// balance_sweep_policies policy, the metadata side of a recurring delegation
-// the scan inspects.
 type txreadsAutodepositRow struct {
 	policyAccount       *string
 	recurringDelegation *string
@@ -254,9 +220,6 @@ type txreadsAutodepositRow struct {
 	lifecycleStatus     string
 }
 
-// txreadsDelegationUsage resolves what the metadata rows say a delegation is
-// doing (resolveRecurringDelegationUsage); protected delegations block their
-// policy's refund.
 func txreadsDelegationUsage(row txreadsAutodepositRow) (blockedReason *string, protected bool, usage string) {
 	switch {
 	case row.lifecycleStatus == "pending_delegation":
@@ -282,9 +245,6 @@ func txreadsDelegationCanRefund(exists, protected bool, status string) bool {
 
 func txreadsStringPtr(value string) *string { return &value }
 
-// txreadsInspectDelegation ports inspectRecurringDelegationAccount: the
-// metadata row's usage facts plus the chain account's amounts, expiry and
-// validity folded into one response entry.
 func txreadsInspectDelegation(account *chain.Account, row txreadsAutodepositRow, nowSeconds uint64) EarnPolicyRefundRecurringDelegation {
 	blockedReason, protected, usage := txreadsDelegationUsage(row)
 	delegation := EarnPolicyRefundRecurringDelegation{
@@ -310,17 +270,17 @@ func txreadsInspectDelegation(account *chain.Account, row txreadsAutodepositRow,
 		return txreadsFinalizeDelegation(delegation, false, "missing")
 	}
 
-	delegation.AmountPerPeriodRaw = txreadsU64At(account.Data, txreadsDelegationPerPeriodOffset)
-	delegation.AmountPulledRaw = txreadsU64At(account.Data, txreadsDelegationAmountPulledOffs)
-	delegation.Authority = txreadsKeyAt(account.Data, txreadsDelegationAuthorityOffset)
-	delegation.Delegatee = txreadsKeyAt(account.Data, txreadsDelegationDelegateeOffset)
-	delegation.Delegator = txreadsKeyAt(account.Data, txreadsDelegationDelegatorOffset)
-	delegation.Mint = txreadsKeyAt(account.Data, txreadsDelegationMintOffset)
+	delegation.AmountPerPeriodRaw = txreadsU64At(account.Data, earncatalog.DelegationPerPeriodOffset)
+	delegation.AmountPulledRaw = txreadsU64At(account.Data, earncatalog.DelegationAmountPulledOffset)
+	delegation.Authority = txreadsKeyAt(account.Data, earncatalog.DelegationAuthorityOffset)
+	delegation.Delegatee = txreadsKeyAt(account.Data, earncatalog.DelegationDelegateeOffset)
+	delegation.Delegator = txreadsKeyAt(account.Data, earncatalog.DelegationDelegatorOffset)
+	delegation.Mint = txreadsKeyAt(account.Data, earncatalog.DelegationMintOffset)
 	delegation.Lamports = &account.Lamports
 
 	valid := account.Owner == txreadsSubscriptionsProgramKey &&
-		len(account.Data) >= txreadsDelegationDataLen &&
-		account.Data[0] == txreadsDelegationDiscriminator
+		len(account.Data) >= earncatalog.DelegationDataLen &&
+		account.Data[0] == earncatalog.DelegationDiscriminator
 	if !valid {
 		return txreadsFinalizeDelegation(delegation, true, "invalid")
 	}
@@ -360,17 +320,14 @@ func txreadsU64StringPtr(value *uint64) *string {
 	return txreadsStringPtr(strconv.FormatUint(*value, 10))
 }
 
-// txreadsOpenDelegations ports findOpenWalletToEarnVaultRecurringDelegations:
-// every Subscriptions recurring-delegation account from the wallet to the Earn
-// vault, whether or not any metadata row still references it.
 func (h earnRoutes) txreadsOpenDelegations(ctx context.Context, wallet, vaultPubkey solana.PublicKey) ([]EarnPolicyRefundRecurringDelegation, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	filters := []rpc.RPCFilter{
-		{DataSize: txreadsDelegationDataLen},
-		{Memcmp: &rpc.RPCFilterMemcmp{Offset: 0, Bytes: []byte{txreadsDelegationDiscriminator}}},
-		{Memcmp: &rpc.RPCFilterMemcmp{Offset: txreadsDelegationDelegatorOffset, Bytes: wallet[:]}},
-		{Memcmp: &rpc.RPCFilterMemcmp{Offset: txreadsDelegationDelegateeOffset, Bytes: vaultPubkey[:]}},
+		{DataSize: earncatalog.DelegationDataLen},
+		{Memcmp: &rpc.RPCFilterMemcmp{Offset: 0, Bytes: []byte{earncatalog.DelegationDiscriminator}}},
+		{Memcmp: &rpc.RPCFilterMemcmp{Offset: earncatalog.DelegationDelegatorOffset, Bytes: wallet[:]}},
+		{Memcmp: &rpc.RPCFilterMemcmp{Offset: earncatalog.DelegationDelegateeOffset, Bytes: vaultPubkey[:]}},
 	}
 	_, accounts, err := h.Chain.ProgramAccounts(ctx, txreadsSubscriptionsProgramKey, filters, rpc.CommitmentConfirmed, 0)
 	if err != nil {
@@ -395,8 +352,6 @@ func txreadsSortDelegations(values []EarnPolicyRefundRecurringDelegation) {
 	})
 }
 
-// txreadsDelegationAccountsByAddress reads the metadata-referenced delegation
-// accounts in one confirmed multi-read, absent accounts coming back nil.
 func (h earnRoutes) txreadsDelegationAccountsByAddress(ctx context.Context, addresses []string) (map[string]*chain.Account, error) {
 	if len(addresses) == 0 {
 		return map[string]*chain.Account{}, nil
@@ -430,8 +385,6 @@ func (h earnRoutes) txreadsDelegationAccountsByAddress(ctx context.Context, addr
 	return byAddress, nil
 }
 
-// txreadsRefundDBState is EarnPolicyRefundDbState: the loyal_yield facts that
-// say whether a policy or the vault is still in use.
 type txreadsRefundDBState struct {
 	activeAutodepositAccounts  map[string]bool
 	activeManagedVaultAccounts map[string]bool
@@ -471,8 +424,6 @@ const txreadsRefundScheduledSweepsSQL = `SELECT pending.target_id::text, COUNT(*
   WHERE target_id = ANY($1) AND status = 'selected'
 ) pending GROUP BY pending.target_id`
 
-// txreadsVaultDBFlags is findEarnVaultRefundDbState: vault-level liveness
-// flags, any non-closed autodeposit target counting as active.
 type txreadsVaultDBFlags struct {
 	hasActiveAutodeposit  bool
 	hasActiveManagedVault bool
@@ -497,9 +448,6 @@ func (h earnRoutes) txreadsVaultDBFlags(ctx context.Context, account EarnAccount
 	return flags, err
 }
 
-// txreadsRefundDBState ports findEarnPolicyRefundDbState. With no policy
-// accounts the DB contributes nothing and only the open wallet-to-vault
-// delegations remain; the caller supplies those.
 func (h earnRoutes) txreadsRefundDBState(ctx context.Context, account EarnAccount, index uint8, policyAddresses []string, openDelegations []EarnPolicyRefundRecurringDelegation) (txreadsRefundDBState, error) {
 	state := txreadsRefundDBState{
 		activeAutodepositAccounts:  map[string]bool{},
@@ -737,8 +685,6 @@ func txreadsMergeDelegations(metadata, chainDelegations []EarnPolicyRefundRecurr
 	return merged
 }
 
-// txreadsCollectDelegations ports collectRecurringDelegations: chain
-// delegations first, then every metadata row's, deduplicated and sorted.
 func txreadsCollectDelegations(byPolicyAccount map[string][]EarnPolicyRefundRecurringDelegation, chainDelegations []EarnPolicyRefundRecurringDelegation) []EarnPolicyRefundRecurringDelegation {
 	byAccount := map[string]EarnPolicyRefundRecurringDelegation{}
 	order := make([]string, 0)
@@ -764,29 +710,19 @@ func txreadsCollectDelegations(byPolicyAccount map[string][]EarnPolicyRefundRecu
 	return collected
 }
 
-// txreadsUSDCMint is getStablecoinMintForCluster(cluster, USDC)
-// (@loyal-labs/actions constants.ts:136-146); dtarget_target.go carries the
-// same two addresses.
 func txreadsUSDCMint(cluster LoyalCluster) solana.PublicKey {
 	if cluster == LoyalDevnet {
-		return solana.MustPublicKeyFromBase58(dtargetDevnetUSDCMint)
+		return solana.MustPublicKeyFromBase58(earncatalog.DevnetUSDC)
 	}
-	return solana.MustPublicKeyFromBase58(dtargetUSDCMint)
+	return solana.MustPublicKeyFromBase58(earncatalog.USDC)
 }
 
-// txreadsVaultSnapshot is fetchEarnVaultRefundSnapshot
-// (smart-account-vaults client.ts:10339): the vault's SOL and every token
-// account it owns across both token programs, plus its USDC ATA so the
-// chain-funds check can exempt it.
 type txreadsVaultSnapshot struct {
 	lamports      uint64
 	tokenAccounts []EarnVaultRefundTokenAccount
 	vaultUsdcAta  solana.PublicKey
 }
 
-// txreadsVaultHoldsChainFunds is vaultHoldsChainFunds
-// (earn-policy-refund.server.ts:88): any token account other than the vault's
-// own USDC ATA still carrying a balance is a live on-chain position.
 func txreadsVaultHoldsChainFunds(snapshot txreadsVaultSnapshot) bool {
 	for _, tokenAccount := range snapshot.tokenAccounts {
 		if tokenAccount.AmountRaw != "0" && tokenAccount.Account != snapshot.vaultUsdcAta.String() {
@@ -796,9 +732,8 @@ func txreadsVaultHoldsChainFunds(snapshot txreadsVaultSnapshot) bool {
 	return false
 }
 
-// txreadsVaultSnapshot reads the vault at confirmed. The SOL balance mirrors
-// getVaultSweepLamportsOrZero (:3134): a failed read contributes zero instead
-// of failing the scan.
+// txreadsVaultSnapshot reads the vault at confirmed. A failed SOL balance
+// read contributes zero instead of failing the scan.
 func (h earnRoutes) txreadsVaultSnapshot(ctx context.Context, vault, usdcMint solana.PublicKey) (txreadsVaultSnapshot, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -838,11 +773,10 @@ func (h earnRoutes) txreadsVaultSnapshot(ctx context.Context, vault, usdcMint so
 	return snapshot, nil
 }
 
-// txreadsVaultHoldsKaminoCollateral is vaultHoldsKaminoCollateral
-// (earn-policy-refund.server.ts:101): every Safe market for every product
-// mint, read through the shared holdings snapshot with no dependence on DB
-// policy rows (they may be missing, ASK-2252), failing closed on unreadable
-// reserves.
+// txreadsVaultHoldsKaminoCollateral checks every Safe market for every
+// product mint, read through the shared holdings snapshot with no dependence
+// on DB policy rows (they may be missing, ASK-2252), failing closed on
+// unreadable reserves.
 func (h earnRoutes) txreadsVaultHoldsKaminoCollateral(ctx context.Context, account EarnAccount, index uint8) (bool, error) {
 	mints := make([]string, 0, 6)
 	for _, product := range dtargetProductMintsForCluster(account.Cluster) {
@@ -871,9 +805,6 @@ func (h earnRoutes) txreadsVaultHoldsKaminoCollateral(ctx context.Context, accou
 	return false, nil
 }
 
-// txreadsPolicyBlockedReason is getBlockedReason
-// (earn-policy-refund.server.ts:63): funds visible on chain block every
-// policy refund before the read-model flags are consulted.
 func txreadsPolicyBlockedReason(activeAutodeposit, activeManagedVault, referencedByActivePosition, vaultHoldsChainFunds bool) *string {
 	switch {
 	case vaultHoldsChainFunds:
@@ -889,9 +820,6 @@ func txreadsPolicyBlockedReason(activeAutodeposit, activeManagedVault, reference
 	}
 }
 
-// txreadsVaultBlockedReason is buildVaultRefundEntry's ladder
-// (earn-policy-refund.server.ts:150-159); the vault's own autodeposit flag
-// reads "Active Autodeposit", not the per-policy wording.
 func txreadsVaultBlockedReason(snapshot txreadsVaultSnapshot, flags txreadsVaultDBFlags) *string {
 	holdsChainFunds := txreadsVaultHoldsChainFunds(snapshot)
 	switch {
@@ -908,10 +836,9 @@ func txreadsVaultBlockedReason(snapshot txreadsVaultSnapshot, flags txreadsVault
 	}
 }
 
-// txreadsVaultRefundEntry is buildVaultRefundEntry
-// (earn-policy-refund.server.ts:141): everything here is chain-derived, so it
-// surfaces even when the DB rows for the position are long gone. The scan's
-// copy is never null; NextResponse.json always carries the entry.
+// txreadsVaultRefundEntry: everything here is chain-derived, so it surfaces
+// even when the DB rows for the position are long gone. The scan's copy is
+// never null; the response always carries the entry.
 func txreadsVaultRefundEntry(account EarnAccount, snapshot txreadsVaultSnapshot, flags txreadsVaultDBFlags) *EarnPolicyRefundVaultEntry {
 	blockedReason := txreadsVaultBlockedReason(snapshot, flags)
 	total := snapshot.lamports
@@ -928,9 +855,6 @@ func txreadsVaultRefundEntry(account EarnAccount, snapshot txreadsVaultSnapshot,
 	}
 }
 
-// txreadsVaultFacts is what one vault index contributes to the verdict on
-// each policy that names it: the DB liveness rows, the open wallet-to-vault
-// delegations and whether the vault still holds funds on chain.
 type txreadsVaultFacts struct {
 	snapshot        txreadsVaultSnapshot
 	openDelegations []EarnPolicyRefundRecurringDelegation
@@ -973,8 +897,6 @@ func txreadsPolicyVaultIndex(policy txreadsPolicySeed) uint8 {
 	return earnprep.EarnVaultIndex
 }
 
-// txreadsScanPolicy is one policy's scan entry, judged by the facts of the
-// vault it belongs to.
 func txreadsScanPolicy(policy txreadsPolicySeed, vaults map[uint8]txreadsVaultFacts) EarnPolicyRefundScanPolicy {
 	facts := vaults[txreadsPolicyVaultIndex(policy)]
 	address := policy.address.String()
@@ -1003,9 +925,6 @@ func txreadsScanPolicy(policy txreadsPolicySeed, vaults map[uint8]txreadsVaultFa
 	}
 }
 
-// txreadsScanPolicyRefunds ports scanEarnPolicyRefunds
-// (earn-policy-refund.server.ts:228): the chain and DB liveness facts each
-// route policy and the Earn vault need before a refund may run.
 func (h earnRoutes) txreadsScanPolicyRefunds(ctx context.Context, account EarnAccount) (EarnPolicyRefundScanResponse, error) {
 	policies, err := h.txreadsScanPolicyAccounts(ctx, account.Settings)
 	if err != nil {

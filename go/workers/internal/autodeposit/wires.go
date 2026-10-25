@@ -15,13 +15,13 @@ import (
 	"github.com/solana-foundation/solana-go/v2"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earncatalog"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 )
 
 const (
-	splTokenID     = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 	instructionsID = "Sysvar1nstructions1111111111111111111111111"
 
 	kaminoDepositDataLength       = 16
@@ -192,7 +192,7 @@ func (b *SweepWireBuilder) ConfirmTopUpRoute(ctx context.Context, plan DepositPl
 	if route.Position.LiquidityMint != plan.LiquidityMint {
 		return TopUpRoute{}, fmt.Errorf("%w: reserve %s liquidity mint is %s, want the frozen %s", ErrRouteNotExecutable, plan.Reserve, route.Position.LiquidityMint, plan.LiquidityMint)
 	}
-	if route.Position.LiquidityTokenProgram != splTokenID {
+	if route.Position.LiquidityTokenProgram != earncatalog.SPLTokenProgram {
 		return TopUpRoute{}, fmt.Errorf("%w: reserve %s token accounts are not a routable USDC reserve", ErrRouteNotExecutable, plan.Reserve)
 	}
 	if marketAccount.Owner != kamino.ProgramID || marketAccount.Executable {
@@ -383,7 +383,7 @@ func (b *SweepWireBuilder) proveTopUpDecoded(plan DepositPlan, attempt DurableAt
 		plan.Target.VaultPubkey, route.Obligation, plan.Market, route.Position.MarketAuthority,
 		plan.Reserve, plan.LiquidityMint, route.Position.LiquiditySupply,
 		route.Position.CollateralMint, route.Position.CollateralSupply,
-		plan.Target.VaultUsdcAta, kamino.ProgramID.String(), splTokenID, route.Position.LiquidityTokenProgram,
+		plan.Target.VaultUsdcAta, kamino.ProgramID.String(), earncatalog.SPLTokenProgram, route.Position.LiquidityTokenProgram,
 		instructionsID,
 	}
 	for position, address := range expected {

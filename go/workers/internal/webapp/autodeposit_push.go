@@ -11,14 +11,9 @@ import (
 	"time"
 )
 
-// Wallet push bridge, ported from
-// web/apps/web/src/lib/push-notifications/wallet-push.server.ts (sendWalletPush
-// :18, autodepositEnabledPush :91, autodepositSweepScheduledPush :98). Expo
-// push tokens register per wallet on the app backend, so Earn delivers pushes
-// through its authenticated send endpoint. The DECIDED pathmap.md:14 row keeps
-// the mobile route's sendWalletPush call inside the Go confirm op. Like the
-// TS, a nil WalletPush (push off at startup) or a failed send never fails the
-// confirm.
+// Wallet push bridge. Expo push tokens register per wallet on the app
+// backend, so Earn delivers pushes through its authenticated send endpoint.
+// The confirm ops send the mobile wallet push themselves (EARN.md, Decided).
 type autodepositWalletPush struct {
 	Body  string `json:"body"`
 	Title string `json:"title"`
@@ -63,7 +58,6 @@ func (p *WalletPush) send(ctx context.Context, walletAddress string, payload aut
 	}
 }
 
-// autodepositEnabledPush copy comes from the mobile confirm route.
 func autodepositEnabledPush() autodepositWalletPush {
 	return autodepositWalletPush{
 		Body:  "Your idle USDC will be moved to Earn automatically, roughly once an hour.",
@@ -71,8 +65,6 @@ func autodepositEnabledPush() autodepositWalletPush {
 	}
 }
 
-// autodepositSweepScheduledPush announces the bootstrap sweep; a null or
-// non-positive amount renders as the plain token symbol.
 func autodepositSweepScheduledPush(amountRaw uint64) autodepositWalletPush {
 	amount := "USDC"
 	if amountRaw > 0 {

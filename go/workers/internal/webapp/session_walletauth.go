@@ -42,8 +42,8 @@ var mobileWalletAuthPurposes = []string{
 }
 
 // buildMobileWalletAuthMessage is the deterministic message the mobile client
-// signs (web/apps/mobile/src/lib/solana/earn/earn-session.ts:48) and the
-// server rebuilds (mobile-wallet-auth.ts:55-66).
+// signs and the
+// server rebuilds.
 func buildMobileWalletAuthMessage(purpose, walletAddress, issuedAt string) string {
 	return strings.Join([]string{
 		"Loyal Mobile Earn",
@@ -53,11 +53,6 @@ func buildMobileWalletAuthMessage(purpose, walletAddress, issuedAt string) strin
 	}, "\n")
 }
 
-// authenticateMobileWalletRequest verifies a mobile wallet-signed request
-// (mobile-wallet-auth.ts:100-153) and returns the authenticated wallet. The
-// signature is checked against each purpose's message, so a confirm endpoint
-// can also accept the flow's prepare-purpose signature; order matters only
-// for which match wins. Every failure is a routeError in web's envelope.
 func authenticateMobileWalletRequest(now time.Time, body any) (solana.PublicKey, error) {
 	object, ok := body.(map[string]any)
 	if !ok {
@@ -121,8 +116,6 @@ func mobileWalletAuthFields(object map[string]any) (walletAddress, signature, is
 	return walletAddress, signature, issuedAt, nil
 }
 
-// parseJSONBody mirrors the Next routes' `await request.json()` in a try/catch
-// (route.ts:28-32): anything JSON cannot parse is an invalid_request 400.
 func parseJSONBody(raw []byte) (any, error) {
 	var parsed any
 	if json.Unmarshal(raw, &parsed) != nil {

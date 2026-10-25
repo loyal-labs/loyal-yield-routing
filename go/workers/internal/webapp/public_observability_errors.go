@@ -1,9 +1,5 @@
 package webapp
 
-// Error ingest contract, porting web/apps/web/src/features/observability/
-// error-contract.ts (parse/normalize) and the browser/mobile error mapping in
-// features/observability/server.ts.
-
 import (
 	"encoding/json"
 	"net/url"
@@ -36,7 +32,7 @@ var obsBrowserErrorOperations = []string{
 }
 
 // The ambient window listeners observe wallet extensions too; their
-// extension-only crashes never reach the error alert (error-contract.ts:76).
+// extension-only crashes never reach the error alert.
 var obsAmbientErrorOperations = map[string]bool{
 	"browser.window.error":        true,
 	"browser.unhandled_rejection": true,
@@ -61,8 +57,6 @@ type obsChunkDiagnostics struct {
 	resourceTransferSize    *float64
 }
 
-// obsErrorEnvelope carries both the browser and the mobile error envelope;
-// which fields apply is decided by the admitting client kind.
 type obsErrorEnvelope struct {
 	clientBuildID  string
 	diagnostics    *obsChunkDiagnostics
@@ -216,8 +210,6 @@ func obsReadResourceValue(record map[string]any, key string, maxLength int) (str
 	return normalized, nil
 }
 
-// parseBrowserErrorEnvelope ports parseBrowserErrorEnvelope
-// (error-contract.ts:421).
 func parseBrowserErrorEnvelope(raw []byte, expectedChunkOrigin string, now time.Time) (obsErrorEnvelope, error) {
 	record, err := obsObjectBody(raw)
 	if err != nil {
@@ -238,7 +230,6 @@ func parseBrowserErrorEnvelope(raw []byte, expectedChunkOrigin string, now time.
 	envelope.operation = operation
 	// Chunk context is diagnostic enrichment, never the report itself: a
 	// partial match is dropped and the error still exports
-	// (error-contract.ts:469-506).
 	buildID, _ := record["clientBuildId"].(string)
 	pageSession, _ := record["pageSessionId"].(string)
 	if obsClientBuildID.MatchString(buildID) && obsPageSessionID.MatchString(pageSession) {
@@ -254,8 +245,6 @@ func parseBrowserErrorEnvelope(raw []byte, expectedChunkOrigin string, now time.
 	return envelope, nil
 }
 
-// parseMobileErrorEnvelope ports parseMobileErrorEnvelope
-// (error-contract.ts:540).
 func parseMobileErrorEnvelope(raw []byte, now time.Time) (obsErrorEnvelope, error) {
 	record, err := obsObjectBody(raw)
 	if err != nil {
@@ -300,8 +289,8 @@ func parseMobileErrorEnvelope(raw []byte, now time.Time) (obsErrorEnvelope, erro
 	return envelope, nil
 }
 
-// isThirdPartyExtensionError ports error-contract.ts:273: an ambient report
-// whose stack holds only extension frames never saw Loyal code run.
+// isThirdPartyExtensionError: an ambient report whose stack holds only
+// extension frames never saw Loyal code run.
 var (
 	obsExtensionFramePattern  = regexp.MustCompile(`(?i)\b(?:chrome|moz|safari-web|safari|ms-browser)-extension:\/\//`)
 	obsFirstPartyFramePattern = regexp.MustCompile(`\bhttps?:\/\//`)
@@ -315,13 +304,18 @@ func isThirdPartyExtensionError(operation, stack string) bool {
 	return obsExtensionFramePattern.MatchString(stack) && !obsFirstPartyFramePattern.MatchString(stack)
 }
 
-// isCapWidgetInternalError ports error-contract.ts:294: the Cap captcha widget
-// tearing down mid-solve is not a Loyal failure.
+// isCapWidgetInternalError: the Cap captcha widget tearing down mid-solve is
+// not a Loyal failure.
 func isCapWidgetInternalError(operation, message string) bool {
 	return obsAmbientErrorOperations[operation] && obsCapWidgetPattern.MatchString(message)
 }
 
-// obsNormalizedError is NormalizedErrorEvent (error-contract.ts:115).
+// obsErrorSeverity is the closed value set of a normalized error's severity.
+// Construction always sets ERROR; nothing produces WARN.
+type obsErrorSeverity string
+
+const obsSeverityError obsErrorSeverity = "ERROR"
+
 type obsNormalizedError struct {
 	browserDiagnostics    *obsChunkDiagnostics
 	clientBuildID         string
@@ -338,11 +332,10 @@ type obsNormalizedError struct {
 	release               string
 	runtime               string
 	serviceName           string
-	severity              string // "" means ERROR
+	severity              obsErrorSeverity
 	timestamp             string
 }
 
-// createNormalizedBrowserErrorEvent ports error-contract.ts:508.
 func createNormalizedBrowserErrorEvent(envelope obsErrorEnvelope, deploymentEnvironment, serverRelease string) obsNormalizedError {
 	return obsNormalizedError{
 		browserDiagnostics:    envelope.diagnostics,
@@ -357,12 +350,11 @@ func createNormalizedBrowserErrorEvent(envelope obsErrorEnvelope, deploymentEnvi
 		release:               serverRelease,
 		runtime:               "browser",
 		serviceName:           "loyal-frontend",
+		severity:              obsSeverityError,
 		timestamp:             envelope.timestamp,
 	}
 }
 
-// normalizedMobileErrorEvent ports reportMobileErrorEnvelope
-// (server.ts:178-203).
 func normalizedMobileErrorEvent(envelope obsErrorEnvelope) obsNormalizedError {
 	return obsNormalizedError{
 		deploymentEnvironment: envelope.environment,
@@ -376,12 +368,11 @@ func normalizedMobileErrorEvent(envelope obsErrorEnvelope) obsNormalizedError {
 		release:               envelope.release,
 		runtime:               "mobile",
 		serviceName:           "loyal-mobile",
+		severity:              obsSeverityError,
 		timestamp:             envelope.timestamp,
 	}
 }
 
-// normalizeChunkDiagnostics ports normalizeBrowserChunkDiagnostics
-// (chunk-load-contract.ts:116): null on any invalid detail, never an error.
 func normalizeChunkDiagnostics(value any) *obsChunkDiagnostics {
 	record, ok := value.(map[string]any)
 	if !ok {
@@ -461,7 +452,6 @@ func obsOptionalNumber(record map[string]any, key string, max float64, integer b
 	return &value, nil
 }
 
-// normalizeChunkURL ports normalizeBrowserChunkUrl (chunk-load-contract.ts:53).
 func normalizeChunkURL(value string) string {
 	if value == "" || utf16Len(value) > 1024 {
 		return ""
@@ -470,7 +460,7 @@ func normalizeChunkURL(value string) string {
 	if err != nil || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.RawFragment != "" {
 		return ""
 	}
-	if !obsURLOriginLocal(parsed) {
+	if !obsHTTPSOrLoopbackOrigin(parsed) {
 		return ""
 	}
 	if !strings.HasPrefix(parsed.EscapedPath(), "/_next/static/chunks/") || !strings.HasSuffix(parsed.EscapedPath(), ".js") {
@@ -483,9 +473,7 @@ func normalizeChunkURL(value string) string {
 	return normalized
 }
 
-// obsURLOriginLocal mirrors the TS local-or-https guard: https anywhere, http
-// only on loopback hosts.
-func obsURLOriginLocal(u *url.URL) bool {
+func obsHTTPSOrLoopbackOrigin(u *url.URL) bool {
 	if u.Scheme == "https" {
 		return true
 	}
@@ -513,8 +501,6 @@ func obsURLOrigin(u *url.URL) string {
 	return scheme + "://" + host
 }
 
-// obsChunkURLFromOrigin ports isBrowserChunkUrlFromOrigin
-// (chunk-load-contract.ts:82).
 func obsChunkURLFromOrigin(value, expectedOrigin string) bool {
 	expected, err := url.Parse(expectedOrigin)
 	if err != nil || obsURLOrigin(expected) == "null" {

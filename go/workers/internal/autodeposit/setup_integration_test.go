@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earncatalog"
 )
 
 // setupReplayChain drops forwards until send number landOn.
@@ -65,7 +66,7 @@ func TestControllerSetupLandsStageAndReadsItBackBeforePull(t *testing.T) {
 	copy(data[:32], mint[:])
 	copy(data[32:64], vault[:])
 	data[108] = 1
-	accounts[setup.Account] = testAccount{Owner: splTokenID, Data: data}
+	accounts[setup.Account] = testAccount{Owner: earncatalog.SPLTokenProgram, Data: data}
 	ready, err = controller.ensureDestinationSetup(scope, claim, plan)
 	if err != nil || !ready || chain.broadcasts != 2 {
 		t.Fatalf("created account ready=%v broadcasts=%d err=%v", ready, chain.broadcasts, err)

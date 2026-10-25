@@ -19,18 +19,17 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
-// POST /api/smart-accounts/yield-optimization/policies/confirm ports
-// web/apps/web/src/app/api/smart-accounts/yield-optimization/policies/confirm/route.ts:
-// after the client sends the policy-create transactions from policies/prepare,
-// it confirms one of them here. The route checks the body against the
+// POST /api/smart-accounts/yield-optimization/policies/confirm: after the
+// client sends the policy-create transactions from policies/prepare, it
+// confirms one of them here. The route checks the body against the
 // canonical policy metadata derived from the Settings, waits for the claimed
 // signature to reach confirmed on RPC and returns the canonical policy
 // reference. No database access, nothing signed, nothing sent.
 const earnPoliciesConfirmPath = "/api/smart-accounts/yield-optimization/policies/confirm"
 
-// CONFIRMED_SIGNATURE_STATUS_ATTEMPTS, _RETRY_MS and _RETRY_MAX_MS
-// (route.ts:20-22): the RPC status index can trail the browser, so the
-// request stays open through the same bounded lag window (ASK-2005).
+// CONFIRMED_SIGNATURE_STATUS_ATTEMPTS, _RETRY_MS and _RETRY_MAX_MS bound the
+// status poll: the RPC status index can trail the browser, so the request
+// stays open through the same bounded lag window (ASK-2005).
 const (
 	confirmSignatureAttempts = 12
 	confirmSignatureRetryMS  = 350 * time.Millisecond
@@ -42,8 +41,8 @@ const (
 	confirmStageSetup = "setup_policy"
 )
 
-// EarnPolicyConfirmPolicy is serializeVerifiedPolicy's shape
-// (route.ts:252-273): ids and seeds are decimal strings, vaultIndex a number.
+// EarnPolicyConfirmPolicy: ids and seeds are decimal strings, vaultIndex a
+// number.
 type EarnPolicyConfirmPolicy struct {
 	Account     string `json:"account"`
 	ID          string `json:"id"`
@@ -102,8 +101,6 @@ func (h earnRoutes) registerPoliciesConfirm(api huma.API) {
 }
 
 func (h earnRoutes) earnPoliciesConfirm(ctx context.Context, in *earnPoliciesConfirmInput) (*earnPoliciesConfirmOutput, error) {
-	// Next order (route.ts:275-329): principal, body, principal match,
-	// canonical metadata, configured cluster.
 	account, err := h.account(ctx, in.SessionInput)
 	if err != nil {
 		if refused, ok := authRefusal(err); ok {
@@ -125,9 +122,6 @@ func (h earnRoutes) earnPoliciesConfirm(ctx context.Context, in *earnPoliciesCon
 	return &earnPoliciesConfirmOutput{Body: *response}, nil
 }
 
-// depositConfirmPolicyResponse is route.ts:306-375 minus auth and parsing:
-// canonical metadata, configured-cluster check, the RPC status wait, the slot
-// match and the verified-policy serialization.
 func (h earnRoutes) depositConfirmPolicyResponse(ctx context.Context, account EarnAccount, body earnPolicyConfirmBody) (*EarnPolicyConfirmResponse, error) {
 	canonical, err := depositCanonicalPolicyInput(body)
 	if err != nil {
@@ -175,8 +169,6 @@ func (h earnRoutes) depositConfirmPolicyResponse(ctx context.Context, account Ea
 	return &EarnPolicyConfirmResponse{Policy: policy}, nil
 }
 
-// confirmErrorText mirrors `error instanceof Error ? error.message : fallback`
-// at the route's two catch sites.
 func confirmErrorText(err error, fallback string) string {
 	if err == nil {
 		return fallback
@@ -188,7 +180,7 @@ func confirmErrorText(err error, fallback string) string {
 }
 
 // earnPolicyConfirmBody is parseEarnPolicyConfirmRequestBody's output
-// (earn-confirm-contracts.shared.ts:447-479) plus the stage it derives. Whole
+// plus the stage it derives. Whole
 // numbers ride in big.Int because the TS body carries BigInts that only later
 // steps bound to the safe-integer range.
 type earnPolicyConfirmBody struct {
@@ -216,13 +208,10 @@ type earnPolicyConfirmBody struct {
 
 var confirmUintPattern = regexp.MustCompile(`^\d+$`)
 
-// confirmInvalidBody is the shared 400 envelope every parser refusal below
-// maps to (route.ts:285-293).
 func confirmInvalidBody(message string) error {
 	return earnError(http.StatusBadRequest, "invalid_request", message)
 }
 
-// confirmRequiredString is readRequiredString (contracts.shared.ts:120-129).
 func confirmRequiredString(record map[string]any, key string) (string, error) {
 	value, ok := record[key].(string)
 	if !ok || strings.TrimSpace(value) == "" {
@@ -231,8 +220,6 @@ func confirmRequiredString(record map[string]any, key string) (string, error) {
 	return strings.TrimSpace(value), nil
 }
 
-// confirmOptionalString is readOptionalString (contracts.shared.ts:131-144):
-// absent, null and blank all collapse to null.
 func confirmOptionalString(record map[string]any, key string) (*string, error) {
 	value, present := record[key]
 	if !present || value == nil {
@@ -260,7 +247,6 @@ func confirmBigInt(text, key string) (*big.Int, error) {
 	return value, nil
 }
 
-// confirmBigIntString is readBigIntString (contracts.shared.ts:146-152).
 func confirmBigIntString(record map[string]any, key string) (*big.Int, error) {
 	text, err := confirmRequiredString(record, key)
 	if err != nil {
@@ -270,7 +256,6 @@ func confirmBigIntString(record map[string]any, key string) (*big.Int, error) {
 }
 
 // confirmOptionalBigIntString is readOptionalBigIntString
-// (contracts.shared.ts:154-166).
 func confirmOptionalBigIntString(record map[string]any, key string) (*big.Int, error) {
 	text, err := confirmOptionalString(record, key)
 	if err != nil || text == nil {
@@ -279,7 +264,7 @@ func confirmOptionalBigIntString(record map[string]any, key string) (*big.Int, e
 	return confirmBigInt(*text, key)
 }
 
-// confirmVaultIndex is readVaultIndex (contracts.shared.ts:168-179); JSON
+// confirmVaultIndex is readVaultIndex; JSON
 // numbers decode as float64, and Number.isInteger rejects the fractions.
 func confirmVaultIndex(record map[string]any) (float64, error) {
 	value, ok := record["vaultIndex"].(float64)
@@ -289,8 +274,6 @@ func confirmVaultIndex(record map[string]any) (float64, error) {
 	return value, nil
 }
 
-// confirmStage is readPolicyConfirmStage (contracts.shared.ts:191-204): the
-// explicit stage first, else the setup signature's presence decides.
 func confirmStage(record map[string]any) (string, error) {
 	value, err := confirmOptionalString(record, "stage")
 	if err != nil {
@@ -395,9 +378,6 @@ func parseEarnPolicyConfirmBody(raw []byte) (earnPolicyConfirmBody, error) {
 	return body, nil
 }
 
-// earnPolicyCanonical is the canonical input createCanonicalPolicyInput
-// returns (route.ts:93-107): the body fields replaced by what the Settings
-// PDA actually derives.
 type earnPolicyCanonical struct {
 	Cluster            string
 	PolicyAccount      string
@@ -420,7 +400,6 @@ func confirmPublicKey(raw string) (solana.PublicKey, error) {
 	return key, nil
 }
 
-// confirmNormalizeCluster is normalizeLoyalCluster (loyal-actions cluster.ts:46-58).
 func confirmNormalizeCluster(value string) (string, error) {
 	switch value {
 	case "devnet":
@@ -431,8 +410,6 @@ func confirmNormalizeCluster(value string) (string, error) {
 	return "", fmt.Errorf("unsupported Loyal cluster: %s", value)
 }
 
-// confirmSafePolicySeed is toSafePolicySeed (route.ts:50-56): the wire and
-// the PDA seeds cap a policy seed at the JSON safe-integer range.
 func confirmSafePolicySeed(seed *big.Int) (uint64, error) {
 	maxSafe := new(big.Int).SetUint64(depositMaxPolicySeed)
 	if seed.Sign() <= 0 || seed.Cmp(maxSafe) > 0 {
@@ -441,14 +418,10 @@ func confirmSafePolicySeed(seed *big.Int) (uint64, error) {
 	return seed.Uint64(), nil
 }
 
-// confirmCanonicalMismatch is assertCanonicalField (route.ts:38-48).
 func confirmCanonicalMismatch(label string) error {
 	return fmt.Errorf("%s does not match the canonical earn policy metadata.", label)
 }
 
-// depositCanonicalPolicyInput ports createCanonicalPolicyInput
-// (route.ts:58-183): derive every account from the Settings, validate the
-// reserve the way deposit confirm does, then assert each claimed field.
 func depositCanonicalPolicyInput(request earnPolicyConfirmBody) (earnPolicyCanonical, error) {
 	cluster, err := confirmNormalizeCluster(request.Cluster)
 	if err != nil {
@@ -482,7 +455,7 @@ func depositCanonicalPolicyInput(request earnPolicyConfirmBody) (earnPolicyCanon
 
 	// Prepare routes mint to the best Safe reserve rather than one fixed
 	// market, so the reserve validates like deposit confirm: a supported
-	// product mint and a Safe-universe market (route.ts:78-92).
+	// product mint and a Safe-universe market.
 	universe, err := depositEarnUniverseFor(LoyalCluster(cluster))
 	if err != nil {
 		return earnPolicyCanonical{}, err
@@ -513,10 +486,6 @@ func depositCanonicalPolicyInput(request earnPolicyConfirmBody) (earnPolicyCanon
 		VaultPubkey:        expectedVault.String(),
 	}
 
-	// assertCanonicalField order (route.ts:109-180). The liquidityMint,
-	// market and targetReserve assertions compare the request value against
-	// itself (assertSafeEarnReserveMetadata passes them through unchanged),
-	// so unlike the rest they cannot fire.
 	if request.Cluster != canonical.Cluster {
 		return earnPolicyCanonical{}, confirmCanonicalMismatch("cluster")
 	}
@@ -576,10 +545,6 @@ func depositConfirmContainsString(values []string, value string) bool {
 	return false
 }
 
-// depositConfirmedSignatureSlot is resolveConfirmedSignatureSlot
-// (route.ts:202-250): poll getSignatureStatuses until the transaction reaches
-// confirmed, backoff capped at 5s, refusing a transaction that failed or
-// never landed inside the lag window.
 func depositConfirmedSignatureSlot(ctx context.Context, client *chain.Client, operation, signature string) (*big.Int, error) {
 	for attempt := 0; attempt < confirmSignatureAttempts; attempt++ {
 		state, err := client.SignatureState(ctx, signature)

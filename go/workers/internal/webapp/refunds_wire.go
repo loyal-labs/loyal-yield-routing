@@ -1,9 +1,5 @@
 package webapp
 
-// Wire shapes for POST /api/smart-accounts/yield-optimization/policy-refunds/prepare.
-// They mirror web/apps/web/src/lib/yield-optimization/earn-policy-refund-contracts.shared.ts
-// and web/packages/smart-account-vaults/src/wire/prepared-operation-wire.shared.ts:31-94.
-
 type WirePreparedInstructionKey struct {
 	IsSigner   bool   `json:"isSigner"`
 	IsWritable bool   `json:"isWritable"`
@@ -39,8 +35,6 @@ type WirePreparedOperation struct {
 	RequiresConfirmation bool                      `json:"requiresConfirmation"`
 }
 
-// EarnVaultRefundEntry mirrors EarnPolicyRefundVaultEntry: the Earn vault's
-// refundable rent, chain-derived (contracts.shared.ts:72-83).
 type EarnVaultRefundEntry struct {
 	Account                 string                        `json:"account"`
 	BlockedReason           *string                       `json:"blockedReason"`
@@ -50,8 +44,6 @@ type EarnVaultRefundEntry struct {
 	TotalRefundableLamports uint64                        `json:"totalRefundableLamports"`
 }
 
-// PreparedEarnVaultRefund mirrors WireSmartAccountPreparedEarnVaultRefund
-// (contracts.shared.ts:123-129).
 type PreparedEarnVaultRefund struct {
 	EstimatedRefundLamports uint64                `json:"estimatedRefundLamports"`
 	Prepared                WirePreparedOperation `json:"prepared"`
@@ -60,9 +52,6 @@ type PreparedEarnVaultRefund struct {
 	VaultIndex              uint8                 `json:"vaultIndex"`
 }
 
-// WirePreparedEarnPolicyRefund mirrors WireSmartAccountPreparedEarnPolicyRefund
-// (contracts.shared.ts:107-113): the closed policy's scan facts plus the one
-// executeSettingsTransactionSync carrying its PolicyRemove.
 type WirePreparedEarnPolicyRefund struct {
 	EstimatedRefundLamports uint64                     `json:"estimatedRefundLamports"`
 	Policy                  EarnPolicyRefundScanPolicy `json:"policy"`
@@ -71,10 +60,9 @@ type WirePreparedEarnPolicyRefund struct {
 	VaultIndex              uint8                      `json:"vaultIndex"`
 }
 
-// WirePreparedEarnRecurringDelegationRefund mirrors
-// WireSmartAccountPreparedEarnRecurringDelegationRefund
-// (contracts.shared.ts:115-121). The estimated lamports ride the delegation's
-// own nullable rent read, so they serialize as null when the account is gone.
+// WirePreparedEarnRecurringDelegationRefund: the estimated lamports ride the
+// delegation's own nullable rent read, so they serialize as null when the
+// account is gone.
 type WirePreparedEarnRecurringDelegationRefund struct {
 	EstimatedRefundLamports *uint64                             `json:"estimatedRefundLamports"`
 	Prepared                WirePreparedOperation               `json:"prepared"`
@@ -83,8 +71,7 @@ type WirePreparedEarnRecurringDelegationRefund struct {
 	VaultIndex              uint8                               `json:"vaultIndex"`
 }
 
-// EarnPolicyRefundPrepareResponse mirrors EarnPolicyRefundPrepareResponse
-// (contracts.shared.ts:131-135): exactly one branch key per request kind.
+// EarnPolicyRefundPrepareResponse: exactly one branch key per request kind.
 type EarnPolicyRefundPrepareResponse struct {
 	PreparedVaultRefund               *PreparedEarnVaultRefund                   `json:"preparedVaultRefund,omitempty"`
 	PreparedRecurringDelegationRefund *WirePreparedEarnRecurringDelegationRefund `json:"preparedRecurringDelegationRefund,omitempty"`

@@ -7,11 +7,6 @@ import (
 	"strings"
 )
 
-// Ports parseEarnWithdrawalConfirmRequestBody and its readers
-// (earn-confirm-contracts.shared.ts:112-564). Every failure is a plain error;
-// the route wraps it as 400 invalid_request with the thrown message, exactly
-// like the Next route's try/catch around the parser.
-
 type withdrawAutodepositCloseInput struct {
 	CloseSignature      string
 	ConfirmedSlot       *big.Int
@@ -33,7 +28,7 @@ type withdrawReserveWithdrawalInput struct {
 }
 
 // withdrawConfirmInput mirrors ConfirmedYieldWithdrawalInput
-// (yield-deposit-repository.server.ts:229-268) as the parser produces it:
+// as the parser produces it:
 // optional strings collapse to nil, bigint fields stay arbitrary precision.
 type withdrawConfirmInput struct {
 	AutodepositClose           *withdrawAutodepositCloseInput
@@ -245,10 +240,6 @@ func withdrawReadOptionalSourceMetadata(record map[string]any) (map[string]any, 
 	}
 	object, isObject := value.(map[string]any)
 	if !isObject {
-		if _, isArray := value.([]any); isArray {
-			return nil, fmt.Errorf("sourceMetadata must be an object when provided.")
-		}
-		// A non-null primitive fails the object check in TS too.
 		return nil, fmt.Errorf("sourceMetadata must be an object when provided.")
 	}
 	return object, nil

@@ -11,15 +11,10 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-// Port of the orchestration half of earnings-read-service.server.ts: the
-// rebuild path (readEarnEarningsRangeSet) and the cache entry
-// (readCachedEarnEarningsRangeSet, earnings_cache.go). Database access is
-// injected so the rebuild logic stays testable against fixtures.
-
 type earningsReadInput struct {
 	cluster       string
 	settings      string
-	timezone      string // nullable in TS; empty means null here
+	timezone      string
 	vaultIndex    int16
 	walletAddress string
 }
@@ -40,8 +35,6 @@ func (p earningsPosition) seed() earningsPositionSeed {
 	}
 }
 
-// earningsSnapshotRecord is EarnEarningsSnapshotRecord: the stored payload with
-// its private columns split out.
 type earningsSnapshotRecord struct {
 	generatedAt    time.Time
 	payload        EarningsRangeSet
@@ -49,10 +42,8 @@ type earningsSnapshotRecord struct {
 	checkpoint     *earningsCheckpointWire
 }
 
-// earningsUnavailableError mirrors EarnEarningsUnavailableError; the route
-// layer (unit 2) maps it to the 503 envelope.
 type earningsUnavailableError struct {
-	code       string // "earnings_unavailable" | "history_incomplete"
+	code       string
 	message    string
 	detailCode string
 	coverage   *EarningsCoverage
@@ -61,7 +52,7 @@ type earningsUnavailableError struct {
 func (e *earningsUnavailableError) Error() string { return e.message }
 
 func unavailableErr(detailCode, message string) *earningsUnavailableError {
-	return &earningsUnavailableError{code: "history_incomplete", message: message, detailCode: detailCode}
+	return &earningsUnavailableError{code: earningsIncompleteCode, message: message, detailCode: detailCode}
 }
 
 var errEarningsRefreshInProgress = errors.New("earnings refresh is in progress")
@@ -70,7 +61,6 @@ type earningsApyTimeoutError struct{}
 
 func (e *earningsApyTimeoutError) Error() string { return "earnings_timescale_timeout" }
 
-// normalizedErrorKind ports normalizedError (read-service:824) for logs.
 func normalizedErrorKind(err error) (errorCode, errorName, errorDetailCode string) {
 	errorDetailCode = ""
 	errorName = errorNameOf(err)
@@ -135,7 +125,6 @@ func indexOf(haystack, needle string) int {
 	return -1
 }
 
-// earningsApyArgs is loadApySamples' argument bundle.
 type earningsApyArgs struct {
 	end                time.Time
 	pathEvents         []earningsPathEvent
@@ -144,7 +133,6 @@ type earningsApyArgs struct {
 	start              time.Time
 }
 
-// earningsSaveArgs is saveSnapshot's argument bundle.
 type earningsSaveArgs struct {
 	input          earningsReadInput
 	payload        EarningsRangeSet
@@ -168,12 +156,10 @@ type earningsReadDeps struct {
 	now                    func() time.Time
 }
 
-// parseI64 reads a JS-bigint-stringified field back.
 func parseI64(v string) (int64, error) {
 	return strconv.ParseInt(v, 10, 64)
 }
 
-// mustParseISO reads an ISO millisecond timestamp written by the TS side.
 func mustParseISO(v string) time.Time {
 	t, err := time.Parse("2006-01-02T15:04:05.000Z07:00", v)
 	if err != nil {
@@ -182,8 +168,6 @@ func mustParseISO(v string) time.Time {
 	return t
 }
 
-// earningsCheckpointTime ports earnings-checkpoint.server.ts:54: the most
-// recent absolute UTC day boundary that closed a full APY period.
 func earningsCheckpointTime(firstDepositAt, now time.Time) time.Time {
 	const day = int64(86_400_000)
 	first := firstDepositAt.UnixMilli()
@@ -191,7 +175,6 @@ func earningsCheckpointTime(firstDepositAt, now time.Time) time.Time {
 	return msTimeMillis((closedApyPeriod / day) * day)
 }
 
-// checkpointSeedSnapshot ports checkpointSeed (earnings-checkpoint.server.ts:41).
 func checkpointSeedSnapshot(checkpoint earningsCheckpointWire) (earningsPortfolioSnapshot, error) {
 	slot, err := parseI64(checkpoint.Seed.ObservedSlot)
 	if err != nil {
@@ -218,7 +201,6 @@ func checkpointSeedSnapshot(checkpoint earningsCheckpointWire) (earningsPortfoli
 	return snapshot, nil
 }
 
-// createEmptyEarnEarningsRangeSet ports read-service:864.
 func createEmptyEarnEarningsRangeSet(now time.Time, timezone string) (EarningsRangeSet, error) {
 	timezone = normalizeEarningsTimezone(timezone)
 	ranges := EarningsRanges{}
@@ -256,8 +238,6 @@ func createEmptyEarnEarningsRangeSet(now time.Time, timezone string) (EarningsRa
 	}, nil
 }
 
-// staleSnapshotOverlay ports staleSnapshot (read-service:811): the stored
-// payload re-marked stale with a reason.
 func staleSnapshotOverlay(snapshot earningsSnapshotRecord, now time.Time, staleReason string) EarningsRangeSet {
 	payload := snapshot.payload
 	ageMs := now.UnixMilli() - snapshot.generatedAt.UnixMilli()
@@ -275,10 +255,17 @@ func warnEarningsRead(step string, err error) {
 	slog.Warn("earnings-read "+step, "errorCode", code, "errorName", name, "errorDetailCode", detail)
 }
 
-// readEarningsRangeSet ports readEarnEarningsRangeSet (read-service:930): the
-// full rebuild. `useCheckpoint` mirrors the TS recursion flag for a retry that
-// must ignore a mismatched stored checkpoint.
-func readEarningsRangeSet(ctx context.Context, input earningsReadInput, deps earningsReadDeps, useCheckpoint bool) (EarningsRangeSet, error) {
+func readEarningsRangeSetResuming(ctx context.Context, input earningsReadInput, deps earningsReadDeps) (EarningsRangeSet, error) {
+	timezone, now, snapshot := loadEarningsSnapshotForRead(ctx, input, deps)
+	return rebuildEarningsRangeSet(ctx, input, deps, snapshot, timezone, now, snapshot, time.Now())
+}
+
+func readEarningsRangeSetFromScratch(ctx context.Context, input earningsReadInput, deps earningsReadDeps) (EarningsRangeSet, error) {
+	timezone, now, snapshot := loadEarningsSnapshotForRead(ctx, input, deps)
+	return rebuildEarningsRangeSet(ctx, input, deps, nil, timezone, now, snapshot, time.Now())
+}
+
+func loadEarningsSnapshotForRead(ctx context.Context, input earningsReadInput, deps earningsReadDeps) (string, time.Time, *earningsSnapshotRecord) {
 	now := deps.now()
 	timezone := normalizeEarningsTimezone(input.timezone)
 	var snapshot *earningsSnapshotRecord
@@ -287,17 +274,15 @@ func readEarningsRangeSet(ctx context.Context, input earningsReadInput, deps ear
 	} else if loaded != nil {
 		snapshot = loaded
 	}
-	return rebuildEarningsRangeSet(ctx, input, deps, useCheckpoint, timezone, now, snapshot, time.Now())
+	return timezone, now, snapshot
 }
 
-// earningsReadFailure answers a read that could not rebuild: the stored
-// snapshot re-marked stale when there is one, else the 503 envelope.
 func earningsReadFailure(err error, snapshot *earningsSnapshotRecord, now, startedAt time.Time) (EarningsRangeSet, error) {
 	var history *earningsHistoryError
 	unavailable, isUnavailable := err.(*earningsUnavailableError)
 	if errors.As(err, &history) {
 		unavailable = &earningsUnavailableError{
-			code:       "history_incomplete",
+			code:       earningsIncompleteCode,
 			message:    history.Error(),
 			detailCode: "principal_history_ambiguous",
 		}
@@ -326,10 +311,10 @@ func earningsReadFailure(err error, snapshot *earningsSnapshotRecord, now, start
 		"errorName", name,
 		"cause", earningsErrorCause(err),
 		"elapsedMs", time.Since(startedAt).Milliseconds())
-	return EarningsRangeSet{}, &earningsUnavailableError{code: "earnings_unavailable", message: "Earn earnings are unavailable.", detailCode: "earnings_unavailable"}
+	return EarningsRangeSet{}, &earningsUnavailableError{code: earningsUnavailableCode, message: "Earn earnings are unavailable.", detailCode: "earnings_unavailable"}
 }
 
-func rebuildEarningsRangeSet(ctx context.Context, input earningsReadInput, deps earningsReadDeps, useCheckpoint bool, timezone string, now time.Time, snapshot *earningsSnapshotRecord, startedAt time.Time) (payload EarningsRangeSet, err error) {
+func rebuildEarningsRangeSet(ctx context.Context, input earningsReadInput, deps earningsReadDeps, resumeFrom *earningsSnapshotRecord, timezone string, now time.Time, snapshot *earningsSnapshotRecord, startedAt time.Time) (payload EarningsRangeSet, err error) {
 	defer func() {
 		if err != nil {
 			payload, err = earningsReadFailure(err, snapshot, now, startedAt)
@@ -381,13 +366,13 @@ func rebuildEarningsRangeSet(ctx context.Context, input earningsReadInput, deps 
 	}
 
 	var checkpoint *earningsCheckpointWire
-	if useCheckpoint && snapshot != nil && snapshot.checkpoint != nil &&
-		snapshot.checkpoint.Version == 1 &&
-		isServerVerifiedEarnEarningsPayload(&snapshot.payload) &&
+	if resumeFrom != nil && resumeFrom.checkpoint != nil &&
+		resumeFrom.checkpoint.Version == 1 &&
+		isServerVerifiedEarnEarningsPayload(&resumeFrom.payload) &&
 		firstLedgerDeposit != nil &&
-		snapshot.checkpoint.FirstDepositAt == isoMS(*firstLedgerDeposit) &&
-		!mustParseISO(snapshot.checkpoint.At).After(now) {
-		checkpoint = snapshot.checkpoint
+		resumeFrom.checkpoint.FirstDepositAt == isoMS(*firstLedgerDeposit) &&
+		!mustParseISO(resumeFrom.checkpoint.At).After(now) {
+		checkpoint = resumeFrom.checkpoint
 	}
 	if checkpoint != nil {
 		broken := deps.loadHistoryFingerprint == nil ||
@@ -516,7 +501,7 @@ func rebuildEarningsRangeSet(ctx context.Context, input earningsReadInput, deps 
 			}
 			if firstAt != secondAt {
 				return EarningsRangeSet{}, &earningsUnavailableError{
-					code:       "history_incomplete",
+					code:       earningsIncompleteCode,
 					message:    "Earn principal history is ambiguous.",
 					detailCode: "principal_history_ambiguous",
 				}
@@ -533,8 +518,6 @@ func rebuildEarningsRangeSet(ctx context.Context, input earningsReadInput, deps 
 		return EarningsRangeSet{}, err
 	}
 
-	// TS keeps this slice empty on purpose: portfolio windows do not use it.
-	pathEvents := []earningsPathEvent{}
 	historyRevision := getPortfolioEarningsHistoryRevision(effectiveLedger, portfolioSnapshots)
 
 	if !principalMatchesHistory || len(effectiveLedger) == 0 || (projectedPrincipal > 0 && len(portfolioSnapshots) == 0) {
@@ -543,14 +526,14 @@ func rebuildEarningsRangeSet(ctx context.Context, input earningsReadInput, deps 
 			detailCode = "deposit_history_incomplete"
 		}
 		return EarningsRangeSet{}, &earningsUnavailableError{
-			code:       "history_incomplete",
+			code:       earningsIncompleteCode,
 			message:    "Earn principal history is incomplete.",
 			detailCode: detailCode,
 		}
 	}
 	if firstDepositAt == nil {
 		return EarningsRangeSet{}, &earningsUnavailableError{
-			code:       "history_incomplete",
+			code:       earningsIncompleteCode,
 			message:    "Earn deposit history is incomplete.",
 			detailCode: "deposit_history_incomplete",
 		}
@@ -560,7 +543,7 @@ func rebuildEarningsRangeSet(ctx context.Context, input earningsReadInput, deps 
 	defer cancelApy()
 	apySamples, err := deps.loadApySamples(apyCtx, input, earningsApyArgs{
 		end:                now,
-		pathEvents:         pathEvents,
+		pathEvents:         []earningsPathEvent{},
 		portfolioSnapshots: portfolioSnapshots,
 		reserves:           checkpointReservesOrNil(checkpoint),
 		start:              *firstDepositAt,
@@ -578,13 +561,13 @@ func rebuildEarningsRangeSet(ctx context.Context, input earningsReadInput, deps 
 	}
 	if checkpoint != nil &&
 		checkpoint.ApyFingerprint != apyFingerprint(mustParseISO(checkpoint.At), checkpoint.Reserves) {
-		return readEarningsRangeSet(ctx, input, deps, false)
+		return readEarningsRangeSetFromScratch(ctx, input, deps)
 	}
 
 	coverage := getPortfolioEarningsCoverage(apySamples, now, portfolioSnapshots)
 	if len(coverage.MissingReserves) > 0 || len(coverage.GappedReserves) > 0 || len(coverage.StaleReserves) > 0 || coverage.SampledReserveCount != coverage.ReserveCount {
 		return EarningsRangeSet{}, &earningsUnavailableError{
-			code:       "history_incomplete",
+			code:       earningsIncompleteCode,
 			message:    "Earn APY history coverage is incomplete.",
 			detailCode: "apy_coverage_incomplete",
 			coverage:   &coverage,
@@ -604,7 +587,7 @@ func rebuildEarningsRangeSet(ctx context.Context, input earningsReadInput, deps 
 			apySamples:         apySamples,
 			events:             effectiveLedger,
 			now:                now,
-			pathEvents:         pathEvents,
+			pathEvents:         []earningsPathEvent{},
 			portfolioSnapshots: portfolioSnapshots,
 			principalClamp:     activeClamp,
 			rangeID:            rangeID,
@@ -618,7 +601,7 @@ func rebuildEarningsRangeSet(ctx context.Context, input earningsReadInput, deps 
 	}
 	if checkpoint != nil {
 		if fp := historyFingerprint(mustParseISO(checkpoint.At)); fp == nil || checkpoint.HistoryFingerprint != *fp {
-			return readEarningsRangeSet(ctx, input, deps, false)
+			return readEarningsRangeSetFromScratch(ctx, input, deps)
 		}
 	}
 
@@ -660,7 +643,7 @@ func rebuildEarningsRangeSet(ctx context.Context, input earningsReadInput, deps 
 					apySamples:         apySamples,
 					events:             effectiveLedger,
 					now:                *nextCheckpointAt,
-					pathEvents:         pathEvents,
+					pathEvents:         []earningsPathEvent{},
 					portfolioSnapshots: portfolioSnapshots,
 					principalClamp:     activeClamp,
 					rangeID:            rangeID,
@@ -738,8 +721,6 @@ func checkpointReservesOrNil(checkpoint *earningsCheckpointWire) []string {
 	return checkpoint.Reserves
 }
 
-// buildCheckpointWire serializes the next incremental checkpoint the way the
-// TS object literal orders its keys.
 func buildCheckpointWire(at time.Time, firstDepositAt time.Time, historyFingerprint, ledgerFingerprint, apyFingerprint string, apySamples []reserveApySample, ranges EarningsRanges, seed earningsPortfolioSnapshot) (*earningsCheckpointWire, error) {
 	reserveSet := map[string]bool{}
 	var reserves []string

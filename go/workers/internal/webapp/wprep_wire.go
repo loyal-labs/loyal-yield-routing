@@ -11,10 +11,7 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
-// WireSmartAccountPreparedEarnUsdcWithdraw as serializePreparedEarnUsdcWithdraw
-// emits it (wire/earn-prepare-wire.shared.ts:99-152, 369-444). The persistence
-// objects are the SDK's own (client.ts:8876-8921, 10000-10036, 10125-10164),
-// echoed verbatim to confirm.
+// EarnWithdrawPrepareResponse echoes the persisted prepare wire verbatim.
 type EarnWithdrawPrepareResponse struct {
 	PreparedWithdraw EarnWithdrawPrepareWire `json:"preparedWithdraw"`
 }
@@ -91,7 +88,7 @@ type EarnWithdrawReserveMetadata struct {
 	WithdrawnAmountRaw      string `json:"withdrawnAmountRaw"`
 }
 
-// EarnWithdrawSourceMetadata is the nested sourceMetadata (client.ts:8743-8769):
+// EarnWithdrawSourceMetadata is the nested sourceMetadata:
 // {mint, tokenAccount} for an idle source, {liquidityMint, market, reserve}
 // for a reserve source.
 type EarnWithdrawSourceMetadata struct {
@@ -147,8 +144,6 @@ var wprepNull = json.RawMessage("null")
 
 const wprepOperation = "earnUsdcWithdraw"
 
-// wprepWireOperation is serializePreparedOperation for an earnUsdcWithdraw
-// op: the instruction list, its lookup tables, payer and program.
 func wprepWireOperation(payer solana.PublicKey, instructions []squads.Instruction, tables []earnprep.WithdrawLookupTable) DepositWirePreparedOperation {
 	wire := DepositWirePreparedOperation{
 		Instructions:         make([]DepositWireInstruction, 0, len(instructions)),

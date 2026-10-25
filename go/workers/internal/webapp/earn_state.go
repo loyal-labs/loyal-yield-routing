@@ -8,12 +8,8 @@ package webapp
 //	POST /api/smart-accounts/yield-optimization/position/reconcile
 //	POST /api/smart-accounts/yield-optimization/realtime/token
 //
-// <- web/apps/web/src/app/api/smart-accounts/yield-optimization/{earn-state,
-// position, position/reconcile, realtime/token}/route.ts (mobile twins
-// .../mobile/earn/state and .../mobile/earn/autodeposit/state). Earn-state
-// runs five independent
-// loads, each degraded into loadErrors + null on failure exactly like
-// loadEarnStatePart; the position load also runs the reconcile writers, so
+// Earn-state runs five independent loads, each degraded into loadErrors +
+// null on failure; the position load also runs the reconcile writers, so
 // this is a read family with a bounded write blast radius.
 
 import (
@@ -65,14 +61,10 @@ var earnStateFamily = earnFamily{
 }
 
 type earnStateOutput struct {
-	// Next sets no explicit cache header on this route; no-store is pinned
-	// here because every byte is per-wallet state.
 	CacheControl string `header:"Cache-Control"`
 	Body         EarnStateResponse
 }
 
-// stateLoad mirrors loadEarnStatePart: a failed part logs, sets its
-// loadErrors key and falls back to nil. The data is captured by the closure.
 func stateLoad(name string, failed *bool, load func() error) {
 	if err := load(); err != nil {
 		slog.Warn("earn-state failed to load part; returning null", "part", name, "error", err)
@@ -93,9 +85,6 @@ func (h earnRoutes) registerState(api huma.API) {
 	h.registerRealtime(api)
 }
 
-// stateCurrentTotalAmountRaw ports loadCurrentTotalAmountRaw: the sum of the
-// vault's user-facing reserve rows and all idle balances, falling back to the
-// stored position holding when it is zero.
 func (h earnRoutes) stateCurrentTotalAmountRaw(ctx context.Context, settings, wallet, vaultPubkey string) (int64, error) {
 	reserveRows, err := h.stateCurrentReserveRows(ctx, settings, wallet, vaultPubkey)
 	if err != nil {
@@ -219,12 +208,12 @@ func (h earnRoutes) earnState(ctx context.Context, in *sessionRequest) (*earnSta
 
 	var policyOut *EarnStatePolicy
 	if pair != nil {
-		policyOut = serializeEarnStatePolicy(pair.Route, pair.Setup, int(earnprep.EarnVaultIndex), vaultPubkey)
+		policyOut = serializeEarnStatePolicy(pair.Route, pair.Setup)
 	}
 	nextStep := stateOnboardingNextStep(attempt, position != nil, pair != nil, pair != nil && pair.Setup != nil)
 
 	return &earnStateOutput{
-		CacheControl: "no-store",
+		CacheControl: perWalletCacheControl(),
 		Body: EarnStateResponse{
 			Autodeposit:           autodeposit,
 			Autoswap:              autoswap,

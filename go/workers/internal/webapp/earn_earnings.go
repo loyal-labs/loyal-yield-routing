@@ -1,12 +1,5 @@
 package webapp
 
-// GET /api/smart-accounts/yield-optimization/earnings
-// <- web/apps/web/src/app/api/smart-accounts/yield-optimization/earnings/route.ts
-// (mobile twin web/apps/web/src/app/api/smart-accounts/mobile/earn/earnings).
-// Authenticated read over the unit-1 read service: cached snapshot when fresh,
-// stale-while-revalidate otherwise, with the detached rebuild standing in for
-// Next's after().
-
 import (
 	"context"
 	"errors"
@@ -49,8 +42,6 @@ type earningsRequest struct {
 }
 
 type earningsOutput struct {
-	// Next sets no explicit cache header on this route; no-store is pinned
-	// here because every byte is per-wallet state.
 	CacheControl string `header:"Cache-Control"`
 	Body         EarningsRangeSet
 }
@@ -91,7 +82,7 @@ func (h earnRoutes) earnEarnings(ctx context.Context, in *earningsRequest) (*ear
 	input := earningsReadInput{
 		cluster:       string(account.Cluster),
 		settings:      account.Settings.String(),
-		timezone:      in.Timezone,
+		timezone:      normalizeEarningsTimezone(in.Timezone),
 		vaultIndex:    int16(earnprep.EarnVaultIndex),
 		walletAddress: account.Wallet.String(),
 	}
@@ -100,13 +91,9 @@ func (h earnRoutes) earnEarnings(ctx context.Context, in *earningsRequest) (*ear
 	if err != nil {
 		return nil, earningsRouteError(err)
 	}
-	return &earningsOutput{CacheControl: "no-store", Body: payload}, nil
+	return &earningsOutput{CacheControl: perWalletCacheControl(), Body: payload}, nil
 }
 
-// earningsRouteError maps a read-service failure onto the route's 503
-// envelope exactly as the TS catch block does: a classified unavailable error
-// keeps its code and detailCode, anything else degrades to
-// earnings_unavailable.
 func earningsRouteError(err error) error {
 	var unavailable *earningsUnavailableError
 	if errors.As(err, &unavailable) {

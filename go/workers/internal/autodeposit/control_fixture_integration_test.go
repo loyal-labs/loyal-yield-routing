@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earncatalog"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
@@ -69,7 +70,7 @@ func installControlSnapshot(t *testing.T, f controlGolden, b *SweepWireBuilder, 
 	binary.LittleEndian.PutUint64(token[64:72], 9_000_000)
 	binary.LittleEndian.PutUint32(token[72:76], 1)
 	copy(token[76:108], authority[:])
-	accounts := map[string]testAccount{f.Settings: {Address: f.Settings, Owner: squads.ProgramID.String(), Data: goldenHex(t, f.SettingsDataHex)}, f.Policy: {Address: f.Policy, Owner: squads.ProgramID.String(), Data: goldenHex(t, f.PolicyDataHex)}, f.SubscriptionAuthority: {Address: f.SubscriptionAuthority, Owner: SubscriptionsProgramID}, f.RecurringDelegation: {Address: f.RecurringDelegation, Owner: SubscriptionsProgramID, Data: testDelegationData(f.Wallet, f.Vault, USDCMint, perPeriod, 0)}, f.WalletATA: {Address: f.WalletATA, Owner: splTokenID, Data: token}}
+	accounts := map[string]testAccount{f.Settings: {Address: f.Settings, Owner: squads.ProgramID.String(), Data: goldenHex(t, f.SettingsDataHex)}, f.Policy: {Address: f.Policy, Owner: squads.ProgramID.String(), Data: goldenHex(t, f.PolicyDataHex)}, f.SubscriptionAuthority: {Address: f.SubscriptionAuthority, Owner: earncatalog.SubscriptionsProgram}, f.RecurringDelegation: {Address: f.RecurringDelegation, Owner: earncatalog.SubscriptionsProgram, Data: testDelegationData(f.Wallet, f.Vault, USDCMint, perPeriod, 0)}, f.WalletATA: {Address: f.WalletATA, Owner: earncatalog.SPLTokenProgram, Data: token}}
 	b.read = fixtureReader(200, accounts)
 	return accounts
 }

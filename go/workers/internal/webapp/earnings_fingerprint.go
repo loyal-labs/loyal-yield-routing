@@ -3,6 +3,7 @@ package webapp
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"sort"
 )
 
 // Canonical JSON for the sha256 fingerprints and revisions the TS readers
@@ -48,12 +49,10 @@ func writeEarningsEventJSON(w *jsonWriter, e earningsEvent) {
 		w.optBool(e.settlesPosition)
 	}
 	w.raw(`,"type":`)
-	w.str(e.eventType)
+	w.str(string(e.eventType))
 	w.raw("}")
 }
 
-// earningsLedgerFingerprint is ledgerFingerprint (read-service:981): the
-// fingerprint over time-sorted ledger events strictly before `before`.
 func earningsLedgerFingerprint(sorted []earningsEvent, before int64) string {
 	var w jsonWriter
 	w.raw("[")
@@ -72,7 +71,6 @@ func earningsLedgerFingerprint(sorted []earningsEvent, before int64) string {
 	return fingerprintHex(w.String())
 }
 
-// getMaterialEarningsHistoryRevision ports read-service:381 over path events.
 func getMaterialEarningsHistoryRevision(pathEvents []earningsPathEvent) string {
 	var w jsonWriter
 	w.raw("[")
@@ -81,7 +79,7 @@ func getMaterialEarningsHistoryRevision(pathEvents []earningsPathEvent) string {
 			w.raw(",")
 		}
 		w.raw(`[`)
-		w.str(event.eventType)
+		w.str(string(event.eventType))
 		w.raw(",")
 		w.str(isoMS(event.confirmedAt))
 		w.raw(",")
@@ -109,7 +107,7 @@ func getPortfolioEarningsHistoryRevision(sorted []earningsEvent, snapshots []ear
 			w.raw(",")
 		}
 		w.raw(`[`)
-		w.str(event.eventType)
+		w.str(string(event.eventType))
 		w.raw(",")
 		w.str(isoMS(event.confirmedAt))
 		w.raw(",")
@@ -147,7 +145,7 @@ func getPortfolioEarningsHistoryRevision(sorted []earningsEvent, snapshots []ear
 			w.raw(`[`)
 			w.str(exposure.sourceID)
 			w.raw(",")
-			w.str(exposure.kind)
+			w.str(string(exposure.kind))
 			w.raw(",")
 			w.str(exposure.liquidityMint)
 			w.raw(",")
@@ -183,8 +181,6 @@ func eventArrayBool(v *bool) string {
 	return w.String()
 }
 
-// earningsApyFingerprint is apyFingerprint (read-service:1161) over the
-// reserve-scoped sample objects.
 func earningsApyFingerprint(samples []reserveApySample, before int64, reserves []string) string {
 	var w jsonWriter
 	w.raw("[")
@@ -227,14 +223,12 @@ func earningsApyFingerprint(samples []reserveApySample, before int64, reserves [
 	return fingerprintHex(w.String())
 }
 
-// earningsSourceRevisionRow is one user_yield_positions row as
-// getEarnEarningsSourceRevision selects it (read-service:693).
 type earningsSourceRevisionRow struct {
-	ID        int64
-	Status    string
-	Principal int64
-	LastEvent *int64
-	UpdatedAt string // ISO
+	ID           int64
+	Status       string
+	Principal    int64
+	LastEvent    *int64
+	UpdatedAtISO string
 }
 
 func (r earningsSourceRevisionRow) write(w *jsonWriter) {
@@ -247,12 +241,14 @@ func (r earningsSourceRevisionRow) write(w *jsonWriter) {
 	w.raw(`,"lastEvent":`)
 	w.optBigint(r.LastEvent)
 	w.raw(`,"updatedAt":`)
-	w.str(r.UpdatedAt)
+	w.str(r.UpdatedAtISO)
 	w.raw("}")
 }
 
-// getEarnEarningsSourceRevision hashes the position rows in id order.
-func getEarnEarningsSourceRevision(rows []earningsSourceRevisionRow) string {
+func getEarnEarningsSourceRevision(unsorted []earningsSourceRevisionRow) string {
+	rows := make([]earningsSourceRevisionRow, len(unsorted))
+	copy(rows, unsorted)
+	sort.SliceStable(rows, func(i, j int) bool { return rows[i].ID < rows[j].ID })
 	var w jsonWriter
 	w.raw("[")
 	for i, row := range rows {
@@ -265,8 +261,6 @@ func getEarnEarningsSourceRevision(rows []earningsSourceRevisionRow) string {
 	return "earnings-v1:" + fingerprintHex(w.String())
 }
 
-// isServerVerifiedEarnEarningsPayload ports earnings.shared.ts:74: the minimum
-// shape a stored snapshot must have before the cache will serve it.
 func isServerVerifiedEarnEarningsPayload(payload *EarningsRangeSet) bool {
 	if payload == nil {
 		return false

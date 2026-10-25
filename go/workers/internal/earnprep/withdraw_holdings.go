@@ -13,36 +13,22 @@ import (
 	"github.com/solana-foundation/solana-go/v2/rpc"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earncatalog"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
-// The RPC holdings snapshot, a mirror of fetchEarnRpcHoldingsSnapshot
-// (web/apps/web/src/lib/yield-optimization/earn-rpc-holdings.client.ts:422-662).
-// Stage 1 reads the Earn vault's idle product ATAs and its vanilla obligation
-// per allowed market; stage 2 reads the reserves behind every discovered
-// deposit. Kamino amounts are redeemable liquidity, not raw collateral. The
-// function only throws; callers map failures to their own envelopes.
-
-// RPC is the chain surface the withdraw family reads through; *chain.Client
-// satisfies it.
 type RPC interface {
 	Accounts(ctx context.Context, keys []solana.PublicKey, commitment rpc.CommitmentType, minContextSlot uint64) (uint64, []*chain.Account, error)
 }
 
-// EarnVaultIndex is the Earn vault's account index (EARN_VAULT_INDEX,
-// loyal-actions/src/constants.ts:49).
 const EarnVaultIndex uint8 = 1
 
-// withdrawCommitment is SOURCE_COMMITMENT (earn-rpc-holdings.client.ts:44).
 var withdrawCommitment = rpc.CommitmentConfirmed
 
 const withdrawGetMultipleAccountsLimit = 100
 
-// WithdrawPolicyUniverse is the policy metadata the snapshot narrows to
-// (EarnRpcPolicyMetadata, earn-rpc-holdings.client.ts:47): the vault index,
-// the policy's stable mints, its Kamino liquidity mints and its markets.
 type WithdrawPolicyUniverse struct {
 	VaultIndex           uint8
 	StableMints          []string
@@ -50,40 +36,29 @@ type WithdrawPolicyUniverse struct {
 	KaminoMarkets        []string
 }
 
-// withdrawProductAsset mirrors EarnProductAsset (earn-product-mints.shared.ts:21).
-// The token program follows the stablecoin, not the cluster
-// (loyal-actions/src/constants.ts:253): CASH, USDG and PYUSD are Token-2022.
+// withdrawProductAsset: the token program follows the stablecoin, not the
+// cluster, because CASH, USDG and PYUSD are Token-2022.
 type withdrawProductAsset struct {
 	Mint         solana.PublicKey
 	Symbol       string
 	TokenProgram solana.PublicKey
 }
 
-var (
-	withdrawDevnetUSDCMint = solana.MustPublicKeyFromBase58("4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU")
-	withdrawTokenProgram   = solana.TokenProgramID
-	withdrawToken2022      = solana.Token2022ProgramID
-)
+var withdrawDevnetUSDCMint = solana.MustPublicKeyFromBase58(earncatalog.DevnetUSDC)
 
-// withdrawProductAssets mirrors getEarnProductAssetsForCluster
-// (earn-product-mints.shared.ts:29): the six canonical stablecoins in policy
-// order on mainnet, the devnet USDC mint only elsewhere.
 func withdrawProductAssets(cluster string) []withdrawProductAsset {
-	if cluster == "devnet" {
-		return []withdrawProductAsset{{Mint: withdrawDevnetUSDCMint, Symbol: "USDC", TokenProgram: withdrawTokenProgram}}
+	products := earncatalog.ForCluster(cluster == "devnet")
+	assets := make([]withdrawProductAsset, len(products))
+	for i, product := range products {
+		assets[i] = withdrawProductAsset{
+			Mint:         solana.MustPublicKeyFromBase58(product.Mint),
+			Symbol:       product.Symbol,
+			TokenProgram: solana.MustPublicKeyFromBase58(product.TokenProgram),
+		}
 	}
-	return []withdrawProductAsset{
-		{Mint: solana.MustPublicKeyFromBase58("CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH"), Symbol: "CASH", TokenProgram: withdrawToken2022},
-		{Mint: solana.MustPublicKeyFromBase58("2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH"), Symbol: "USDG", TokenProgram: withdrawToken2022},
-		{Mint: solana.MustPublicKeyFromBase58("2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo"), Symbol: "PYUSD", TokenProgram: withdrawToken2022},
-		{Mint: solana.MustPublicKeyFromBase58("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"), Symbol: "USDC", TokenProgram: withdrawTokenProgram},
-		{Mint: solana.MustPublicKeyFromBase58("Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"), Symbol: "USDT", TokenProgram: withdrawTokenProgram},
-		{Mint: solana.MustPublicKeyFromBase58("USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA"), Symbol: "USDS", TokenProgram: withdrawTokenProgram},
-	}
+	return assets
 }
 
-// withdrawSafeMarkets mirrors getRiskBasketMarketsForCluster(cluster, Safe)
-// (loyal-actions/src/constants.ts:97-134).
 func withdrawSafeMarkets(cluster string) []solana.PublicKey {
 	if cluster == "devnet" {
 		return []solana.PublicKey{solana.MustPublicKeyFromBase58("27MKCQo5qP7ijrwWSMKX2Jeb3PhK2NZmHQ9befWVRS4J")}
@@ -97,10 +72,6 @@ func withdrawSafeMarkets(cluster string) []solana.PublicKey {
 	}
 }
 
-// assertWithdrawPolicyUniverse mirrors assertPolicyUniverse
-// (earn-rpc-holdings.client.ts:188): the product assets the policy lists in
-// both its stable mints and its Kamino liquidity mints, and the policy's
-// markets that are in the Safe basket, in policy order.
 func assertWithdrawPolicyUniverse(cluster string, policy *WithdrawPolicyUniverse) ([]withdrawProductAsset, []solana.PublicKey, error) {
 	if policy == nil {
 		return nil, nil, errors.New("Active Earn policy metadata is required for RPC holdings.")
@@ -131,9 +102,6 @@ func assertWithdrawPolicyUniverse(cluster string, policy *WithdrawPolicyUniverse
 	return assets, markets, nil
 }
 
-// withdrawPositionDisplay mirrors resolveEarnPositionDisplay
-// (earn-position-display.ts:81): known Safe-basket market names, known mint
-// symbols, shortened addresses otherwise.
 func withdrawPositionDisplay(liquidityMint string, market *solana.PublicKey) (label, marketName, mintSymbol string) {
 	if market == nil {
 		marketName = "Unknown Market"
@@ -172,9 +140,6 @@ func withdrawKnownMintSymbol(mint string) string {
 	return withdrawShortenAddress(mint)
 }
 
-// withdrawShortenAddress mirrors shortenAddress
-// (earn-position-display.ts:73): ten characters or fewer stay whole, anything
-// longer is head 4 + "..." + tail 4.
 func withdrawShortenAddress(address string) string {
 	if len(address) <= 10 {
 		return address
@@ -191,12 +156,38 @@ func withdrawObservedAt(now func() time.Time) string {
 	return now().UTC().Format("2006-01-02T15:04:05.000Z")
 }
 
-// WithdrawHolding mirrors EarnRpcHolding (earn-rpc-holdings.client.ts:68): one
+// WithdrawHoldingKind is the closed value set of EarnRpcHolding["kind"]:
+// "idle" or "kamino".
+type WithdrawHoldingKind string
+
+const (
+	WithdrawHoldingIdle   WithdrawHoldingKind = "idle"
+	WithdrawHoldingKamino WithdrawHoldingKind = "kamino"
+)
+
+// WithdrawWatchedAccountKind is the closed value set of
+// EarnRpcWatchedAccount["kind"]: "idle", "obligation" or "reserve".
+type WithdrawWatchedAccountKind string
+
+const (
+	WatchedAccountIdle       WithdrawWatchedAccountKind = "idle"
+	WatchedAccountObligation WithdrawWatchedAccountKind = "obligation"
+	WatchedAccountReserve    WithdrawWatchedAccountKind = "reserve"
+)
+
+// WithdrawSnapshotCompleteness is the closed value set of
+// EarnRpcHoldingsSnapshot["completeness"].
+type WithdrawSnapshotCompleteness string
+
+// WithdrawSnapshotComplete: the read saw every watched account.
+const WithdrawSnapshotComplete WithdrawSnapshotCompleteness = "complete"
+
+// WithdrawHolding mirrors EarnRpcHolding: one
 // withdrawable position, the amount in raw integer units. Market, reserve and
 // the keys stay public keys here; the route serializes them as base58.
 type WithdrawHolding struct {
 	AmountRaw     uint64
-	Kind          string // "idle" or "kamino"
+	Kind          WithdrawHoldingKind
 	Label         string
 	LiquidityMint solana.PublicKey
 	Market        *solana.PublicKey
@@ -208,13 +199,11 @@ type WithdrawHolding struct {
 	TokenProgram  solana.PublicKey
 }
 
-// WithdrawWatchedAccount mirrors EarnRpcWatchedAccount (:84).
 type WithdrawWatchedAccount struct {
-	Kind   string // "idle", "obligation" or "reserve"
+	Kind   WithdrawWatchedAccountKind
 	Pubkey string
 }
 
-// WithdrawSnapshotProvenance mirrors the provenance block (:96-102).
 type WithdrawSnapshotProvenance struct {
 	AccountCount    int
 	ChunkCount      int
@@ -223,9 +212,8 @@ type WithdrawSnapshotProvenance struct {
 	WatchedAccounts []WithdrawWatchedAccount
 }
 
-// WithdrawSnapshot mirrors EarnRpcHoldingsSnapshot (:89-103).
 type WithdrawSnapshot struct {
-	Completeness          string // always "complete"
+	Completeness          WithdrawSnapshotCompleteness
 	CurrentTotalAmountRaw uint64
 	Holdings              []WithdrawHolding
 	ObservedAt            string
@@ -233,23 +221,21 @@ type WithdrawSnapshot struct {
 	Provenance            WithdrawSnapshotProvenance
 }
 
-// WithdrawHoldingsArgs carries the read's inputs
-// (fetchEarnRpcHoldingsSnapshot's args, :422-439).
 type WithdrawHoldingsArgs struct {
 	Cluster string
 	// MinContextSlot, when set, demands a node at or past this slot on every
-	// underlying read, so no stage answers with pre-deposit state (:425-430).
+	// underlying read, so no stage answers with pre-deposit state.
 	MinContextSlot uint64
 	Now            func() time.Time
 	Policy         *WithdrawPolicyUniverse
 	SettingsPda    solana.PublicKey
 	// RequireCompleteReserveReads fails closed when a reserve behind a
-	// positive obligation deposit is unreadable (:433-436).
+	// positive obligation deposit is unreadable.
 	RequireCompleteReserveReads bool
 }
 
 type withdrawAccountRole struct {
-	kind   string // "idle" or "obligation"
+	kind   WithdrawWatchedAccountKind
 	asset  withdrawProductAsset
 	market solana.PublicKey
 	pubkey solana.PublicKey
@@ -263,8 +249,6 @@ type withdrawDiscoveredDeposit struct {
 	slotIndex           int
 }
 
-// FetchWithdrawHoldingsSnapshot mirrors fetchEarnRpcHoldingsSnapshot
-// (:422-662). The vault is the settings' account at the policy's VaultIndex.
 func FetchWithdrawHoldingsSnapshot(ctx context.Context, rpc RPC, args WithdrawHoldingsArgs) (WithdrawSnapshot, error) {
 	assets, markets, err := assertWithdrawPolicyUniverse(args.Cluster, args.Policy)
 	if err != nil {
@@ -274,9 +258,6 @@ func FetchWithdrawHoldingsSnapshot(ctx context.Context, rpc RPC, args WithdrawHo
 	if err != nil {
 		return WithdrawSnapshot{}, err
 	}
-	// Stage 1 (:454-478): the idle ATA per asset, then the vanilla obligation
-	// per allowed market. The KLend program is the same address on both
-	// clusters (constants.ts:207-212).
 	firstStageRoles := make([]withdrawAccountRole, 0, len(assets)+len(markets))
 	for _, asset := range assets {
 		ata, err := spl.AssociatedTokenAddress(vaultPda, asset.Mint, asset.TokenProgram)
@@ -332,8 +313,6 @@ func FetchWithdrawHoldingsSnapshot(ctx context.Context, rpc RPC, args WithdrawHo
 			})
 		}
 	}
-	// Stage 2 (:516-535): one read per discovered reserve, in discovery order;
-	// with no deposits the stage reuses stage 1's observed slot.
 	reserveKeys := make([]solana.PublicKey, 0, len(deposits))
 	for _, deposit := range deposits {
 		reserveKeys = append(reserveKeys, deposit.reserve)
@@ -391,8 +370,6 @@ func FetchWithdrawHoldingsSnapshot(ctx context.Context, rpc RPC, args WithdrawHo
 	}
 	observedSlot := max(firstStage.MaxObservedSlot, reserveStage.MaxObservedSlot)
 	observedAt := withdrawObservedAt(args.Now)
-	// Holdings (:606-644): Kamino positions first, then one idle holding per
-	// asset even when it holds nothing.
 	holdings := make([]WithdrawHolding, 0, len(candidates)+len(assets))
 	for _, candidate := range candidates {
 		snapshot, err := ParseWithdrawReserveSnapshot(candidate.reserveAccount.Data)
@@ -441,8 +418,6 @@ func FetchWithdrawHoldingsSnapshot(ctx context.Context, rpc RPC, args WithdrawHo
 	}, nil
 }
 
-// withdrawKaminoHolding mirrors toKaminoHolding (:347); the caller drops zero
-// amounts (:354).
 func withdrawKaminoHolding(amountRaw uint64, asset withdrawProductAsset, collateralAmountRaw uint64,
 	collateralMint, liquidityMint, market, obligation, reserve solana.PublicKey,
 	observedAt string, observedSlot uint64, slotIndex int) WithdrawHolding {
@@ -471,8 +446,6 @@ func withdrawKaminoHolding(amountRaw uint64, asset withdrawProductAsset, collate
 	}
 }
 
-// withdrawIdleHolding mirrors toIdleHolding (:390): one holding per product
-// asset, present even at zero.
 func withdrawIdleHolding(amountRaw uint64, asset withdrawProductAsset, observedAt string,
 	observedSlot, sourceSlot uint64, vaultPda, tokenAccount solana.PublicKey) WithdrawHolding {
 	return WithdrawHolding{
@@ -496,9 +469,6 @@ func withdrawIdleHolding(amountRaw uint64, asset withdrawProductAsset, observedA
 	}
 }
 
-// withdrawIdleTokenAmount mirrors validateTokenAccountAmount (:274): an
-// absent account counts as zero; a present one must be the asset's token
-// program, carry the asset's mint, and be owned by the vault.
 func withdrawIdleTokenAmount(account *chain.Account, asset withdrawProductAsset, vaultPda solana.PublicKey) (uint64, error) {
 	if account == nil {
 		return 0, nil
@@ -519,7 +489,6 @@ func withdrawIdleTokenAmount(account *chain.Account, asset withdrawProductAsset,
 	return binary.LittleEndian.Uint64(account.Data[64:72]), nil
 }
 
-// withdrawBatchedRead mirrors BatchedAccountRead (:107).
 type withdrawBatchedRead struct {
 	AccountCount    int
 	ChunkCount      int
@@ -534,8 +503,6 @@ func (r withdrawBatchedRead) valueAt(index int) *chain.Account {
 	return nil
 }
 
-// readWithdrawAccountsInChunks mirrors readAccountsInChunks (:234): chunks of
-// 100 at confirmed commitment, the max context slot across calls kept.
 func readWithdrawAccountsInChunks(ctx context.Context, rpc RPC, keys []solana.PublicKey, minContextSlot uint64) (withdrawBatchedRead, error) {
 	read := withdrawBatchedRead{AccountCount: len(keys)}
 	for start := 0; start < len(keys); start += withdrawGetMultipleAccountsLimit {
@@ -551,13 +518,11 @@ func readWithdrawAccountsInChunks(ctx context.Context, rpc RPC, keys []solana.Pu
 	return read, nil
 }
 
-// withdrawWatchedAccounts mirrors toWatchedAccounts (:328): first-seen order,
-// deduped by kind and pubkey.
 func withdrawWatchedAccounts(roles []withdrawAccountRole, reserves []solana.PublicKey) []WithdrawWatchedAccount {
 	seen := map[string]bool{}
 	var accounts []WithdrawWatchedAccount
-	add := func(kind string, pubkey solana.PublicKey) {
-		key := kind + ":" + pubkey.String()
+	add := func(kind WithdrawWatchedAccountKind, pubkey solana.PublicKey) {
+		key := string(kind) + ":" + pubkey.String()
 		if seen[key] {
 			return
 		}

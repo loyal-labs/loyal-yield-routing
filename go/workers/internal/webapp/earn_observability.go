@@ -1,8 +1,5 @@
 package webapp
 
-// POST /api/observability/errors                                   <- web/apps/web/src/app/api/observability/errors/route.ts + mobile/errors/route.ts
-// POST /api/observability/events                                   <- web/apps/web/src/app/api/observability/events/route.ts + mobile/events/route.ts
-// POST /api/observability/metrics                                  <- web/apps/web/src/app/api/observability/metrics/route.ts + mobile/metrics/route.ts
 // One Go op per signal serves both clients: a request is admitted through the
 // browser same-origin check or the native gate (no Origin, no Sec-Fetch-Site)
 // and parsed with the matching envelope, then forwarded to
@@ -78,7 +75,6 @@ var (
 	obsErrInvalidRequest  = &obsIngestRejected{Message: "invalid_request", status: http.StatusBadRequest}
 )
 
-// obsIngestInput carries everything the Next routes read off the Request.
 type obsIngestInput struct {
 	SessionInput
 	Raw                 rawJSON
@@ -94,7 +90,6 @@ type obsIngestInput struct {
 	SyntheticProbe      string `header:"X-Loyal-Synthetic-Probe"`
 }
 
-// obsHeader gives the rate limiter the same lookup Next does by header name.
 func (in *obsIngestInput) obsHeader(name string) string {
 	switch name {
 	case "X-Forwarded-For":
@@ -125,7 +120,6 @@ func obsAcceptedOutput() *obsIngestOutput {
 	return &obsIngestOutput{Status: http.StatusAccepted, CacheControl: "no-store", Body: obsIngestAccepted{Accepted: true}}
 }
 
-// obsReject maps the shared body-read errors onto their Next statuses.
 func obsReject(err error) error {
 	if err == errObservabilityTooLarge {
 		return obsErrTooLarge
@@ -133,9 +127,6 @@ func obsReject(err error) error {
 	return obsErrInvalidRequest
 }
 
-// obsAdmit runs the shared admission checks: the native gate or the browser
-// same-origin check, then the JSON content type, then the per-signal rate
-// limit. The returned requestOrigin is what Next computes from request.url.
 func obsAdmit(in *obsIngestInput, limiter *obsRateLimiter) (requestOrigin string, refused error) {
 	requestOrigin = obsRequestOrigin(in.host, in.ForwardedProto)
 	if !obsNativeAppRequest(in.Origin, in.SecFetchSite) &&
@@ -151,8 +142,6 @@ func obsAdmit(in *obsIngestInput, limiter *obsRateLimiter) (requestOrigin string
 	return requestOrigin, nil
 }
 
-// obsWallet is resolveWalletAddress (events/route.ts:70-79): the Principal's
-// wallet when a session resolves, undefined otherwise, never an error.
 func (h earnRoutes) obsWallet(ctx context.Context, in SessionInput) string {
 	if h.auth == nil {
 		return ""
@@ -164,8 +153,6 @@ func (h earnRoutes) obsWallet(ctx context.Context, in SessionInput) string {
 	return session.Wallet.String()
 }
 
-// The export helpers take the normalized events by pointer, matching the
-// committed payload builders.
 func browserErrorEventPtr(envelope obsErrorEnvelope, deploymentEnvironment, serverRelease string) *obsNormalizedError {
 	event := createNormalizedBrowserErrorEvent(envelope, deploymentEnvironment, serverRelease)
 	return &event
@@ -236,9 +223,8 @@ func (h earnRoutes) registerObservability(api huma.API) {
 	api.OpenAPI().Paths[obsMetricsPath].Post.RequestBody = requestBody
 }
 
-// obsErrors ports the two error routes. Web rejects third-party extension and
-// Cap widget reports without exporting; every other outcome is 202 whether or
-// not the collector answered, exactly like Next.
+// obsErrors: once admitted, every outcome is 202 whether or not the
+// collector answered.
 func (h earnRoutes) obsErrors(ctx context.Context, in *obsIngestInput) (*obsIngestOutput, error) {
 	requestOrigin, refused := obsAdmit(in, obsErrorRates)
 	if refused != nil {
@@ -269,9 +255,8 @@ func (h earnRoutes) obsErrors(ctx context.Context, in *obsIngestInput) (*obsInge
 	return obsAcceptedOutput(), nil
 }
 
-// obsEvents ports the two lifecycle routes. Only the web admit reports the
-// traffic kind and depends on the export succeeding; the mobile admit always
-// answers 202 like Next's mobile route.
+// obsEvents: the web admit reports the traffic kind and answers 503 when the
+// export fails; the mobile admit always answers 202.
 func (h earnRoutes) obsEvents(ctx context.Context, in *obsIngestInput) (*obsJourneyOutput, error) {
 	if in.SyntheticProbe == "1" && journeyTrafficKind("") != "synthetic" {
 		return nil, obsErrSyntheticTarget
@@ -306,8 +291,7 @@ func (h earnRoutes) obsEvents(ctx context.Context, in *obsIngestInput) (*obsJour
 	return &obsJourneyOutput{Status: http.StatusAccepted, CacheControl: "no-store", Body: obsJourneyAccepted{Accepted: true, TrafficKind: trafficKind}}, nil
 }
 
-// obsMetrics ports the two loading-metric routes; like Next's metrics routes
-// the export result never changes the 202.
+// obsMetrics: the export result never changes the 202.
 func (h earnRoutes) obsMetrics(ctx context.Context, in *obsIngestInput) (*obsIngestOutput, error) {
 	_, refused := obsAdmit(in, obsMetricRates)
 	if refused != nil {

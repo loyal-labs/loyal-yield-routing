@@ -12,15 +12,12 @@ import (
 // served JSON carries them as JS numbers and every sum must round-trip the
 // same IEEE-754 arithmetic as the TS.
 
-// earningsRangeIDs is EARNINGS_RANGE_IDS (earnings.shared.ts:1) in order; the
-// response object keys follow this insertion order in both languages.
 var earningsRangeIDs = [...]string{"7D", "30D", "1Y", "ALL"}
 
 const (
 	earningsStablecoinMicros = 1_000_000.0
 	earningsSecondsPerYear   = 365.0 * 24 * 60 * 60
-	// earningsMaxSampleGapMs flags reserves whose APY sampling has a hole.
-	earningsMaxSampleGapMs = int64(36 * 60 * 60 * 1000)
+	earningsMaxSampleGapMs   = int64(36 * 60 * 60 * 1000)
 )
 
 // Earnings event, portfolio snapshot and path-event values, mirroring
@@ -38,12 +35,12 @@ type earningsEvent struct {
 	initializesPosition *bool
 	principalDeltaRaw   *int64
 	settlesPosition     *bool
-	eventType           string // "deposit" | "withdrawal"
+	eventType           earningsEventType
 }
 
 type earningsPortfolioExposure struct {
 	amountRaw     int64
-	kind          string // "idle" | "kamino"
+	kind          earningsExposureKind
 	liquidityMint string
 	reserve       *string
 	sourceID      string
@@ -62,7 +59,7 @@ type earningsPathEvent struct {
 	market             *string
 	principalAmountRaw int64
 	reserve            string
-	eventType          string // "deposit" | "reconciliation" | "rebalance" | "withdrawal"
+	eventType          earningsEventType
 }
 
 type reserveApySample struct {
@@ -71,8 +68,6 @@ type reserveApySample struct {
 	supplyApy  float64
 }
 
-// earningsHistoryError mirrors EarningsPrincipalHistoryError: an input whose
-// principal history cannot be replayed deterministically.
 type earningsHistoryError struct{ detail string }
 
 func (e *earningsHistoryError) Error() string { return e.detail }
@@ -87,10 +82,6 @@ func firstEarningsInt64(v *int64) int64 {
 	return *v
 }
 
-// sortEarningsEvents ports earnings-calculator.server.ts:34. Timestamps order
-// chart boundaries; slots and holding-event IDs order transitions inside one
-// timestamp. Missing evidence on distinguishable events is an error, not a
-// guess.
 func sortEarningsEvents(events []earningsEvent) ([]earningsEvent, error) {
 	ordered := make([]earningsEvent, len(events))
 	copy(ordered, events)
@@ -121,8 +112,6 @@ func sortEarningsEvents(events []earningsEvent) ([]earningsEvent, error) {
 	return ordered, nil
 }
 
-// lastIndexAtOrBefore returns the last i with times[i] <= atMs, or -1.
-// times must be ascending.
 func lastIndexAtOrBefore(times []int64, atMs int64) int {
 	low, high, found := 0, len(times)-1, -1
 	for low <= high {
@@ -144,8 +133,6 @@ func clampedSubtract(current, amount int64) int64 {
 	return 0
 }
 
-// principalClamp names how withdrawals clamp at zero; see the TS comment at
-// earnings-calculator.server.ts:545.
 type principalClamp string
 
 const (
@@ -161,8 +148,6 @@ type principalIndex struct {
 	totals []int64
 }
 
-// buildPrincipalIndex ports getPrincipalIndex (earnings-calculator.server.ts:575)
-// minus the WeakMap cache; callers keep one index per clamp per request.
 func buildPrincipalIndex(sorted []earningsEvent, clamp principalClamp) (*principalIndex, error) {
 	index := &principalIndex{times: make([]int64, 0, len(sorted)), totals: make([]int64, 0, len(sorted))}
 	byMint := map[string]int64{}
@@ -221,7 +206,6 @@ func buildPrincipalIndex(sorted []earningsEvent, clamp principalClamp) (*princip
 	return index, nil
 }
 
-// principalAt returns the clamped running principal at the given instant.
 func principalAt(sorted []earningsEvent, indexes map[principalClamp]*principalIndex, at time.Time, clamp principalClamp) (int64, error) {
 	index := indexes[clamp]
 	if index == nil {
@@ -250,9 +234,6 @@ func deriveApyBps(avgPrincipalUsd float64, bucketSeconds, earnedUsd float64) *in
 	return &bps
 }
 
-// ---- Sorted-array lookup indexes (ASK-2209) ----
-
-// apySeries is a time-ascending view of one slice of the APY samples.
 type apySeries struct {
 	apys      []float64
 	positions []int
@@ -260,15 +241,19 @@ type apySeries struct {
 }
 
 type apyIndex struct {
+	samples   []reserveApySample
 	all       apySeries
 	byReserve map[string]*apySeries
 	unscoped  apySeries
 }
 
-// buildApyIndex ports getApyIndex; samples must be time-sorted, as
-// calculateEarnEarnings sorts them once per request.
-func buildApyIndex(samples []reserveApySample) *apyIndex {
-	index := &apyIndex{byReserve: map[string]*apySeries{}}
+func buildApyIndex(unsorted []reserveApySample) *apyIndex {
+	samples := make([]reserveApySample, len(unsorted))
+	copy(samples, unsorted)
+	sort.SliceStable(samples, func(i, j int) bool {
+		return samples[i].observedAt.UnixMilli() < samples[j].observedAt.UnixMilli()
+	})
+	index := &apyIndex{samples: samples, byReserve: map[string]*apySeries{}}
 	for position, sample := range samples {
 		t := sample.observedAt.UnixMilli()
 		push := func(series *apySeries) {
@@ -291,9 +276,9 @@ func buildApyIndex(samples []reserveApySample) *apyIndex {
 	return index
 }
 
-// getApyAt ports earnings-calculator.server.ts:441: the latest sample at or
-// before `at`, reserve-scoped when the reserve has its own series and that
-// series' newest match sits later in the sample list than the unscoped one.
+// getApyAt returns the latest sample at or before `at`, reserve-scoped when
+// the reserve has its own series and that series' newest match sits later in
+// the sample list than the unscoped one.
 func getApyAt(index *apyIndex, reserve *string, at time.Time) *float64 {
 	atMs := at.UnixMilli()
 	if reserve == nil || *reserve == "" {
@@ -333,13 +318,17 @@ type earningsWindow struct {
 	principalAmountRaw int64
 }
 
-// portfolioSnapshotIndex answers "state at instant" over time-sorted snapshots.
 type portfolioSnapshotIndex struct {
 	snapshots []earningsPortfolioSnapshot
 	times     []int64
 }
 
-func newPortfolioSnapshotIndex(snapshots []earningsPortfolioSnapshot) *portfolioSnapshotIndex {
+func newPortfolioSnapshotIndex(unsorted []earningsPortfolioSnapshot) *portfolioSnapshotIndex {
+	snapshots := make([]earningsPortfolioSnapshot, len(unsorted))
+	copy(snapshots, unsorted)
+	sort.SliceStable(snapshots, func(i, j int) bool {
+		return snapshots[i].observedAt.UnixMilli() < snapshots[j].observedAt.UnixMilli()
+	})
 	times := make([]int64, len(snapshots))
 	for i, snapshot := range snapshots {
 		times[i] = snapshot.observedAt.UnixMilli()
@@ -359,7 +348,12 @@ type pathEventIndex struct {
 	times  []int64
 }
 
-func newPathEventIndex(events []earningsPathEvent) *pathEventIndex {
+func newPathEventIndex(unsorted []earningsPathEvent) *pathEventIndex {
+	events := make([]earningsPathEvent, len(unsorted))
+	copy(events, unsorted)
+	sort.SliceStable(events, func(i, j int) bool {
+		return events[i].confirmedAt.UnixMilli() < events[j].confirmedAt.UnixMilli()
+	})
 	times := make([]int64, len(events))
 	for i, event := range events {
 		times[i] = event.confirmedAt.UnixMilli()
@@ -383,8 +377,6 @@ func sortedKeys(set map[int64]struct{}) []int64 {
 	return keys
 }
 
-// calculateWindow ports earnings-calculator.server.ts:467: path-event earning
-// against the reserve of the last path state.
 func calculateWindow(apy *apyIndex, pathIdx *pathEventIndex, samples []reserveApySample, startAt, endAt time.Time) earningsWindow {
 	startMs, endMs := startAt.UnixMilli(), endAt.UnixMilli()
 	endPrincipal := int64(0)
@@ -433,8 +425,6 @@ func calculateWindow(apy *apyIndex, pathIdx *pathEventIndex, samples []reserveAp
 	return earningsWindow{avgPrincipalUsd: avg, earnedUsd: earnedUsd, principalAmountRaw: endPrincipal}
 }
 
-// portfolioApyAt ports earnings-calculator.server.ts:678: exposure-weighted
-// APY over the current snapshot, null when any kamino exposure lacks coverage.
 func portfolioApyAt(apy *apyIndex, at time.Time, snapshot *earningsPortfolioSnapshot) *float64 {
 	if snapshot == nil {
 		return nil
@@ -462,8 +452,8 @@ func portfolioApyAt(apy *apyIndex, at time.Time, snapshot *earningsPortfolioSnap
 	return &value
 }
 
-// calculatePortfolioWindow ports earnings-calculator.server.ts:705: earnings
-// accrue per snapshot exposure; the principal line still comes from the ledger.
+// calculatePortfolioWindow: earnings accrue per snapshot exposure; the
+// principal line still comes from the ledger.
 func calculatePortfolioWindow(apy *apyIndex, events []earningsEvent, principalIndexes map[principalClamp]*principalIndex, clamp principalClamp, snapshotIdx *portfolioSnapshotIndex, samples []reserveApySample, startAt, endAt time.Time) (earningsWindow, error) {
 	startMs, endMs := startAt.UnixMilli(), endAt.UnixMilli()
 	if endMs <= startMs {
@@ -525,8 +515,6 @@ func calculatePortfolioWindow(apy *apyIndex, events []earningsEvent, principalIn
 	return earningsWindow{avgPrincipalUsd: avg, earnedUsd: earnedUsd, principalAmountRaw: principal}, nil
 }
 
-// legacyEventsToPathEvents ports earnings-calculator.server.ts:331: the
-// fallback path when no holding history exists.
 func legacyEventsToPathEvents(sorted []earningsEvent) []earningsPathEvent {
 	var principal int64
 	events := make([]earningsPathEvent, 0, len(sorted))
@@ -549,8 +537,6 @@ func legacyEventsToPathEvents(sorted []earningsEvent) []earningsPathEvent {
 	return events
 }
 
-// earningsCheckpointResponse is the checkpoint resume handle: the previous
-// incremental result computed at `at`.
 type earningsCheckpointResponse struct {
 	at       time.Time
 	response EarningsRange
@@ -568,9 +554,6 @@ type calculateEarnEarningsArgs struct {
 	checkpoint         *earningsCheckpointResponse
 }
 
-// calculateEarnEarnings ports earnings-calculator.server.ts:784. Callers pass
-// ledger events and either portfolio snapshots or nothing; the function sorts
-// once, builds each lookup index once, and fills the range's bars.
 func calculateEarnEarnings(args calculateEarnEarningsArgs) (EarningsRange, error) {
 	clamp := args.principalClamp
 	if clamp == "" {
@@ -591,25 +574,12 @@ func calculateEarnEarnings(args calculateEarnEarningsArgs) (EarningsRange, error
 	if pathEvents == nil {
 		pathEvents = legacyEventsToPathEvents(sorted)
 	}
-	pathSorted := make([]earningsPathEvent, len(pathEvents))
-	copy(pathSorted, pathEvents)
-	sort.SliceStable(pathSorted, func(i, j int) bool {
-		return pathSorted[i].confirmedAt.UnixMilli() < pathSorted[j].confirmedAt.UnixMilli()
-	})
-
-	apySorted := make([]reserveApySample, len(args.apySamples))
-	copy(apySorted, args.apySamples)
-	sort.SliceStable(apySorted, func(i, j int) bool {
-		return apySorted[i].observedAt.UnixMilli() < apySorted[j].observedAt.UnixMilli()
-	})
-	apy := buildApyIndex(apySorted)
-
-	snapshots := make([]earningsPortfolioSnapshot, len(args.portfolioSnapshots))
-	copy(snapshots, args.portfolioSnapshots)
-	sort.SliceStable(snapshots, func(i, j int) bool {
-		return snapshots[i].observedAt.UnixMilli() < snapshots[j].observedAt.UnixMilli()
-	})
-	snapshotIdx := newPortfolioSnapshotIndex(snapshots)
+	pathIdx := newPathEventIndex(pathEvents)
+	pathSorted := pathIdx.events
+	apy := buildApyIndex(args.apySamples)
+	apySorted := apy.samples
+	snapshotIdx := newPortfolioSnapshotIndex(args.portfolioSnapshots)
+	snapshots := snapshotIdx.snapshots
 
 	firstDepositAt := firstDepositOf(sorted, pathSorted)
 	lastDepositAt := lastDepositOf(sorted, pathSorted)
@@ -626,7 +596,6 @@ func calculateEarnEarnings(args calculateEarnEarningsArgs) (EarningsRange, error
 	}
 
 	principalIndexes := map[principalClamp]*principalIndex{}
-	pathIdx := newPathEventIndex(pathSorted)
 
 	bars := make([]EarningsBar, 0, len(buckets))
 	for _, bucket := range buckets {
@@ -680,15 +649,26 @@ func calculateEarnEarnings(args calculateEarnEarningsArgs) (EarningsRange, error
 	if firstDepositAt != nil {
 		lifetimeStart = *firstDepositAt
 	}
-	lifetime, err := calculateEarningsRange(args, sorted, apy, apySorted, snapshotIdx, principalIndexes, pathIdx, usePortfolio, lifetimeStart, resumeAtMs)
+	ranges := earningsRangeInputs{
+		now:              args.now,
+		clamp:            args.principalClamp,
+		sorted:           sorted,
+		apy:              apy,
+		snapshotIdx:      snapshotIdx,
+		principalIndexes: principalIndexes,
+		pathIdx:          pathIdx,
+		usePortfolio:     usePortfolio,
+		resumeAtMs:       resumeAtMs,
+	}
+	lifetime, err := ranges.window(lifetimeStart)
 	if err != nil {
 		return EarningsRange{}, err
 	}
-	sinceLastDeposit, err := calculateEarningsRange(args, sorted, apy, apySorted, snapshotIdx, principalIndexes, pathIdx, usePortfolio, ptrOr(lastDepositAt, args.now), resumeAtMs)
+	sinceLastDeposit, err := ranges.window(ptrOr(lastDepositAt, args.now))
 	if err != nil {
 		return EarningsRange{}, err
 	}
-	today, err := calculateEarningsRange(args, sorted, apy, apySorted, snapshotIdx, principalIndexes, pathIdx, usePortfolio, startOfLocalDay(args.now, args.timezone), resumeAtMs)
+	today, err := ranges.window(startOfLocalDay(args.now, args.timezone))
 	if err != nil {
 		return EarningsRange{}, err
 	}
@@ -741,18 +721,28 @@ func calculateEarnEarnings(args calculateEarnEarningsArgs) (EarningsRange, error
 	}, nil
 }
 
-// calculateEarningsRange is the inner `calculateRange` closure of
-// calculateEarnEarnings with the checkpoint resume start applied.
-func calculateEarningsRange(args calculateEarnEarningsArgs, sorted []earningsEvent, apy *apyIndex, apySorted []reserveApySample, snapshotIdx *portfolioSnapshotIndex, principalIndexes map[principalClamp]*principalIndex, pathIdx *pathEventIndex, usePortfolio bool, from time.Time, resumeAtMs int64) (earningsWindow, error) {
+type earningsRangeInputs struct {
+	now              time.Time
+	clamp            principalClamp
+	sorted           []earningsEvent
+	apy              *apyIndex
+	snapshotIdx      *portfolioSnapshotIndex
+	principalIndexes map[principalClamp]*principalIndex
+	pathIdx          *pathEventIndex
+	usePortfolio     bool
+	resumeAtMs       int64
+}
+
+func (in earningsRangeInputs) window(from time.Time) (earningsWindow, error) {
 	startMs := from.UnixMilli()
-	if resumeAtMs > startMs {
-		startMs = resumeAtMs
+	if in.resumeAtMs > startMs {
+		startMs = in.resumeAtMs
 	}
 	startAt := msTimeMillis(startMs)
-	if usePortfolio {
-		return calculatePortfolioWindow(apy, sorted, principalIndexes, args.principalClamp, snapshotIdx, apySorted, startAt, args.now)
+	if in.usePortfolio {
+		return calculatePortfolioWindow(in.apy, in.sorted, in.principalIndexes, in.clamp, in.snapshotIdx, in.apy.samples, startAt, in.now)
 	}
-	return calculateWindow(apy, pathIdx, apySorted, startAt, args.now), nil
+	return calculateWindow(in.apy, in.pathIdx, in.apy.samples, startAt, in.now), nil
 }
 
 func firstDepositOf(sorted []earningsEvent, pathSorted []earningsPathEvent) *time.Time {

@@ -10,6 +10,7 @@ import (
 	"github.com/solana-foundation/solana-go/v2"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earncatalog"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 )
 
@@ -41,15 +42,15 @@ func transferRecurring(amount uint64, wallet, vault, mint solana.PublicKey, dele
 		return fleet.RouteInstruction{}, err
 	}
 	data := make([]byte, 73)
-	data[0] = subscriptionsTransferRecurring
+	data[0] = earncatalog.TransferRecurringDiscriminator
 	binary.LittleEndian.PutUint64(data[1:9], amount)
 	copy(data[9:41], wallet[:])
 	copy(data[41:], mint[:])
-	return fleet.RouteInstruction{Step: "autodeposit", Program: SubscriptionsProgramID, Data: data, Accounts: []fleet.InstructionAccount{
+	return fleet.RouteInstruction{Step: "autodeposit", Program: earncatalog.SubscriptionsProgram, Data: data, Accounts: []fleet.InstructionAccount{
 		{Address: delegation, Writable: true}, {Address: base58Key(authority[:])},
 		{Address: walletATA, Writable: true}, {Address: vaultATA, Writable: true},
-		{Address: mint.String()}, {Address: splTokenID}, {Address: vault.String(), Signer: true},
-		{Address: base58Key(event[:])}, {Address: SubscriptionsProgramID},
+		{Address: mint.String()}, {Address: earncatalog.SPLTokenProgram}, {Address: vault.String(), Signer: true},
+		{Address: base58Key(event[:])}, {Address: earncatalog.SubscriptionsProgram},
 	}}, nil
 }
 

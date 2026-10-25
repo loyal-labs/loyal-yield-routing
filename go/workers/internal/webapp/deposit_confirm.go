@@ -18,28 +18,25 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
-// POST /api/smart-accounts/yield-optimization/deposits/confirm ports
-// web/apps/web/src/app/api/smart-accounts/yield-optimization/deposits/confirm/route.ts
-// plus the mobile twin's quest report (M/deposit/confirm/route.ts:159, DECIDED
-// in pathmap.md). The route is verification-only: the LaserStream projection is
-// the sole writer of Earn deposit state (scripts/web/verify-earn-confirm-single-writer.ts
-// forbids recordConfirmedYieldDeposit here), so this endpoint validates the
-// client's confirmed deposit against the principal, the canonical policy
-// metadata and the on-chain transaction, then acknowledges it. The mobile
-// quest report rides along best-effort after verification. No transaction is
-// built, nothing signed, nothing sent; parity is DB rows + JSON.
+// POST /api/smart-accounts/yield-optimization/deposits/confirm. The route is
+// verification-only: the LaserStream projection is the sole writer of Earn
+// deposit state (scripts/web/verify-earn-confirm-single-writer.ts forbids
+// recordConfirmedYieldDeposit here), so this endpoint validates the client's
+// confirmed deposit against the principal, the canonical policy metadata and
+// the on-chain transaction, then acknowledges it — no transaction is built,
+// nothing signed, nothing sent. The op reports quest completion itself
+// (EARN.md, Decided).
 const earnDepositsConfirmPath = "/api/smart-accounts/yield-optimization/deposits/confirm"
 
-// RPC_VERIFY_ATTEMPTS and RPC_VERIFY_DELAY_MS
-// (earn-deposit-confirm.server.ts:41-42): verification reads can land on
-// lagging RPC nodes, so each read polls six times half a second apart before
-// the deposit is rejected.
+// RPC_VERIFY_ATTEMPTS and RPC_VERIFY_DELAY_MS bound verification: reads can
+// land on lagging RPC nodes, so each read polls six times half a second apart
+// before the deposit is rejected.
 const (
 	depositConfirmVerifyAttempts = 6
 	depositConfirmVerifyRetry    = 500 * time.Millisecond
 )
 
-// MIN_EARN_DEPOSIT_QUEST_USDC_RAW (quest-completion-service.ts:188): deposits
+// MIN_EARN_DEPOSIT_QUEST_USDC_RAW: deposits
 // below $5 USDC never create a quest completion row.
 var depositQuestMinUsdcRaw = big.NewInt(5_000_000)
 
@@ -49,9 +46,8 @@ const (
 	depositQuestRetiredReason = "Seeker Summer round 1 ended — Solana-side reporting retired"
 )
 
-// EarnDepositConfirmPosition is serializeVerifiedDepositPosition
-// (earn-deposit-confirm.server.ts:512-539): the acknowledged deposit as the
-// active position the LaserStream projection will soon record.
+// EarnDepositConfirmPosition is the acknowledged deposit as the active
+// position the LaserStream projection will soon record.
 type EarnDepositConfirmPosition struct {
 	CurrentHolding EarnDepositConfirmCurrentHolding `json:"currentHolding"`
 	ID             string                           `json:"id"`
@@ -137,9 +133,6 @@ func (h earnRoutes) registerDepositsConfirm(api huma.API) {
 	documentJSONBody[EarnDepositConfirmRequest](api, earnDepositsConfirmPath)
 }
 
-// earnDepositsConfirm is route.ts:35-78: principal, body, then the citation
-// and verification pipeline the web route composes as
-// verifyConfirmedEarnDeposit({principal, input: await citeEarnDepositPolicies(...)}).
 func (h earnRoutes) earnDepositsConfirm(ctx context.Context, in *earnDepositConfirmInput) (*earnDepositConfirmOutput, error) {
 	account, err := h.account(ctx, in.SessionInput)
 	if err != nil {
@@ -164,8 +157,6 @@ func (h earnRoutes) earnDepositsConfirm(ctx context.Context, in *earnDepositConf
 	return &earnDepositConfirmOutput{Body: EarnDepositConfirmResponse{Position: *position}}, nil
 }
 
-// depositCiteUnresolved is the one rejection citeEarnDepositPolicies raises
-// (earn-deposit-policy-citation.server.ts:60-73); it never fails silently.
 func depositCiteUnresolved(policyAccount string, body earnDepositConfirmBody, wallet string) error {
 	slog.Error("earn deposit confirm policy citation unresolved",
 		"depositSignature", body.DepositSignature,
@@ -176,9 +167,8 @@ func depositCiteUnresolved(policyAccount string, body earnDepositConfirmBody, wa
 		"We couldn't verify your Earn policy on-chain. Your deposit is safe — please try again in a moment.")
 }
 
-// earnDepositConfirmBody is parseEarnDepositConfirmRequestBody's output
-// (earn-confirm-contracts.shared.ts:481-519). Whole numbers ride in big.Int
-// because the TS body carries BigInts that only later steps bound.
+// earnDepositConfirmBody is the parsed confirm body. Whole numbers ride in
+// big.Int because the TS body carries BigInts that only later steps bound.
 type earnDepositConfirmBody struct {
 	Cluster                  string
 	ConfirmedSlot            *big.Int
@@ -208,8 +198,6 @@ type earnDepositConfirmBody struct {
 	WalletAddress            string
 }
 
-// depositConfirmPolicyInitialization is readPolicyInitialization
-// (contracts.shared.ts:181-189).
 func depositConfirmPolicyInitialization(record map[string]any) (string, error) {
 	value, err := confirmRequiredString(record, "policyInitialization")
 	if err != nil {
@@ -321,9 +309,6 @@ func parseEarnDepositConfirmBody(raw []byte) (earnDepositConfirmBody, error) {
 	return body, nil
 }
 
-// depositConfirmCanonical is the canonical input createCanonicalDepositInput
-// returns (earn-deposit-confirm.server.ts:242-263): the body fields replaced
-// by what the Settings PDA actually derives.
 type depositConfirmCanonical struct {
 	Cluster               string
 	DepositMint           string
@@ -343,18 +328,10 @@ type depositConfirmCanonical struct {
 	VaultPubkey           string
 }
 
-// depositCanonicalMismatch is assertCanonicalField
-// (earn-deposit-confirm.server.ts:107-117).
 func depositCanonicalMismatch(label string) error {
 	return fmt.Errorf("%s does not match the canonical earn deposit metadata.", label)
 }
 
-// depositCanonicalInput ports createCanonicalDepositInput
-// (earn-deposit-confirm.server.ts:175-377): derive every account from the
-// Settings, resolve the product mint and Safe market, then assert each claimed
-// field in the TS order. The cluster, liquidityMint, market, targetReserve,
-// targetSupplyApyBps, policySeed and second policyId assertions cannot fire —
-// both sides of each compare the same request value — so they are left out.
 func depositCanonicalInput(request earnDepositConfirmBody) (depositConfirmCanonical, error) {
 	cluster, err := confirmNormalizeCluster(request.Cluster)
 	if err != nil {
@@ -474,17 +451,11 @@ func depositCanonicalInput(request earnDepositConfirmBody) (depositConfirmCanoni
 	return canonical, nil
 }
 
-// depositPolicyCitation is the signature/slot pair citePolicy returns
-// (earn-deposit-policy-citation.server.ts:18).
 type depositPolicyCitation struct {
 	Signature string
 	Slot      *big.Int
 }
 
-// depositCitePolicy is citePolicy (earn-deposit-policy-citation.server.ts:20-40):
-// the recorded pair's last-seen signature when it names the same account,
-// otherwise the account's oldest successful transaction on chain, polled over
-// the verify window. Never fails: an unresolved citation is a nil.
 func depositCitePolicy(ctx context.Context, client *chain.Client, policyAccount string, recorded *RoutePolicy) *depositPolicyCitation {
 	if recorded != nil && recorded.PolicyAccount == policyAccount {
 		return &depositPolicyCitation{Signature: recorded.LastSeenSignature, Slot: big.NewInt(recorded.LastSeenSlot)}
@@ -504,10 +475,6 @@ func depositCitePolicy(ctx context.Context, client *chain.Client, policyAccount 
 	return nil
 }
 
-// depositCiteCreationFromChain is resolvePolicyCreationSignatureFromChain's
-// read (earn-deposit-confirm.server.ts:400-421): the history's oldest
-// successful transaction created the account; every failure is a null so the
-// caller's poll decides when to give up.
 func depositCiteCreationFromChain(ctx context.Context, client *chain.Client, policyAccount string) *depositPolicyCitation {
 	account, err := solana.PublicKeyFromBase58(policyAccount)
 	if err != nil {
@@ -529,11 +496,6 @@ func depositCiteCreationFromChain(ctx context.Context, client *chain.Client, pol
 	return nil
 }
 
-// depositCiteEarnPolicies ports citeEarnDepositPolicies
-// (earn-deposit-policy-citation.server.ts:42-95): the recorded policy pair
-// names the creation signatures; a reuse confirm with no recorded row recovers
-// them from the chain. The route citation is mandatory, the setup citation
-// only when the deposit claims policy creation.
 func (h earnRoutes) depositCiteEarnPolicies(ctx context.Context, account EarnAccount, body earnDepositConfirmBody) (earnDepositConfirmBody, error) {
 	pair, err := h.activePolicyPair(ctx, account)
 	if err != nil {
@@ -572,10 +534,6 @@ func (h earnRoutes) depositCiteEarnPolicies(ctx context.Context, account EarnAcc
 	return cited, nil
 }
 
-// depositVerifySignatureSlot is resolveConfirmedSignatureSlot
-// (earn-deposit-confirm.server.ts:423-456) under pollRpcRead's window: poll
-// getSignatureStatuses until the transaction reaches confirmed, refusing a
-// failed transaction or one that never lands inside it.
 func depositVerifySignatureSlot(ctx context.Context, client *chain.Client, operation, signature string) (*big.Int, error) {
 	for attempt := 1; attempt <= depositConfirmVerifyAttempts; attempt++ {
 		state, err := client.SignatureState(ctx, signature)
@@ -599,10 +557,6 @@ func depositVerifySignatureSlot(ctx context.Context, client *chain.Client, opera
 	return nil, fmt.Errorf("%s transaction is not confirmed.", operation)
 }
 
-// depositConfirmTransactionProof is resolveConfirmedDepositTransactionProof
-// (earn-deposit-confirm.server.ts:458-510): the deposit transaction's slot
-// must match the server-resolved slot and the deposit mint must leave the
-// wallet's, the smart account's or the Earn vault's token accounts.
 func depositConfirmTransactionProof(ctx context.Context, client *chain.Client, input earnDepositConfirmBody, mint solana.PublicKey) (*big.Int, error) {
 	signature, err := solana.SignatureFromBase58(input.DepositSignature)
 	if err != nil {
@@ -662,10 +616,6 @@ func depositConfirmTransactionProof(ctx context.Context, client *chain.Client, i
 	return principal, nil
 }
 
-// depositTokenDeltasByOwner is getParsedTokenBalanceDeltasByOwner
-// (earn-deposit-confirm.server.ts:134-173): per-owner post-minus-pre deltas
-// of one mint across the transaction's token accounts. An account absent from
-// one side did not hold the mint there, which counts as zero.
 func depositTokenDeltasByOwner(receipt chain.Receipt, mint solana.PublicKey) map[solana.PublicKey]*big.Int {
 	type snapshot struct {
 		amount uint64
@@ -717,11 +667,6 @@ func depositTokenDeltasByOwner(receipt chain.Receipt, mint solana.PublicKey) map
 	return deltas
 }
 
-// depositVerifyConfirmed is verifyConfirmedEarnDeposit
-// (earn-deposit-confirm.server.ts:544-726) minus the citation the web route
-// composes in first: principal match, canonical metadata, configured cluster,
-// the deposit's on-chain proof and — for a creation — both policy setup
-// signatures. Client-supplied slots are corrected to the server-resolved ones.
 func (h earnRoutes) depositVerifyConfirmed(ctx context.Context, account EarnAccount, input earnDepositConfirmBody) (*EarnDepositConfirmPosition, *big.Int, error) {
 	if input.WalletAddress != account.Wallet.String() || input.Settings != account.Settings.String() {
 		return nil, nil, earnError(http.StatusForbidden, "principal_mismatch",
@@ -743,7 +688,6 @@ func (h earnRoutes) depositVerifyConfirmed(ctx context.Context, account EarnAcco
 	if input.ConfirmedSlot.Cmp(confirmedSlot) != 0 {
 		// The client-supplied slot can be its confirmation context slot, not
 		// the landing slot; the server-resolved one is canonical
-		// (earn-deposit-confirm.server.ts:615-626).
 		slog.Warn("earn deposit confirm corrected client slot",
 			"depositSignature", input.DepositSignature, "settings", input.Settings,
 			"walletAddress", input.WalletAddress,
@@ -801,9 +745,8 @@ func depositBigIntText(value *big.Int) string {
 	return value.String()
 }
 
-// depositSerializeVerifiedPosition is serializeVerifiedDepositPosition
-// (earn-deposit-confirm.server.ts:512-539). observedAt keeps TS
-// toISOString's millisecond precision.
+// depositSerializeVerifiedPosition: observedAt keeps toISOString's
+// millisecond precision.
 func depositSerializeVerifiedPosition(canonical depositConfirmCanonical, depositSignature string, confirmedSlot *big.Int, principalAmount *big.Int, verifiedAt time.Time) *EarnDepositConfirmPosition {
 	var supplyApyBps *string
 	if canonical.TargetSupplyApyBps != nil {
@@ -828,14 +771,9 @@ func depositSerializeVerifiedPosition(canonical depositConfirmCanonical, deposit
 	}
 }
 
-// depositReportQuestCompletion is the mobile twin's
-// reportEarnDepositQuestCompletion (M/deposit/confirm/route.ts:159-167,
-// quest-completion-service.ts:190-199), kept in the Go op per pathmap DECIDED.
-// reportQuestCompletion is retired (quest-completion-reporter.ts:19-24), so a
-// qualifying deposit only records its pending completion row and the disabled
-// reporter's attempts bump; the quest-1 push fires only on "reported", which
-// is unreachable while reporting is disabled. Best-effort: a failure logs and
-// never fails the confirm.
+// depositReportQuestCompletion runs inside the op per the decided behavior
+// (EARN.md, Decided). Reporting is retired: rows stay pending and "reported"
+// is unreachable.
 func (h earnRoutes) depositReportQuestCompletion(ctx context.Context, account EarnAccount, principalAmount *big.Int) {
 	if h.YieldDB == nil || principalAmount == nil || principalAmount.Cmp(depositQuestMinUsdcRaw) < 0 {
 		return
@@ -862,7 +800,8 @@ func (h earnRoutes) depositReportQuestCompletion(ctx context.Context, account Ea
 	if status == "reported" {
 		return
 	}
-	// applyReportResult's disabled branch (quest-completion-service.ts:117-123).
+	// The retired reporter's row contract: bump attempts, keep the status
+	// pending, record the retired reason.
 	if _, err := h.YieldDB.Exec(ctx, `UPDATE loyal_yield.solana_week_quest_completions
   SET attempts = attempts + 1, updated_at = now(), status = 'pending', last_error_code = $2
   WHERE id = $1`, rowID, depositQuestRetiredReason); err != nil {

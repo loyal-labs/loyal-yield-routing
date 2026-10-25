@@ -1,12 +1,5 @@
 package webapp
 
-// DB reads for the non-position earn-state parts. Ports
-// yield-deposit-repository.server.ts findCurrentEarnDepositOnboardingAttempt
-// :3378, earn-autodeposit-repository.server.ts findCurrentEarnAutodepositState
-// :635, sumEarnAutodepositCurrentPeriodDeposits :740,
-// findPendingEarnAutodepositScheduledSweeps :768 and
-// earn-cross-mint-repository.server.ts findEarnCrossMintSnapshot :93.
-
 import (
 	"context"
 	"errors"
@@ -31,8 +24,6 @@ func scanStateOnboardingAttempt(row pgx.Row) (*stateOnboardingAttemptRow, error)
 	return &a, nil
 }
 
-// stateOnboardingAttempt ports findCurrentEarnDepositOnboardingAttempt: the
-// latest non-complete attempt for the Earn vault.
 func (h earnRoutes) stateOnboardingAttempt(ctx context.Context, settings, wallet, vaultPubkey string) (*stateOnboardingAttemptRow, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -55,9 +46,6 @@ LIMIT 1`, settings, int16(earnprep.EarnVaultIndex), wallet, vaultPubkey))
 	return attempt, nil
 }
 
-// stateAutodepositState ports findCurrentEarnAutodepositState: the wallet's
-// most relevant non-closed balance sweep target with its policy, preferring
-// the active row over paused/pending ones, newest first.
 func (h earnRoutes) stateAutodepositState(ctx context.Context, settings, wallet string) (*stateAutodepositTargetRow, *stateBalanceSweepPolicyRow, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -115,9 +103,6 @@ LIMIT 1`, wallet, settings, int16(earnprep.EarnVaultIndex)).Scan(&target.ID, &ta
 	return &target, policy, nil
 }
 
-// statePeriodDepositSum ports sumEarnAutodepositCurrentPeriodDeposits: the
-// sum of sweep executions decoded since the current period started, zero when
-// the target has no start timestamp.
 func (h earnRoutes) statePeriodDepositSum(ctx context.Context, target *stateAutodepositTargetRow) (int64, error) {
 	periodStart := stateAutodepositPeriodStart(target.StartTimestamp, target.PeriodLengthSeconds, time.Now())
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -140,8 +125,6 @@ WHERE target_id = $1 AND coalesce(decoded_at, received_at) >= $2`, target.ID, *p
 	return *sum, nil
 }
 
-// statePendingSweeps ports findPendingEarnAutodepositScheduledSweeps, whose
-// SQL is ported verbatim (Drizzle interpolates only the table names).
 func (h earnRoutes) statePendingSweeps(ctx context.Context, target *stateAutodepositTargetRow) ([]statePendingSweepRow, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -205,9 +188,6 @@ ORDER BY aggregated.eligible_after ASC, aggregated.first_lot_created_at ASC NULL
 	return out, nil
 }
 
-// stateCrossMintSnapshot ports findEarnCrossMintSnapshot: the wallet's opt-in
-// plus its cross-mint policy rows projected through
-// deriveEarnCrossMintPolicyIndex and findEarnCrossMintSnapshot's shape.
 func (h earnRoutes) stateCrossMintSnapshot(ctx context.Context, cluster, settings, authority, vaultPubkey string) (*EarnStateAutoswap, *EarnStateAutoswapIndex, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()

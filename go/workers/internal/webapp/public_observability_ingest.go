@@ -1,12 +1,5 @@
 package webapp
 
-// The observability ingest server half, porting the config, enrichment and
-// transport of web/apps/web/src/features/observability/server.ts and the
-// per-route admission shared by the six Next routes under
-// web/apps/web/src/app/api/observability/. Go serves the web path once: a
-// request passes either the browser same-origin check or the native-app gate
-// (native-gate.server.ts:5-9) and is parsed with the matching envelope.
-
 import (
 	"bytes"
 	"context"
@@ -23,9 +16,6 @@ import (
 	"unicode/utf8"
 )
 
-// parseOTLPConfig ports getTelemetryConfig (server.ts:51-74) minus the
-// per-signal path rewrite the exporter applies. Both values must be present
-// and the endpoint https (anywhere) or http on loopback.
 func parseOTLPConfig(rawEndpoint, ingestionKey string) *OTLP {
 	rawEndpoint = strings.TrimSpace(rawEndpoint)
 	ingestionKey = strings.TrimSpace(ingestionKey)
@@ -33,13 +23,12 @@ func parseOTLPConfig(rawEndpoint, ingestionKey string) *OTLP {
 		return nil
 	}
 	parsed, err := url.Parse(rawEndpoint)
-	if err != nil || !obsURLOriginLocal(parsed) {
+	if err != nil || !obsHTTPSOrLoopbackOrigin(parsed) {
 		return nil
 	}
 	return &OTLP{Endpoint: parsed, IngestionKey: ingestionKey}
 }
 
-// observabilityRelease ports getObservabilityRelease (server.ts:76).
 func observabilityRelease() string {
 	release := os.Getenv("VERCEL_GIT_COMMIT_SHA")
 	if release == "" {
@@ -54,8 +43,6 @@ func observabilityRelease() string {
 	return "unknown"
 }
 
-// observabilityDeploymentEnvironment ports getObservabilityDeploymentEnvironment
-// (server.ts:87).
 func observabilityDeploymentEnvironment() string {
 	environment := os.Getenv("VERCEL_ENV")
 	if environment == "" {
@@ -70,9 +57,6 @@ func observabilityDeploymentEnvironment() string {
 	return "unknown"
 }
 
-// journeyTrafficKind ports getJourneyTrafficKind (server.ts:248): synthetic
-// when the env flag says so outside production, internal for the allowlist,
-// external otherwise.
 func journeyTrafficKind(wallet string) string {
 	environment := observabilityDeploymentEnvironment()
 	if os.Getenv("OBSERVABILITY_TRAFFIC_KIND") == "synthetic" &&
@@ -93,17 +77,13 @@ func journeyTrafficKind(wallet string) string {
 	return "external"
 }
 
-// obsNativeAppRequest ports isNativeAppRequest (native-gate.server.ts:5-9):
+// obsNativeAppRequest ports isNativeAppRequest:
 // native fetch never sends Origin or Sec-Fetch-Site, browsers on cross-site
 // POSTs always do.
 func obsNativeAppRequest(origin, secFetchSite string) bool {
 	return origin == "" && secFetchSite == ""
 }
 
-// obsSameOriginRequest ports isSameOriginRequest (errors/route.ts:22-38): the
-// Origin must parse to the request's own origin and Sec-Fetch-Site, when
-// present, must be same-origin. requestOrigin is what new URL(request.url).origin
-// is on Next: the scheme the proxy forwarded plus this request's host.
 func obsSameOriginRequest(originHeader, secFetchSite, requestOrigin string) bool {
 	if originHeader == "" {
 		return false
@@ -118,9 +98,6 @@ func obsSameOriginRequest(originHeader, secFetchSite, requestOrigin string) bool
 	return secFetchSite == "" || secFetchSite == "same-origin"
 }
 
-// obsRequestOrigin builds new URL(request.url).origin from the pieces the
-// proxy hands the Go server (headers.go's redirectHTTPS shows the scheme
-// convention).
 func obsRequestOrigin(host, forwardedProto string) string {
 	scheme := "https"
 	if forwardedProto == "http" {
@@ -133,16 +110,10 @@ func obsRequestOrigin(host, forwardedProto string) string {
 	return obsURLOrigin(origin)
 }
 
-// obsJSONContentType ports isJsonRequest: the media type before the first
-// semicolon, trimmed, must be application/json.
 func obsJSONContentType(contentType string) bool {
 	return strings.TrimSpace(strings.SplitN(contentType, ";", 2)[0]) == "application/json"
 }
 
-// obsReadBody ports readJsonBody: declared and actual byte budgets, then a
-// fatal UTF-8 decode before the JSON parse. The rawJSON resolver already
-// capped the read at maxJSONBody, so anything larger than the contract limit
-// arrives truncated and fails the byte check below.
 func obsReadBody(declaredContentLength string, body []byte) ([]byte, error) {
 	if declaredContentLength != "" {
 		parsed, ok := obsPositiveInt(declaredContentLength)
@@ -167,8 +138,6 @@ func obsReadBody(declaredContentLength string, body []byte) ([]byte, error) {
 	return body, nil
 }
 
-// obsPositiveInt mirrors Number(declaredLength) plus the integer and
-// non-negative guards: ASCII decimal digits only.
 func obsPositiveInt(value string) (int, bool) {
 	if value == "" {
 		return 0, false
@@ -186,14 +155,11 @@ func obsPositiveInt(value string) (int, bool) {
 	return n, true
 }
 
-// obsWalletHash ports the SHA-256 hex userId the web events route derives
-// (server.ts:276-285).
 func obsWalletHash(wallet string) string {
 	sum := sha256.Sum256([]byte(wallet))
 	return hex.EncodeToString(sum[:])
 }
 
-// obsExportBudget is OBSERVABILITY_EXPORT_BUDGET_MS (budget-contract.ts).
 const obsExportBudget = 1250 * time.Millisecond
 
 // The ingest rate limits, porting rate-limit.server.ts: fixed 60s windows per
@@ -254,7 +220,6 @@ func (l *obsRateLimiter) allow(key string, nowMS int64) bool {
 	return true
 }
 
-// The three limiter instances mirror the three module-level TS maps.
 var (
 	obsErrorRates     = newObsRateLimiter(20)
 	obsLifecycleRates = newObsRateLimiter(120)
@@ -267,9 +232,6 @@ func resetObsRateLimitsForTests() {
 	obsMetricRates = newObsRateLimiter(240)
 }
 
-// obsRateLimitSource ports getRequestSource (rate-limit.server.ts:20-33): the
-// first proxy header that carries an address, else "unknown", hashed so raw
-// addresses never become map keys.
 func obsRateLimitSource(header func(string) string) string {
 	source := strings.TrimSpace(strings.SplitN(header("X-Forwarded-For"), ",", 2)[0])
 	if source == "" {
@@ -311,18 +273,11 @@ func obsEncodeJSON(payload any) ([]byte, bool) {
 	return bytes.TrimRight(out.Bytes(), "\n"), true
 }
 
-// exportOtlpPayload ports exportOtlpPayload (server.ts:108-140): one POST of
-// the JSON payload to <endpoint>/v1/<signal> inside the export budget, ok iff
-// the collector answers 2xx. A missing or invalid config means the event is
-// dropped, never an error.
 func (h earnRoutes) exportOtlpPayload(ctx context.Context, payload any, signal string) bool {
 	if h.OTLP == nil || h.OTLP.Endpoint == nil || h.OTLP.IngestionKey == "" {
 		return false
 	}
-	// getTelemetryConfig (server.ts:51-74) only exports to https anywhere or
-	// http on loopback; anything else leaves the config null and the event
-	// dropped, never an error.
-	if !obsURLOriginLocal(h.OTLP.Endpoint) {
+	if !obsHTTPSOrLoopbackOrigin(h.OTLP.Endpoint) {
 		return false
 	}
 	endpoint := *h.OTLP.Endpoint
@@ -355,9 +310,6 @@ func (h earnRoutes) exportObsErrorEvent(ctx context.Context, event *obsNormalize
 	return h.exportOtlpPayload(ctx, buildOtlpErrorPayload(event), "logs")
 }
 
-// exportObsLifecycleEvent ports exportLifecycleEvent (server.ts:146-155): the
-// lifecycle log plus, with full trace context, the journey trace; both must
-// land for the events route to answer 202.
 func (h earnRoutes) exportObsLifecycleEvent(ctx context.Context, event *obsNormalizedLifecycle) bool {
 	if !h.exportOtlpPayload(ctx, buildOtlpLifecyclePayload(event), "logs") {
 		return false
@@ -372,9 +324,6 @@ func (h earnRoutes) exportObsLoadingMetric(ctx context.Context, event *obsNormal
 	return h.exportOtlpPayload(ctx, buildOtlpLoadingMetricPayload(event), "metrics")
 }
 
-// obsWebLifecycleEvent is reportBrowserLifecycleEnvelope's enrichment
-// (server.ts:266-295): the Principal wallet, its hashed user id and the
-// traffic kind, plus the server's own release/environment.
 func obsWebLifecycleEvent(envelope obsNormalizedLifecycle, wallet string) obsNormalizedLifecycle {
 	event := envelope
 	event.walletAddress = wallet
@@ -388,7 +337,7 @@ func obsWebLifecycleEvent(envelope obsNormalizedLifecycle, wallet string) obsNor
 	return event
 }
 
-// obsMobileLifecycleEvent is reportMobileLifecycleEnvelope (server.ts:328):
+// obsMobileLifecycleEvent is reportMobileLifecycleEnvelope:
 // the envelope already carries environment/release/wallet, only the service
 // name is added. No user id or traffic kind — Next never sets them here.
 func obsMobileLifecycleEvent(envelope obsNormalizedLifecycle) obsNormalizedLifecycle {
@@ -405,9 +354,6 @@ func obsWebLoadingMetricEvent(envelope obsNormalizedMetric) obsNormalizedMetric 
 	return event
 }
 
-// obsMobileLoadingMetricEvent is reportMobileLoadingMetricEnvelope
-// (server.ts:312): the envelope's environment/release win, the service name
-// flips the metric description and scope.
 func obsMobileLoadingMetricEvent(envelope obsNormalizedMetric) obsNormalizedMetric {
 	event := envelope
 	event.serviceName = "loyal-mobile"

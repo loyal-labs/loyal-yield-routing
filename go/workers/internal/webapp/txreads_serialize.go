@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strconv"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earncatalog"
 )
 
 // Serializes Earn history into the exact JSON the Next
@@ -17,8 +19,6 @@ const (
 	txreadsMainUSDCIcon     = "/wallet-workspace/earn-vault-usdc.png"
 )
 
-// Compact Kamino market names (earn-position-display.ts KNOWN_MARKET_NAMES
-// with the " Market" suffix stripped) and per-market icons.
 var txreadsCompactMarketNames = map[string]string{
 	"7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF": "Main Kamino",
 	"27MKCQo5qP7ijrwWSMKX2Jeb3PhK2NZmHQ9befWVRS4J": "Main Kamino",
@@ -42,16 +42,13 @@ var txreadsMarketIcons = map[string]string{
 	"BJnbcRHqvppTyGesLzWASGKnmnF1wq9jZu6ExrjT7wvF": "/wallet-workspace/earn-ethena.png",
 }
 
-// Stablecoin mint -> symbol, earn-product-mints.shared.ts over both clusters.
-var txreadsMintSymbols = map[string]string{
-	"CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH": "CASH",
-	"2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH": "USDG",
-	"2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo": "PYUSD",
-	"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": "USDC",
-	"Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB": "USDT",
-	"USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA":  "USDS",
-	"4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": "USDC",
-}
+var txreadsMintSymbols = func() map[string]string {
+	symbols := map[string]string{}
+	for _, product := range append(earncatalog.Mainnet(), earncatalog.Devnet()...) {
+		symbols[product.Mint] = product.Symbol
+	}
+	return symbols
+}()
 
 var txreadsMonths = [...]string{"January", "February", "March", "April", "May", "June",
 	"July", "August", "September", "October", "November", "December"}
@@ -96,8 +93,6 @@ func txreadsPresent(value *string) bool {
 	return value != nil && *value != ""
 }
 
-// txreadsFormatExactUSDC mirrors formatExactUsdcAmount: sign, "$", whole,
-// "." and a zero-padded 6-digit fraction.
 func txreadsFormatExactUSDC(amount int64) string {
 	sign := ""
 	absolute := uint64(amount)
@@ -109,8 +104,8 @@ func txreadsFormatExactUSDC(amount int64) string {
 		fmt.Sprintf("%06d", absolute%1_000_000)
 }
 
-// txreadsFormatDisplayUSDC mirrors formatDisplayUsdcAmount: the sign comes
-// from the direction alone, cents round half away from zero in whole cents.
+// txreadsFormatDisplayUSDC: the sign comes from the direction alone; cents
+// round up to whole cents, matching the TS.
 func txreadsFormatDisplayUSDC(amount int64, direction string) string {
 	sign := ""
 	switch direction {
@@ -131,13 +126,11 @@ func txreadsFormatDisplayUSDC(amount int64, direction string) string {
 		fmt.Sprintf("%02d", cents%100)
 }
 
-// txreadsDateGroup mirrors formatDateGroup: "October 22" in en-US, UTC.
 func txreadsDateGroup(at time.Time) string {
 	utc := at.UTC()
 	return txreadsMonths[utc.Month()-1] + " " + strconv.Itoa(utc.Day())
 }
 
-// txreadsTimestamp mirrors formatTimestamp: "3:45 PM" in en-US, UTC.
 func txreadsTimestamp(at time.Time) string {
 	utc := at.UTC()
 	hour := utc.Hour() % 12

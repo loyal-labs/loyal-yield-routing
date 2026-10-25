@@ -96,6 +96,8 @@ type RoutePolicy struct {
 	UniversePreset       *string
 	RiskProfile          *string
 	SwapLanes            json.RawMessage
+	VaultIndex           int16
+	VaultPubkey          string
 	FirstSeenAt          time.Time
 	LastSeenAt           time.Time
 	LastSeenSlot         int64
@@ -120,7 +122,7 @@ func (h earnRoutes) activePolicyPair(ctx context.Context, account EarnAccount) (
 SELECT p.id = vault.active_policy_id, p.id IS NOT DISTINCT FROM vault.setup_policy_id,
   p.id, p.cluster, p.policy_seed, p.policy_account, p.delegated_signers, p.threshold, p.route_modes,
   p.stable_mints, p.kamino_markets, p.kamino_liquidity_mints, p.universe_preset, p.risk_profile,
-  p.swap_lanes, p.first_seen_at, p.last_seen_at, p.last_seen_slot, p.last_seen_signature
+  p.swap_lanes, p.vault_index, p.vault_pubkey, p.first_seen_at, p.last_seen_at, p.last_seen_slot, p.last_seen_signature
 FROM vault
 JOIN loyal_yield.route_policies p ON p.id IN (vault.active_policy_id, vault.setup_policy_id)
 WHERE p.active AND p.authority = $4 AND p.settings = $1 AND p.vault_index = $2 AND p.vault_pubkey = vault.vault_pubkey`,
@@ -135,7 +137,7 @@ WHERE p.active AND p.authority = $4 AND p.settings = $1 AND p.vault_index = $2 A
 		var p RoutePolicy
 		if err := rows.Scan(&isRoute, &isSetup, &p.ID, &p.Cluster, &p.PolicySeed, &p.PolicyAccount, &p.DelegatedSigners, &p.Threshold, &p.RouteModes,
 			&p.StableMints, &p.KaminoMarkets, &p.KaminoLiquidityMints, &p.UniversePreset, &p.RiskProfile,
-			&p.SwapLanes, &p.FirstSeenAt, &p.LastSeenAt, &p.LastSeenSlot, &p.LastSeenSignature); err != nil {
+			&p.SwapLanes, &p.VaultIndex, &p.VaultPubkey, &p.FirstSeenAt, &p.LastSeenAt, &p.LastSeenSlot, &p.LastSeenSignature); err != nil {
 			return nil, fmt.Errorf("read active route policy pair: %w", err)
 		}
 		if isRoute {

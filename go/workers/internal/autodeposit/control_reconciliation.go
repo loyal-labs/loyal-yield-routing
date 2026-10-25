@@ -13,6 +13,7 @@ import (
 	"github.com/solana-foundation/solana-go/v2"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earncatalog"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 )
@@ -133,7 +134,7 @@ func (b *SweepWireBuilder) ObserveControl(ctx context.Context, target ControlTar
 		}
 	}
 	if accounts[1] != nil {
-		if accounts[1].Owner.String() != SubscriptionsProgramID {
+		if accounts[1].Owner.String() != earncatalog.SubscriptionsProgram {
 			return o, errors.New("control authority has foreign owner")
 		}
 		o.AuthorityValid = true
@@ -142,7 +143,7 @@ func (b *SweepWireBuilder) ObserveControl(ctx context.Context, target ControlTar
 		if _, err = RemainingDelegationAllowance(accounts[2].Owner.String(), accounts[2].Data, DelegationIdentity{Account: target.RecurringDelegation, Delegator: target.Wallet, Delegatee: target.Vault, Mint: target.Mint, Nonce: uint64(target.Nonce)}); err != nil {
 			return o, err
 		}
-		delegationBudget := binary.LittleEndian.Uint64(accounts[2].Data[delegationPerPeriodOffset:])
+		delegationBudget := binary.LittleEndian.Uint64(accounts[2].Data[earncatalog.DelegationPerPeriodOffset:])
 		if delegationBudget != uint64(*target.MaxAmountPerPeriod) {
 			return o, errors.New("control delegation budget differs from target")
 		}
@@ -171,12 +172,12 @@ func policyCapCoversDelegationBudget(policyCap uint64, capped bool, delegationBu
 
 func policyBudgetCap(constraints []squads.InstructionConstraintView) (uint64, bool) {
 	for _, instruction := range constraints {
-		if instruction.ProgramID.String() != SubscriptionsProgramID {
+		if instruction.ProgramID.String() != earncatalog.SubscriptionsProgram {
 			continue
 		}
 		for _, account := range instruction.AccountConstraints {
 			for _, data := range account.AccountData {
-				if account.AccountIndex == 0 && data.DataOffset == delegationPerPeriodOffset && data.DataValue.Kind == 3 && data.Operator == squads.OpLessThanOrEqualTo {
+				if account.AccountIndex == 0 && data.DataOffset == earncatalog.DelegationPerPeriodOffset && data.DataValue.Kind == 3 && data.Operator == squads.OpLessThanOrEqualTo {
 					return data.DataValue.U64, true
 				}
 			}

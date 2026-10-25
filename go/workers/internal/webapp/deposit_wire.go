@@ -12,7 +12,6 @@ import (
 )
 
 // Wire shapes for prepared Earn operations, ported byte-for-byte from
-// web/packages/smart-account-vaults/src/wire/prepared-operation-wire.shared.ts:31-94.
 // The server never fetches a blockhash: the wire carries unsigned instructions
 // and the client compiles them against a fresh one, so parity is JSON field
 // order and the instruction bytes themselves.
@@ -41,8 +40,8 @@ type DepositWireLookupTableAccount struct {
 	State DepositWireLookupTableState `json:"state"`
 }
 
-// DepositWireSimulationDiagnostics mirrors
-// client.ts:2310-2320 (withEarnPolicyCreateSimulationDiagnostics).
+// DepositWireSimulationDiagnostics pins the TS client's
+// withEarnPolicyCreateSimulationDiagnostics shape.
 type DepositWireSimulationDiagnostics struct {
 	IncludedPolicyAccounts []string `json:"includedPolicyAccounts"`
 	Kind                   string   `json:"kind"`
@@ -92,9 +91,6 @@ func depositWireOperation(operation string, payer solana.PublicKey, ix squads.In
 	}
 }
 
-// depositEarnPolicyCreateDiagnostics reports the policy account the operation
-// creates: included when the instruction carries it as a remaining account
-// (client.ts:2302-2320), which every PolicyCreate here does.
 func depositEarnPolicyCreateDiagnostics(policyAccount solana.PublicKey, seed uint64, stage string, settings solana.PublicKey, ix squads.Instruction) DepositWireSimulationDiagnostics {
 	included := []string{}
 	for _, account := range ix.Accounts {
@@ -114,18 +110,14 @@ func depositEarnPolicyCreateDiagnostics(policyAccount solana.PublicKey, seed uin
 	}
 }
 
-// depositPacketBlockhash pins the all-ones blockhash the TS packet guard uses
-// (client.ts:574); it is never sent anywhere.
-var depositPacketBlockhash = solana.MustHashFromBase58("11111111111111111111111111111111")
+// depositPacketProbeBlockhash pins the all-ones blockhash the TS packet guard
+// uses; it is never sent anywhere.
+var depositPacketProbeBlockhash = solana.MustHashFromBase58("11111111111111111111111111111111")
 
-// depositMaxPacketBytes is EARN_POLICY_PACKET_DATA_SIZE (client.ts:324): a
-// prepared op must compile into one Solana packet.
 const depositMaxPacketBytes = 1232
 
-// depositPacketLength compiles the instruction the way preparedPacketLength
-// does (client.ts:569-583) and returns the serialized packet length.
 func depositPacketLength(payer solana.PublicKey, ix squads.Instruction) (int, error) {
-	tx, err := earnprep.CompileV0(payer, depositPacketBlockhash, []squads.Instruction{ix}, nil)
+	tx, err := earnprep.CompileV0(payer, depositPacketProbeBlockhash, []squads.Instruction{ix}, nil)
 	if err != nil {
 		return 0, err
 	}

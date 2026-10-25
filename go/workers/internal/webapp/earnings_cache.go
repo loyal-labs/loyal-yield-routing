@@ -9,10 +9,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// Port of earnings-cache.server.ts: serve a fresh stored snapshot, fall back
-// to stale-while-revalidate, and rebuild under a transaction-scoped advisory
-// lock so concurrent requests share one rebuild per scope.
-
 const earningsFreshMs = int64(5 * 60 * 1000)
 
 var earningsRefreshLockSlots = make(chan struct{}, 4)
@@ -35,8 +31,6 @@ func earningsRefreshLockKey(input earningsReadInput, timezone string) string {
 	return w.String()
 }
 
-// isFresh ports cache:63: fresh payload, same source revision, generated this
-// calendar day in the scope timezone, and younger than five minutes.
 func isFresh(snapshot earningsSnapshotRecord, sourceRevision string, now time.Time, timezone string) bool {
 	if snapshot.payload.Freshness != "fresh" {
 		return false
@@ -51,7 +45,6 @@ func isFresh(snapshot earningsSnapshotRecord, sourceRevision string, now time.Ti
 	return localDayString(snapshot.generatedAt, timezone) == localDayString(now, timezone)
 }
 
-// localDayString is Intl.DateTimeFormat("en-CA", {timeZone}) — YYYY-MM-DD.
 func localDayString(t time.Time, timezone string) string {
 	p := getZonedParts(t, timezone)
 	return itoa4(p.year) + "-" + pad2(p.month) + "-" + pad2(p.day)
@@ -110,11 +103,8 @@ func withEarningsRefreshLock(ctx context.Context, pool *pgxpool.Pool, key string
 	return true, nil
 }
 
-// earningsScheduleRefresh is the `after` callback shape the route passes in
-// (unit 2 wires it to a background goroutine).
 type earningsScheduleRefresh func(func(context.Context))
 
-// readCachedEarnEarningsRangeSet ports cache:80.
 func readCachedEarnEarningsRangeSet(ctx context.Context, pool *pgxpool.Pool, input earningsReadInput, schedule earningsScheduleRefresh, deps earningsReadDeps) (EarningsRangeSet, error) {
 	startedAt := time.Now()
 	timezone := normalizeEarningsTimezone(input.timezone)
@@ -150,7 +140,7 @@ func readCachedEarnEarningsRangeSet(ctx context.Context, pool *pgxpool.Pool, inp
 				isFresh(*latest, latestRevision, deps.now(), timezone) {
 				result = latest.payload
 			} else {
-				result, err = readEarningsRangeSet(ctx, input, deps, true)
+				result, err = readEarningsRangeSetResuming(ctx, input, deps)
 				if err != nil {
 					return err
 				}

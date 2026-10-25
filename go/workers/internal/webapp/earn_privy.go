@@ -49,8 +49,8 @@ type PrivyCompleteRequest struct {
 	WalletAddress string   `json:"walletAddress"`
 }
 
-// Field order follows the TS object literal in privy-auth.ts:125-134 so the
-// JSON body compares byte-for-byte with the Next route's response.
+// Field order is JSON wire order; the body must compare byte-for-byte with
+// the Next route's response.
 type PrivyAuthUser struct {
 	AuthMethod          string  `json:"authMethod"`
 	Provider            string  `json:"provider"`
@@ -95,8 +95,6 @@ func (h earnRoutes) registerPrivy(api huma.API) {
 	documentJSONBody[PrivyCompleteRequest](api, privyCompletePath)
 }
 
-// privyComplete ports route.ts handleRequest: header check, body schema,
-// completePrivyAuth, then the session cookie on a 200 user response.
 func (h earnRoutes) privyComplete(ctx context.Context, in *privyCompleteInput) (*privyCompleteOutput, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -161,7 +159,7 @@ func (h earnRoutes) privyComplete(ctx context.Context, in *privyCompleteInput) (
 		claims["email"] = identity.Email
 	}
 	// The session mint for Privy complete signs the same web session claims
-	// the Next route's issueSessionToken does (session-cookie.ts:202-225);
+	// the Next route's issueSessionToken does;
 	// signer_test.go allows the mint only here and in earn_session.go.
 	sessionToken, err := h.Session.Mint(claims, jwt.NoAudience, ttl, now)
 	if err != nil {
@@ -199,10 +197,6 @@ func (h earnRoutes) privyComplete(ctx context.Context, in *privyCompleteInput) (
 	}}, nil
 }
 
-// privyCompletionWallet ports the zod body schema (route.ts:14-16): a JSON
-// object whose walletAddress is a 32-64 character string. An unparseable body
-// becomes an empty object, as `await request.json().catch(() => ({}))` does,
-// and fails the same schema with 400 invalid_privy_completion_request.
 func privyCompletionWallet(raw []byte) (string, error) {
 	invalid := func() (string, error) {
 		return "", earnError(http.StatusBadRequest, "invalid_privy_completion_request", "Request is invalid.")

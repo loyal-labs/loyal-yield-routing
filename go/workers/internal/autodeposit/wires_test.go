@@ -16,6 +16,7 @@ import (
 	"github.com/solana-foundation/solana-go/v2"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earncatalog"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
@@ -68,7 +69,7 @@ func testReserve(t *testing.T, plan DepositPlan, farm string) (testAccount, TopU
 	copy(data, kamino.ReserveDiscriminator[:])
 	binary.LittleEndian.PutUint64(data[8:16], 1)
 	binary.LittleEndian.PutUint64(data[16:24], 100)
-	fields := map[int]string{32: plan.Market, 128: USDCMint, 160: fixedKey("supply"), 408: splTokenID, 2560: fixedKey("collateral-mint"), 2600: fixedKey("collateral-supply"), 64: farm}
+	fields := map[int]string{32: plan.Market, 128: USDCMint, 160: fixedKey("supply"), 408: earncatalog.SPLTokenProgram, 2560: fixedKey("collateral-mint"), 2600: fixedKey("collateral-supply"), 64: farm}
 	for offset, value := range fields {
 		if value != "" {
 			key := mustKey(value)
@@ -91,19 +92,19 @@ func fixedKey(label string) string {
 // testDelegationData builds a delegation account body at the official
 // loyal-actions offsets, so the decoder is pinned to the real wire layout.
 func testDelegationData(delegator, delegatee, mint string, perPeriod, pulled uint64) []byte {
-	data := make([]byte, delegationDataLen)
+	data := make([]byte, earncatalog.DelegationDataLen)
 	delegatorKey, delegateeKey, mintKey := mustKey(delegator), mustKey(delegatee), mustKey(mint)
-	copy(data[delegationDelegatorOffset:], delegatorKey[:])
-	copy(data[delegationDelegateeOffset:], delegateeKey[:])
-	copy(data[delegationMintOffset:], mintKey[:])
+	copy(data[earncatalog.DelegationDelegatorOffset:], delegatorKey[:])
+	copy(data[earncatalog.DelegationDelegateeOffset:], delegateeKey[:])
+	copy(data[earncatalog.DelegationMintOffset:], mintKey[:])
 	authority, err := subscriptionAuthorityKey(delegatorKey[:], mintKey[:])
 	if err != nil {
 		panic(err)
 	}
-	copy(data[delegationAuthorityOffset:], authority[:])
-	binary.LittleEndian.PutUint64(data[delegationPerPeriodOffset:delegationPerPeriodOffset+8], perPeriod)
-	binary.LittleEndian.PutUint64(data[delegationAmountPulledOffset:delegationAmountPulledOffset+8], pulled)
-	data[delegationDiscriminatorOffset] = delegationDiscriminator
+	copy(data[earncatalog.DelegationAuthorityOffset:], authority[:])
+	binary.LittleEndian.PutUint64(data[earncatalog.DelegationPerPeriodOffset:earncatalog.DelegationPerPeriodOffset+8], perPeriod)
+	binary.LittleEndian.PutUint64(data[earncatalog.DelegationAmountPulledOffset:earncatalog.DelegationAmountPulledOffset+8], pulled)
+	data[earncatalog.DelegationDiscriminatorOffset] = earncatalog.DelegationDiscriminator
 	return data
 }
 
@@ -125,7 +126,7 @@ func testDelegationIdentity(t *testing.T, wallet, vault string, nonce uint64) De
 func TestRemainingDelegationAllowanceDecodesOfficialLayout(t *testing.T) {
 	wallet, vault := fixedKey("wallet"), fixedKey("vault")
 	data := testDelegationData(wallet, vault, USDCMint, 5_000_000, 1_200_000)
-	allowance, err := RemainingDelegationAllowance(SubscriptionsProgramID, data, testDelegationIdentity(t, wallet, vault, 7))
+	allowance, err := RemainingDelegationAllowance(earncatalog.SubscriptionsProgram, data, testDelegationIdentity(t, wallet, vault, 7))
 	if err != nil {
 		t.Fatalf("decode official delegation: %v", err)
 	}
@@ -138,7 +139,7 @@ func TestRemainingDelegationAllowanceRejectsForeignAccounts(t *testing.T) {
 	wallet, vault, foreign := fixedKey("wallet"), fixedKey("vault"), fixedKey("foreign-wallet")
 	identity := testDelegationIdentity(t, wallet, vault, 7)
 	data := testDelegationData(wallet, vault, USDCMint, 5_000_000, 0)
-	if _, err := RemainingDelegationAllowance(SubscriptionsProgramID, data, identity); err != nil {
+	if _, err := RemainingDelegationAllowance(earncatalog.SubscriptionsProgram, data, identity); err != nil {
 		t.Fatalf("the unaltered delegation must decode: %v", err)
 	}
 
@@ -148,18 +149,18 @@ func TestRemainingDelegationAllowanceRejectsForeignAccounts(t *testing.T) {
 	}
 	// A delegator swap must not authorize this family's pull.
 	copied := testDelegationData(foreign, vault, USDCMint, 5_000_000, 0)
-	if _, err := RemainingDelegationAllowance(SubscriptionsProgramID, copied, identity); err == nil {
+	if _, err := RemainingDelegationAllowance(earncatalog.SubscriptionsProgram, copied, identity); err == nil {
 		t.Fatal("a foreign delegator must not decode")
 	}
 	// A pulled counter above its budget is corrupt, never a fresh allowance.
 	corrupt := testDelegationData(wallet, vault, USDCMint, 5_000_000, 5_000_001)
-	if _, err := RemainingDelegationAllowance(SubscriptionsProgramID, corrupt, identity); err == nil {
+	if _, err := RemainingDelegationAllowance(earncatalog.SubscriptionsProgram, corrupt, identity); err == nil {
 		t.Fatal("a corrupt pulled counter must not decode")
 	}
 	// A discriminator flip is not a delegation account.
 	flipped := testDelegationData(wallet, vault, USDCMint, 5_000_000, 0)
-	flipped[delegationDiscriminatorOffset] = 4
-	if _, err := RemainingDelegationAllowance(SubscriptionsProgramID, flipped, identity); err == nil {
+	flipped[earncatalog.DelegationDiscriminatorOffset] = 4
+	if _, err := RemainingDelegationAllowance(earncatalog.SubscriptionsProgram, flipped, identity); err == nil {
 		t.Fatal("a wrong discriminator must not decode")
 	}
 }
@@ -188,8 +189,8 @@ func testWireBuilder(t *testing.T) *SweepWireBuilder {
 		binary.LittleEndian.PutUint64(data[1:9], uint64(plan.AmountRaw))
 		copy(data[9:41], wallet[:])
 		copy(data[41:], mint[:])
-		inner := fleet.RouteInstruction{Program: SubscriptionsProgramID, Data: data, Accounts: []fleet.InstructionAccount{
-			{Address: delegation, Writable: true}, {Address: base58Key(authority[:])}, {Address: plan.Target.WalletUsdcAta, Writable: true}, {Address: plan.Target.VaultUsdcAta, Writable: true}, {Address: USDCMint}, {Address: splTokenID}, {Address: plan.Target.VaultPubkey, Signer: true}, {Address: base58Key(event[:])}, {Address: SubscriptionsProgramID},
+		inner := fleet.RouteInstruction{Program: earncatalog.SubscriptionsProgram, Data: data, Accounts: []fleet.InstructionAccount{
+			{Address: delegation, Writable: true}, {Address: base58Key(authority[:])}, {Address: plan.Target.WalletUsdcAta, Writable: true}, {Address: plan.Target.VaultUsdcAta, Writable: true}, {Address: USDCMint}, {Address: earncatalog.SPLTokenProgram}, {Address: plan.Target.VaultPubkey, Signer: true}, {Address: base58Key(event[:])}, {Address: earncatalog.SubscriptionsProgram},
 		}}
 		policy, err := exactPolicyFixture(plan.Target.Settings, solana.PrivateKey(private).PublicKey().String(), 1, []fleet.RouteInstruction{inner})
 		if err != nil {
@@ -288,10 +289,10 @@ func TestBuildPullProducesSignedSubscriptionsWire(t *testing.T) {
 	for _, account := range execute.Inner[0].Accounts {
 		inner.accounts = append(inner.accounts, account.PublicKey)
 	}
-	if !keyEqual(inner.program, SubscriptionsProgramID) {
+	if !keyEqual(inner.program, earncatalog.SubscriptionsProgram) {
 		t.Fatalf("wrapped program is %s, want the subscriptions program", inner.program)
 	}
-	if len(inner.data) != 73 || inner.data[0] != subscriptionsTransferRecurring {
+	if len(inner.data) != 73 || inner.data[0] != earncatalog.TransferRecurringDiscriminator {
 		t.Fatalf("pull data is %d bytes tag %d, want 73 bytes tag 5", len(inner.data), inner.data[0])
 	}
 	amount := binary.LittleEndian.Uint64(inner.data[1:9])

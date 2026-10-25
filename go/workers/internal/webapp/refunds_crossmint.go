@@ -10,26 +10,19 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnprep"
 )
 
-// Ports web/apps/web/src/app/api/smart-accounts/yield-optimization/
-// cross-mint/toggle/route.ts and cross-mint/delete/readiness/route.ts.
-
 const (
 	crossMintTogglePath          = "/api/smart-accounts/yield-optimization/cross-mint/toggle"
 	crossMintDeleteReadinessPath = "/api/smart-accounts/yield-optimization/cross-mint/delete/readiness"
 
-	// route.ts:106-108 and :148 (toggle), :108-110 (delete readiness).
 	crossMintNotInstalledMessage = "Autoswap is not installed."
-	// route.ts:150-152 and :110-112.
-	crossMintStaleMessage = "Autoswap state changed. Refresh and try again."
+	crossMintStaleMessage        = "Autoswap state changed. Refresh and try again."
 )
 
 var crossMintDigitsOnly = regexp.MustCompile(`^\d+$`)
 
-// parseCrossMintGeneration ports the shared generation check (toggle
-// route.ts:50-57, delete readiness route.ts:46-59): a /^\d+$/ string greater
-// than zero. A value past int64 can never match the bigint column, so the
-// caller takes the stale-or-missing shortcut instead of sending it to
-// Postgres.
+// parseCrossMintGeneration accepts a /^\d+$/ string greater than zero. A
+// value past int64 can never match the bigint column, so the caller takes
+// the stale-or-missing shortcut instead of sending it to Postgres.
 func parseCrossMintGeneration(value any) (uint64, bool, bool) {
 	text, isText := value.(string)
 	if !isText || !crossMintDigitsOnly.MatchString(text) {
@@ -47,14 +40,11 @@ func parseCrossMintGeneration(value any) (uint64, bool, bool) {
 
 const maxInt64 = int64(^uint64(0) >> 1)
 
-// parseCrossMintToggleBody ports parseRequest (toggle route.ts:45-62).
 func parseCrossMintToggleBody(raw []byte) (enabled bool, generation uint64, overflow bool, err error) {
 	parsed, err := parseJSONBody(raw)
 	if err != nil {
 		return false, 0, false, err
 	}
-	// !value || typeof value !== "object": null and scalars are required-input
-	// refusals, an array is an object and falls into the field checks.
 	record, isObject := parsed.(map[string]any)
 	if parsed == nil || !isObject {
 		return false, 0, false, earnError(http.StatusBadRequest, "invalid_request", "Autoswap toggle input is required.")
@@ -70,8 +60,6 @@ func parseCrossMintToggleBody(raw []byte) (enabled bool, generation uint64, over
 	return inputEnabled, generation, overflow, nil
 }
 
-// parseCrossMintReadinessBody ports parseExpectedGeneration (delete readiness
-// route.ts:46-59): everything invalid says the same sentence.
 func parseCrossMintReadinessBody(raw []byte) (generation uint64, overflow bool, err error) {
 	parsed, err := parseJSONBody(raw)
 	if err != nil {
@@ -85,9 +73,6 @@ func parseCrossMintReadinessBody(raw []byte) (generation uint64, overflow bool, 
 	return generation, overflow, nil
 }
 
-// crossMintTransition applies setEarnCrossMintEnabled and reads the fresh
-// enrollment the TS function returns (repository.server.ts:223-245); nil
-// enrollment is the missing outcome.
 func crossMintTransition(ctx context.Context, h earnRoutes, scope crossMintScope, enabled bool, generation uint64, overflow bool) (*crossMintEnrollment, string, error) {
 	var kind string
 	var err error
@@ -119,7 +104,6 @@ type CrossMintToggleRequest struct {
 	ExpectedGeneration *string `json:"expectedGeneration,omitempty"`
 }
 
-// CrossMintToggleResponse mirrors the toggle route's body (route.ts:153-157).
 type CrossMintToggleResponse struct {
 	Enabled    bool   `json:"enabled"`
 	Generation string `json:"generation"`
@@ -136,8 +120,6 @@ type crossMintToggleOutput struct {
 }
 
 func (h earnRoutes) earnCrossMintToggle(ctx context.Context, in *crossMintToggleInput) (*crossMintToggleOutput, error) {
-	// Next wraps everything below the env gate in one catch that answers 409
-	// autoswap_toggle_failed with error.message (toggle route.ts:158-164).
 	toggleFailed := func(err error) error {
 		return earnError(http.StatusConflict, "autoswap_toggle_failed", err.Error())
 	}
@@ -161,8 +143,6 @@ func (h earnRoutes) earnCrossMintToggle(ctx context.Context, in *crossMintToggle
 		VaultPubkey: account.Vault.String(),
 	}
 
-	// toggle route.ts:100-141: the enable path proves the installed state and
-	// its on-chain artifacts before touching the opt-in row.
 	if enabled {
 		state, err := findEarnCrossMintState(ctx, h.YieldDB, scope)
 		if err != nil {
@@ -205,8 +185,6 @@ type CrossMintDeleteReadinessRequest struct {
 	ExpectedGeneration *string `json:"expectedGeneration,omitempty"`
 }
 
-// CrossMintDeleteReadinessResponse mirrors the delete-readiness body
-// (delete/readiness/route.ts:132-136).
 type CrossMintDeleteReadinessResponse struct {
 	ExpectedGeneration string   `json:"expectedGeneration"`
 	Policies           []string `json:"policies"`
@@ -223,9 +201,6 @@ type crossMintDeleteReadinessOutput struct {
 }
 
 func (h earnRoutes) earnCrossMintDeleteReadiness(ctx context.Context, in *crossMintDeleteReadinessInput) (*crossMintDeleteReadinessOutput, error) {
-	// The delete route's catch answers 409 delete_readiness_failed with
-	// error.message, after letting smart-account provisioning refusals through
-	// unchanged (delete/readiness/route.ts:137-148) — those ride h.account.
 	failed := func(err error) error {
 		return earnError(http.StatusConflict, "delete_readiness_failed", err.Error())
 	}
@@ -260,8 +235,6 @@ func (h earnRoutes) earnCrossMintDeleteReadiness(ctx context.Context, in *crossM
 		return nil, failed(errors.New(crossMintStaleMessage))
 	}
 
-	// delete/readiness/route.ts:114-120: a movement still in flight keeps the
-	// policies on chain.
 	movement, err := hasNonTerminalEarnCrossMintMovement(ctx, h.YieldDB, scope)
 	if err != nil {
 		return nil, failed(err)
@@ -270,8 +243,6 @@ func (h earnRoutes) earnCrossMintDeleteReadiness(ctx context.Context, in *crossM
 		return nil, earnError(http.StatusConflict, "movement_in_progress", "Autoswap is paused. Delete it after the current movement reaches a safe final state.")
 	}
 
-	// delete/readiness/route.ts:122-136: the enrolled pair read at confirmed
-	// commitment; whatever survived is still to delete.
 	policies := make([]string, 0, len(enrollment.BoundPolicies))
 	for _, bound := range enrollment.BoundPolicies {
 		policies = append(policies, bound.Account)

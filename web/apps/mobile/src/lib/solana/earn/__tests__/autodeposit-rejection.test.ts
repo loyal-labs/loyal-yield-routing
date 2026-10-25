@@ -1,5 +1,3 @@
-// Protects the Autodeposit lifecycle boundary behind ASK-1859. A wallet
-// decline before any chain write is a clean cancellation.
 
 const mockTrack = jest.fn();
 const mockFetchState = jest.fn();

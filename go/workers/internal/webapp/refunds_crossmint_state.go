@@ -10,10 +10,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// Ports web/apps/web/src/lib/yield-optimization/earn-cross-mint-repository.server.ts
-// and earn-cross-mint-policy-index.shared.ts for the cross-mint toggle and
-// delete-readiness routes.
-
 type crossMintScope struct {
 	Authority   string
 	Cluster     string
@@ -29,15 +25,11 @@ type crossMintBoundPolicy struct {
 }
 
 type crossMintPolicyState struct {
-	Bound crossMintBoundPolicy
-	// LastSeen fields ride the projected policies, not the bound pair
-	// (repository.server.ts:142-148).
+	Bound             crossMintBoundPolicy
 	LastSeenSignature string
 	LastSeenSlot      string
 }
 
-// crossMintState mirrors EarnCrossMintState; it is the repository's read
-// model, not a wire type.
 type crossMintState struct {
 	BoundPolicies              []crossMintBoundPolicy
 	DailySourceMintSpendingCap string
@@ -56,8 +48,6 @@ type crossMintEnrollment struct {
 	MaxSlippageBps             int32
 }
 
-// crossMintPolicyRow mirrors EarnCrossMintPolicyProjectionRow for one
-// cross_mint_swap_policies row; nullable columns stay pointers.
 type crossMintPolicyRow struct {
 	Active            bool
 	DailyCap          *int64
@@ -85,10 +75,20 @@ type crossMintProjectedPolicy struct {
 	SourceShard                string
 }
 
-// crossMintPolicyIndex mirrors EarnCrossMintPolicyIndex.
+// crossMintPolicyIndexState is the closed value set of
+// EarnCrossMintPolicyIndex["state"]: ambiguous, complete, empty and partial.
+type crossMintPolicyIndexState string
+
+const (
+	crossMintStateAmbiguous crossMintPolicyIndexState = "ambiguous"
+	crossMintStateComplete  crossMintPolicyIndexState = "complete"
+	crossMintStateEmpty     crossMintPolicyIndexState = "empty"
+	crossMintStatePartial   crossMintPolicyIndexState = "partial"
+)
+
 type crossMintPolicyIndex struct {
 	Policies []crossMintProjectedPolicy
-	State    string // ambiguous, complete, empty, partial
+	State    crossMintPolicyIndexState
 }
 
 func isCrossMintPolicyShard(value *string) bool {
@@ -99,8 +99,6 @@ func isCrossMintCommitment(value string) bool {
 	return value == "confirmed" || value == "finalized"
 }
 
-// deriveCrossMintPolicyIndex ports deriveEarnCrossMintPolicyIndex
-// (earn-cross-mint-policy-index.shared.ts:45-111), refusal for refusal.
 func deriveCrossMintPolicyIndex(rows []crossMintPolicyRow) crossMintPolicyIndex {
 	var active []crossMintPolicyRow
 	for _, row := range rows {
@@ -109,7 +107,7 @@ func deriveCrossMintPolicyIndex(rows []crossMintPolicyRow) crossMintPolicyIndex 
 		}
 	}
 	if len(active) == 0 {
-		return crossMintPolicyIndex{State: "empty"}
+		return crossMintPolicyIndex{State: crossMintStateEmpty}
 	}
 
 	var candidates []crossMintProjectedPolicy
@@ -117,13 +115,13 @@ func deriveCrossMintPolicyIndex(rows []crossMintPolicyRow) crossMintPolicyIndex 
 		if !row.StartEligible || !isCrossMintPolicyShard(row.SourceShard) || !isCrossMintCommitment(row.SourceCommitment) ||
 			row.PolicySeed == nil || row.MaxSlippageBps == nil || row.DailyCap == nil ||
 			row.DelegatedSigner == nil || *row.DelegatedSigner == "" {
-			return crossMintPolicyIndex{State: "ambiguous"}
+			return crossMintPolicyIndex{State: crossMintStateAmbiguous}
 		}
 		if *row.PolicySeed < 0 || *row.DailyCap < 0 {
 			// TS carries these as bigint and keeps going; a negative seed or
 			// cap never comes from the enrollment writer, and the uint64 views
 			// below cannot state one.
-			return crossMintPolicyIndex{State: "ambiguous"}
+			return crossMintPolicyIndex{State: crossMintStateAmbiguous}
 		}
 		candidates = append(candidates, crossMintProjectedPolicy{
 			Account:                    row.PolicyAccount,
@@ -155,11 +153,9 @@ func deriveCrossMintPolicyIndex(rows []crossMintPolicyRow) crossMintPolicyIndex 
 	}
 	if len(candidates) > 2 || len(accounts) != len(candidates) || len(seeds) != len(candidates) ||
 		len(shards) != len(candidates) || !parametersMatch {
-		return crossMintPolicyIndex{State: "ambiguous"}
+		return crossMintPolicyIndex{State: crossMintStateAmbiguous}
 	}
 
-	// candidates.sort(left => classic ? -1 : 1): shards are distinct here, so
-	// this is the classic policy moving to the front.
 	sorted := make([]crossMintProjectedPolicy, 0, len(candidates))
 	for _, candidate := range candidates {
 		if candidate.SourceShard == "classic" {
@@ -171,9 +167,9 @@ func deriveCrossMintPolicyIndex(rows []crossMintPolicyRow) crossMintPolicyIndex 
 			sorted = append(sorted, candidate)
 		}
 	}
-	state := "partial"
+	state := crossMintStatePartial
 	if len(sorted) == 2 {
-		state = "complete"
+		state = crossMintStateComplete
 	}
 	return crossMintPolicyIndex{Policies: sorted, State: state}
 }
@@ -222,9 +218,6 @@ ORDER BY last_seen_slot DESC`, scope.Cluster, scope.Settings, scope.Authority, s
 	return projected, nil
 }
 
-// findEarnCrossMintSnapshot ports findEarnCrossMintSnapshot
-// (repository.server.ts:93-166): nil autoswap when the opt-in row is missing
-// or the policy index is not complete.
 func findEarnCrossMintSnapshot(ctx context.Context, yieldDB *pgxpool.Pool, scope crossMintScope) (*crossMintState, crossMintPolicyIndex, error) {
 	optInEnabled, optInGeneration, found, err := findEarnCrossMintOptIn(ctx, yieldDB, scope)
 	if err != nil {
@@ -235,7 +228,7 @@ func findEarnCrossMintSnapshot(ctx context.Context, yieldDB *pgxpool.Pool, scope
 		return nil, crossMintPolicyIndex{}, err
 	}
 	index := deriveCrossMintPolicyIndex(policyRows)
-	if !found || index.State != "complete" {
+	if !found || index.State != crossMintStateComplete {
 		return nil, index, nil
 	}
 
@@ -284,11 +277,6 @@ func findEarnCrossMintState(ctx context.Context, yieldDB *pgxpool.Pool, scope cr
 	return state, err
 }
 
-// setEarnCrossMintEnabled ports setEarnCrossMintEnabled
-// (repository.server.ts:174-246): one statement that locks the opt-in row FOR
-// UPDATE, bumps generation only when it still matches expectedGeneration and
-// the enabled bit actually flips, and answers applied/idempotent/stale/
-// missing without a second writer able to slip between.
 func setEarnCrossMintEnabled(ctx context.Context, yieldDB *pgxpool.Pool, scope crossMintScope, enabled bool, expectedGeneration int64) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -351,9 +339,6 @@ func setEarnCrossMintEnabledHuge(ctx context.Context, yieldDB *pgxpool.Pool, sco
 	return "stale", nil
 }
 
-// hasNonTerminalEarnCrossMintMovement ports
-// hasNonTerminalEarnCrossMintMovement (repository.server.ts:248-268): one
-// cross_mint_jupiter decision that has not reached a terminal outcome.
 func hasNonTerminalEarnCrossMintMovement(ctx context.Context, yieldDB *pgxpool.Pool, scope crossMintScope) (bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -371,8 +356,6 @@ LIMIT 1)`, scope.Settings, scope.VaultIndex, scope.VaultPubkey).Scan(&has)
 	return has, nil
 }
 
-// crossMintEnrollmentAfterTransition re-reads the state the way
-// setEarnCrossMintEnabled does after the write (repository.server.ts:234-245).
 func crossMintEnrollmentAfterTransition(ctx context.Context, yieldDB *pgxpool.Pool, scope crossMintScope) (*crossMintEnrollment, error) {
 	state, err := findEarnCrossMintState(ctx, yieldDB, scope)
 	if err != nil {

@@ -1,13 +1,5 @@
 package webapp
 
-// Ports the two earn-policy-refund.server.ts prepare branches the vault unit
-// left on Next: kind "policy" (prepareEarnPolicyRefund :439-520, closing one
-// route policy through an executeSettingsTransactionSync PolicyRemove) and
-// kind "recurring_delegation" (:384-437, revoking one Subscriptions
-// delegation). The read helpers are the scan twin's (txreads_refundscan.go);
-// the close instruction is squads.PolicyApply with Replace, the same bytes the
-// TS client builds (resolvePoliciesForClose + executeSettingsTransactionSync).
-
 import (
 	"context"
 	"errors"
@@ -21,9 +13,6 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
-// parseRefundPublicKey is parsePublicKey (earn-policy-refund.server.ts:216):
-// a malformed body address is an EarnPolicyRefundError, so the Next route
-// answers 400 invalid_request naming the field.
 func parseRefundPublicKey(value, label string) (solana.PublicKey, error) {
 	key, err := solana.PublicKeyFromBase58(value)
 	if err != nil {
@@ -32,9 +21,6 @@ func parseRefundPublicKey(value, label string) (solana.PublicKey, error) {
 	return key, nil
 }
 
-// refundPrepareFailed is route.ts:107-111: every non-refund error inside
-// prepareEarnPolicyRefund — chain reads, DB reads, builder failures — becomes
-// 500 prepare_failed carrying the error's own message.
 func refundPrepareFailed(err error) error {
 	message := err.Error()
 	if message == "" {
@@ -43,13 +29,9 @@ func refundPrepareFailed(err error) error {
 	return earnError(http.StatusInternalServerError, "prepare_failed", message)
 }
 
-// SUBSCRIPTIONS_REVOKE_DELEGATION (loyal-actions constants.ts:283); the revoke
-// instruction's whole data is this one tag byte.
+// The revoke instruction's whole data is this one tag byte.
 const subscriptionsRevokeDelegationTag = byte(3)
 
-// buildRecurringDelegationRefundOperation is prepareRecurringDelegationRefund
-// (earn-policy-refund.server.ts:197-214): one revoke instruction the wallet
-// signs and pays, wrapped as the whole prepared operation.
 func buildRecurringDelegationRefundOperation(feePayer, delegation solana.PublicKey) squads.Instruction {
 	return squads.Instruction{
 		ProgramID: txreadsSubscriptionsProgramKey,
@@ -61,9 +43,6 @@ func buildRecurringDelegationRefundOperation(feePayer, delegation solana.PublicK
 	}
 }
 
-// prepareRecurringDelegationRefundKind ports the kind "recurring_delegation"
-// branch (earn-policy-refund.server.ts:384-437): the merged delegation list
-// from the scan state, then one revoke instruction the wallet signs and pays.
 func (h earnRoutes) prepareRecurringDelegationRefundKind(ctx context.Context, account EarnAccount, delegationAddress string) (*refundPrepareOutput, error) {
 	delegation, err := parseRefundPublicKey(delegationAddress, "recurringDelegation")
 	if err != nil {
@@ -86,9 +65,6 @@ func (h earnRoutes) prepareRecurringDelegationRefundKind(ctx context.Context, ac
 	if err != nil {
 		return nil, refundPrepareFailed(err)
 	}
-	// dbState.recurringDelegations is collectRecurringDelegations
-	// (earn-policy-refund-state.server.ts:474): chain entries first, metadata
-	// overrides behind them, localeCompare order.
 	delegations := txreadsCollectDelegations(dbState.byPolicyAccount, openDelegations)
 
 	var entry *EarnPolicyRefundRecurringDelegation
@@ -109,9 +85,6 @@ func (h earnRoutes) prepareRecurringDelegationRefundKind(ctx context.Context, ac
 		return nil, earnError(http.StatusConflict, "delegation_protected", reason)
 	}
 
-	// createSubscriptionRevokeDelegationInstruction folded into
-	// prepareRecurringDelegationRefund (earn-policy-refund.server.ts:183-214):
-	// keys [authority s+w, delegation w], data [3], the Subscriptions program.
 	revoke := buildRecurringDelegationRefundOperation(account.Wallet, delegation)
 
 	return &refundPrepareOutput{Body: EarnPolicyRefundPrepareResponse{
@@ -133,7 +106,7 @@ func (h earnRoutes) prepareRecurringDelegationRefundKind(ctx context.Context, ac
 }
 
 // resolvePolicyForClose is resolvePoliciesForClose
-// (client.ts:12163-12186) for the one-policy refund: fetchPolicy re-reads the
+// for the one-policy refund: fetchPolicy re-reads the
 // account and refuses a policy owned by another settings PDA. The failure
 // texts are the generated fetcher's and the resolver's own; the Next route's
 // catch turns both into 500 prepare_failed.
@@ -157,9 +130,6 @@ func resolvePolicyForClose(ctx context.Context, h earnRoutes, policy, settings s
 	return nil
 }
 
-// preparePolicyRefundKind ports the kind "policy" branch
-// (earn-policy-refund.server.ts:439-520): liveness facts for the one policy,
-// then one executeSettingsTransactionSync carrying its PolicyRemove.
 func (h earnRoutes) preparePolicyRefundKind(ctx context.Context, account EarnAccount, policyAddress string) (*refundPrepareOutput, error) {
 	policyAccount, err := parseRefundPublicKey(policyAddress, "policyAccount")
 	if err != nil {
@@ -202,9 +172,6 @@ func (h earnRoutes) preparePolicyRefundKind(ctx context.Context, account EarnAcc
 		return nil, earnError(http.StatusConflict, "policy_active", *policy.BlockedReason)
 	}
 
-	// prepareClosePoliciesSync (client.ts:11791-11816): the resolver re-read
-	// plus one executeSettingsTransactionSync with one PolicyRemove, the same
-	// builder the cleanup routes use.
 	if err := resolvePolicyForClose(ctx, h, policyAccount, account.Settings); err != nil {
 		return nil, refundPrepareFailed(err)
 	}

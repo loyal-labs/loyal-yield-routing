@@ -91,13 +91,11 @@ func (h earnRoutes) earnWprep(ctx context.Context, in *wprepRequestInput) (*wpre
 	return &wprepOutput{Body: *body}, nil
 }
 
-// wprepPolicies are the two SQL reads resolution makes; earnRoutes serves them.
 type wprepPolicies interface {
 	activePolicyPair(ctx context.Context, account EarnAccount) (*RoutePolicyPair, error)
 	inactivePolicy(ctx context.Context, account EarnAccount) (bool, error)
 }
 
-// inactivePolicy is hasInactiveYieldRoutePolicyForVault.
 func (h earnRoutes) inactivePolicy(ctx context.Context, account EarnAccount) (bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -162,8 +160,6 @@ var wprepSourceChangedPatterns = []*regexp.Regexp{
 
 var wprepAccountNotFound = regexp.MustCompile(`(?i)\bAccountNotFound\b`)
 
-// wprepNormalize is normalizeEarnWithdrawPreparationError plus the route's
-// fallthrough to 500 prepare_failed.
 func wprepNormalize(account EarnAccount, err error) error {
 	var refused *routeError
 	var retry *wprepRetryError
@@ -302,8 +298,6 @@ func parseWprepLegacySource(value any) (*wprepLegacySource, error) {
 	return source, nil
 }
 
-// wprepResolve is resolveEarnUsdcWithdrawInput for the sourceId and legacy
-// partial shapes.
 func wprepResolve(ctx context.Context, policies wprepPolicies, chain earnprep.WithdrawChain, account EarnAccount, policySigner solana.PublicKey, request wprepRequest) (wprepInput, error) {
 	var pair *RoutePolicyPair
 	for _, delay := range wprepProjectionDelays {
@@ -394,7 +388,6 @@ type wprepCandidate struct {
 	sourceID string
 }
 
-// wprepSources is buildSnapshotWithdrawSources.
 func wprepSources(holdings []earnprep.WithdrawHolding) []wprepCandidate {
 	var sources []wprepCandidate
 	for _, holding := range holdings {
@@ -426,9 +419,6 @@ func (c wprepCandidate) typed() string {
 	return "reserve"
 }
 
-// wprepLegacyMatch is selectLegacyEarnWithdrawSource: a direct identifier
-// first, then a unique stable-mint match, then a unique amount match among
-// the stable-mint matches.
 func wprepLegacyMatch(sources []wprepCandidate, request *wprepLegacySource) (wprepCandidate, bool) {
 	if request == nil {
 		if len(sources) == 1 {

@@ -10,18 +10,11 @@ import (
 	"github.com/solana-foundation/solana-go/v2/rpc"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earncatalog"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnprep"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
-
-// Ports client.assertEarnCrossMintCanonicalArtifacts
-// (web/packages/smart-account-vaults/src/client.ts:8572-8646) and the pieces
-// it leans on: createEarnCrossMintPolicyCreationPayload (client.ts:2052-2128),
-// fetchRawPolicyAtAddress (client.ts:6232-6274) and assertCanonicalEarnPolicy
-// (client.ts:6340-6406). The expected state is what
-// createJupiterCrossMintPolicyPlan writes for the shard (loyal-actions
-// sdk.ts:216-316), rebuilt from the enrolled spec.
 
 const (
 	crossMintJupiterV6ProgramID = "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
@@ -29,18 +22,17 @@ const (
 	jupiterSwapDiscriminator                  = "\xbb\x64\xfa\xcc\x31\xc4\xaf\x14"
 	jupiterSharedAccountsRouteV2Discriminator = "\xd1\x98\x53\x93\x7c\xfe\xd8\xe9"
 
-	// loyal-actions constants.ts:241-247.
 	jupiterSwapSlippageBPSOffset           = 24
 	jupiterSwapPlatformFeeBPSOffset        = 26
 	jupiterSharedAccountsSlippageBPSOffset = 25
 	jupiterSharedAccountsPlatformFeeOffset = 27
 
-	// client.ts:6348 — Number(seed) loses precision past MAX_SAFE_INTEGER.
+	// a float64 seed loses precision past 2^53 - 1.
 	crossMintMaxSafeSeed = uint64(1)<<53 - 1
 )
 
 // crossMintStablecoin is one entry of the six-mint Earn registry, in
-// STABLECOINS order (constants.ts:40-47): the ATA list and the shard mints
+// STABLECOINS order: the ATA list and the shard mints
 // keep that order on the wire and in the policy bytes.
 type crossMintStablecoin struct {
 	Mint    solana.PublicKey
@@ -48,22 +40,17 @@ type crossMintStablecoin struct {
 }
 
 var crossMintStablecoins = func() []crossMintStablecoin {
-	must := func(text string) solana.PublicKey {
-		return solana.MustPublicKeyFromBase58(text)
+	products := earncatalog.Mainnet()
+	stablecoins := make([]crossMintStablecoin, len(products))
+	for i, product := range products {
+		stablecoins[i] = crossMintStablecoin{
+			Mint:    solana.MustPublicKeyFromBase58(product.Mint),
+			Program: solana.MustPublicKeyFromBase58(product.TokenProgram),
+		}
 	}
-	return []crossMintStablecoin{
-		{must("CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH"), solana.Token2022ProgramID},
-		{must("2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH"), solana.Token2022ProgramID},
-		{must("2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo"), solana.Token2022ProgramID},
-		{must("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"), solana.TokenProgramID},
-		{must("Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"), solana.TokenProgramID},
-		{must("USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA"), solana.TokenProgramID},
-	}
+	return stablecoins
 }()
 
-// crossMintCanonicalVaultATAs builds the ATA list
-// (createEarnCrossMintPolicyCreationPayload, client.ts:2058-2066): one ATA per
-// registered stablecoin under its own token program.
 func crossMintCanonicalVaultATAs(vault solana.PublicKey) ([]solana.PublicKey, error) {
 	atas := make([]solana.PublicKey, 0, len(crossMintStablecoins))
 	for _, stablecoin := range crossMintStablecoins {
@@ -87,10 +74,6 @@ func crossMintSourceMints(shard string) []solana.PublicKey {
 	return mints
 }
 
-// crossMintJupiterConstraint ports the `constraint` closure
-// (client.ts:2067-2101): one per swap dialect, constraining the vault as
-// authority and the six canonical vault ATAs as output, the discriminator,
-// the slippage u16 ceiling and a zero platform fee.
 func crossMintJupiterConstraint(vault solana.PublicKey, canonicalATAs []solana.PublicKey, dialect string, maxSlippageBps int32) (squads.InstructionConstraintView, error) {
 	jupiter, err := solana.PublicKeyFromBase58(crossMintJupiterV6ProgramID)
 	if err != nil {
@@ -129,9 +112,6 @@ func crossMintJupiterConstraint(vault solana.PublicKey, canonicalATAs []solana.P
 	}, nil
 }
 
-// crossMintExpectedPolicy ports createEarnCrossMintPolicyCreationPayload
-// (client.ts:2052-2128): the two swap-dialect constraints plus one daily
-// spending limit per shard source mint.
 func crossMintExpectedPolicy(vault solana.PublicKey, shard string, maxSlippageBps int32, dailyCap uint64) (squads.Policy, error) {
 	canonicalATAs, err := crossMintCanonicalVaultATAs(vault)
 	if err != nil {
@@ -152,10 +132,8 @@ func crossMintExpectedPolicy(vault solana.PublicKey, shard string, maxSlippageBp
 	return squads.Policy{VaultIndex: earnprep.EarnVaultIndex, Constraints: []squads.InstructionConstraintView{routeV2, sharedAccounts}, SpendingLimits: limits}, nil
 }
 
-// crossMintLimitsSorted orders spending limits the way
-// programInteractionPolicySecurity does before comparing
-// (program-interaction-policy-security.ts:113): mint base58 localeCompare,
-// the collationLess order.
+// crossMintLimitsSorted orders spending limits before comparing: by mint,
+// base58 localeCompare, the collationLess order.
 func crossMintLimitsSorted(limits []squads.SpendingLimitView) []squads.SpendingLimitView {
 	sorted := append([]squads.SpendingLimitView(nil), limits...)
 	for i := 1; i < len(sorted); i++ {
@@ -239,8 +217,8 @@ func assertEarnCrossMintCanonicalArtifacts(ctx context.Context, client *chain.Cl
 	return nil
 }
 
-// assertCanonicalCrossMintPolicy ports assertCanonicalEarnPolicy
-// (client.ts:6340-6406), message for message.
+// assertCanonicalCrossMintPolicy checks the canonical Earn policy; its errors
+// match the Next route's message for message.
 func assertCanonicalCrossMintPolicy(decoded squads.DecodedPolicy, settings solana.PublicKey, bound crossMintBoundPolicy, expected squads.Policy, signer solana.PublicKey, label string) error {
 	if bound.Seed > crossMintMaxSafeSeed {
 		return fmt.Errorf("%s seed is too large for this client.", label)
@@ -285,9 +263,6 @@ func assertCanonicalCrossMintPolicy(decoded squads.DecodedPolicy, settings solan
 	return nil
 }
 
-// decodedFullLimits flattens the spending limits the decoder kept; it never
-// returns nil for a decoded cross-mint policy, but an empty set must compare
-// against the expected three, not skip the check.
 func decodedFullLimits(decoded squads.DecodedPolicy) []squads.SpendingLimitView {
 	if decoded.Full == nil {
 		return nil
@@ -295,8 +270,6 @@ func decodedFullLimits(decoded squads.DecodedPolicy) []squads.SpendingLimitView 
 	return decoded.Full.Payload.SpendingLimits
 }
 
-// fetchCrossMintPolicyExistence ports the delete route's getMultipleAccountsInfo
-// (cross-mint/delete/readiness/route.ts:125-131) at confirmed commitment.
 func fetchCrossMintPolicyExistence(ctx context.Context, client *chain.Client, policies []string) ([]bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()

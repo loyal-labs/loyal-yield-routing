@@ -73,7 +73,6 @@ test("a rewrap whose round-trip fails keeps the legacy blob", async () => {
   expect(store.has("wallet_hardware_keypair")).toBe(false);
 });
 
-
 test.each(["failed", "canceled"] as const)("%s hardware access stays retryable without changing credentials or PIN attempts", async (reason) => {
   const keypair = await seedLegacyWallet("1234");
   await loadKeypair("1234");
@@ -106,7 +105,6 @@ test("recovery of the same wallet replaces an unusable hardware blob and clears 
   await loadKeypair("1234");
   store.set("wallet_failed_attempts", "4");
   store.set("wallet_locked_until", String(Date.now() + 30_000));
-  // The device key is invalidated, so recovery must retain a working PIN blob.
   unwrap.mockResolvedValueOnce({ ok: false, reason: "invalidated" });
   await importKeypair(keypair.secretKey, "5678", keypair.publicKey.toBase58());
   expect(store.has("wallet_locked_until")).toBe(false);

@@ -13,27 +13,19 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
-// KaminoWithdrawInstructionsURL is KAMINO_WITHDRAW_INSTRUCTIONS_URL, the
-// server-side endpoint fetchKaminoWithdrawInstruction posts to (CL:2742-2791).
 const KaminoWithdrawInstructionsURL = "https://api.kamino.finance/ktx/klend/withdraw-instructions"
 
-// KaminoWithdrawBundle is readKaminoInstructionBundle's withdraw result
-// (CL:2514-2579): the KLend prefix up to the first withdraw, every withdraw
-// match, and the lookup table keys Kamino named (CL:2589-2619).
 type KaminoWithdrawBundle struct {
 	KaminoInstructionBundle
 	LookupTables []solana.PublicKey
 }
 
-// KaminoWithdrawInstructions ports fetchKaminoWithdrawInstruction
-// (CL:2742-2791): wallet is the Earn vault, the amount is liquidity in
-// six-decimal API units.
-func KaminoWithdrawInstructions(ctx context.Context, client *http.Client, endpoint string, vault, market, reserve solana.PublicKey, amountRaw uint64) (KaminoWithdrawBundle, error) {
+func KaminoWithdrawInstructions(ctx context.Context, client *http.Client, endpoint string, vault, market, reserve solana.PublicKey, liquidityAmountRaw uint64) (KaminoWithdrawBundle, error) {
 	body, err := json.Marshal(kaminoDepositRequestBody{
-		Wallet:  vault.String(),
+		Vault:   vault.String(),
 		Market:  market.String(),
 		Reserve: reserve.String(),
-		Amount:  FormatRawTokenAmountForAPI(amountRaw, KaminoDepositUSDCDecimals),
+		Amount:  FormatRawTokenAmountForAPI(liquidityAmountRaw, KaminoDepositUSDCDecimals),
 	})
 	if err != nil {
 		return KaminoWithdrawBundle{}, err
@@ -65,9 +57,6 @@ func KaminoWithdrawInstructions(ctx context.Context, client *http.Client, endpoi
 	return KaminoWithdrawBundle{KaminoInstructionBundle: bundle, LookupTables: kaminoLookupTableKeys(payload)}, nil
 }
 
-// kaminoLookupTableKeys ports readKaminoLookupTableAddresses (CL:2589-2619):
-// the keys of lutsByAddress in document order, or a bare address array;
-// anything that is not a valid address is skipped, duplicates dropped.
 func kaminoLookupTableKeys(payload []byte) []solana.PublicKey {
 	var wire struct {
 		LutsByAddress json.RawMessage `json:"lutsByAddress"`

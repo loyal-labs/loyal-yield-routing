@@ -14,6 +14,7 @@ import (
 	"github.com/solana-foundation/solana-go/v2/rpc"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earncatalog"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnprep"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
@@ -60,7 +61,7 @@ func dprepTargetOf(target dtargetEarnReserveTarget) (dprepTarget, error) {
 	return out, nil
 }
 
-func (h dprepRoutes) prepareDeposit(ctx context.Context, account EarnAccount, amount uint64, product dtargetProductMint) (*dprepPreparedDeposit, error) {
+func (h dprepRoutes) prepareDeposit(ctx context.Context, account EarnAccount, amount uint64, product earncatalog.Product) (*dprepPreparedDeposit, error) {
 	if account.Cluster != LoyalMainnetBeta {
 		return nil, errors.New("Earn deposit prepare is served by Go on mainnet-beta only.")
 	}
@@ -216,7 +217,7 @@ func (h dprepRoutes) prepareEarnDeposit(ctx context.Context, account EarnAccount
 
 	bundle, err := earnprep.KaminoDepositInstructions(ctx, h.HTTP, earnprep.KaminoDepositInstructionsURL, earnprep.KaminoDepositInstructionArgs{
 		AmountRaw: amount, DepositDiscriminator: kamino.DepositV2Discriminator, LendProgramID: depositKLendProgramID,
-		Market: target.market, Reserve: target.reserve, Wallet: vault,
+		Market: target.market, Reserve: target.reserve, Vault: vault,
 	})
 	if err != nil {
 		return nil, err
@@ -543,7 +544,7 @@ func dprepInferCollateral(deposit squads.Instruction, vault, vaultAta solana.Pub
 }
 
 func dprepPacketLength(payer solana.PublicKey, instructions []squads.Instruction) (int, error) {
-	tx, err := earnprep.CompileV0(payer, depositPacketBlockhash, instructions, nil)
+	tx, err := earnprep.CompileV0(payer, depositPacketProbeBlockhash, instructions, nil)
 	if err != nil {
 		return 0, err
 	}
@@ -598,7 +599,7 @@ func (h dprepRoutes) nativeSolRequirement(ctx context.Context, cluster LoyalClus
 	for i, op := range ops {
 		signatures := uint64(1)
 		if ixs, err := dprepInstructionsOf(op); err == nil {
-			if tx, err := earnprep.CompileV0(payer, depositPacketBlockhash, ixs, nil); err == nil && tx.Message.Header.NumRequiredSignatures > 1 {
+			if tx, err := earnprep.CompileV0(payer, depositPacketProbeBlockhash, ixs, nil); err == nil && tx.Message.Header.NumRequiredSignatures > 1 {
 				signatures = uint64(tx.Message.Header.NumRequiredSignatures)
 			}
 		}

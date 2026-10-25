@@ -1,6 +1,10 @@
 package earnmax
 
-import "github.com/solana-foundation/solana-go/v2"
+import (
+	"github.com/solana-foundation/solana-go/v2"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earncatalog"
+)
 
 const (
 	squadsVault  = "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh"
@@ -12,7 +16,7 @@ const (
 var (
 	SquadsVault   = solana.MustPublicKeyFromBase58(squadsVault)
 	Vault         = solana.MustPublicKeyFromBase58("HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA")
-	AssetMint     = solana.MustPublicKeyFromBase58("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v")
+	AssetMint     = solana.MustPublicKeyFromBase58(earncatalog.USDC)
 	LPMint        = solana.MustPublicKeyFromBase58("6tNheTBYSpQkfMLhcczKgmTLSGffK54npKMG1WQR2tvb")
 	IdleAuth      = solana.MustPublicKeyFromBase58("EoHz6FHTL34F6HjuJmb5EceaRqxRG1RMYwYWKtWkGBFb")
 	IdleATA       = solana.MustPublicKeyFromBase58("6LATwaB4yRwGURCBDyFeJGqofaXxb6xXws9wBGbr3RBh")

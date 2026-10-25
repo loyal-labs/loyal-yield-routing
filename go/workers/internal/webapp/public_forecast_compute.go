@@ -1,15 +1,15 @@
 package webapp
 
-// Pure port of web/apps/web/src/lib/kamino/earn-realized-apy.shared.ts and
-// earn-fleet-allocation.shared.ts: realized Earn APY from Kamino reserve share
-// prices. Signed share-price growth measures realized reserve returns; the
-// headline annualizes the observed fleet allocation's return.
+// Signed share-price growth measures realized reserve returns; the headline
+// annualizes the observed fleet allocation's return.
 
 import (
 	"cmp"
 	"math"
 	"slices"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earncatalog"
 )
 
 const (
@@ -36,11 +36,10 @@ const (
 	forecastPreWindowLookback = int64(2 * 60 * 60 * 1000)
 )
 
-// Kamino main market constants (earn-forecast.server.ts:26-31).
 const (
 	KaminoMainMarket            = "7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF"
 	KaminoMainMarketUSDCReserve = "D6q6wuQSrifJKZYpR1M8R4YawnLDtDsMmWM1NbBmgJ59"
-	KaminoMainMarketUSDCMint    = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+	KaminoMainMarketUSDCMint    = earncatalog.USDC
 )
 
 type forecastSharePricePoint struct {
@@ -100,8 +99,6 @@ type forecastAllocationHistory struct {
 	vaultsFirstSeenMS   []int64
 }
 
-// earnAllocationHistoryFromSamples ports earn-fleet-allocation.shared.ts:25-69.
-// Amounts are raw integer strings; anything else marks the snapshot unsupported.
 func earnAllocationHistoryFromSamples(samples []fleetAllocationSample, sinceMS int64) forecastAllocationHistory {
 	history := forecastAllocationHistory{vaultsFirstSeenMS: []int64{floorDiv(sinceMS, forecastHourMS) * forecastHourMS}}
 	for _, sample := range samples {
@@ -148,7 +145,6 @@ type fleetReserveAmount struct {
 	amountRaw string
 }
 
-// safeSampleWeight ports safeWeight: /^[0-9]+$/ and a JS safe integer.
 func safeSampleWeight(raw string) (float64, bool) {
 	if raw == "" {
 		return 0, false
@@ -173,8 +169,6 @@ func floorDiv(a, b int64) int64 {
 	return q
 }
 
-// forecastSharePriceAt ports sharePriceAt: last point at or before atMS,
-// geometric interpolation across gaps of at most forecastMaxInterpGapMS.
 func forecastSharePriceAt(points []forecastSharePricePoint, atMS int64) (float64, bool) {
 	low, high := 0, len(points)-1
 	index := -1
@@ -206,7 +200,6 @@ func forecastSharePriceAt(points []forecastSharePricePoint, atMS int64) (float64
 	return before.sharePrice * math.Pow(after.sharePrice/before.sharePrice, fraction), true
 }
 
-// forecastUnclampedAnnualizedBps ports unclampedAnnualizedBps.
 func forecastUnclampedAnnualizedBps(points []forecastSharePricePoint, endMS, windowMS, minWindowMS int64) (float64, bool) {
 	if len(points) == 0 {
 		return 0, false
@@ -260,8 +253,6 @@ func forecastAllocationIndexAt(timeline []forecastAllocationPoint, atMS int64) i
 	return index
 }
 
-// forecastCoveredSegmentGrowth ports coveredSegmentGrowth
-// (earn-realized-apy.shared.ts:231-265); iteration stays in insertion order.
 func forecastCoveredSegmentGrowth(histories map[string][]forecastSharePricePoint, weights forecastWeights, startMS, endMS int64) (float64, bool) {
 	totalWeight, coveredWeight, weightedSum := 0.0, 0.0, 0.0
 	for _, reserve := range weights.order {
@@ -289,8 +280,6 @@ func forecastCoveredSegmentGrowth(histories map[string][]forecastSharePricePoint
 	return weightedSum / coveredWeight, true
 }
 
-// forecastPortfolioAnnualizedGrowth ports portfolioAnnualizedGrowth
-// (earn-realized-apy.shared.ts:267-308).
 func forecastPortfolioAnnualizedGrowth(input forecastRealizedInput, timeline []forecastAllocationPoint, endMS, windowMS, minWindowMS int64) (float64, bool) {
 	if len(input.allocations.snapshots) == 0 {
 		return 0, false
@@ -331,7 +320,6 @@ func forecastPortfolioAnnualizedGrowth(input forecastRealizedInput, timeline []f
 }
 
 type forecastRealizedInput struct {
-	// Ascending by observedAtMS.
 	histories   map[string][]forecastSharePricePoint
 	allocations forecastAllocationHistory
 	nowMS       int64
@@ -342,11 +330,19 @@ type forecastApySample struct {
 	observedAt string
 }
 
+// forecastApySource is the closed value set of EarnForecastResponse["source"].
+type forecastApySource string
+
+const (
+	forecastSourceLive       forecastApySource = "live"
+	forecastSourceRealized7d forecastApySource = "realized_7d"
+)
+
 type forecastRealizedResult struct {
 	realized7dBps         *int64
 	liveBps               *int64
 	headlineBps           int64
-	source                string // "realized_7d" | "live"
+	source                forecastApySource
 	loyalSeries           []forecastApySample
 	mainUsdcReserveSeries []forecastApySample
 	measuredAtMS          int64
@@ -354,8 +350,6 @@ type forecastRealizedResult struct {
 
 func int64Ptr(v int64) *int64 { return &v }
 
-// forecastComputeRealizedApy ports computeRealizedApy
-// (earn-realized-apy.shared.ts:310-410).
 func forecastComputeRealizedApy(input forecastRealizedInput) *forecastRealizedResult {
 	if input.allocations.currentIdleMismatch {
 		return nil
@@ -363,7 +357,9 @@ func forecastComputeRealizedApy(input forecastRealizedInput) *forecastRealizedRe
 	// Never let a future-dated recorder row set the measurement time or supply
 	// the interpolation point for a return that has not yet happened.
 	bounded := make(map[string][]forecastSharePricePoint, len(input.histories))
-	for reserve, points := range input.histories {
+	for reserve, unsorted := range input.histories {
+		points := slices.Clone(unsorted)
+		slices.SortStableFunc(points, func(a, b forecastSharePricePoint) int { return cmp.Compare(a.observedAtMS, b.observedAtMS) })
 		filtered := points
 		for i, point := range points {
 			if point.observedAtMS > input.nowMS {
@@ -446,11 +442,11 @@ func forecastComputeRealizedApy(input forecastRealizedInput) *forecastRealizedRe
 		loyalSeries:           forecastBuildLoyalSeries(boundedInput, timeline),
 		mainUsdcReserveSeries: forecastBuildReserveSeries(bounded[KaminoMainMarketUSDCReserve], input.nowMS),
 		measuredAtMS:          measurementEndMS,
-		source:                "live",
+		source:                forecastSourceLive,
 	}
 	if realized7dBps != nil {
 		result.headlineBps = *realized7dBps
-		result.source = "realized_7d"
+		result.source = forecastSourceRealized7d
 	} else {
 		result.headlineBps = *liveBps
 	}
@@ -466,8 +462,6 @@ func forecastSeriesHours(nowMS int64) []int64 {
 	return hours
 }
 
-// forecastBuildLoyalSeries ports buildLoyalSeries
-// (earn-realized-apy.shared.ts:425-446).
 func forecastBuildLoyalSeries(input forecastRealizedInput, timeline []forecastAllocationPoint) []forecastApySample {
 	var samples []forecastApySample
 	for _, hour := range forecastSeriesHours(input.nowMS) {
@@ -479,8 +473,6 @@ func forecastBuildLoyalSeries(input forecastRealizedInput, timeline []forecastAl
 	return samples
 }
 
-// forecastBuildReserveSeries ports buildReserveSeries
-// (earn-realized-apy.shared.ts:448-468).
 func forecastBuildReserveSeries(points []forecastSharePricePoint, nowMS int64) []forecastApySample {
 	var samples []forecastApySample
 	for _, hour := range forecastSeriesHours(nowMS) {
@@ -492,8 +484,6 @@ func forecastBuildReserveSeries(points []forecastSharePricePoint, nowMS int64) [
 	return samples
 }
 
-// forecastISO renders JavaScript Date.prototype.toISOString for a millisecond
-// timestamp; isoMilliseconds renders the same shape for a time.Time.
 func forecastISO(ms int64) string {
 	return isoMilliseconds(time.UnixMilli(ms))
 }
@@ -504,7 +494,7 @@ type forecastAllocationPoint struct {
 	weights    forecastWeights
 }
 
-// forecastAllocationTimeline ports allocationTimeline (earn-realized-apy.shared.ts:131-210).
+// forecastAllocationTimeline ports allocationTimeline.
 // Snapshot identity (TS `===`) becomes pointer identity; vault ids become indexes.
 func forecastAllocationTimeline(allocations forecastAllocationHistory) []forecastAllocationPoint {
 	const (

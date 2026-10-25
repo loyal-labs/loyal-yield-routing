@@ -15,21 +15,12 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
-// Ports POST /api/smart-accounts/yield-optimization/policy-refunds/prepare
-// (web/apps/web/src/app/api/smart-accounts/yield-optimization/policy-refunds/
-// prepare/route.ts -> earn-policy-refund.server.ts prepareEarnPolicyRefund
-// :324-521) for all three refund kinds: the vault-accounts refund here, the
-// policy close and the recurring-delegation revoke in refunds_policy.go.
-
 const refundsPreparePath = "/api/smart-accounts/yield-optimization/policy-refunds/prepare"
 
 const (
-	// earn-policy-refund.server.ts:351-364; client.ts:10513-10517.
-	vaultEmptyMessage = "Nothing to refund on the Earn vault."
-	// client.ts:10456-10458 — a plain Error, so Next answers 500 prepare_failed.
+	vaultEmptyMessage    = "Nothing to refund on the Earn vault."
 	refundBlockedMessage = "Earn vault still holds token balances outside its USDC account; withdraw the position before refunding vault accounts."
-	// client.ts:10514-10516 — also unreachable behind the route's canRefund
-	// gate, but the message and status are part of the contract.
+	// The message and status are part of the contract.
 	refundNothingMessage = "Nothing to refund: the Earn vault holds no SOL and no token accounts."
 )
 
@@ -47,14 +38,14 @@ type refundPrepareBody struct {
 	recurringDelegation string
 }
 
-// parseRefundPrepareBody ports parseEarnPolicyRefundPrepareRequestBody
-// (earn-policy-refund-contracts.shared.ts:145-183), message for message.
+// parseRefundPrepareBody parses the prepare request body; its errors match
+// the Next route's message for message.
 func parseRefundPrepareBody(raw []byte) (refundPrepareBody, error) {
 	parsed, err := parseJSONBody(raw)
 	if err != nil {
 		return refundPrepareBody{}, err
 	}
-	// assertRecord (contracts.shared.ts:137-143) only refuses non-objects: an
+	// assertRecord only refuses non-objects: an
 	// array passes and then misses every field, so it dies on the policyAccount
 	// check like TS, not on the object check.
 	record := map[string]any{}
@@ -90,7 +81,7 @@ func parseRefundPrepareBody(raw []byte) (refundPrepareBody, error) {
 	return refundPrepareBody{kind: refundKindPolicy, policyAccount: strings.TrimSpace(text)}, nil
 }
 
-// makeVaultSignerWritable ports makeSignerWritable (client.ts:2984-2996): the
+// makeVaultSignerWritable ports makeSignerWritable: the
 // vault signs every inner instruction by CPI, so its meta must carry signer
 // and writable.
 func makeVaultSignerWritable(ix solana.Instruction, vault solana.PublicKey) (squads.Instruction, error) {
@@ -111,9 +102,6 @@ func vaultTransferCheckedInner(vaultAta, mint, walletAta, vault solana.PublicKey
 	return makeVaultSignerWritable(transfer, vault)
 }
 
-// vaultCloseAccountInner ports createCloseAccountInstruction(account,
-// destination, owner, [], tokenProgram): data [9], metas [account w,
-// destination w, authority s], then makeSignerWritable on the vault.
 func vaultCloseAccountInner(tokenProgram, account, destination, vault solana.PublicKey) squads.Instruction {
 	return squads.Instruction{
 		ProgramID: tokenProgram,
@@ -130,18 +118,13 @@ func vaultSystemTransferInner(vault, wallet solana.PublicKey, lamports uint64) (
 	return squads.InstructionOf(spl.SystemTransfer(vault, wallet, lamports))
 }
 
-// earnRefundBlockedError is client.ts:10455-10459: a plain Error on the Next
-// side, so it becomes 500 prepare_failed rather than an EarnPolicyRefundError.
 type earnRefundBlockedError struct{}
 
 func (earnRefundBlockedError) Error() string { return refundBlockedMessage }
 
-// buildVaultRefundOperation ports client.ts:10432-10573 from the second
-// snapshot the TS builder reads for itself: idle USDC out, every token account
-// closed, the vault PDA's SOL swept, one member-sync execution carrying them.
 func buildVaultRefundOperation(snapshot earnVaultRefundSnapshot, usdcMint, feePayer, settings solana.PublicKey, accountIndex uint8) ([]WirePreparedInstruction, error) {
-	// client.ts:10450-10459. Between the route's gate and this second snapshot
-	// the vault can have gained a balance; the refund still refuses.
+	// Between the caller's gate and this second snapshot the vault can have
+	// gained a balance; the refund still refuses.
 	for _, tokenAccount := range snapshot.TokenAccounts {
 		if tokenAccount.Amount > 0 && tokenAccount.Address != snapshot.VaultUsdcATA {
 			return nil, earnRefundBlockedError{}
@@ -168,7 +151,6 @@ func buildVaultRefundOperation(snapshot earnVaultRefundSnapshot, usdcMint, feePa
 		}
 		inner = append(inner, transfer)
 	}
-	// client.ts:10485-10500: every token account closes, in snapshot order.
 	for _, tokenAccount := range snapshot.TokenAccounts {
 		inner = append(inner, vaultCloseAccountInner(tokenAccount.Program, tokenAccount.Address, feePayer, snapshot.Vault))
 	}
@@ -183,8 +165,6 @@ func buildVaultRefundOperation(snapshot earnVaultRefundSnapshot, usdcMint, feePa
 		return nil, errors.New(refundNothingMessage)
 	}
 
-	// client.ts:10519-10537: instructionsToSynchronousTransactionDetailsV2
-	// plus prepare.executeTransactionSyncV2 — one instruction, no LUTs.
 	execute, err := earnprep.ExecuteMemberSync(earnprep.MemberSync{
 		Settings:     settings,
 		Vault:        snapshot.Vault,
@@ -196,8 +176,6 @@ func buildVaultRefundOperation(snapshot earnVaultRefundSnapshot, usdcMint, feePa
 		return nil, err
 	}
 
-	// client.ts:10538-10558: the wallet USDC ATA create rides ahead of the
-	// execution only when the idle transfer does.
 	instructions := make([]WirePreparedInstruction, 0, 2)
 	if idleAmount > 0 {
 		create, err := squads.InstructionOf(spl.CreateIdempotentATA(feePayer, feePayer, usdcMint, solana.TokenProgramID))
@@ -270,9 +248,6 @@ func (h earnRoutes) earnPolicyRefundPrepare(ctx context.Context, in *refundPrepa
 		return earnUnavailable(step, err, "earn_refund_unavailable", "The Earn refund is temporarily unavailable.")
 	}
 
-	// Next order (route.ts:51-73): principal, body, controls. h.account folds
-	// the controls check into the principal read, so a request that both fails
-	// controls and carries a malformed body gets Go's 409 before the 400.
 	account, err := h.account(ctx, in.SessionInput)
 	if err != nil {
 		return nil, unavailable("principal", err)
@@ -289,8 +264,6 @@ func (h earnRoutes) earnPolicyRefundPrepare(ctx context.Context, in *refundPrepa
 	}
 
 	usdcMint := earnUSDCMint(account.Cluster)
-	// earn-policy-refund.server.ts:342-345 reads the DB flags and a snapshot
-	// together; the gates judge the same read.
 	state, err := findEarnVaultRefundDbState(ctx, h.YieldDB, account.Settings.String())
 	if err != nil {
 		return nil, unavailable("vault refund state", err)
@@ -308,7 +281,7 @@ func (h earnRoutes) earnPolicyRefundPrepare(ctx context.Context, in *refundPrepa
 	}
 
 	// client.prepareEarnVaultAccountsRefund re-reads the snapshot and builds
-	// from what it read (client.ts:10437-10440).
+	// from what it read.
 	secondSnapshot, err := fetchEarnVaultRefundSnapshot(ctx, h.Chain, account.Vault, usdcMint)
 	if err != nil {
 		return nil, unavailable("vault refund snapshot", err)

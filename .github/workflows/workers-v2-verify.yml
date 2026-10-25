@@ -6,6 +6,7 @@ on:
     paths:
       - go/workers/**
       - scripts/verify-workers-v2.sh
+      - scripts/check-go-ts-refs.sh
       - scripts/workers-v2-fixture.py
       - scripts/build-svm-fixtures.sh
       - migrations/**
@@ -55,7 +56,7 @@ jobs:
           BASE: ${{ github.event.pull_request.base.sha }}
         # Pushes are already filtered by the push paths above.
         run: |
-          if test "$GITHUB_EVENT_NAME" = push || git diff --name-only "$BASE" HEAD | grep -qE '^(go/workers/|migrations/|scripts/(verify-workers-v2\.sh|workers-v2-fixture\.py|build-svm-fixtures\.sh)$|\.github/workflows/workers-v2-verify\.yml$|Cargo\.(toml|lock)$|rust-toolchain\.toml$|crates/(squads-test-harness|mock-yield-protocols-program|loyal-actions|loyal-solana-env|loyal-hub-abi|loyal-voltr-rwa-nav-adaptor)/)'; then
+          if test "$GITHUB_EVENT_NAME" = push || git diff --name-only "$BASE" HEAD | grep -qE '^(go/workers/|migrations/|scripts/(verify-workers-v2\.sh|check-go-ts-refs\.sh|workers-v2-fixture\.py|build-svm-fixtures\.sh)$|\.github/workflows/workers-v2-verify\.yml$|Cargo\.(toml|lock)$|rust-toolchain\.toml$|crates/(squads-test-harness|mock-yield-protocols-program|loyal-actions|loyal-solana-env|loyal-hub-abi|loyal-voltr-rwa-nav-adaptor)/)'; then
             echo workers=true >> "$GITHUB_OUTPUT"
           else
             echo workers=false >> "$GITHUB_OUTPUT"

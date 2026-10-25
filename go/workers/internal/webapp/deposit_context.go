@@ -15,31 +15,29 @@ import (
 	"github.com/solana-foundation/solana-go/v2"
 	"github.com/solana-foundation/solana-go/v2/rpc"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earncatalog"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
-// POST /api/smart-accounts/earn-max/context ports the context action of
-// web/apps/web/src/app/api/smart-accounts/mobile/earn-max/route.ts POST
-// (features/earn-max/server/mobile.ts:38-121): resolve the signed-in wallet's
+// POST /api/smart-accounts/earn-max/context: resolve the signed-in wallet's
 // Earn smart account, sponsoring the on-chain create through
 // earn_sponsor.go's ensureSmartAccount when no ready account exists, after
-// the $1 USDC gate (mobile.ts:79-94). Nothing here signs anything itself and
+// the $1 USDC gate. Nothing here signs anything itself and
 // no transaction is built outside the seam.
 const earnMaxContextPath = "/api/smart-accounts/earn-max/context"
 
-// earnMaxContextMinUsdc is BigInt(1_000_000) (mobile.ts:82): the $1 minimum
+// earnMaxContextMinUsdc is BigInt(1_000_000): the $1 minimum
 // in raw USDC base units (6 decimals).
 const earnMaxContextMinUsdc = uint64(1_000_000)
 
-// earnMaxContextUsdcMint is VOLTR_ASSET_MINT
-// (smart-account-vaults/src/voltr/program.ts:30), the mainnet USDC whose
-// spendable balance the gate reads.
-var earnMaxContextUsdcMint = solana.MustPublicKeyFromBase58("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v")
+// earnMaxContextUsdcMint is the mainnet USDC whose spendable balance the
+// gate reads.
+var earnMaxContextUsdcMint = solana.MustPublicKeyFromBase58(earncatalog.USDC)
 
 // EarnMaxContextRequest is the POST body. The Next route dispatches
 // summary/activity/context on one path; this dedicated path implies context,
-// so an explicit action must still be exactly "context" (mobile.ts:40) and
+// so an explicit action must still be exactly "context" and
 // RN's `{"action":"context"}` parses unchanged.
 type EarnMaxContextRequest struct {
 	Action *string `json:"action,omitempty"`
@@ -50,8 +48,6 @@ type earnMaxContextInput struct {
 	Raw rawJSON
 }
 
-// EarnMaxContextResponse is mobile.ts:114-121's json(...) body, fields in
-// the TS object-literal order.
 type EarnMaxContextResponse struct {
 	Cluster       string `json:"cluster"`
 	WalletAddress string `json:"walletAddress"`
@@ -74,11 +70,6 @@ func (h earnRoutes) registerEarnMaxContext(api huma.API) {
 	documentJSONBody[EarnMaxContextRequest](api, earnMaxContextPath)
 }
 
-// earnMaxContextAction mirrors the action validation the Next route runs
-// before anything else (mobile.ts:39-42): a body that is not JSON, or whose
-// action is not one the route serves, is 400 invalid_request. The dedicated
-// path only serves context, so an explicit action must be "context"; an
-// absent action or empty body reads as context.
 func earnMaxContextAction(raw []byte) error {
 	if len(strings.TrimSpace(string(raw))) == 0 {
 		return nil
@@ -93,10 +84,6 @@ func earnMaxContextAction(raw []byte) error {
 	return nil
 }
 
-// earnMaxContext is the context action of the Next POST (mobile.ts:38-121)
-// on its dedicated path: the same order — action validation, wallet session,
-// mainnet gate, ready-account short circuit, $1 USDC gate, user
-// get-or-create, sponsored provisioning — and the same bodies.
 func (h earnRoutes) earnMaxContext(ctx context.Context, in *earnMaxContextInput) (*earnMaxContextOutput, error) {
 	if err := earnMaxContextAction(in.Raw.data); err != nil {
 		return nil, err
@@ -123,15 +110,9 @@ func (h earnRoutes) earnMaxContext(ctx context.Context, in *earnMaxContextInput)
 	}}, nil
 }
 
-// earnMaxContextSettings is mobile.ts:67-108: use the wallet's ready smart
-// account when one exists (findReadyCurrentUserSmartAccount's state and
-// on-chain signer check, mobile.ts:73-78), otherwise require $1 USDC
-// (mobile.ts:80-88), create the app user (mobile.ts:89-94) and resolve the
-// account through the sponsored-provisioning seam (mobile.ts:95-100). The
-// seam's chain reads are also the wallet-controls assert the Next route runs
-// at mobile.ts:109-113: findSettingsSignerAddresses (onchain.ts:116-152) is
-// that assert's own chain read, so an ensured account is verified by
-// construction.
+// earnMaxContextSettings returns a settings PDA only after a chain read lists
+// the wallet as a signer: promoteSmartAccount, createSponsoredSmartAccount or
+// delegatedRootSigner (earn_sponsor.go).
 func (h earnRoutes) earnMaxContextSettings(ctx context.Context, wallet solana.PublicKey) (string, error) {
 	userID, err := h.earnMaxContextUserID(ctx, wallet)
 	if err != nil {
@@ -170,9 +151,6 @@ func (h earnRoutes) earnMaxContextSettings(ctx context.Context, wallet solana.Pu
 	return ensured.SmartAccount.SettingsPda, nil
 }
 
-// earnMaxContextUserID is findCurrentUser (app-user.ts:154): "" when the
-// wallet has no app user row yet, leaving the create to privyGetOrCreateUser
-// after the balance gate, as mobile.ts:89 orders it.
 func (h earnRoutes) earnMaxContextUserID(ctx context.Context, wallet solana.PublicKey) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -187,10 +165,9 @@ func (h earnRoutes) earnMaxContextUserID(ctx context.Context, wallet solana.Publ
 	return id, nil
 }
 
-// earnMaxWalletUsdcBalance is readEarnMaxWalletUsdcBalance
-// (voltr/summary.server.ts:44-60): the wallet's token accounts at confirmed,
-// summed over the ones for the USDC mint whose state is "initialized" — a
-// frozen account holds but does not spend, so it does not count.
+// earnMaxWalletUsdcBalance sums the wallet's USDC token accounts whose state
+// is "initialized" — a frozen account holds but does not spend, so it does
+// not count.
 func (h earnRoutes) earnMaxWalletUsdcBalance(ctx context.Context, wallet solana.PublicKey) (uint64, error) {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
@@ -209,9 +186,8 @@ func (h earnRoutes) earnMaxWalletUsdcBalance(ctx context.Context, wallet solana.
 	return total, nil
 }
 
-// earnMaxContextBalanceGate is mobile.ts:80-88: the shipped clients send no
-// deposit amount, so a wallet holding less than $1 USDC cannot have its
-// setup sponsored.
+// earnMaxContextBalanceGate: the shipped clients send no deposit amount, so a
+// wallet holding less than $1 USDC cannot have its setup sponsored.
 func earnMaxContextBalanceGate(balance uint64) error {
 	if balance < earnMaxContextMinUsdc {
 		return earnError(http.StatusPaymentRequired, "insufficient_balance",
@@ -220,11 +196,10 @@ func earnMaxContextBalanceGate(balance uint64) error {
 	return nil
 }
 
-// earnMaxContextFailed is the Next POST's catch (mobile.ts:132-148): a
-// provisioning refusal keeps its own status, code and message, and anything
-// else is logged without the request body and answered 500
-// earn_max_unavailable — the status the mobile route ships, kept over
-// EARN.md's generic 503 because this port's contract is that route.
+// earnMaxContextFailed passes a provisioning refusal through with its own
+// status, code and message; anything else is logged and answered 500
+// earn_max_unavailable — this route's shipped contract, not EARN.md's generic
+// 503.
 func earnMaxContextFailed(step string, err error) error {
 	var refused *routeError
 	if errors.As(err, &refused) {

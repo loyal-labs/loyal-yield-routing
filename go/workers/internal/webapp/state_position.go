@@ -1,12 +1,5 @@
 package webapp
 
-// GET /api/smart-accounts/yield-optimization/position
-// <- web/apps/web/src/app/api/smart-accounts/yield-optimization/position/route.ts.
-// The reconciled active position plus the vault's current holdings split into
-// Kamino reserve rows and idle balances, priced only by the Timescale feed's
-// supply APY (a failed feed serializes as null, exactly as the route's
-// .catch(() => []) does).
-
 import (
 	"context"
 	"errors"
@@ -19,11 +12,12 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/jackc/pgx/v5"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earncatalog"
 )
 
 const statePositionPath = "/api/smart-accounts/yield-optimization/position"
 
-// The provenance source values Next emits with the reserve and idle rows.
 var (
 	stateSourceVaultReserve       = "vault_reserve_positions_current"
 	stateSourceVaultIdle          = "vault_idle_token_balances_current"
@@ -102,8 +96,6 @@ type EarnPositionResponse struct {
 }
 
 type statePositionOutput struct {
-	// Next sets no explicit cache header on this route; no-store is pinned
-	// here because every byte is per-wallet state.
 	CacheControl string `header:"Cache-Control"`
 	Body         EarnPositionResponse
 }
@@ -131,7 +123,7 @@ func (h earnRoutes) earnPosition(ctx context.Context, in *sessionRequest) (*stat
 		return nil, earnUnavailable("earn-position read", err, "position_unavailable", "Earn position is unavailable.")
 	}
 	if position == nil {
-		return &statePositionOutput{CacheControl: "no-store", Body: EarnPositionResponse{}}, nil
+		return &statePositionOutput{CacheControl: perWalletCacheControl(), Body: EarnPositionResponse{}}, nil
 	}
 
 	reserveRows, err := h.stateCurrentReserveRows(ctx, settings, wallet, position.VaultPubkey)
@@ -150,16 +142,11 @@ func (h earnRoutes) earnPosition(ctx context.Context, in *sessionRequest) (*stat
 		return nil, earnUnavailable("earn-position serialize", err, "position_unavailable", "Earn position is unavailable.")
 	}
 	return &statePositionOutput{
-		CacheControl: "no-store",
+		CacheControl: perWalletCacheControl(),
 		Body:         EarnPositionResponse{Position: serialized},
 	}, nil
 }
 
-// stateCurrentSupplyApyBps ports the route's
-// getCurrentReserveUpdatesByReserveWithRetry: two retries (250 ms apart, then
-// 500 ms) around one Timescale lookup of the position's reserve, a failed
-// feed logging and leaving the APY unset. The feed only tracks mainnet, so a
-// devnet position is read through its mainnet twin reserve.
 func (h earnRoutes) stateCurrentSupplyApyBps(ctx context.Context, position stateYieldPositionRow) *string {
 	reserve := stateTimescaleReserveForPosition(position)
 	var apy *float64
@@ -186,10 +173,6 @@ func (h earnRoutes) stateCurrentSupplyApyBps(ctx context.Context, position state
 	return &bps
 }
 
-// stateTimescaleSupplyApy ports TimescaleReserveClient
-// .getCurrentReserveUpdatesByReserve (:651-683) narrowed to the one reserve
-// the route looks up: the latest non-stale update with an in-bounds supply
-// APY, joined to the latest-per-reserve pointer table.
 func (h earnRoutes) stateTimescaleSupplyApy(ctx context.Context, reserve string) (*float64, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -213,50 +196,19 @@ LIMIT 1`, reserve, dtargetMaxSupplyApy).Scan(&apy)
 	return &apy, nil
 }
 
-// stateProductAsset mirrors EarnProductAsset (earn-product-mints.shared.ts:21):
-// the token program follows the stablecoin, not the cluster
-// (loyal-actions/src/constants.ts:253): CASH, USDG and PYUSD are Token-2022.
-type stateProductAsset struct {
-	Mint         string
-	Symbol       string
-	TokenProgram string
+func stateProductAssets(cluster LoyalCluster) []earncatalog.Product {
+	return earncatalog.ForCluster(cluster == LoyalDevnet)
 }
 
-var (
-	stateTokenProgram   = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-	stateToken2022      = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
-	stateDevnetUSDCMint = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
-)
-
-// stateProductAssets mirrors getEarnProductAssetsForCluster
-// (earn-product-mints.shared.ts:29): the six canonical stablecoins in policy
-// order on mainnet, the devnet USDC mint only elsewhere.
-func stateProductAssets(cluster LoyalCluster) []stateProductAsset {
-	if cluster == LoyalDevnet {
-		return []stateProductAsset{{Mint: stateDevnetUSDCMint, Symbol: "USDC", TokenProgram: stateTokenProgram}}
-	}
-	return []stateProductAsset{
-		{Mint: "CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH", Symbol: "CASH", TokenProgram: stateToken2022},
-		{Mint: "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH", Symbol: "USDG", TokenProgram: stateToken2022},
-		{Mint: "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo", Symbol: "PYUSD", TokenProgram: stateToken2022},
-		{Mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", Symbol: "USDC", TokenProgram: stateTokenProgram},
-		{Mint: "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB", Symbol: "USDT", TokenProgram: stateTokenProgram},
-		{Mint: "USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA", Symbol: "USDS", TokenProgram: stateTokenProgram},
-	}
-}
-
-// stateProductAssetFor mirrors resolveEarnProductAsset: an unsupported mint is
-// a thrown error on Next, so the caller maps it to a route failure.
-func stateProductAssetFor(cluster LoyalCluster, mint string) (stateProductAsset, error) {
+func stateProductAssetFor(cluster LoyalCluster, mint string) (earncatalog.Product, error) {
 	for _, asset := range stateProductAssets(cluster) {
 		if asset.Mint == mint {
 			return asset, nil
 		}
 	}
-	return stateProductAsset{}, errors.New("mint is not a supported Earn product mint.")
+	return earncatalog.Product{}, errors.New("mint is not a supported Earn product mint.")
 }
 
-// stateKnownMarketName mirrors KNOWN_MARKET_NAMES (earn-position-display.ts:27).
 var stateKnownMarketName = map[string]string{
 	"7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF": "Main Kamino",
 	"27MKCQo5qP7ijrwWSMKX2Jeb3PhK2NZmHQ9befWVRS4J": "Main Kamino",
@@ -271,9 +223,6 @@ var stateKnownMarketName = map[string]string{
 	"9Y7uwXgQ68mGqRtZfuFaP4hc4fxeJ7cE9zTtqTxVhfGU": "Solstice Market",
 }
 
-// stateKnownMintSymbol mirrors KNOWN_MINT_SYMBOLS (earn-position-display.ts:51):
-// every cluster's product assets, which between them are the six canonical
-// stablecoins plus the devnet USDC mint.
 func stateKnownMintSymbol(mint string) string {
 	for _, asset := range append(stateProductAssets(LoyalMainnetBeta), stateProductAssets(LoyalDevnet)...) {
 		if asset.Mint == mint {
@@ -283,7 +232,6 @@ func stateKnownMintSymbol(mint string) string {
 	return stateShortenAddress(mint)
 }
 
-// stateShortenAddress mirrors shortenAddress (earn-position-display.ts:62).
 func stateShortenAddress(address string) string {
 	if len(address) <= 10 {
 		return address
@@ -291,8 +239,6 @@ func stateShortenAddress(address string) string {
 	return address[:4] + "..." + address[len(address)-4:]
 }
 
-// statePositionDisplay mirrors resolveEarnPositionDisplay
-// (earn-position-display.ts:70).
 func statePositionDisplay(liquidityMint string, market *string) EarnPositionDisplay {
 	marketName := "Unknown Market"
 	if market != nil {
@@ -306,10 +252,9 @@ func statePositionDisplay(liquidityMint string, market *string) EarnPositionDisp
 	return EarnPositionDisplay{Label: marketName + " · " + mintSymbol, MarketName: marketName, MintSymbol: mintSymbol}
 }
 
-// stateTimescaleReserveForPosition ports resolveTimescaleReserveForPosition
-// (position/route.ts:42): the devnet Earn venue (the devnet USDC target's
-// reserve, market and liquidity mint together) is read through its mainnet
-// twin reserve, which is what the Timescale feed samples.
+// stateTimescaleReserveForPosition reads the devnet Earn venue (the devnet
+// USDC target's reserve, market and liquidity mint together) through its
+// mainnet twin reserve, which is what the Timescale feed samples.
 func stateTimescaleReserveForPosition(position stateYieldPositionRow) string {
 	const (
 		devnetReserve      = "9uKMtFU9UJ9DfbwzCReGENb31appi79KTEeDGdCnvMjy"
@@ -318,14 +263,12 @@ func stateTimescaleReserveForPosition(position stateYieldPositionRow) string {
 	)
 	if position.CurrentReserve == devnetReserve &&
 		position.CurrentMarket != nil && *position.CurrentMarket == devnetMarket &&
-		position.CurrentLiquidityMint == stateDevnetUSDCMint {
+		position.CurrentLiquidityMint == earncatalog.DevnetUSDC {
 		return mainnetTwinReserve
 	}
 	return position.CurrentReserve
 }
 
-// serializeEarnPositionHolding ports serializeKaminoHolding
-// (position/route.ts:116).
 func serializeEarnPositionHolding(row stateVaultReserveRow, cluster LoyalCluster) (EarnPositionHolding, error) {
 	asset, err := stateProductAssetFor(cluster, row.LiquidityMint)
 	if err != nil {
@@ -353,8 +296,6 @@ func serializeEarnPositionHolding(row stateVaultReserveRow, cluster LoyalCluster
 	}, nil
 }
 
-// serializeEarnPositionIdleHolding ports serializeIdleHolding
-// (position/route.ts:148).
 func serializeEarnPositionIdleHolding(row stateVaultIdleRow, cluster LoyalCluster) (EarnPositionHolding, error) {
 	asset, err := stateProductAssetFor(cluster, row.Mint)
 	if err != nil {
@@ -385,9 +326,6 @@ func serializeEarnPositionIdleHolding(row stateVaultIdleRow, cluster LoyalCluste
 	}, nil
 }
 
-// serializeEarnPositionCurrentHoldingAsKamino ports
-// serializePositionCurrentHoldingAsKamino (position/route.ts:175), the
-// fallback holding when the vault has no reserve row but a positive position.
 func serializeEarnPositionCurrentHoldingAsKamino(position stateYieldPositionRow, cluster LoyalCluster) (EarnPositionHolding, error) {
 	asset, err := stateProductAssetFor(cluster, position.CurrentLiquidityMint)
 	if err != nil {
@@ -415,9 +353,6 @@ func serializeEarnPositionCurrentHoldingAsKamino(position stateYieldPositionRow,
 	}, nil
 }
 
-// serializeEarnPositionHoldings ports serializeHoldings (position/route.ts:207):
-// Kamino rows first; with none, the position's own holding stands in when no
-// idle balance has value; idle balances always follow.
 func serializeEarnPositionHoldings(position stateYieldPositionRow, reserveRows []stateVaultReserveRow, idleRows []stateVaultIdleRow, cluster LoyalCluster) ([]EarnPositionHolding, error) {
 	var idle []EarnPositionHolding
 	for _, row := range idleRows {
@@ -450,7 +385,7 @@ func serializeEarnPositionHoldings(position stateYieldPositionRow, reserveRows [
 	return append(kamino, idle...), nil
 }
 
-// serializeEarnPosition ports serializePosition (position/route.ts:61). The
+// serializeEarnPosition ports serializePosition. The
 // total is the holdings sum floored at zero, emitted as both
 // currentTotalAmountRaw and currentTotalNominalUsdMicros.
 func serializeEarnPosition(position stateYieldPositionRow, currentSupplyApyBps *string, reserveRows []stateVaultReserveRow, idleRows []stateVaultIdleRow, cluster LoyalCluster) (*EarnPosition, error) {

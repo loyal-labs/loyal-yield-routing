@@ -8,8 +8,6 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 )
 
-// GET  /api/smart-accounts/earn-transactions                       <- web/apps/web/src/app/api/smart-accounts/earn-transactions/route.ts (mobile twin web/apps/web/src/app/api/smart-accounts/mobile/earn/transactions)
-// POST /api/smart-accounts/yield-optimization/policy-refunds/scan  <- web/apps/web/src/app/api/smart-accounts/yield-optimization/policy-refunds/scan/route.ts (mobile twin web/apps/web/src/app/api/smart-accounts/mobile/earn/policy-refunds/scan, GET)
 var earnTransactionsFamily = earnFamily{
 	name:        "earn transactions",
 	appGrants:   nil,
@@ -20,9 +18,8 @@ var earnTransactionsFamily = earnFamily{
 	register: earnRoutes.registerTransactions,
 }
 
-// Every loyal_yield table the earn-transactions and policy-refund-scan read
-// paths touch, including the sync write the history runs first
-// (user_yield_position_holding_events INSERT, user_yield_positions UPDATE).
+// A history GET needs INSERT/UPDATE: it runs the wallet sync write before
+// reading.
 var earnTransactionYieldGrants = []Grant{
 	TableGrant("loyal_yield.balance_sweep_executions", "SELECT"),
 	TableGrant("loyal_yield.balance_sweep_lot_claims", "SELECT"),
@@ -95,9 +92,6 @@ func (h earnRoutes) registerTransactions(api huma.API) {
 	}, h.earnPolicyRefundScan)
 }
 
-// earnTransactions ports the Next earn-transactions route: sync the confirmed
-// rebalance holding events, then serve the position and autodeposit history
-// through the formatter's serializer, collapse and ordering.
 func (h earnRoutes) earnTransactions(ctx context.Context, in *sessionRequest) (*earnTransactionsOutput, error) {
 	const unavailableCode = "earn_transactions_unavailable"
 	const unavailableMessage = "Earn transactions are unavailable."
@@ -197,11 +191,9 @@ type earnPolicyRefundScanOutput struct {
 	Body EarnPolicyRefundScanResponse
 }
 
-// earnPolicyRefundScan ports the Next policy-refunds scan route
-// (yield-optimization/policy-refunds/scan/route.ts): the chain and DB liveness
-// facts each route policy and the Earn vault need before a refund may run.
-// Next answers failures with its own 500 scan_failed envelope rather than the
-// 503 earn envelope, so only the auth refusal goes through earnUnavailable.
+// earnPolicyRefundScan answers failures with the 500 scan_failed envelope,
+// not the 503 earn envelope; only the auth refusal goes through
+// earnUnavailable.
 func (h earnRoutes) earnPolicyRefundScan(ctx context.Context, in *sessionRequest) (*earnPolicyRefundScanOutput, error) {
 	account, err := h.account(ctx, in.SessionInput)
 	if err != nil {
@@ -212,7 +204,6 @@ func (h earnRoutes) earnPolicyRefundScan(ctx context.Context, in *sessionRequest
 	if err != nil {
 		slog.Warn("earn policy refund scan failed", "settings", account.Settings.String(),
 			"wallet", account.Wallet.String(), "error", err)
-		// Next surfaces the underlying error.message in this envelope.
 		return nil, earnError(http.StatusInternalServerError, "scan_failed", err.Error())
 	}
 	return &earnPolicyRefundScanOutput{Body: scan}, nil

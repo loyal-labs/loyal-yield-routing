@@ -1,11 +1,9 @@
 package webapp
 
-// POST and GET /api/smart-accounts/yield-optimization/autodeposit/sweeps/execute,
-// ported from web/apps/web/src/app/api/smart-accounts/yield-optimization/autodeposit/sweeps/execute/route.ts.
-// POST flips the wallet's oldest eligible scheduled slot to "requested" so the
-// sweep worker executes it now (execute-now); GET reports one slot's progress
-// for the client fallback when the realtime stream is down. Identity is the
-// Principal; the mobile twin's walletAddress query param never reaches here.
+// POST and GET /api/smart-accounts/yield-optimization/autodeposit/sweeps/execute:
+// GET reports one slot's progress for the client fallback when the realtime
+// stream is down. Identity is the session Principal; the mobile twin's
+// walletAddress query param never reaches here.
 
 import (
 	"context"
@@ -35,8 +33,8 @@ type AutodepositSweepsExecuteRequest struct {
 	SlotID *string `json:"slotId,omitempty"`
 }
 
-// AutodepositSweepRequestResult mirrors serializeRequestResult
-// (route.ts:52-63); every id and amount renders as a decimal string.
+// AutodepositSweepRequestResult: every id and amount renders as a decimal
+// string.
 type AutodepositSweepRequestResult struct {
 	AcceleratedAmountRaw string `json:"acceleratedAmountRaw"`
 	AcceleratedLotCount  int64  `json:"acceleratedLotCount"`
@@ -46,17 +44,12 @@ type AutodepositSweepRequestResult struct {
 	TargetID             string `json:"targetId"`
 }
 
-// AutodepositSweepsExecuteResponse is NextResponse.json({ status,
-// sweepRequest, target }) — key order matches the route's object literal.
 type AutodepositSweepsExecuteResponse struct {
 	Status       string                         `json:"status"`
 	SweepRequest AutodepositSweepRequestResult  `json:"sweepRequest"`
 	Target       *AutodepositSetupConfirmTarget `json:"target"`
 }
 
-// AutodepositSweepsProgressResponse is the GET body (route.ts:160-170). eventId
-// and failureCode are undefined in TS when the column is null, so they are
-// omitted here too; the remaining key order matches the route's literal.
 type AutodepositSweepsProgressResponse struct {
 	EventID         *string `json:"eventId,omitempty"`
 	EventType       string  `json:"eventType"`
@@ -68,9 +61,6 @@ type AutodepositSweepsProgressResponse struct {
 	State           string  `json:"state"`
 }
 
-// resolveAutodepositTargetStatus ports resolveEarnAutodepositStatus
-// (earn-autodeposit-repository.server.ts:232): active flag and lifecycle
-// collapse to active, paused or pending.
 func resolveAutodepositTargetStatus(target autodepositTargetRow) string {
 	switch target.LifecycleStatus {
 	case "active":
@@ -84,9 +74,6 @@ func resolveAutodepositTargetStatus(target autodepositTargetRow) string {
 	return "pending"
 }
 
-// findCurrentAutodepositTarget ports findCurrentEarnAutodepositState's target
-// read (:635): the wallet's most relevant non-closed target for the Earn
-// vault, preferring the active row, newest last-seen slot first.
 func (h earnRoutes) findCurrentAutodepositTarget(ctx context.Context, settings, wallet string) (*autodepositTargetRow, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -106,13 +93,8 @@ LIMIT 1`, wallet, settings, int16(earnprep.EarnVaultIndex))
 	return &target, nil
 }
 
-// autodepositSlotIDPattern is /^\d+$/ — both parsers accept decimal strings
-// only, whatever their length.
 var autodepositSlotIDPattern = regexp.MustCompile(`^\d+$`)
 
-// parseAutodepositSlotID ports the shared slot-id shape check
-// (route.ts:65-87): anything but a non-empty decimal string fails with the
-// route's message.
 func parseAutodepositSlotID(value string) (int64, error) {
 	if !autodepositSlotIDPattern.MatchString(value) {
 		return 0, errors.New("Invalid Autodeposit scheduled slot.")
@@ -124,9 +106,8 @@ func parseAutodepositSlotID(value string) (int64, error) {
 	return slotID, nil
 }
 
-// parseAutodepositOptionalSlotID ports parseOptionalSlotId (route.ts:65-79):
-// only an application/json body carries a slot; a missing key, null, an empty
-// string or a non-object body means "oldest eligible slot".
+// parseAutodepositOptionalSlotID: a nil slotID selects the wallet's oldest
+// eligible slot.
 func parseAutodepositOptionalSlotID(raw []byte) (*int64, error) {
 	parsed, err := parseJSONBody(raw)
 	if err != nil {
@@ -156,7 +137,6 @@ func parseAutodepositOptionalSlotID(raw []byte) (*int64, error) {
 	return nil, errors.New("Invalid Autodeposit scheduled slot.")
 }
 
-// autodepositSweepRequestResult is ImmediateEarnAutodepositScheduledSweepRequestResult.
 type autodepositSweepRequestResult struct {
 	AcceleratedAmountRaw uint64
 	AcceleratedLotCount  int64
@@ -166,13 +146,8 @@ type autodepositSweepRequestResult struct {
 	TargetID             int64
 }
 
-// requestImmediateAutodepositSweep ports
-// requestImmediateEarnAutodepositScheduledSweep (:903-987): one statement
-// locks the oldest eligible slot FOR UPDATE, flips it to "requested" and
-// re-labels its open lots, returning the accelerated totals. A second call
-// finds nothing left in ('scheduled','failed','released') with open lots and
-// returns nil — the caller renders 409 no_scheduled_sweeps. The eligible-after
-// bump to max(now, delegation-ready) is what moves the worker's pick-up forward.
+// requestImmediateAutodepositSweep: the eligible_after bump to
+// max(now, delegation-ready) is what moves the sweep worker's pick-up forward.
 func (h earnRoutes) requestImmediateAutodepositSweep(ctx context.Context, target autodepositTargetRow, slotID *int64) (*autodepositSweepRequestResult, error) {
 	now := time.Now()
 	eligibleAfter := now
@@ -260,7 +235,6 @@ type autodepositSweepsExecuteInput struct {
 	Raw         rawJSON
 }
 
-// autodepositSweepProgressRecord is EarnAutodepositScheduledSweepProgressRecord.
 type autodepositSweepProgressRecord struct {
 	SlotID                int64
 	Status                string
@@ -270,10 +244,6 @@ type autodepositSweepProgressRecord struct {
 	OccurredAt            time.Time
 }
 
-// findAutodepositSweepProgress ports
-// findEarnAutodepositScheduledSweepProgress (:848-901): the slot's execution
-// completion columns plus the newest autodeposit realtime event for the slot;
-// occurredAt falls back to the slot's updated_at when no event exists.
 func (h earnRoutes) findAutodepositSweepProgress(ctx context.Context, targetID, slotID int64) (*autodepositSweepProgressRecord, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -310,9 +280,6 @@ LIMIT 1`, targetID, slotID).
 	return &progress, nil
 }
 
-// resolveAutodepositProgressState ports resolveProgressState (route.ts:89-112):
-// the execution outcome wins, then the executed status, then the live slot
-// statuses; an unrecognized status has no renderable state.
 func resolveAutodepositProgressState(progress autodepositSweepProgressRecord) string {
 	if progress.CompletedAt != nil {
 		return "completed"
@@ -335,25 +302,21 @@ type autodepositSweepsProgressInput struct {
 	SlotID string `query:"slotId" required:"false"`
 }
 
-// autodepositSweepsProgressOutput wraps the body, same as the execute output.
 type autodepositSweepsProgressOutput struct {
 	Body AutodepositSweepsProgressResponse
 }
 
 func (h earnRoutes) autodepositSweepsProgress(ctx context.Context, in *autodepositSweepsProgressInput) (*autodepositSweepsProgressOutput, error) {
-	// route.ts:115-118.
 	account, err := h.account(ctx, in.SessionInput)
 	if err != nil {
 		return nil, earnUnavailable("load Earn account", err, "account_unavailable", "Earn account is unavailable.")
 	}
 
-	// route.ts:120-131.
 	slotID, err := parseAutodepositSlotID(in.SlotID)
 	if err != nil {
 		return nil, earnError(http.StatusBadRequest, "invalid_request", err.Error())
 	}
 
-	// route.ts:133-145.
 	target, err := h.findCurrentAutodepositTarget(ctx, account.Settings.String(), account.Wallet.String())
 	if err != nil {
 		return nil, earnError(http.StatusInternalServerError, "progress_read_failed",
@@ -364,7 +327,6 @@ func (h earnRoutes) autodepositSweepsProgress(ctx context.Context, in *autodepos
 			"No Earn Autodeposit policy is available for this wallet.")
 	}
 
-	// route.ts:147-158.
 	progress, err := h.findAutodepositSweepProgress(ctx, target.ID, slotID)
 	if err != nil {
 		return nil, earnError(http.StatusInternalServerError, "progress_read_failed",
@@ -423,14 +385,30 @@ type autodepositSweepsExecuteOutput struct {
 	Body AutodepositSweepsExecuteResponse
 }
 
+// earnPositionGateFailsOpen checks the wallet still has an active Earn
+// position and fails OPEN on a lookup error: a withdrawn-away position has no
+// route policy left and its sweeps would strand on "Executing…" forever, so a
+// transient lookup failure only logs and lets the sweep proceed.
+func (h earnRoutes) earnPositionGateFailsOpen(ctx context.Context, account EarnAccount) error {
+	pair, gateErr := h.activePolicyPair(ctx, account)
+	if gateErr != nil {
+		slog.WarnContext(ctx, "[autodeposit-sweeps-execute] earn position gate skipped",
+			"errorMessage", gateErr.Error(), "walletAddress", account.Wallet.String())
+		return nil
+	}
+	if pair == nil {
+		return earnError(http.StatusConflict, "earn_position_required",
+			"Autodeposit needs an active Earn account to deposit into. Make a deposit first.")
+	}
+	return nil
+}
+
 func (h earnRoutes) autodepositSweepsExecute(ctx context.Context, in *autodepositSweepsExecuteInput) (*autodepositSweepsExecuteOutput, error) {
-	// route.ts:206-210.
 	account, err := h.account(ctx, in.SessionInput)
 	if err != nil {
 		return nil, earnUnavailable("load Earn account", err, "account_unavailable", "Earn account is unavailable.")
 	}
 
-	// route.ts:213-227 — only an application/json body carries a slot id.
 	var slotID *int64
 	if strings.Contains(strings.ToLower(in.ContentType), "application/json") {
 		slotID, err = parseAutodepositOptionalSlotID(in.Raw.data)
@@ -439,7 +417,6 @@ func (h earnRoutes) autodepositSweepsExecute(ctx context.Context, in *autodeposi
 		}
 	}
 
-	// route.ts:229-241.
 	target, err := h.findCurrentAutodepositTarget(ctx, account.Settings.String(), account.Wallet.String())
 	if err != nil {
 		return nil, earnError(http.StatusInternalServerError, "request_failed", err.Error())
@@ -449,24 +426,15 @@ func (h earnRoutes) autodepositSweepsExecute(ctx context.Context, in *autodeposi
 			"No Earn Autodeposit policy is available for this wallet.")
 	}
 
-	// route.ts:243-249.
 	if resolveAutodepositTargetStatus(*target) != "active" {
 		return nil, earnError(http.StatusConflict, "autodeposit_not_active",
 			"Earn Autodeposit must be active before a scheduled sweep can be executed now.")
 	}
 
-	// route.ts:257-281 — a withdrawn-away position has no route policy left and
-	// its sweeps would strand on "Executing…" forever; lookup errors fail open.
-	pair, gateErr := h.activePolicyPair(ctx, account)
-	if gateErr != nil {
-		slog.WarnContext(ctx, "[autodeposit-sweeps-execute] earn position gate skipped",
-			"errorMessage", gateErr.Error(), "walletAddress", account.Wallet.String())
-	} else if pair == nil {
-		return nil, earnError(http.StatusConflict, "earn_position_required",
-			"Autodeposit needs an active Earn account to deposit into. Make a deposit first.")
+	if err := h.earnPositionGateFailsOpen(ctx, account); err != nil {
+		return nil, err
 	}
 
-	// route.ts:283-294 — nil result means nothing was eligible.
 	result, err := h.requestImmediateAutodepositSweep(ctx, *target, slotID)
 	if err != nil {
 		return nil, earnError(http.StatusInternalServerError, "request_failed", err.Error())

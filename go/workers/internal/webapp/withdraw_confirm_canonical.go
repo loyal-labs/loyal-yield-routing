@@ -13,17 +13,8 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
-// Ports createCanonicalWithdrawalInput (earn-withdraw-confirm.server.ts:270-460):
-// every request field is checked against what the Earn vault PDAs and the
-// product catalog imply, and the canonical values replace the request's. Any
-// failure carries its thrown message; the route wraps it as 400
-// metadata_mismatch.
-
 const withdrawMaxSafePolicySeed = uint64(1<<53 - 1) // Number.MAX_SAFE_INTEGER
 
-// withdrawNormalizeCluster mirrors normalizeLoyalCluster
-// (loyal-actions/src/cluster.ts:46): "mainnet" folds into mainnet-beta, an
-// unknown cluster names itself in the error.
 func withdrawNormalizeCluster(value string) (string, error) {
 	switch strings.TrimSpace(value) {
 	case "devnet":
@@ -44,8 +35,6 @@ func withdrawPublicKeyInput(value string) (solana.PublicKey, error) {
 	return key, nil
 }
 
-// withdrawSafePolicySeed mirrors toSafePolicySeed
-// (earn-withdraw-confirm.server.ts:94-100).
 func withdrawSafePolicySeed(seed *big.Int) (uint64, error) {
 	if seed.Sign() <= 0 || seed.Cmp(new(big.Int).SetUint64(withdrawMaxSafePolicySeed)) > 0 {
 		return 0, errors.New("policySeed is outside the supported earn policy range.")

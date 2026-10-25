@@ -10,12 +10,9 @@ import (
 	"github.com/solana-foundation/solana-go/v2"
 )
 
-// privyGetOrCreateUser ports getOrCreateCurrentUser (app-user.ts:161-200):
-// find by (provider, subject_address), else insert with ON CONFLICT DO
-// NOTHING and re-read after a lost race, then refresh metadata and upsert the
-// wallet row in every branch. TS commits each statement separately; here the
-// four statements share one short transaction so a crash cannot leave a user
-// row without its wallet row — the re-run writes the same rows either way.
+// privyGetOrCreateUser commits the four statements in one short transaction
+// so a crash cannot leave a user row without its wallet row; a re-run writes
+// the same rows either way.
 func (h earnRoutes) privyGetOrCreateUser(ctx context.Context, wallet solana.PublicKey, email string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -64,12 +61,10 @@ func privyFindUser(ctx context.Context, tx pgx.Tx, address string) (string, erro
 
 func privyCreateUser(ctx context.Context, tx pgx.Tx, address, email string) (string, error) {
 	var id string
-	// Conflict target mirrors the app_users_provider_subject_uidx unique
-	// index the Drizzle insert races on (app-user.ts:87).
 	err := tx.QueryRow(ctx,
 		`INSERT INTO app_users (provider, subject_address, email, created_at, updated_at)
 VALUES ('solana', $1, $2, now(), now())
-ON CONFLICT DO NOTHING
+ON CONFLICT (provider, subject_address) DO NOTHING
 RETURNING id::text`,
 		address, privyOptionalText(email)).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -103,10 +98,6 @@ func privyTouchUser(ctx context.Context, tx pgx.Tx, userID, email string) error 
 	return nil
 }
 
-// privyUpsertUserWallet mirrors upsertWalletForUser (app-user.ts:112-131):
-// the wallet address is globally unique, so the conflict target is the
-// app_user_wallets_wallet_address_uidx index and a re-run refreshes the same
-// row instead of failing.
 func privyUpsertUserWallet(ctx context.Context, tx pgx.Tx, userID, address string) error {
 	_, err := tx.Exec(ctx,
 		`INSERT INTO app_user_wallets (user_id, wallet_address, verified_at, last_used_at, created_at, updated_at)

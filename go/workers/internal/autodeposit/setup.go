@@ -8,6 +8,7 @@ import (
 	"github.com/solana-foundation/solana-go/v2"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earncatalog"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
@@ -73,7 +74,7 @@ func validateDestinationSetupPlan(plan DepositPlan, setup DestinationSetupPlan) 
 		return err
 	}
 	obligation := obligationKey.String()
-	if setup.Route.Obligation != obligation || setup.Route.Position.Obligation != obligation || setup.Route.Position.Reserve != plan.Reserve || setup.Route.Position.Market != plan.Market || setup.Route.Position.LiquidityMint != plan.LiquidityMint || setup.Route.Position.LiquidityTokenProgram != splTokenID || setup.Route.Position.VaultLiquidityATA != plan.Target.VaultUsdcAta {
+	if setup.Route.Obligation != obligation || setup.Route.Position.Obligation != obligation || setup.Route.Position.Reserve != plan.Reserve || setup.Route.Position.Market != plan.Market || setup.Route.Position.LiquidityMint != plan.LiquidityMint || setup.Route.Position.LiquidityTokenProgram != earncatalog.SPLTokenProgram || setup.Route.Position.VaultLiquidityATA != plan.Target.VaultUsdcAta {
 		return errors.New("setup route differs from frozen deposit identity")
 	}
 	var account string
@@ -152,7 +153,7 @@ func (b *SweepWireBuilder) InspectDestinationSetup(ctx context.Context, plan Dep
 	if err != nil {
 		return nil, errors.New("setup reserve evidence invalid")
 	}
-	if route.Position.Market != plan.Market || route.Position.LiquidityMint != USDCMint || route.Position.LiquidityTokenProgram != splTokenID || by[plan.Market].Owner != kamino.ProgramID || by[plan.Market].Executable {
+	if route.Position.Market != plan.Market || route.Position.LiquidityMint != USDCMint || route.Position.LiquidityTokenProgram != earncatalog.SPLTokenProgram || by[plan.Market].Owner != kamino.ProgramID || by[plan.Market].Executable {
 		return nil, errors.New("setup reserve/market/token identity changed")
 	}
 	stage := SetupStage("")

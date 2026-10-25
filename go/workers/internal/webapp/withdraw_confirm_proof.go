@@ -15,13 +15,6 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 )
 
-// Ports the on-chain proof half of the withdraw confirm:
-// resolveConfirmedSignatureSlot (earn-withdraw-confirm.server.ts:462-495) and
-// resolveConfirmedWithdrawalTransactionProof + the token-balance deltas
-// (:109-268), with pollRpcRead's cadence (earn-deposit-confirm.server.ts:41-57).
-
-// withdrawConfirmChain is the chain surface the confirm verification reads
-// through; *chain.Client satisfies it.
 type withdrawConfirmChain interface {
 	SignatureState(ctx context.Context, signature string) (chain.SignatureState, error)
 	Execution(ctx context.Context, signature solana.Signature, commitment rpc.CommitmentType) (chain.Execution, error)
@@ -36,8 +29,6 @@ const withdrawVerifyAttempts = 6
 
 var withdrawVerifyDelay = 500 * time.Millisecond
 
-// withdrawSleep waits one poll interval, abandoning the wait when the request
-// goes away.
 func withdrawSleep(ctx context.Context) error {
 	timer := time.NewTimer(withdrawVerifyDelay)
 	defer timer.Stop()
@@ -49,9 +40,6 @@ func withdrawSleep(ctx context.Context) error {
 	}
 }
 
-// withdrawConfirmedSignatureSlot resolves the slot the withdrawal actually
-// landed at: getSignatureStatuses with searchTransactionHistory, polled.
-// Errors and an unconfirmed signature carry the TS messages.
 func withdrawConfirmedSignatureSlot(ctx context.Context, client withdrawConfirmChain, sleep func(context.Context) error, operation, signature string) (*big.Int, error) {
 	for attempt := 1; attempt <= withdrawVerifyAttempts; attempt++ {
 		state, err := client.SignatureState(ctx, signature)
@@ -80,11 +68,7 @@ func withdrawBalanceAmount(balances map[solana.PublicKey]chain.TokenBalance, key
 	return 0
 }
 
-// withdrawTokenBalanceDeltaRaw ports getParsedTokenBalanceDeltaRaw
-// (earn-withdraw-confirm.server.ts:117-164): the summed token-balance change
-// over every account the mint touches, matched by token account or, when no
-// account is given, by owner.
-func withdrawTokenBalanceDeltaRaw(execution chain.Execution, mint solana.PublicKey, tokenAccount, fallbackOwner string) int64 {
+func withdrawMintAccounts(execution chain.Execution, mint solana.PublicKey) map[solana.PublicKey]bool {
 	touched := map[solana.PublicKey]bool{}
 	for key, balance := range execution.Pre {
 		if balance.Mint == mint {
@@ -96,30 +80,42 @@ func withdrawTokenBalanceDeltaRaw(execution chain.Execution, mint solana.PublicK
 			touched[key] = true
 		}
 	}
+	return touched
+}
+
+func withdrawAccountChange(execution chain.Execution, key solana.PublicKey) int64 {
+	return int64(withdrawBalanceAmount(execution.Post, key)) - int64(withdrawBalanceAmount(execution.Pre, key))
+}
+
+func withdrawTokenAccountDeltaRaw(execution chain.Execution, mint solana.PublicKey, tokenAccount string) int64 {
 	var delta int64
-	for key := range touched {
-		owner := ""
-		if post, ok := execution.Post[key]; ok {
-			owner = post.Owner.String()
-		} else if pre, ok := execution.Pre[key]; ok {
-			owner = pre.Owner.String()
+	for key := range withdrawMintAccounts(execution, mint) {
+		if key.String() == tokenAccount {
+			delta += withdrawAccountChange(execution, key)
 		}
-		if tokenAccount != "" {
-			if key.String() != tokenAccount {
-				continue
-			}
-		} else if fallbackOwner == "" || owner != fallbackOwner {
-			continue
-		}
-		delta += int64(withdrawBalanceAmount(execution.Post, key)) - int64(withdrawBalanceAmount(execution.Pre, key))
 	}
 	return delta
 }
 
-// withdrawTransactionProof ports resolveConfirmedWithdrawalTransactionProof
-// (earn-withdraw-confirm.server.ts:166-268) and folds the resulting proof into
-// the canonical input the way applyConfirmedWithdrawalTransactionProof does
-// (earn-withdraw-proof.shared.ts:14-41).
+func withdrawOwnerDeltaRaw(execution chain.Execution, mint solana.PublicKey, owner string) int64 {
+	if owner == "" {
+		return 0
+	}
+	var delta int64
+	for key := range withdrawMintAccounts(execution, mint) {
+		keyOwner := ""
+		if post, ok := execution.Post[key]; ok {
+			keyOwner = post.Owner.String()
+		} else if pre, ok := execution.Pre[key]; ok {
+			keyOwner = pre.Owner.String()
+		}
+		if keyOwner == owner {
+			delta += withdrawAccountChange(execution, key)
+		}
+	}
+	return delta
+}
+
 func withdrawTransactionProof(ctx context.Context, client withdrawConfirmChain, sleep func(context.Context) error, cluster string, in *withdrawCanonicalInput) error {
 	signature, err := solana.SignatureFromBase58(in.WithdrawalSignature)
 	if err != nil {
@@ -182,15 +178,15 @@ func withdrawTransactionProof(ctx context.Context, client withdrawConfirmChain, 
 		return err
 	}
 
-	walletAtaDelta := withdrawTokenBalanceDeltaRaw(execution, liquidityMint, walletLiquidityAta.String(), "")
+	walletAtaDelta := withdrawTokenAccountDeltaRaw(execution, liquidityMint, walletLiquidityAta.String())
 	walletTransfer := walletAtaDelta
 	if walletTransfer <= 0 {
-		walletTransfer = withdrawTokenBalanceDeltaRaw(execution, liquidityMint, "", in.WalletAddress)
+		walletTransfer = withdrawOwnerDeltaRaw(execution, liquidityMint, in.WalletAddress)
 	}
 	if walletTransfer <= 0 {
 		return errors.New("Confirmed withdrawal transaction does not transfer the withdrawal mint to the authenticated wallet.")
 	}
-	vaultLiquidityDelta := withdrawTokenBalanceDeltaRaw(execution, liquidityMint, vaultLiquidityAta.String(), "")
+	vaultLiquidityDelta := withdrawTokenAccountDeltaRaw(execution, liquidityMint, vaultLiquidityAta.String())
 
 	if in.SourceType == "idle" {
 		if vaultLiquidityDelta >= 0 || -vaultLiquidityDelta != walletTransfer {

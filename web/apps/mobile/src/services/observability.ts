@@ -1,6 +1,6 @@
 // ClickStack error reporting (ASK-1804) — posts unhandled JS errors, fatal JS
 // crashes, and unhandled promise rejections to the askloyal.com observability
-// ingest at `/api/observability/errors`.
+// ingest.
 //
 // Best-effort by design: every path here swallows its own failures. Telemetry
 // must never crash the app or block a user flow. Native crashes (JS VM dies

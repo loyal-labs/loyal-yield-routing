@@ -5,6 +5,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earncatalog"
 )
 
 func TestControlSnapshotProvesActualArtifacts(t *testing.T) {
@@ -26,7 +28,7 @@ func TestControlSnapshotProvesActualArtifacts(t *testing.T) {
 	accounts[f.WalletATA].Data[76] ^= 1
 	// A policy whose constraints no longer allow the pull is observed, not
 	// retried forever as an unprovable target.
-	subscriptions := mustKey(SubscriptionsProgramID)
+	subscriptions := mustKey(earncatalog.SubscriptionsProgram)
 	at := bytes.Index(accounts[f.Policy].Data, subscriptions[:])
 	if at < 0 {
 		t.Fatal("fixture policy lacks the subscriptions program constraint")

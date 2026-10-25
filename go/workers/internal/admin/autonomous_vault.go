@@ -15,6 +15,7 @@ import (
 	"github.com/solana-foundation/solana-go/v2/rpc"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earncatalog"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/meteora"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
@@ -32,7 +33,7 @@ var autonomousVaultManifest = struct {
 	kaminoObligation: solana.MustPublicKeyFromBase58("4HhTdUm6Z1GLTjW9bvv3B9X5tHedJC8zHwdGtvu3yqKU"),
 	kaminoReserve:    solana.MustPublicKeyFromBase58("D6q6wuQSrifJKZYpR1M8R4YawnLDtDsMmWM1NbBmgJ59"),
 	loyalMint:        solana.MustPublicKeyFromBase58("LYLikzBQtpa9ZgVrJsqYGQpR3cC1WMJrBHaXGrQmeta"),
-	usdcMint:         solana.MustPublicKeyFromBase58("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"),
+	usdcMint:         solana.MustPublicKeyFromBase58(earncatalog.USDC),
 	meteoraPool:      solana.MustPublicKeyFromBase58("c29DVknA5DZUCH6U5ujo1EGfiKKXZrUk6yk56yJxLrm"),
 	meteoraPosition:  solana.MustPublicKeyFromBase58("3SBxJxpCG2EbfLrvD5DgjKUarLgn5i643WYNnUdTYgCB"),
 	vault:            solana.MustPublicKeyFromBase58("F7zuL14omw4JJfS1cvsWXVb3wh48dvsonMJgoc9tYu3e"),

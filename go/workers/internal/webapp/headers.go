@@ -8,6 +8,10 @@ import (
 	"strings"
 )
 
+// perWalletCacheControl is the Cache-Control of every authed per-wallet earn
+// response: every byte is wallet state, so no store may cache it.
+func perWalletCacheControl() string { return "no-store" }
+
 var securityPolicy = strings.Join([]string{
 	"default-src 'self'",
 	"script-src 'self' 'unsafe-inline' 'unsafe-eval' https://challenges.cloudflare.com https://static.ads-twitter.com https://vercel.live",

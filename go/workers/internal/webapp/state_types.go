@@ -1,13 +1,11 @@
 package webapp
 
 // Response body for GET /api/smart-accounts/yield-optimization/earn-state.
-// Ports web/apps/web/src/app/api/smart-accounts/yield-optimization/earn-state/route.ts
-// and L/earn-state-serializers.server.ts. Raw amounts are integer unit strings
-// exactly as the TS emits BigInt.toString(); TS null stays null. Deliberate
-// additions over Next are autodeposit.lifecycleStatus (pathmap row
-// autodeposit/state: the raw balance_sweep_targets.chain_status text the RN
-// client already reads) and programId (foreman: the Squads program id the
-// prepare wire ops use, for the RN holdings client).
+// Raw amounts are integer unit strings exactly as BigInt.toString() emits;
+// null stays null. Deliberate additions are autodeposit.lifecycleStatus (the
+// raw balance_sweep_targets.chain_status text the RN client already reads)
+// and programId (the Squads program id the prepare wire ops use, for the RN
+// holdings client).
 
 type EarnStateVault struct {
 	AccountIndex int    `json:"accountIndex"`
@@ -86,8 +84,7 @@ type EarnStateOnboardingPolicy struct {
 // spreads the attempt, so absent attempt fields are omitted rather than null;
 // the web client types them optional and reads them with ?. and ??.
 type EarnStateOnboarding struct {
-	NextStep string `json:"nextStep"`
-	// Present only when a non-complete attempt exists.
+	NextStep             string                     `json:"nextStep"`
 	DepositConfirmedSlot *string                    `json:"depositConfirmedSlot,omitempty"`
 	DepositSignature     *string                    `json:"depositSignature,omitempty"`
 	LastErrorCode        *string                    `json:"lastErrorCode,omitempty"`

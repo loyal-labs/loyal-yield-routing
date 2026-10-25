@@ -7,13 +7,6 @@ import (
 	"time"
 )
 
-// Turns the history records into the wire shape and applies the formatter's
-// collapse and the route's ordering (earn-transactions/formatter.ts and
-// route.ts sortEarnTransactions).
-
-// txreadsAssembleTransactions is route.ts:85-104: drop reconciliations and
-// position events already covered by an autodeposit sweep's deposit, serialize
-// the rest, collapse duplicate rebalances, sort newest first.
 func txreadsAssembleTransactions(positionEvents []txreadsPositionEvent, autodepositEvents []txreadsAutodepositEvent) []SerializedEarnTransaction {
 	depositSignatures := map[string]struct{}{}
 	for _, event := range autodepositEvents {
@@ -186,9 +179,6 @@ func txreadsSelfMovement(transaction SerializedEarnTransaction) bool {
 	return transaction.Source.Label == transaction.Destination.Label
 }
 
-// collapseDuplicateEarnRebalanceTransactions: the first transaction wins per
-// signature; a later non-self-movement replaces an earlier self-movement in
-// place.
 func collapseDuplicateRebalanceTransactions(transactions []SerializedEarnTransaction) []SerializedEarnTransaction {
 	indexBySignature := map[string]int{}
 	collapsed := make([]SerializedEarnTransaction, 0, len(transactions))
@@ -210,8 +200,6 @@ func collapseDuplicateRebalanceTransactions(transactions []SerializedEarnTransac
 	return collapsed
 }
 
-// sortEarnTransactions: newest first by confirmation time (millisecond
-// precision, as Date.parse sees it), then slot descending, then id ascending.
 func sortEarnTransactions(transactions []SerializedEarnTransaction) {
 	sort.SliceStable(transactions, func(left, right int) bool {
 		a, b := transactions[left], transactions[right]
