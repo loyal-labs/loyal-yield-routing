@@ -409,3 +409,46 @@ func TestStrategyTwoReceiptVersionAndTrackedCustody(t *testing.T) {
 		t.Fatal("unknown reserved field accepted")
 	}
 }
+
+func onreEntryNAVFixture(t *testing.T, squadsUSDCRaw, onycRaw uint64) (RuntimeRoute, []ConfirmedAccount) {
+	t.Helper()
+	route, err := runtimeRoute(onreONycUSDC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mark := new(big.Int).Quo(new(big.Int).Mul(big.NewInt(11_558), new(big.Int).Lsh(big.NewInt(1), 60)), big.NewInt(10_000))
+	custody := tokenAccountFixture(t, route.CollateralCustody, route.Kamino.CollateralMint, bridgeVault, onycRaw)
+	custody.Owner = route.CollateralTokenProgram
+	return route, []ConfirmedAccount{
+		exactAdaptorConfigAccount(t),
+		strategyReceiptFixture(t, 1_000_000_000),
+		tokenAccountFixture(t, bridgeIdleATA, fleet.USDCMint, bridgeIdleAuthority, 0),
+		tokenAccountFixture(t, bridgeStrategyATA, fleet.USDCMint, bridgeStrategyAuth, 0),
+		tokenAccountFixture(t, bridgeSquadsATA, fleet.USDCMint, bridgeVault, squadsUSDCRaw),
+		custody,
+		{Address: route.Kamino.Obligation},
+		kaminoReserveImage(t, route.Kamino.Market, route.Kamino.CollateralReserve, route.Kamino.CollateralMint, 77, mark, 1_000_000_000_000, 0, 1_000_000_000_000, 9),
+		kaminoReserveImage(t, route.Kamino.Market, route.Kamino.DebtReserve, fleet.USDCMint, 77, new(big.Int).Lsh(big.NewInt(1), 60), 1_000_000_000, 0, 1_000_000_000, 6),
+		marketFixture(t, route.Kamino.Market),
+		voltrVaultFixture(t, 1_000_000_000),
+		voltrLPMintFixture(t, 1_000),
+	}
+}
+
+func TestRouteNAVEntryBelowMarkIsFlat(t *testing.T) {
+	t.Parallel()
+	manifest := readyWorkerManifest(t)
+	route, cash := onreEntryNAVFixture(t, 1_000_000_000, 0)
+	before, err := ComputeRouteNAVForRoutes(77, cash, manifest, nil, []RuntimeRoute{route})
+	if err != nil || before.StrategyNAVRaw != 1_000_000_000 {
+		t.Fatalf("cash book: %d %v", before.StrategyNAVRaw, err)
+	}
+	_, bought := onreEntryNAVFixture(t, 0, 866_701_334_720)
+	after, err := ComputeRouteNAVForRoutes(77, bought, manifest, nil, []RuntimeRoute{route})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.StrategyNAVRaw != 999_880_196 {
+		t.Fatalf("entry below the mark moved NAV from %d to %d, want 999880196", before.StrategyNAVRaw, after.StrategyNAVRaw)
+	}
+}
