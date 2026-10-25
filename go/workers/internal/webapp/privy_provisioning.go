@@ -61,12 +61,10 @@ func privyFindUser(ctx context.Context, tx pgx.Tx, address string) (string, erro
 
 func privyCreateUser(ctx context.Context, tx pgx.Tx, address, email string) (string, error) {
 	var id string
-	// Conflict target mirrors the app_users_provider_subject_uidx unique
-	// index the Drizzle insert races on.
 	err := tx.QueryRow(ctx,
 		`INSERT INTO app_users (provider, subject_address, email, created_at, updated_at)
 VALUES ('solana', $1, $2, now(), now())
-ON CONFLICT DO NOTHING
+ON CONFLICT (provider, subject_address) DO NOTHING
 RETURNING id::text`,
 		address, privyOptionalText(email)).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
