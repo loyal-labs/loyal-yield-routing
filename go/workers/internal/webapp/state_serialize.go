@@ -2,6 +2,7 @@ package webapp
 
 import (
 	"errors"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -326,11 +327,9 @@ func serializeEarnStatePosition(position stateYieldPositionRow, currentTotalAmou
 	}
 }
 
-// serializeEarnStatePolicy mirrors serializeRoutePolicyState. The route
-// policies are looked up through h.activePolicyPair, which does not scan
-// vault_index/vault_pubkey, so they arrive as arguments; the pair lookup pins
-// both to the Earn vault, so they equal the row values.
-func serializeEarnStatePolicy(route RoutePolicy, setup *RoutePolicy, vaultIndex int, vaultPubkey string) *EarnStatePolicy {
+// serializeEarnStatePolicy mirrors serializeRoutePolicyState; the pair lookup
+// scans vault_index/vault_pubkey, so the row carries them.
+func serializeEarnStatePolicy(route RoutePolicy, setup *RoutePolicy) *EarnStatePolicy {
 	serialized := &EarnStatePolicy{
 		Account:              route.PolicyAccount,
 		DelegatedSigners:     route.DelegatedSigners,
@@ -344,8 +343,8 @@ func serializeEarnStatePolicy(route RoutePolicy, setup *RoutePolicy, vaultIndex 
 		Seed:                 strconvFormatInt(route.PolicySeed),
 		StableMints:          route.StableMints,
 		UniversePreset:       stateStringPtr(route.UniversePreset),
-		VaultIndex:           vaultIndex,
-		VaultPubkey:          vaultPubkey,
+		VaultIndex:           int(route.VaultIndex),
+		VaultPubkey:          route.VaultPubkey,
 	}
 	if setup != nil {
 		serialized.SetupPolicy = &EarnStateSetupPolicy{
@@ -565,11 +564,15 @@ func deriveEarnCrossMintIndex(rows []stateCrossMintPolicyRow) EarnStateAutoswapI
 }
 
 func sortStateCandidates(candidates []EarnStateAutoswapIndexPolicy) {
-	for i := 1; i < len(candidates); i++ {
-		for j := i; j > 0 && candidates[j].SourceShard == "classic" && candidates[j-1].SourceShard != "classic"; j-- {
-			candidates[j], candidates[j-1] = candidates[j-1], candidates[j]
+	slices.SortStableFunc(candidates, func(a, b EarnStateAutoswapIndexPolicy) int {
+		if (a.SourceShard == "classic") == (b.SourceShard == "classic") {
+			return 0
 		}
-	}
+		if a.SourceShard == "classic" {
+			return -1
+		}
+		return 1
+	})
 }
 
 func stateIsPolicyShard(shard *string) bool {

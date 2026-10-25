@@ -42,8 +42,6 @@ type earningsRequest struct {
 }
 
 type earningsOutput struct {
-	// Next sets no explicit cache header on this route; no-store is pinned
-	// here because every byte is per-wallet state.
 	CacheControl string `header:"Cache-Control"`
 	Body         EarningsRangeSet
 }
@@ -84,7 +82,7 @@ func (h earnRoutes) earnEarnings(ctx context.Context, in *earningsRequest) (*ear
 	input := earningsReadInput{
 		cluster:       string(account.Cluster),
 		settings:      account.Settings.String(),
-		timezone:      in.Timezone,
+		timezone:      normalizeEarningsTimezone(in.Timezone),
 		vaultIndex:    int16(earnprep.EarnVaultIndex),
 		walletAddress: account.Wallet.String(),
 	}
@@ -93,7 +91,7 @@ func (h earnRoutes) earnEarnings(ctx context.Context, in *earningsRequest) (*ear
 	if err != nil {
 		return nil, earningsRouteError(err)
 	}
-	return &earningsOutput{CacheControl: "no-store", Body: payload}, nil
+	return &earningsOutput{CacheControl: perWalletCacheControl(), Body: payload}, nil
 }
 
 func earningsRouteError(err error) error {

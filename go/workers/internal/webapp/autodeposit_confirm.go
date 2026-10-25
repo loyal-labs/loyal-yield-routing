@@ -66,9 +66,7 @@ type autodepositCloseInput struct {
 type autodepositFloorInput struct {
 	PolicyAccount         string
 	RecurringDelegation   string
-	Settings              string
 	VaultIndex            int
-	WalletAddress         string
 	WalletBalanceFloorRaw uint64
 }
 
@@ -76,9 +74,7 @@ type autodepositToggleInput struct {
 	Active              bool
 	PolicyAccount       string
 	RecurringDelegation string
-	Settings            string
 	VaultIndex          int
-	WalletAddress       string
 }
 
 func autodepositBodyObject(raw []byte) (map[string]any, error) {
@@ -390,10 +386,7 @@ func (h earnRoutes) autodepositFloorConfirm(ctx context.Context, in *autodeposit
 		return nil, earnError(http.StatusBadRequest, "invalid_request", err.Error())
 	}
 
-	// The wallet and settings come from the principal, never from the body.
-	input.Settings = account.Settings.String()
-	input.WalletAddress = account.Wallet.String()
-	result, err := h.updateAutodepositWalletBalanceFloor(ctx, input)
+	result, err := h.updateAutodepositWalletBalanceFloor(ctx, account.Settings.String(), account.Wallet.String(), input)
 	if err != nil {
 		return nil, earnError(http.StatusBadRequest, "update_failed", err.Error())
 	}
@@ -450,10 +443,7 @@ func (h earnRoutes) autodepositToggleConfirm(ctx context.Context, in *autodeposi
 		return nil, earnError(http.StatusBadRequest, "invalid_request", err.Error())
 	}
 
-	// The wallet and settings come from the principal.
-	input.Settings = account.Settings.String()
-	input.WalletAddress = account.Wallet.String()
-	target, err := h.updateAutodepositTargetActive(ctx, input)
+	target, err := h.updateAutodepositTargetActive(ctx, account.Settings.String(), account.Wallet.String(), input)
 	if err != nil {
 		return nil, earnError(http.StatusBadRequest, "toggle_failed", err.Error())
 	}

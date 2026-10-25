@@ -37,8 +37,6 @@ type stateReconcileRequest struct {
 }
 
 type stateReconcileOutput struct {
-	// Next's NextResponse.json sets no cache header on this route; no-store
-	// is pinned because the write is per-wallet state.
 	CacheControl string `header:"Cache-Control"`
 	Body         EarnPositionReconcileResponse
 }
@@ -67,7 +65,7 @@ func (h earnRoutes) earnPositionReconcile(ctx context.Context, in *stateReconcil
 		slog.Warn("[earn-position] reconciliation failed", "error", err)
 		return nil, earnError(http.StatusInternalServerError, "reconcile_failed", err.Error())
 	}
-	return &stateReconcileOutput{CacheControl: "no-store", Body: result}, nil
+	return &stateReconcileOutput{CacheControl: perWalletCacheControl(), Body: result}, nil
 }
 
 func stateReconcileMissing(vault *stateManagedVaultRow) EarnPositionReconcileResponse {
@@ -301,28 +299,15 @@ func (h earnRoutes) stateRecordReconciledSnapshot(ctx context.Context, in stateR
 	for _, balance := range in.IdleBalances {
 		idleTotal += balance.AmountRaw
 	}
-	// pendingContext: the context without publication_scope, which only the
-	// publishing update below restores.
-	pendingContext, err := json.Marshal(map[string]any{
+	snapshotContext := map[string]any{
 		"accountCount":                    in.AccountCount,
 		"chunkCount":                      in.ChunkCount,
 		"idle_vault_liquidity_amount_raw": strconvFormatInt(idleTotal),
 		"purpose":                         "routine",
 		"source":                          "earn_rpc_holdings",
 		"sourceCommitment":                in.SourceCommitment,
-	})
-	if err != nil {
-		return fmt.Errorf("record reconciled yield vault snapshot: %w", err)
 	}
-	fullContext, err := json.Marshal(map[string]any{
-		"accountCount":                    in.AccountCount,
-		"chunkCount":                      in.ChunkCount,
-		"idle_vault_liquidity_amount_raw": strconvFormatInt(idleTotal),
-		"publication_scope":               "complete_product_vault",
-		"purpose":                         "routine",
-		"source":                          "earn_rpc_holdings",
-		"sourceCommitment":                in.SourceCommitment,
-	})
+	pendingContext, err := json.Marshal(snapshotContext)
 	if err != nil {
 		return fmt.Errorf("record reconciled yield vault snapshot: %w", err)
 	}
@@ -388,9 +373,14 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
 		}
 	}
 
+	snapshotContext["publication_scope"] = "complete_product_vault"
+	publishedContext, err := json.Marshal(snapshotContext)
+	if err != nil {
+		return fmt.Errorf("record reconciled yield vault snapshot: %w", err)
+	}
 	if _, err := tx.Exec(ctx, `UPDATE loyal_yield.vault_position_snapshots
 SET context = $2, is_current = TRUE
-WHERE id = $1`, snapshotID, fullContext); err != nil {
+WHERE id = $1`, snapshotID, publishedContext); err != nil {
 		return fmt.Errorf("record reconciled yield vault snapshot: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `UPDATE loyal_yield.managed_vaults
