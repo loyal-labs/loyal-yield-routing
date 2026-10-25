@@ -8,12 +8,8 @@ package webapp
 //	POST /api/smart-accounts/yield-optimization/position/reconcile
 //	POST /api/smart-accounts/yield-optimization/realtime/token
 //
-// <- web/apps/web/src/app/api/smart-accounts/yield-optimization/{earn-state,
-// position, position/reconcile, realtime/token}/route.ts (mobile twins
-// .../mobile/earn/state and .../mobile/earn/autodeposit/state). Earn-state
-// runs five independent
-// loads, each degraded into loadErrors + null on failure exactly like
-// loadEarnStatePart; the position load also runs the reconcile writers, so
+// Earn-state runs five independent loads, each degraded into loadErrors +
+// null on failure; the position load also runs the reconcile writers, so
 // this is a read family with a bounded write blast radius.
 
 import (
@@ -65,8 +61,7 @@ var earnStateFamily = earnFamily{
 }
 
 type earnStateOutput struct {
-	// Next sets no explicit cache header on this route; no-store is pinned
-	// here because every byte is per-wallet state.
+	// no-store is deliberate: every byte is per-wallet state.
 	CacheControl string `header:"Cache-Control"`
 	Body         EarnStateResponse
 }

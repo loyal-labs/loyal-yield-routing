@@ -244,10 +244,8 @@ func resetEarnForecastCacheForTests() {
 	forecastLastRealized = nil
 }
 
-// mediumFeeAwareEarnForecast ports getMediumFeeAwareEarnForecast
-// : a 5-minute cache with a 3-hour stale
-// fallback, served as availability "stale". The lock also single-flights the
-// DB reads the TS would race.
+// mediumFeeAwareEarnForecast serves a 5-minute cache with a 3-hour stale
+// fallback as availability "stale"; the lock single-flights the DB reads.
 func (h earnRoutes) mediumFeeAwareEarnForecast(ctx context.Context, deps forecastDeps, now time.Time) *forecastResult {
 	forecastCacheMu.Lock()
 	defer forecastCacheMu.Unlock()

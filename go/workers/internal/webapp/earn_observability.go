@@ -1,8 +1,5 @@
 package webapp
 
-// POST /api/observability/errors                                   <- web/apps/web/src/app/api/observability/errors/route.ts + mobile/errors/route.ts
-// POST /api/observability/events                                   <- web/apps/web/src/app/api/observability/events/route.ts + mobile/events/route.ts
-// POST /api/observability/metrics                                  <- web/apps/web/src/app/api/observability/metrics/route.ts + mobile/metrics/route.ts
 // One Go op per signal serves both clients: a request is admitted through the
 // browser same-origin check or the native gate (no Origin, no Sec-Fetch-Site)
 // and parsed with the matching envelope, then forwarded to
@@ -226,9 +223,8 @@ func (h earnRoutes) registerObservability(api huma.API) {
 	api.OpenAPI().Paths[obsMetricsPath].Post.RequestBody = requestBody
 }
 
-// obsErrors ports the two error routes. Web rejects third-party extension and
-// Cap widget reports without exporting; every other outcome is 202 whether or
-// not the collector answered, exactly like Next.
+// obsErrors: once admitted, every outcome is 202 whether or not the
+// collector answered.
 func (h earnRoutes) obsErrors(ctx context.Context, in *obsIngestInput) (*obsIngestOutput, error) {
 	requestOrigin, refused := obsAdmit(in, obsErrorRates)
 	if refused != nil {
@@ -259,9 +255,8 @@ func (h earnRoutes) obsErrors(ctx context.Context, in *obsIngestInput) (*obsInge
 	return obsAcceptedOutput(), nil
 }
 
-// obsEvents ports the two lifecycle routes. Only the web admit reports the
-// traffic kind and depends on the export succeeding; the mobile admit always
-// answers 202 like Next's mobile route.
+// obsEvents: the web admit reports the traffic kind and answers 503 when the
+// export fails; the mobile admit always answers 202.
 func (h earnRoutes) obsEvents(ctx context.Context, in *obsIngestInput) (*obsJourneyOutput, error) {
 	if in.SyntheticProbe == "1" && journeyTrafficKind("") != "synthetic" {
 		return nil, obsErrSyntheticTarget
@@ -296,8 +291,7 @@ func (h earnRoutes) obsEvents(ctx context.Context, in *obsIngestInput) (*obsJour
 	return &obsJourneyOutput{Status: http.StatusAccepted, CacheControl: "no-store", Body: obsJourneyAccepted{Accepted: true, TrafficKind: trafficKind}}, nil
 }
 
-// obsMetrics ports the two loading-metric routes; like Next's metrics routes
-// the export result never changes the 202.
+// obsMetrics: the export result never changes the 202.
 func (h earnRoutes) obsMetrics(ctx context.Context, in *obsIngestInput) (*obsIngestOutput, error) {
 	_, refused := obsAdmit(in, obsMetricRates)
 	if refused != nil {

@@ -20,8 +20,7 @@ const refundsPreparePath = "/api/smart-accounts/yield-optimization/policy-refund
 const (
 	vaultEmptyMessage    = "Nothing to refund on the Earn vault."
 	refundBlockedMessage = "Earn vault still holds token balances outside its USDC account; withdraw the position before refunding vault accounts."
-	// client.ts:10514-10516 — also unreachable behind the route's canRefund
-	// gate, but the message and status are part of the contract.
+	// The message and status are part of the contract.
 	refundNothingMessage = "Nothing to refund: the Earn vault holds no SOL and no token accounts."
 )
 
@@ -124,8 +123,8 @@ type earnRefundBlockedError struct{}
 func (earnRefundBlockedError) Error() string { return refundBlockedMessage }
 
 func buildVaultRefundOperation(snapshot earnVaultRefundSnapshot, usdcMint, feePayer, settings solana.PublicKey, accountIndex uint8) ([]WirePreparedInstruction, error) {
-	// client.ts:10450-10459. Between the route's gate and this second snapshot
-	// the vault can have gained a balance; the refund still refuses.
+	// Between the caller's gate and this second snapshot the vault can have
+	// gained a balance; the refund still refuses.
 	for _, tokenAccount := range snapshot.TokenAccounts {
 		if tokenAccount.Amount > 0 && tokenAccount.Address != snapshot.VaultUsdcATA {
 			return nil, earnRefundBlockedError{}

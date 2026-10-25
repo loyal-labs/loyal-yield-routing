@@ -2,6 +2,8 @@ package webapp
 
 import "github.com/danielgtaylor/huma/v2"
 
+// earnDepositYieldGrants includes the quest-table writes because the confirm
+// op itself reports quest completion.
 var earnDepositYieldGrants = []Grant{
 	TableGrant("loyal_yield.managed_vaults", "SELECT"),
 	TableGrant("loyal_yield.route_policies", "SELECT"),

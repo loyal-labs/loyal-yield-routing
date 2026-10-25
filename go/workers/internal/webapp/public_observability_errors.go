@@ -289,8 +289,8 @@ func parseMobileErrorEnvelope(raw []byte, now time.Time) (obsErrorEnvelope, erro
 	return envelope, nil
 }
 
-// isThirdPartyExtensionError ports error-contract.ts:273: an ambient report
-// whose stack holds only extension frames never saw Loyal code run.
+// isThirdPartyExtensionError: an ambient report whose stack holds only
+// extension frames never saw Loyal code run.
 var (
 	obsExtensionFramePattern  = regexp.MustCompile(`(?i)\b(?:chrome|moz|safari-web|safari|ms-browser)-extension:\/\//`)
 	obsFirstPartyFramePattern = regexp.MustCompile(`\bhttps?:\/\//`)
@@ -304,8 +304,8 @@ func isThirdPartyExtensionError(operation, stack string) bool {
 	return obsExtensionFramePattern.MatchString(stack) && !obsFirstPartyFramePattern.MatchString(stack)
 }
 
-// isCapWidgetInternalError ports error-contract.ts:294: the Cap captcha widget
-// tearing down mid-solve is not a Loyal failure.
+// isCapWidgetInternalError: the Cap captcha widget tearing down mid-solve is
+// not a Loyal failure.
 func isCapWidgetInternalError(operation, message string) bool {
 	return obsAmbientErrorOperations[operation] && obsCapWidgetPattern.MatchString(message)
 }

@@ -63,8 +63,7 @@ type RealtimeTokenResponse struct {
 }
 
 type realtimeTokenOutput struct {
-	// Next pins Cache-Control: no-store on success and errors alike
-	// (route.ts:8-12,62-70).
+	// no-store is pinned on success and errors alike.
 	CacheControl string `header:"Cache-Control"`
 	Body         RealtimeTokenResponse
 }

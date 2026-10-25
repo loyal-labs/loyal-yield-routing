@@ -7,15 +7,6 @@ var earnAutodepositFamily = earnFamily{
 	ready: func(h earnRoutes) bool {
 		return h.signedIn() && h.YieldDB != nil && h.Chain != nil && !h.PolicySigner.IsZero()
 	},
-	// The setup confirm reads the target row, then writes the intent and the
-	// bootstrap sweep state machine (targets, wallet projections, events,
-	// surplus lots, scheduled slots); lot claims are joined when the scheduled
-	// sweep is re-read. The close confirm releases the target's selected
-	// claims (UPDATE) after reading their items; the floor confirm draws the
-	// rebaseline event id from the reserved negative floor sequence. The
-	// sweeps execute op reads the target, gates on the active route policy
-	// pair, flips the chosen slot to "requested" (slots, lots UPDATE) and the
-	// progress GET joins the execution and realtime event tables.
 	yieldGrants: append([]Grant{
 		TableGrant("loyal_yield.balance_sweep_targets", "SELECT"),
 		TableGrant("loyal_yield.balance_sweep_targets", "INSERT"),
@@ -31,10 +22,15 @@ var earnAutodepositFamily = earnFamily{
 		TableGrant("loyal_yield.balance_sweep_scheduled_slots", "SELECT"),
 		TableGrant("loyal_yield.balance_sweep_scheduled_slots", "INSERT"),
 		TableGrant("loyal_yield.balance_sweep_scheduled_slots", "UPDATE"),
+		// The close confirm releases the target's selected claims after
+		// reading their items.
 		TableGrant("loyal_yield.balance_sweep_lot_claims", "SELECT"),
 		TableGrant("loyal_yield.balance_sweep_lot_claims", "UPDATE"),
 		TableGrant("loyal_yield.balance_sweep_lot_claim_items", "SELECT"),
+		// The floor confirm draws the rebaseline event id from the reserved
+		// negative floor sequence.
 		SequenceGrant("loyal_yield.balance_sweep_floor_rebaseline_event_id_seq", "USAGE"),
+		// The progress GET joins the execution and realtime event tables.
 		TableGrant("loyal_yield.balance_sweep_executions", "SELECT"),
 		TableGrant("loyal_yield.realtime_events", "SELECT"),
 	}, EarnPolicyGrants...),

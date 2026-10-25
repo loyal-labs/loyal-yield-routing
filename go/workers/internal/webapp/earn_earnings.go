@@ -1,12 +1,5 @@
 package webapp
 
-// GET /api/smart-accounts/yield-optimization/earnings
-// <- web/apps/web/src/app/api/smart-accounts/yield-optimization/earnings/route.ts
-// (mobile twin web/apps/web/src/app/api/smart-accounts/mobile/earn/earnings).
-// Authenticated read over the unit-1 read service: cached snapshot when fresh,
-// stale-while-revalidate otherwise, with the detached rebuild standing in for
-// Next's after().
-
 import (
 	"context"
 	"errors"
