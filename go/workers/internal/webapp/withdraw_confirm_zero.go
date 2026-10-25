@@ -131,9 +131,6 @@ func classifyWithdrawZeroProof(cluster string, holdingsSnapshot earnprep.Withdra
 		return withdrawFullExitZeroProof{}, errors.New("Earn vault token inventory was observed before the withdrawal confirmation slot.")
 	}
 
-	// A vault token account blocks policy close when it holds a non-dust
-	// balance, or any positive balance of a mint that is not a canonical idle
-	// product asset at the expected ATA and token program.
 	idleAssetByTokenAccount := map[string]earnprep.WithdrawProductAsset{}
 	for _, asset := range earnprep.WithdrawProductAssets(cluster) {
 		ata, err := spl.AssociatedTokenAddress(vaultSnapshot.VaultPda, asset.Mint, asset.TokenProgram)
@@ -145,8 +142,7 @@ func classifyWithdrawZeroProof(cluster string, holdingsSnapshot earnprep.Withdra
 	var blocking []withdrawBlockingTokenAccount
 	cleanup := []withdrawCleanupTokenAccount{}
 	for _, account := range vaultSnapshot.TokenAccounts {
-		asset, known := idleAssetByTokenAccount[account.Address.String()]
-		if account.Amount > 0 && (!known || asset.Mint != account.Mint || asset.TokenProgram != account.Program || account.Amount >= finalExitIdleDustToleranceRaw) {
+		if blocksPolicyClose(account, idleAssetByTokenAccount) {
 			blocking = append(blocking, withdrawBlockingTokenAccount{
 				Address:        account.Address.String(),
 				AmountRaw:      strconv.FormatUint(account.Amount, 10),
@@ -186,6 +182,12 @@ func classifyWithdrawZeroProof(cluster string, holdingsSnapshot earnprep.Withdra
 		RemainingHoldings:     remaining,
 		Status:                status,
 	}, nil
+}
+
+func blocksPolicyClose(account vaultRefundTokenAccount, idleAssetByTokenAccount map[string]earnprep.WithdrawProductAsset) bool {
+	asset, canonicalIdle := idleAssetByTokenAccount[account.Address.String()]
+	canonicalIdle = canonicalIdle && asset.Mint == account.Mint && asset.TokenProgram == account.Program
+	return account.Amount > 0 && (!canonicalIdle || account.Amount >= finalExitIdleDustToleranceRaw)
 }
 
 func verifyWithdrawFullExitZeroBalances(ctx context.Context, client withdrawConfirmChain, sleep func(context.Context) error, now func() time.Time, cluster string, in withdrawCanonicalInput, minContextSlot uint64) (withdrawFullExitZeroProof, error) {
