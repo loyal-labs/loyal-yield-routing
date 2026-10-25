@@ -253,19 +253,27 @@ func earn(ctx context.Context, rpcClient *chain.Client, appDB, yieldDB *pgxpool.
 			degraded("Earn earnings, state and deposit prepare", errors.New("TIMESCALEDB_URL is not installed"))
 		}
 	}
-	baseURL, okBase := optionalCredential("Earn autodeposit", "MOBILE_PUSH_API_BASE_URL")
-	pushSecret, okPush := optionalCredential("Earn autodeposit", "MOBILE_PUSH_API_SECRET")
-	if okBase && okPush {
-		if baseURL != "" && pushSecret != "" {
-			e.Push = &webapp.WalletPush{BaseURL: baseURL, Secret: pushSecret}
-		} else {
-			degraded("Earn autodeposit", errors.New("MOBILE_PUSH_API_BASE_URL and MOBILE_PUSH_API_SECRET are not both installed"))
-		}
-	}
+	e.Push = walletPush()
 	grantCtx, cancel := context.WithTimeout(ctx, grantBound)
 	defer cancel()
 	e.Granted = webapp.CheckEarnGrants(grantCtx, appDB, yieldDB)
 	return e
+}
+
+func walletPush() *webapp.WalletPush {
+	baseURL, errBase := engine.OptionalCredential("MOBILE_PUSH_API_BASE_URL")
+	secret, errSecret := engine.OptionalCredential("MOBILE_PUSH_API_SECRET")
+	switch {
+	case errBase != nil || errSecret != nil:
+		slog.Error("Earn autodeposit wallet push off", "reason", errors.Join(errBase, errSecret).Error())
+	case baseURL == "" && secret == "":
+		slog.Info("Earn autodeposit wallet push off", "reason", "MOBILE_PUSH_API_BASE_URL and MOBILE_PUSH_API_SECRET are not installed")
+	case baseURL == "" || secret == "":
+		slog.Error("Earn autodeposit wallet push off", "reason", "only one of MOBILE_PUSH_API_BASE_URL and MOBILE_PUSH_API_SECRET is installed")
+	default:
+		return &webapp.WalletPush{BaseURL: baseURL, Secret: secret}
+	}
+	return nil
 }
 
 func run(ctx context.Context) error {

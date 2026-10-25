@@ -502,7 +502,7 @@ func (h earnRoutes) autodepositSetupConfirm(ctx context.Context, in *autodeposit
 		if scheduledSweep != nil {
 			payload = autodepositSweepScheduledPush(scheduledSweep.RemainingAmountRaw)
 		}
-		h.sendAutodepositWalletPush(ctx, canonical.WalletAddress, payload)
+		h.Push.send(ctx, canonical.WalletAddress, payload)
 	}
 
 	return &autodepositSetupConfirmOutput{Body: AutodepositSetupConfirmResponse{

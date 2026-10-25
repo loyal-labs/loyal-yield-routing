@@ -17,7 +17,8 @@ import (
 // push tokens register per wallet on the app backend, so Earn delivers pushes
 // through its authenticated send endpoint. The DECIDED pathmap.md:14 row keeps
 // the mobile route's sendWalletPush call inside the Go confirm op. Like the
-// TS, a missing configuration or a failed send never fails the confirm.
+// TS, a nil WalletPush (push off at startup) or a failed send never fails the
+// confirm.
 type autodepositWalletPush struct {
 	Body  string `json:"body"`
 	Title string `json:"title"`
@@ -25,8 +26,11 @@ type autodepositWalletPush struct {
 
 const autodepositPushSendTimeout = 5 * time.Second
 
-func (h earnRoutes) sendAutodepositWalletPush(ctx context.Context, walletAddress string, payload autodepositWalletPush) {
-	baseURL, secret := h.Push.BaseURL, h.Push.Secret
+func (p *WalletPush) send(ctx context.Context, walletAddress string, payload autodepositWalletPush) {
+	if p == nil {
+		return
+	}
+	baseURL, secret := p.BaseURL, p.Secret
 	body, err := json.Marshal(map[string]string{
 		"body":            payload.Body,
 		"title":           payload.Title,
