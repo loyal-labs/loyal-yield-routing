@@ -34,6 +34,7 @@ export type ChartTab = (typeof CHART_TABS)[number];
 
 export type ChartCardCustomContent = {
   defaultTab: ChartTab;
+  loggedOutTooltip?: string;
   renderBody: (activeTab: ChartTab, isExpanded: boolean) => ReactNode;
   tabs: readonly ChartTab[];
 };
@@ -159,7 +160,10 @@ export function EarnChartCard({
               <InfoTooltip
                 iconClassName="size-6"
                 placement="bottom"
-                text="Historical APY of the Loyal Earn strategy over the last 30 days."
+                text={
+                  custom?.loggedOutTooltip ??
+                  "Historical APY of the Loyal Earn strategy over the last 30 days."
+                }
               />
             </div>
           ) : (

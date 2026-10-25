@@ -1,6 +1,5 @@
 import type {
   EarnMaxActivityItem,
-  EarnMaxApyPoint,
   EarnMaxCoverage,
   EarnMaxPerformancePoint,
   EarnMaxWithdrawalView,
@@ -21,7 +20,6 @@ export type {
 
 export type EarnMaxViewModel = {
   activity: EarnMaxActivityItem[];
-  apyHistory: EarnMaxApyPoint[];
   apyWindowDays: number | null;
   balanceUsd: number;
   canWithdraw: boolean;

@@ -27,6 +27,7 @@ import { TextSwap } from "@/components/wallet-workspace/facelift/text-swap";
 import { AddEmailNudge } from "@/components/auth/add-email-nudge";
 import { LedgerSignInLink } from "@/components/auth/ledger-sign-in-link";
 import { ThemedIcon } from "@/components/wallet-workspace/facelift/themed-icon";
+import { useEarnMaxApy } from "@/features/earn-max";
 import { useEarnForecastApy } from "@/hooks/use-earn-forecast-apy";
 import { useAuthSession } from "@/contexts/auth-session-context";
 import { useSignInModal } from "@/contexts/sign-in-modal-context";
@@ -141,7 +142,6 @@ export function FaceliftSidebar({
   activePage,
   earnBalanceUsd,
   earnMaxBalanceUsd,
-  earnMaxForecastApyBps,
   flashedShortcut,
   isEarnBalanceLoading,
   isEarnMaxBalanceLoading,
@@ -239,25 +239,7 @@ export function FaceliftSidebar({
   const cryptoBalance = splitUsdBalance(cryptoUsd);
   const earnBalance = splitUsdBalance(earnBalanceUsd);
   const earnMaxBalance = splitUsdBalance(earnMaxBalanceUsd);
-  const [publicEarnMaxApyBps, setPublicEarnMaxApyBps] = useState<number | null>(null);
-  useEffect(() => {
-    if (isSignedIn) return;
-    setPublicEarnMaxApyBps(null);
-    const controller = new AbortController();
-    void fetch("/api/earn-max/apy", { signal: controller.signal })
-      .then(async (response) => {
-        if (!response.ok) return;
-        const data: { apyBps?: unknown } = await response.json();
-        if (typeof data.apyBps === "number" && Number.isFinite(data.apyBps)) {
-          setPublicEarnMaxApyBps(data.apyBps);
-        }
-      })
-      .catch(() => {});
-    return () => controller.abort();
-  }, [isSignedIn]);
-  const earnMaxApyBps = isSignedIn
-    ? earnMaxForecastApyBps
-    : publicEarnMaxApyBps;
+  const earnMaxApyBps = useEarnMaxApy().apy?.apyBps ?? null;
   const earnMaxApyLabel =
     earnMaxApyBps === null ? null : formatEarnMaxApyLabel(earnMaxApyBps);
   const totalBalance = splitUsdBalance(
