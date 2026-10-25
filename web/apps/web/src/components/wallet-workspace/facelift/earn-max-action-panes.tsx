@@ -105,7 +105,7 @@ export function EarnMaxInfoFaqsCard({
 }) {
   return (
     <div
-      className={`flex-col overflow-clip rounded-3xl bg-card ${className}`}
+      className={`flex-col rounded-3xl bg-card ${bannerRoom ? "overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden" : "overflow-clip"} ${className}`}
       data-earn-banner-room={bannerRoom ? "" : undefined}
     >
       <header className="flex w-full items-center p-2">
