@@ -340,7 +340,7 @@ func (h earnMaxRoutes) registerPublicAPY(api huma.API) {
 		Path:        "/api/earn-max/apy",
 		Summary:     "Earn MAX trailing 7-day realized APY and its history",
 	}, func(ctx context.Context, _ *struct{}) (*apyOutput, error) {
-		return &apyOutput{h.cfg.Reader.PublicAPY(ctx)}, nil
+		return &apyOutput{h.cfg.Reader.PublicAPY()}, nil
 	})
 }
 
