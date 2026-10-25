@@ -112,7 +112,6 @@ func sortEarningsEvents(events []earningsEvent) ([]earningsEvent, error) {
 	return ordered, nil
 }
 
-// lastIndexAtOrBefore requires times to be ascending.
 func lastIndexAtOrBefore(times []int64, atMs int64) int {
 	low, high, found := 0, len(times)-1, -1
 	for low <= high {
@@ -242,15 +241,19 @@ type apySeries struct {
 }
 
 type apyIndex struct {
+	samples   []reserveApySample
 	all       apySeries
 	byReserve map[string]*apySeries
 	unscoped  apySeries
 }
 
-// buildApyIndex requires samples time-sorted, as calculateEarnEarnings
-// sorts them once per request.
-func buildApyIndex(samples []reserveApySample) *apyIndex {
-	index := &apyIndex{byReserve: map[string]*apySeries{}}
+func buildApyIndex(unsorted []reserveApySample) *apyIndex {
+	samples := make([]reserveApySample, len(unsorted))
+	copy(samples, unsorted)
+	sort.SliceStable(samples, func(i, j int) bool {
+		return samples[i].observedAt.UnixMilli() < samples[j].observedAt.UnixMilli()
+	})
+	index := &apyIndex{samples: samples, byReserve: map[string]*apySeries{}}
 	for position, sample := range samples {
 		t := sample.observedAt.UnixMilli()
 		push := func(series *apySeries) {
@@ -320,7 +323,12 @@ type portfolioSnapshotIndex struct {
 	times     []int64
 }
 
-func newPortfolioSnapshotIndex(snapshots []earningsPortfolioSnapshot) *portfolioSnapshotIndex {
+func newPortfolioSnapshotIndex(unsorted []earningsPortfolioSnapshot) *portfolioSnapshotIndex {
+	snapshots := make([]earningsPortfolioSnapshot, len(unsorted))
+	copy(snapshots, unsorted)
+	sort.SliceStable(snapshots, func(i, j int) bool {
+		return snapshots[i].observedAt.UnixMilli() < snapshots[j].observedAt.UnixMilli()
+	})
 	times := make([]int64, len(snapshots))
 	for i, snapshot := range snapshots {
 		times[i] = snapshot.observedAt.UnixMilli()
@@ -340,7 +348,12 @@ type pathEventIndex struct {
 	times  []int64
 }
 
-func newPathEventIndex(events []earningsPathEvent) *pathEventIndex {
+func newPathEventIndex(unsorted []earningsPathEvent) *pathEventIndex {
+	events := make([]earningsPathEvent, len(unsorted))
+	copy(events, unsorted)
+	sort.SliceStable(events, func(i, j int) bool {
+		return events[i].confirmedAt.UnixMilli() < events[j].confirmedAt.UnixMilli()
+	})
 	times := make([]int64, len(events))
 	for i, event := range events {
 		times[i] = event.confirmedAt.UnixMilli()
@@ -561,25 +574,12 @@ func calculateEarnEarnings(args calculateEarnEarningsArgs) (EarningsRange, error
 	if pathEvents == nil {
 		pathEvents = legacyEventsToPathEvents(sorted)
 	}
-	pathSorted := make([]earningsPathEvent, len(pathEvents))
-	copy(pathSorted, pathEvents)
-	sort.SliceStable(pathSorted, func(i, j int) bool {
-		return pathSorted[i].confirmedAt.UnixMilli() < pathSorted[j].confirmedAt.UnixMilli()
-	})
-
-	apySorted := make([]reserveApySample, len(args.apySamples))
-	copy(apySorted, args.apySamples)
-	sort.SliceStable(apySorted, func(i, j int) bool {
-		return apySorted[i].observedAt.UnixMilli() < apySorted[j].observedAt.UnixMilli()
-	})
-	apy := buildApyIndex(apySorted)
-
-	snapshots := make([]earningsPortfolioSnapshot, len(args.portfolioSnapshots))
-	copy(snapshots, args.portfolioSnapshots)
-	sort.SliceStable(snapshots, func(i, j int) bool {
-		return snapshots[i].observedAt.UnixMilli() < snapshots[j].observedAt.UnixMilli()
-	})
-	snapshotIdx := newPortfolioSnapshotIndex(snapshots)
+	pathIdx := newPathEventIndex(pathEvents)
+	pathSorted := pathIdx.events
+	apy := buildApyIndex(args.apySamples)
+	apySorted := apy.samples
+	snapshotIdx := newPortfolioSnapshotIndex(args.portfolioSnapshots)
+	snapshots := snapshotIdx.snapshots
 
 	firstDepositAt := firstDepositOf(sorted, pathSorted)
 	lastDepositAt := lastDepositOf(sorted, pathSorted)
@@ -596,7 +596,6 @@ func calculateEarnEarnings(args calculateEarnEarningsArgs) (EarningsRange, error
 	}
 
 	principalIndexes := map[principalClamp]*principalIndex{}
-	pathIdx := newPathEventIndex(pathSorted)
 
 	bars := make([]EarningsBar, 0, len(buckets))
 	for _, bucket := range buckets {

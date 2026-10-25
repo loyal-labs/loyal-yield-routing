@@ -5,10 +5,11 @@ package webapp
 
 import (
 	"cmp"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earncatalog"
 	"math"
 	"slices"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earncatalog"
 )
 
 const (
@@ -319,7 +320,6 @@ func forecastPortfolioAnnualizedGrowth(input forecastRealizedInput, timeline []f
 }
 
 type forecastRealizedInput struct {
-	// Ascending by observedAtMS.
 	histories   map[string][]forecastSharePricePoint
 	allocations forecastAllocationHistory
 	nowMS       int64
@@ -357,7 +357,9 @@ func forecastComputeRealizedApy(input forecastRealizedInput) *forecastRealizedRe
 	// Never let a future-dated recorder row set the measurement time or supply
 	// the interpolation point for a return that has not yet happened.
 	bounded := make(map[string][]forecastSharePricePoint, len(input.histories))
-	for reserve, points := range input.histories {
+	for reserve, unsorted := range input.histories {
+		points := slices.Clone(unsorted)
+		slices.SortStableFunc(points, func(a, b forecastSharePricePoint) int { return cmp.Compare(a.observedAtMS, b.observedAtMS) })
 		filtered := points
 		for i, point := range points {
 			if point.observedAtMS > input.nowMS {

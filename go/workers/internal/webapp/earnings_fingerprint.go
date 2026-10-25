@@ -3,6 +3,7 @@ package webapp
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"sort"
 )
 
 // Canonical JSON for the sha256 fingerprints and revisions the TS readers
@@ -244,8 +245,10 @@ func (r earningsSourceRevisionRow) write(w *jsonWriter) {
 	w.raw("}")
 }
 
-// getEarnEarningsSourceRevision hashes the position rows in id order.
-func getEarnEarningsSourceRevision(rows []earningsSourceRevisionRow) string {
+func getEarnEarningsSourceRevision(unsorted []earningsSourceRevisionRow) string {
+	rows := make([]earningsSourceRevisionRow, len(unsorted))
+	copy(rows, unsorted)
+	sort.SliceStable(rows, func(i, j int) bool { return rows[i].ID < rows[j].ID })
 	var w jsonWriter
 	w.raw("[")
 	for i, row := range rows {

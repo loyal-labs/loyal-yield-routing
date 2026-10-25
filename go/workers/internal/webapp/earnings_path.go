@@ -58,8 +58,9 @@ func sign64(v int64) int64 {
 	return 0
 }
 
-// findHoldingAt ports read-service:212 over chronologically ordered events.
-func findHoldingAt(events []earningsHoldingEvent, at time.Time) *earningsHoldingEvent {
+type ascendingHoldingEvents []earningsHoldingEvent
+
+func (events ascendingHoldingEvents) at(at time.Time) *earningsHoldingEvent {
 	atMs := at.UnixMilli()
 	var current *earningsHoldingEvent
 	for i := range events {
@@ -71,8 +72,8 @@ func findHoldingAt(events []earningsHoldingEvent, at time.Time) *earningsHolding
 	return current
 }
 
-func sortHoldingEventsAscending(events []earningsHoldingEvent) []earningsHoldingEvent {
-	ordered := make([]earningsHoldingEvent, len(events))
+func sortHoldingEventsAscending(events []earningsHoldingEvent) ascendingHoldingEvents {
+	ordered := make(ascendingHoldingEvents, len(events))
 	copy(ordered, events)
 	sort.SliceStable(ordered, func(i, j int) bool {
 		return comparePathEvents(&ordered[i], &ordered[j]) < 0
@@ -193,7 +194,7 @@ func buildCanonicalEarningsPath(holdingEvents []earningsHoldingEvent, ledgerEven
 		}
 		holding := matchingHolding
 		if holding == nil {
-			holding = findHoldingAt(holdings, event.confirmedAt)
+			holding = holdings.at(event.confirmedAt)
 		}
 		if holding != nil {
 			reserve = holding.reserve
