@@ -766,12 +766,33 @@ func (d *Database) MarkReconciled(ctx context.Context, operationID string, recon
 	if err := reconciliation.Validate(); err != nil || !json.Valid(effects) {
 		return fmt.Errorf("invalid reconciliation evidence")
 	}
-	tag, err := d.pool.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET status='reconciled',confirmation_status='finalized',reconciliation_sha256=$2,reconciled_effects=$3::jsonb,updated_at=clock_timestamp() WHERE operation_id=$1 AND status IN ('confirmed','reconciling')`, operationID, reconciliation.EffectsSHA256, string(effects))
+	var body struct {
+		Sale *realizedSale `json:"sale"`
+	}
+	if err := json.Unmarshal(effects, &body); err != nil {
+		return fmt.Errorf("invalid reconciliation evidence")
+	}
+	tx, err := d.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	tag, err := tx.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET status='reconciled',confirmation_status='finalized',reconciliation_sha256=$2,reconciled_effects=$3::jsonb,updated_at=clock_timestamp() WHERE operation_id=$1 AND status IN ('confirmed','reconciling')`, operationID, reconciliation.EffectsSHA256, string(effects))
 	if err != nil {
 		return err
 	}
 	if tag.RowsAffected() != 1 {
 		return fmt.Errorf("reconciliation found no landed operation")
+	}
+	if body.Sale != nil {
+		if cost, ok := body.Sale.exitCost(time.Now().UTC()); ok {
+			if _, err := tx.Exec(ctx, recordExitCostSQL, exitCostArgs(cost)...); err != nil {
+				return err
+			}
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
 	}
 	d.eventReconciled(ctx, operationID)
 	return nil

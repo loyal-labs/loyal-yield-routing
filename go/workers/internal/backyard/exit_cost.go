@@ -187,11 +187,61 @@ func (d *Database) RecordExitCost(ctx context.Context, cost ExitCost) error {
 	if _, err := newExitCost(cost); err != nil {
 		return err
 	}
-	_, err := d.pool.Exec(ctx, `INSERT INTO loyal_yield.backyard_lane_exit_costs AS c (lane, source, bps_micro, quoted_collateral_raw, mark_sf, slot, recorded_at)
-		VALUES ($1, $2, $3, $4::numeric, $5::numeric, $6, $7)
-		ON CONFLICT (lane, source) DO UPDATE SET bps_micro = EXCLUDED.bps_micro, quoted_collateral_raw = EXCLUDED.quoted_collateral_raw,
-			mark_sf = EXCLUDED.mark_sf, slot = EXCLUDED.slot, recorded_at = EXCLUDED.recorded_at
-		WHERE EXCLUDED.slot >= c.slot AND NOT (c.source = 'quote' AND c.mark_sf = EXCLUDED.mark_sf AND c.quoted_collateral_raw > EXCLUDED.quoted_collateral_raw)`,
-		cost.Lane, string(cost.Source), int64(cost.BPS), fmt.Sprint(cost.QuotedCollateralRaw), littleInt(cost.MarkSF[:]).String(), cost.Slot, cost.At)
+	_, err := d.pool.Exec(ctx, recordExitCostSQL, exitCostArgs(cost)...)
 	return err
+}
+
+const recordExitCostSQL = `INSERT INTO loyal_yield.backyard_lane_exit_costs AS c (lane, source, bps_micro, quoted_collateral_raw, mark_sf, slot, recorded_at)
+	VALUES ($1, $2, $3, $4::numeric, $5::numeric, $6, $7)
+	ON CONFLICT (lane, source) DO UPDATE SET bps_micro = EXCLUDED.bps_micro, quoted_collateral_raw = EXCLUDED.quoted_collateral_raw,
+		mark_sf = EXCLUDED.mark_sf, slot = EXCLUDED.slot, recorded_at = EXCLUDED.recorded_at
+	WHERE EXCLUDED.slot >= c.slot AND NOT (c.source = 'quote' AND c.mark_sf = EXCLUDED.mark_sf AND c.quoted_collateral_raw > EXCLUDED.quoted_collateral_raw)`
+
+func exitCostArgs(cost ExitCost) []any {
+	return []any{cost.Lane, string(cost.Source), int64(cost.BPS), fmt.Sprint(cost.QuotedCollateralRaw), littleInt(cost.MarkSF[:]).String(), cost.Slot, cost.At}
+}
+
+type ExpectedSale struct {
+	Lane          string                `json:"lane"`
+	SoldRaw       uint64                `json:"soldRaw"`
+	MarkValueRaw  uint64                `json:"markValueRaw"`
+	MarkSF        kamino.ScaledFraction `json:"markSf"`
+	OutputAccount string                `json:"outputAccount"`
+}
+
+type realizedSale struct {
+	ExpectedSale
+	ReturnedRaw uint64 `json:"returnedRaw"`
+	Slot        int64  `json:"slot"`
+}
+
+func collateralSale(accounts []ConfirmedAccount, route RuntimeRoute, action Action, soldRaw uint64, effects ExpectedEffects) *ExpectedSale {
+	if (action != SwapCollateralToStableStep && action != SwapCollateralToDebtStep) || len(effects.Accounts) != 2 ||
+		effects.Accounts[1].Mint != fleet.USDCMint || soldRaw == 0 {
+		return nil
+	}
+	prices, err := batchLanePrices(accounts, route)
+	if err != nil {
+		return nil
+	}
+	value, err := prices.collateralMicros(soldRaw)
+	if err != nil || value <= 0 {
+		return nil
+	}
+	return &ExpectedSale{Lane: route.Lane, SoldRaw: soldRaw, MarkValueRaw: uint64(value), MarkSF: prices.collateral, OutputAccount: effects.Accounts[1].Address}
+}
+
+func withStepSale(accounts []ConfirmedAccount, route RuntimeRoute, evidence StepExecutionEvidence) StepExecutionEvidence {
+	switch r := evidence.Request; {
+	case r.Swap != nil:
+		evidence.ExpectedEffects.Sale = collateralSale(accounts, route, r.Swap.Action, r.Swap.AmountRaw, evidence.ExpectedEffects)
+	case r.Hastra != nil:
+		evidence.ExpectedEffects.Sale = collateralSale(accounts, route, r.Hastra.Action, r.Hastra.AmountRaw, evidence.ExpectedEffects)
+	}
+	return evidence
+}
+
+func (s realizedSale) exitCost(at time.Time) (ExitCost, bool) {
+	cost, err := exitCostOf(s.Lane, exitCostRealized, s.SoldRaw, s.MarkValueRaw, s.ReturnedRaw, s.MarkSF, s.Slot, at)
+	return cost, err == nil
 }
