@@ -2,6 +2,7 @@ package webapp
 
 import (
 	"errors"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -565,11 +566,15 @@ func deriveEarnCrossMintIndex(rows []stateCrossMintPolicyRow) EarnStateAutoswapI
 }
 
 func sortStateCandidates(candidates []EarnStateAutoswapIndexPolicy) {
-	for i := 1; i < len(candidates); i++ {
-		for j := i; j > 0 && candidates[j].SourceShard == "classic" && candidates[j-1].SourceShard != "classic"; j-- {
-			candidates[j], candidates[j-1] = candidates[j-1], candidates[j]
+	slices.SortStableFunc(candidates, func(a, b EarnStateAutoswapIndexPolicy) int {
+		if (a.SourceShard == "classic") == (b.SourceShard == "classic") {
+			return 0
 		}
-	}
+		if a.SourceShard == "classic" {
+			return -1
+		}
+		return 1
+	})
 }
 
 func stateIsPolicyShard(shard *string) bool {

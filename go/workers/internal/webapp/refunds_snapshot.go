@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -126,13 +127,15 @@ func fetchEarnVaultRefundSnapshot(ctx context.Context, client *chain.Client, vau
 }
 
 func sortVaultTokenAccounts(accounts []vaultRefundTokenAccount) {
-	// Insertion sort: the vault holds a handful of stale collateral ATAs at
-	// most, so the quadratic bound is free here.
-	for i := 1; i < len(accounts); i++ {
-		for j := i; j > 0 && collationLess(accounts[j].Address.String(), accounts[j-1].Address.String()); j-- {
-			accounts[j], accounts[j-1] = accounts[j-1], accounts[j]
+	slices.SortStableFunc(accounts, func(a, b vaultRefundTokenAccount) int {
+		switch {
+		case collationLess(a.Address.String(), b.Address.String()):
+			return -1
+		case collationLess(b.Address.String(), a.Address.String()):
+			return 1
 		}
-	}
+		return 0
+	})
 }
 
 // decodeVaultTokenAccount reads the SPL token account layout the way
