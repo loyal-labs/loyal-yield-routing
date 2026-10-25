@@ -2,9 +2,10 @@ package webapp
 
 import (
 	"fmt"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earncatalog"
 	"strconv"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earncatalog"
 )
 
 // Serializes Earn history into the exact JSON the Next

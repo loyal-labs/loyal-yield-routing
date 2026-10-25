@@ -3,10 +3,11 @@ package webapp
 import (
 	"context"
 	"errors"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earncatalog"
 	"log/slog"
 	"math"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earncatalog"
 )
 
 const (

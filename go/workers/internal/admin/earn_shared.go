@@ -2,8 +2,9 @@ package admin
 
 import (
 	"fmt"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earncatalog"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earncatalog"
 )
 
 const earnStablecoinDecimals = 6

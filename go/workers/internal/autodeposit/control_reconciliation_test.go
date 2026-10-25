@@ -3,9 +3,10 @@ package autodeposit
 import (
 	"bytes"
 	"context"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earncatalog"
 	"testing"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earncatalog"
 )
 
 func TestControlSnapshotProvesActualArtifacts(t *testing.T) {

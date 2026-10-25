@@ -1,9 +1,10 @@
 package fleet
 
 import (
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earncatalog"
 	"math"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earncatalog"
 )
 
 const (
