@@ -313,7 +313,7 @@ func (h earnRoutes) earnPolicyRefundPrepare(ctx context.Context, in *refundPrepa
 	if err != nil {
 		return nil, unavailable("vault refund snapshot", err)
 	}
-	instructions, err := buildVaultRefundOperation(secondSnapshot, usdcMint, account.Wallet, account.Settings, earnVaultIndex)
+	instructions, err := buildVaultRefundOperation(secondSnapshot, usdcMint, account.Wallet, account.Settings, earnprep.EarnVaultIndex)
 	if err != nil {
 		var blocked earnRefundBlockedError
 		if errors.As(err, &blocked) {
@@ -335,7 +335,7 @@ func (h earnRoutes) earnPolicyRefundPrepare(ctx context.Context, in *refundPrepa
 			},
 			SettingsPda: account.Settings.String(),
 			Vault:       vault,
-			VaultIndex:  earnVaultIndex,
+			VaultIndex:  earnprep.EarnVaultIndex,
 		},
 	}}, nil
 }

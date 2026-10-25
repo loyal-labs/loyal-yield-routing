@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnprep"
 )
 
 // Reads the Earn history the Next earn-transactions route serves, including
@@ -141,7 +143,7 @@ func (h earnRoutes) syncRebalanceHoldingEvents(ctx context.Context, account Earn
 	defer cancel()
 	now := time.Now()
 	_, err := h.YieldDB.Exec(ctx, txreadsSyncRebalanceSQL,
-		account.Settings.String(), int16(earnVaultIndex), account.Wallet.String(), now)
+		account.Settings.String(), int16(earnprep.EarnVaultIndex), account.Wallet.String(), now)
 	return err
 }
 
@@ -278,7 +280,7 @@ func (h earnRoutes) positionSeeds(ctx context.Context, account EarnAccount) ([]t
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	rows, err := h.YieldDB.Query(ctx, txreadsPositionsSQL,
-		account.Settings.String(), int16(earnVaultIndex), account.Wallet.String())
+		account.Settings.String(), int16(earnprep.EarnVaultIndex), account.Wallet.String())
 	if err != nil {
 		return nil, err
 	}
@@ -540,7 +542,7 @@ func (h earnRoutes) autodepositHistoryEvents(ctx context.Context, account EarnAc
   wallet_balance_floor_raw, first_seen_at
 FROM loyal_yield.balance_sweep_targets
 WHERE settings = $1 AND vault_index = $2 AND wallet = $3`,
-		account.Settings.String(), int16(earnVaultIndex), account.Wallet.String())
+		account.Settings.String(), int16(earnprep.EarnVaultIndex), account.Wallet.String())
 	if err != nil {
 		return nil, err
 	}
@@ -601,7 +603,7 @@ WHERE t.settings = $1 AND t.vault_index = $2 AND t.wallet = $3`
 
 func (h earnRoutes) autodepositSweepEvents(ctx context.Context, account EarnAccount) ([]txreadsAutodepositEvent, error) {
 	rows, err := h.YieldDB.Query(ctx, txreadsSweepsSQL,
-		account.Settings.String(), int16(earnVaultIndex), account.Wallet.String())
+		account.Settings.String(), int16(earnprep.EarnVaultIndex), account.Wallet.String())
 	if err != nil {
 		return nil, err
 	}

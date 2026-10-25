@@ -82,7 +82,7 @@ func (h earnRoutes) prepareRecurringDelegationRefundKind(ctx context.Context, ac
 	if err != nil {
 		return nil, refundPrepareFailed(err)
 	}
-	dbState, err := h.txreadsRefundDBState(ctx, account, earnVaultIndex, policyAddresses, openDelegations)
+	dbState, err := h.txreadsRefundDBState(ctx, account, earnprep.EarnVaultIndex, policyAddresses, openDelegations)
 	if err != nil {
 		return nil, refundPrepareFailed(err)
 	}
@@ -127,7 +127,7 @@ func (h earnRoutes) prepareRecurringDelegationRefundKind(ctx context.Context, ac
 			},
 			RecurringDelegation: *entry,
 			SettingsPda:         account.Settings.String(),
-			VaultIndex:          earnVaultIndex,
+			VaultIndex:          earnprep.EarnVaultIndex,
 		},
 	}}, nil
 }

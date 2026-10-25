@@ -13,6 +13,7 @@ import (
 	"github.com/solana-foundation/solana-go/v2/rpc"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnprep"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
@@ -156,7 +157,7 @@ func canonicalizeAutodepositSetupInput(in autodepositSetupInput, policySigner so
 	if err != nil {
 		return in, err
 	}
-	expectedVault, _, err := squads.SmartAccountAddress(settings, earnVaultIndex)
+	expectedVault, _, err := squads.SmartAccountAddress(settings, earnprep.EarnVaultIndex)
 	if err != nil {
 		return in, err
 	}
@@ -202,7 +203,7 @@ func canonicalizeAutodepositSetupInput(in autodepositSetupInput, policySigner so
 	if err := assert(in.SubscriptionDelegatee, expectedVault.String(), "subscriptionDelegatee"); err != nil {
 		return in, err
 	}
-	if in.VaultIndex != int(earnVaultIndex) {
+	if in.VaultIndex != int(earnprep.EarnVaultIndex) {
 		return in, errors.New("vaultIndex does not match canonical Earn autodeposit metadata.")
 	}
 	if err := assert(in.VaultPubkey, expectedVault.String(), "vaultPubkey"); err != nil {
@@ -229,7 +230,7 @@ func canonicalizeAutodepositSetupInput(in autodepositSetupInput, policySigner so
 	in.RecurringDelegation = recurringDelegation.String()
 	in.SubscriptionAuthority = subscriptionAuthority.String()
 	in.SubscriptionDelegatee = expectedVault.String()
-	in.VaultIndex = int(earnVaultIndex)
+	in.VaultIndex = int(earnprep.EarnVaultIndex)
 	in.VaultPubkey = expectedVault.String()
 	in.VaultUsdcAta = vaultUsdcAta.String()
 	in.WalletUsdcAta = walletUsdcAta.String()
@@ -430,7 +431,7 @@ func assertAutodepositCanonicalArtifacts(accounts []*chain.Account, in autodepos
 		}
 		expected := autodepositCanonicalTransferConstraint(in, autodepositSubscriptionEventAuthority(), vault, subscriptionAuthority, walletUsdcAta, vaultUsdcAta, usdcMint)
 		if decoded.Full == nil || decoded.Full.PreHook || decoded.Full.PostHook ||
-			!decoded.Full.Payload.Equal(squads.Policy{VaultIndex: earnVaultIndex, Constraints: []squads.InstructionConstraintView{expected}}) {
+			!decoded.Full.Payload.Equal(squads.Policy{VaultIndex: earnprep.EarnVaultIndex, Constraints: []squads.InstructionConstraintView{expected}}) {
 			return errors.New("Autodeposit policy state is not canonical.")
 		}
 	}

@@ -16,6 +16,7 @@ import (
 	"github.com/solana-foundation/solana-go/v2/rpc"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnprep"
 )
 
 // POST /api/smart-accounts/yield-optimization/withdrawals/cleanup/confirm
@@ -339,7 +340,7 @@ func cleanupConfirmVerify(ctx context.Context, client withdrawConfirmChain, stor
 	wallet, _ := cleanupWireText(persistence, "walletAddress")
 	settings, _ := cleanupWireText(persistence, "settings")
 	vaultIndex, isNumber := persistence["vaultIndex"].(float64)
-	if wallet != account.Wallet.String() || settings != account.Settings.String() || !isNumber || vaultIndex != float64(earnVaultIndex) {
+	if wallet != account.Wallet.String() || settings != account.Settings.String() || !isNumber || vaultIndex != float64(earnprep.EarnVaultIndex) {
 		return nil, earnError(http.StatusForbidden, "cleanup_owner_mismatch", "Prepared cleanup does not belong to the authenticated wallet.")
 	}
 	cluster, _ := cleanupWireText(persistence, "cluster")
@@ -438,7 +439,7 @@ func cleanupCloseIntentInput(cluster string, closeMeta map[string]any, signature
 		PolicyAccount:       policyAccount,
 		RecurringDelegation: recurringDelegation,
 		Settings:            settings,
-		VaultIndex:          int(earnVaultIndex),
+		VaultIndex:          int(earnprep.EarnVaultIndex),
 		VaultPubkey:         vaultPubkey,
 		WalletAddress:       wallet,
 	}, nil

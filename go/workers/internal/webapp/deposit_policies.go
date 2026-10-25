@@ -13,6 +13,7 @@ import (
 	"github.com/solana-foundation/solana-go/v2/rpc"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnprep"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
@@ -232,7 +233,7 @@ func depositPreparePolicyResponse(account EarnAccount, settings squads.Settings,
 		Signer:      account.Wallet,
 		Delegate:    policySigner,
 		Seed:        seed,
-		VaultIndex:  earnVaultIndex,
+		VaultIndex:  earnprep.EarnVaultIndex,
 		Constraints: routeConstraints,
 	}
 	setupApply := squads.PolicyApply{
@@ -241,7 +242,7 @@ func depositPreparePolicyResponse(account EarnAccount, settings squads.Settings,
 		Signer:      account.Wallet,
 		Delegate:    policySigner,
 		Seed:        setupSeed,
-		VaultIndex:  earnVaultIndex,
+		VaultIndex:  earnprep.EarnVaultIndex,
 		Constraints: setupConstraints,
 	}
 	routeInstruction, err := routeApply.Instruction()
@@ -289,7 +290,7 @@ func depositPreparePolicyResponse(account EarnAccount, settings squads.Settings,
 		WalletAddress:        account.Wallet.String(),
 		DelegatedSigner:      policySigner.String(),
 		Settings:             account.Settings.String(),
-		VaultIndex:           earnVaultIndex,
+		VaultIndex:           earnprep.EarnVaultIndex,
 		VaultPubkey:          account.Vault.String(),
 		PolicyID:             seedText,
 		PolicyAccount:        routePolicy.String(),
@@ -327,7 +328,7 @@ func depositPreparePolicyResponse(account EarnAccount, settings squads.Settings,
 			Obligation:            obligation.String(),
 			Reserve:               target.Reserve.String(),
 		},
-		Vault: EarnPolicyVaultRef{AccountIndex: earnVaultIndex, Pubkey: account.Vault.String()},
+		Vault: EarnPolicyVaultRef{AccountIndex: earnprep.EarnVaultIndex, Pubkey: account.Vault.String()},
 	}}, nil
 }
 

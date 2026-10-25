@@ -12,10 +12,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/solana-foundation/solana-go/v2"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnprep"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
-
-const earnVaultIndex uint8 = 1
 
 var EarnPolicyGrants = []Grant{
 	TableGrant("loyal_yield.managed_vaults", "SELECT"),
@@ -65,7 +64,7 @@ func (h earnRoutes) account(ctx context.Context, in SessionInput) (EarnAccount, 
 	if err != nil {
 		return EarnAccount{}, err
 	}
-	vault, _, err := squads.SmartAccountAddress(p.Settings, earnVaultIndex)
+	vault, _, err := squads.SmartAccountAddress(p.Settings, earnprep.EarnVaultIndex)
 	if err != nil {
 		return EarnAccount{}, err
 	}
@@ -125,7 +124,7 @@ SELECT p.id = vault.active_policy_id, p.id IS NOT DISTINCT FROM vault.setup_poli
 FROM vault
 JOIN loyal_yield.route_policies p ON p.id IN (vault.active_policy_id, vault.setup_policy_id)
 WHERE p.active AND p.authority = $4 AND p.settings = $1 AND p.vault_index = $2 AND p.vault_pubkey = vault.vault_pubkey`,
-		account.Settings.String(), int16(earnVaultIndex), account.Vault.String(), account.Wallet.String())
+		account.Settings.String(), int16(earnprep.EarnVaultIndex), account.Vault.String(), account.Wallet.String())
 	if err != nil {
 		return nil, fmt.Errorf("read active route policy pair: %w", err)
 	}

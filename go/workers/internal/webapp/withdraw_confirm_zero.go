@@ -74,7 +74,7 @@ type withdrawVaultSnapshot struct {
 // The SOL read folds a failure into zero (getVaultSweepLamportsOrZero,
 // client.ts:3134-3146); the token-account reads fail the proof.
 func fetchWithdrawVaultSnapshot(ctx context.Context, client withdrawConfirmChain, settings, usdcMint solana.PublicKey, minContextSlot uint64) (withdrawVaultSnapshot, error) {
-	vault, _, err := squads.SmartAccountAddress(settings, earnVaultIndex)
+	vault, _, err := squads.SmartAccountAddress(settings, earnprep.EarnVaultIndex)
 	if err != nil {
 		return withdrawVaultSnapshot{}, err
 	}

@@ -90,7 +90,7 @@ func (in wprepInput) persistenceBase() EarnWithdrawPersistence {
 		WalletAddress:   in.Account.Wallet.String(),
 		DelegatedSigner: in.PolicySigner.String(),
 		Settings:        in.Account.Settings.String(),
-		VaultIndex:      earnVaultIndex,
+		VaultIndex:      earnprep.EarnVaultIndex,
 		VaultPubkey:     in.Account.Vault.String(),
 		PolicyID:        strconv.FormatInt(in.Policy.Seed, 10),
 		PolicyAccount:   in.Policy.Account.String(),
@@ -160,7 +160,7 @@ func (in wprepInput) memberSync(inner []squads.Instruction) (squads.Instruction,
 	return earnprep.ExecuteMemberSync(earnprep.MemberSync{
 		Settings:     in.Account.Settings,
 		Vault:        in.Account.Vault,
-		AccountIndex: earnVaultIndex,
+		AccountIndex: earnprep.EarnVaultIndex,
 		Members:      []solana.PublicKey{in.Account.Wallet},
 		Inner:        inner,
 	})
@@ -213,7 +213,7 @@ func (in wprepInput) prepareIdle() (EarnWithdrawPrepareWire, error) {
 		StepCount:          1,
 		StepIndex:          0,
 	}})
-	wire.Vault = EarnWithdrawVault{AccountIndex: earnVaultIndex, Pubkey: vault.String(), UsdcAta: vaultAta.String()}
+	wire.Vault = EarnWithdrawVault{AccountIndex: earnprep.EarnVaultIndex, Pubkey: vault.String(), UsdcAta: vaultAta.String()}
 	return wire, nil
 }
 
@@ -270,7 +270,7 @@ func (in wprepInput) prepareReserve(ctx context.Context, deps wprepDeps) (EarnWi
 		Obligation:            first.AccountingReserve.Obligation,
 		Reserve:               first.AccountingReserve.Reserve,
 	}
-	wire.Vault = EarnWithdrawVault{AccountIndex: earnVaultIndex, CollateralAta: first.CollateralAta, Pubkey: vault.String(), UsdcAta: vaultAta.String()}
+	wire.Vault = EarnWithdrawVault{AccountIndex: earnprep.EarnVaultIndex, CollateralAta: first.CollateralAta, Pubkey: vault.String(), UsdcAta: vaultAta.String()}
 	return wire, nil
 }
 

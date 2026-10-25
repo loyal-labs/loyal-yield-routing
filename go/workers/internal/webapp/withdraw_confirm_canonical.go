@@ -120,7 +120,7 @@ func createWithdrawCanonicalInput(in withdrawConfirmInput) (withdrawCanonicalInp
 	if err != nil {
 		return withdrawCanonicalInput{}, err
 	}
-	expectedVault, _, err := squads.SmartAccountAddress(settings, earnVaultIndex)
+	expectedVault, _, err := squads.SmartAccountAddress(settings, earnprep.EarnVaultIndex)
 	if err != nil {
 		return withdrawCanonicalInput{}, err
 	}
@@ -189,7 +189,7 @@ func createWithdrawCanonicalInput(in withdrawConfirmInput) (withdrawCanonicalInp
 		Cluster:             cluster,
 		WalletAddress:       in.WalletAddress,
 		Settings:            in.Settings,
-		VaultIndex:          int(earnVaultIndex),
+		VaultIndex:          int(earnprep.EarnVaultIndex),
 		VaultPubkey:         expectedVault.String(),
 		PolicyAccount:       expectedPolicyAccount.String(),
 		PolicySeed:          policySeed,

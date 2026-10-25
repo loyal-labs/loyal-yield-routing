@@ -31,9 +31,9 @@ type RPC interface {
 	Accounts(ctx context.Context, keys []solana.PublicKey, commitment rpc.CommitmentType, minContextSlot uint64) (uint64, []*chain.Account, error)
 }
 
-// WithdrawVaultIndex is the Earn vault's account index (EARN_VAULT_INDEX,
+// EarnVaultIndex is the Earn vault's account index (EARN_VAULT_INDEX,
 // loyal-actions/src/constants.ts:49).
-const WithdrawVaultIndex uint8 = 1
+const EarnVaultIndex uint8 = 1
 
 // withdrawCommitment is SOURCE_COMMITMENT (earn-rpc-holdings.client.ts:44).
 var withdrawCommitment = rpc.CommitmentConfirmed

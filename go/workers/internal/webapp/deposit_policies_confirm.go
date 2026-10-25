@@ -15,6 +15,7 @@ import (
 	"github.com/solana-foundation/solana-go/v2"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnprep"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
@@ -474,7 +475,7 @@ func depositCanonicalPolicyInput(request earnPolicyConfirmBody) (earnPolicyCanon
 	if err != nil {
 		return earnPolicyCanonical{}, err
 	}
-	expectedVault, _, err := squads.SmartAccountAddress(settings, earnVaultIndex)
+	expectedVault, _, err := squads.SmartAccountAddress(settings, earnprep.EarnVaultIndex)
 	if err != nil {
 		return earnPolicyCanonical{}, err
 	}
@@ -508,7 +509,7 @@ func depositCanonicalPolicyInput(request earnPolicyConfirmBody) (earnPolicyCanon
 		SetupPolicyAccount: expectedSetupPolicyAccount.String(),
 		SetupPolicyID:      new(big.Int).Set(expectedSetupPolicySeed),
 		SetupPolicySeed:    new(big.Int).Set(expectedSetupPolicySeed),
-		VaultIndex:         earnVaultIndex,
+		VaultIndex:         earnprep.EarnVaultIndex,
 		VaultPubkey:        expectedVault.String(),
 	}
 

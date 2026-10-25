@@ -13,6 +13,7 @@ import (
 	"github.com/solana-foundation/solana-go/v2"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnprep"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
@@ -103,7 +104,7 @@ func (h dprepRoutes) prepare(ctx context.Context, in *dprepInput) (*dprepOutput,
 	if err != nil {
 		return nil, err
 	}
-	vault, _, err := squads.SmartAccountAddress(principal.Settings, earnVaultIndex)
+	vault, _, err := squads.SmartAccountAddress(principal.Settings, earnprep.EarnVaultIndex)
 	if err != nil {
 		return nil, depositPrepareFailed(err)
 	}

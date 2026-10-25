@@ -19,6 +19,7 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/jackc/pgx/v5"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnprep"
 )
 
 const autodepositSweepsExecutePath = "/api/smart-accounts/yield-optimization/autodeposit/sweeps/execute"
@@ -94,7 +95,7 @@ func (h earnRoutes) findCurrentAutodepositTarget(ctx context.Context, settings, 
 WHERE wallet = $1 AND settings = $2 AND vault_index = $3 AND chain_status <> 'closed'
 ORDER BY CASE WHEN desired_active = TRUE AND chain_status = 'active' THEN 0 ELSE 1 END,
   last_seen_slot DESC
-LIMIT 1`, wallet, settings, int16(earnVaultIndex))
+LIMIT 1`, wallet, settings, int16(earnprep.EarnVaultIndex))
 	target, err := scanAutodepositTarget(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil

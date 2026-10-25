@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnprep"
 )
 
 var earnEarningsYieldGrants = []Grant{
@@ -91,7 +92,7 @@ func (h earnRoutes) earnEarnings(ctx context.Context, in *earningsRequest) (*ear
 		cluster:       string(account.Cluster),
 		settings:      account.Settings.String(),
 		timezone:      in.Timezone,
-		vaultIndex:    int16(earnVaultIndex),
+		vaultIndex:    int16(earnprep.EarnVaultIndex),
 		walletAddress: account.Wallet.String(),
 	}
 	payload, err := readCachedEarnEarningsRangeSet(ctx, h.YieldDB, input,

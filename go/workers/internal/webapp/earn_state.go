@@ -23,6 +23,7 @@ import (
 	"os"
 
 	"github.com/danielgtaylor/huma/v2"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnprep"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
@@ -218,7 +219,7 @@ func (h earnRoutes) earnState(ctx context.Context, in *sessionRequest) (*earnSta
 
 	var policyOut *EarnStatePolicy
 	if pair != nil {
-		policyOut = serializeEarnStatePolicy(pair.Route, pair.Setup, int(earnVaultIndex), vaultPubkey)
+		policyOut = serializeEarnStatePolicy(pair.Route, pair.Setup, int(earnprep.EarnVaultIndex), vaultPubkey)
 	}
 	nextStep := stateOnboardingNextStep(attempt, position != nil, pair != nil, pair != nil && pair.Setup != nil)
 
@@ -237,7 +238,7 @@ func (h earnRoutes) earnState(ctx context.Context, in *sessionRequest) (*earnSta
 			PolicySignerPublicKey: h.PolicySigner.String(),
 			ProgramID:             squads.ProgramID.String(),
 			SettingsPda:           settings,
-			Vault:                 EarnStateVault{AccountIndex: int(earnVaultIndex), Pubkey: vaultPubkey},
+			Vault:                 EarnStateVault{AccountIndex: int(earnprep.EarnVaultIndex), Pubkey: vaultPubkey},
 		},
 	}, nil
 }

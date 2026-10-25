@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnprep"
 )
 
 type dprepOnboardingAttempt struct {
@@ -28,7 +29,7 @@ func (h dprepRoutes) dprepOnboardingAttempt(ctx context.Context, account EarnAcc
 FROM loyal_yield.earn_deposit_onboarding_attempts
 WHERE settings = $1 AND vault_index = $2 AND wallet_address = $3 AND status <> 'complete' AND vault_pubkey = $4
 ORDER BY updated_at DESC, id DESC
-LIMIT 1`, account.Settings.String(), int16(earnVaultIndex), account.Wallet.String(), account.Vault.String()).Scan(
+LIMIT 1`, account.Settings.String(), int16(earnprep.EarnVaultIndex), account.Wallet.String(), account.Vault.String()).Scan(
 		&attempt.policyAccount, &attempt.policySeed, &attempt.routeSignature, &attempt.routeConfirmedSlot,
 		&attempt.setupSignature, &attempt.setupAccount, &attempt.setupSeed)
 	if errors.Is(err, pgx.ErrNoRows) {
