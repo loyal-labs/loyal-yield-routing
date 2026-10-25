@@ -43,7 +43,7 @@ type earningsSnapshotRecord struct {
 }
 
 type earningsUnavailableError struct {
-	code       string // "earnings_unavailable" | "history_incomplete"
+	code       string
 	message    string
 	detailCode string
 	coverage   *EarningsCoverage
@@ -52,7 +52,7 @@ type earningsUnavailableError struct {
 func (e *earningsUnavailableError) Error() string { return e.message }
 
 func unavailableErr(detailCode, message string) *earningsUnavailableError {
-	return &earningsUnavailableError{code: "history_incomplete", message: message, detailCode: detailCode}
+	return &earningsUnavailableError{code: earningsIncompleteCode, message: message, detailCode: detailCode}
 }
 
 var errEarningsRefreshInProgress = errors.New("earnings refresh is in progress")
@@ -275,7 +275,7 @@ func earningsReadFailure(err error, snapshot *earningsSnapshotRecord, now, start
 	unavailable, isUnavailable := err.(*earningsUnavailableError)
 	if errors.As(err, &history) {
 		unavailable = &earningsUnavailableError{
-			code:       "history_incomplete",
+			code:       earningsIncompleteCode,
 			message:    history.Error(),
 			detailCode: "principal_history_ambiguous",
 		}
@@ -304,7 +304,7 @@ func earningsReadFailure(err error, snapshot *earningsSnapshotRecord, now, start
 		"errorName", name,
 		"cause", earningsErrorCause(err),
 		"elapsedMs", time.Since(startedAt).Milliseconds())
-	return EarningsRangeSet{}, &earningsUnavailableError{code: "earnings_unavailable", message: "Earn earnings are unavailable.", detailCode: "earnings_unavailable"}
+	return EarningsRangeSet{}, &earningsUnavailableError{code: earningsUnavailableCode, message: "Earn earnings are unavailable.", detailCode: "earnings_unavailable"}
 }
 
 func rebuildEarningsRangeSet(ctx context.Context, input earningsReadInput, deps earningsReadDeps, useCheckpoint bool, timezone string, now time.Time, snapshot *earningsSnapshotRecord, startedAt time.Time) (payload EarningsRangeSet, err error) {
@@ -494,7 +494,7 @@ func rebuildEarningsRangeSet(ctx context.Context, input earningsReadInput, deps 
 			}
 			if firstAt != secondAt {
 				return EarningsRangeSet{}, &earningsUnavailableError{
-					code:       "history_incomplete",
+					code:       earningsIncompleteCode,
 					message:    "Earn principal history is ambiguous.",
 					detailCode: "principal_history_ambiguous",
 				}
@@ -519,14 +519,14 @@ func rebuildEarningsRangeSet(ctx context.Context, input earningsReadInput, deps 
 			detailCode = "deposit_history_incomplete"
 		}
 		return EarningsRangeSet{}, &earningsUnavailableError{
-			code:       "history_incomplete",
+			code:       earningsIncompleteCode,
 			message:    "Earn principal history is incomplete.",
 			detailCode: detailCode,
 		}
 	}
 	if firstDepositAt == nil {
 		return EarningsRangeSet{}, &earningsUnavailableError{
-			code:       "history_incomplete",
+			code:       earningsIncompleteCode,
 			message:    "Earn deposit history is incomplete.",
 			detailCode: "deposit_history_incomplete",
 		}
@@ -560,7 +560,7 @@ func rebuildEarningsRangeSet(ctx context.Context, input earningsReadInput, deps 
 	coverage := getPortfolioEarningsCoverage(apySamples, now, portfolioSnapshots)
 	if len(coverage.MissingReserves) > 0 || len(coverage.GappedReserves) > 0 || len(coverage.StaleReserves) > 0 || coverage.SampledReserveCount != coverage.ReserveCount {
 		return EarningsRangeSet{}, &earningsUnavailableError{
-			code:       "history_incomplete",
+			code:       earningsIncompleteCode,
 			message:    "Earn APY history coverage is incomplete.",
 			detailCode: "apy_coverage_incomplete",
 			coverage:   &coverage,
