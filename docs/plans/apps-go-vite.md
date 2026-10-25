@@ -1,7 +1,14 @@
 # Rebuild the remaining loyal-app apps on Go + Vite
 
-Status: proposal for owner sign-off (Oct 21 2026). Follows `web-go.md`, which
-moved the web frontend.
+Status (Oct 25 2026): kept as the record of the Oct 21 proposal, and in part
+overtaken. Later on Oct 21 the owner redirected the move into
+loyal-yield-routing, without the Vercel framing. Since then:
+- W3 admin is done: admin.askloyal.com has served the Go + Vite loyal-admin
+  since Oct 22.
+- The dashboard is done: stats.askloyal.com has served loyal-stats since Oct 22.
+- W1 and W2's Earn families run on loyal-web at next.askloyal.com (#608–#614).
+Retiring the Vercel projects and deleting the Next code each need the owner's
+go. Follows `web-go.md`, which moved the web frontend.
 
 Owner decisions in force: every app is rebuilt as Go + Vite on the
 loyal-workers host behind test hostnames; Vercel stays production while the
