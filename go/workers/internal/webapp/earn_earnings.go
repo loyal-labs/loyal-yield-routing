@@ -84,7 +84,7 @@ func (h earnRoutes) earnEarnings(ctx context.Context, in *earningsRequest) (*ear
 	input := earningsReadInput{
 		cluster:       string(account.Cluster),
 		settings:      account.Settings.String(),
-		timezone:      in.Timezone,
+		timezone:      normalizeEarningsTimezone(in.Timezone),
 		vaultIndex:    int16(earnprep.EarnVaultIndex),
 		walletAddress: account.Wallet.String(),
 	}

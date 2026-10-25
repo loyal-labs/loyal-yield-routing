@@ -14,7 +14,7 @@ import (
 type earningsReadInput struct {
 	cluster       string
 	settings      string
-	timezone      string // nullable in TS; empty means null here
+	timezone      string
 	vaultIndex    int16
 	walletAddress string
 }
