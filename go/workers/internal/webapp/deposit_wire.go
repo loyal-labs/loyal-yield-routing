@@ -110,14 +110,14 @@ func depositEarnPolicyCreateDiagnostics(policyAccount solana.PublicKey, seed uin
 	}
 }
 
-// depositPacketBlockhash pins the all-ones blockhash the TS packet guard uses
+// depositPacketProbeBlockhash pins the all-ones blockhash the TS packet guard uses
 // ; it is never sent anywhere.
-var depositPacketBlockhash = solana.MustHashFromBase58("11111111111111111111111111111111")
+var depositPacketProbeBlockhash = solana.MustHashFromBase58("11111111111111111111111111111111")
 
 const depositMaxPacketBytes = 1232
 
 func depositPacketLength(payer solana.PublicKey, ix squads.Instruction) (int, error) {
-	tx, err := earnprep.CompileV0(payer, depositPacketBlockhash, []squads.Instruction{ix}, nil)
+	tx, err := earnprep.CompileV0(payer, depositPacketProbeBlockhash, []squads.Instruction{ix}, nil)
 	if err != nil {
 		return 0, err
 	}

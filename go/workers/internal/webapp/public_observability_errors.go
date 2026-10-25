@@ -463,7 +463,7 @@ func normalizeChunkURL(value string) string {
 	if err != nil || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.RawFragment != "" {
 		return ""
 	}
-	if !obsURLOriginLocal(parsed) {
+	if !obsHTTPSOrLoopbackOrigin(parsed) {
 		return ""
 	}
 	if !strings.HasPrefix(parsed.EscapedPath(), "/_next/static/chunks/") || !strings.HasSuffix(parsed.EscapedPath(), ".js") {
@@ -476,9 +476,7 @@ func normalizeChunkURL(value string) string {
 	return normalized
 }
 
-// obsURLOriginLocal mirrors the TS local-or-https guard: https anywhere, http
-// only on loopback hosts.
-func obsURLOriginLocal(u *url.URL) bool {
+func obsHTTPSOrLoopbackOrigin(u *url.URL) bool {
 	if u.Scheme == "https" {
 		return true
 	}

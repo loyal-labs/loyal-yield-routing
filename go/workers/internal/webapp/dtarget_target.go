@@ -246,7 +246,7 @@ func dtargetFindEarnReserveTargetIneligibility(ctx context.Context, q dtargetQue
 	if q == nil {
 		return "", nil
 	}
-	observations, err := dtargetLatestReserveObservations(ctx, q, getBlockTime, []string{reserve})
+	observations, err := dtargetReservePresenceOnlyObservations(ctx, q, getBlockTime, []string{reserve})
 	if err != nil {
 		return "", err
 	}

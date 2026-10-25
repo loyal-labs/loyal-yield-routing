@@ -170,17 +170,16 @@ type forecastDeps struct {
 	loadHistories   func(ctx context.Context, cluster string, reserves []string, sinceMS int64) (map[string][]forecastSharePricePoint, error)
 }
 
-func yieldForecastDeps(pool *pgxpool.Pool) forecastDeps {
-	// pool is the same yield database the Next route reads.
+func yieldForecastDeps(yieldPool *pgxpool.Pool) forecastDeps {
 	return forecastDeps{
 		hasRecentPrices: func(ctx context.Context, cluster string, sinceMS int64) (bool, error) {
-			return hasEarnSharePriceHistory(ctx, pool, cluster, sinceMS)
+			return hasEarnSharePriceHistory(ctx, yieldPool, cluster, sinceMS)
 		},
 		loadAllocations: func(ctx context.Context, cluster string, sinceMS, nowMS int64) (forecastAllocationHistory, error) {
-			return loadEarnAllocationHistory(ctx, pool, cluster, sinceMS, nowMS)
+			return loadEarnAllocationHistory(ctx, yieldPool, cluster, sinceMS, nowMS)
 		},
 		loadHistories: func(ctx context.Context, cluster string, reserves []string, sinceMS int64) (map[string][]forecastSharePricePoint, error) {
-			return loadReserveSharePriceHistories(ctx, pool, cluster, reserves, sinceMS)
+			return loadReserveSharePriceHistories(ctx, yieldPool, cluster, reserves, sinceMS)
 		},
 	}
 }
@@ -244,6 +243,13 @@ func resetEarnForecastCacheForTests() {
 	forecastLastRealized = nil
 }
 
+// contextForSharedCacheRead detaches a read that fills a shared cache from the
+// calling request: the cached result serves every caller, so one caller
+// hanging up must not cancel the read and cache a miss.
+func contextForSharedCacheRead(ctx context.Context) context.Context {
+	return context.WithoutCancel(ctx)
+}
+
 // mediumFeeAwareEarnForecast serves a 5-minute cache with a 3-hour stale
 // fallback as availability "stale"; the lock single-flights the DB reads.
 func (h earnRoutes) mediumFeeAwareEarnForecast(ctx context.Context, deps forecastDeps, now time.Time) *forecastResult {
@@ -254,9 +260,7 @@ func (h earnRoutes) mediumFeeAwareEarnForecast(ctx context.Context, deps forecas
 		return forecastCacheValue
 	}
 
-	// The cached result serves every caller, so one caller hanging up must
-	// not cancel the read and cache a miss (Next's read ignores the abort).
-	realized, err := h.realizedEarnForecast(context.WithoutCancel(ctx), deps, now)
+	realized, err := h.realizedEarnForecast(contextForSharedCacheRead(ctx), deps, now)
 	if err != nil {
 		slog.Warn("[earn-forecast] realized APY read failed", "error", err)
 	}

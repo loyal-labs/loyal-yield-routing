@@ -385,6 +385,24 @@ type autodepositSweepsExecuteOutput struct {
 	Body AutodepositSweepsExecuteResponse
 }
 
+// earnPositionGateFailsOpen checks the wallet still has an active Earn
+// position and fails OPEN on a lookup error: a withdrawn-away position has no
+// route policy left and its sweeps would strand on "Executing…" forever, so a
+// transient lookup failure only logs and lets the sweep proceed.
+func (h earnRoutes) earnPositionGateFailsOpen(ctx context.Context, account EarnAccount) error {
+	pair, gateErr := h.activePolicyPair(ctx, account)
+	if gateErr != nil {
+		slog.WarnContext(ctx, "[autodeposit-sweeps-execute] earn position gate skipped",
+			"errorMessage", gateErr.Error(), "walletAddress", account.Wallet.String())
+		return nil
+	}
+	if pair == nil {
+		return earnError(http.StatusConflict, "earn_position_required",
+			"Autodeposit needs an active Earn account to deposit into. Make a deposit first.")
+	}
+	return nil
+}
+
 func (h earnRoutes) autodepositSweepsExecute(ctx context.Context, in *autodepositSweepsExecuteInput) (*autodepositSweepsExecuteOutput, error) {
 	account, err := h.account(ctx, in.SessionInput)
 	if err != nil {
@@ -413,15 +431,8 @@ func (h earnRoutes) autodepositSweepsExecute(ctx context.Context, in *autodeposi
 			"Earn Autodeposit must be active before a scheduled sweep can be executed now.")
 	}
 
-	// A withdrawn-away position has no route policy left and its sweeps would
-	// strand on "Executing…" forever; lookup errors fail open.
-	pair, gateErr := h.activePolicyPair(ctx, account)
-	if gateErr != nil {
-		slog.WarnContext(ctx, "[autodeposit-sweeps-execute] earn position gate skipped",
-			"errorMessage", gateErr.Error(), "walletAddress", account.Wallet.String())
-	} else if pair == nil {
-		return nil, earnError(http.StatusConflict, "earn_position_required",
-			"Autodeposit needs an active Earn account to deposit into. Make a deposit first.")
+	if err := h.earnPositionGateFailsOpen(ctx, account); err != nil {
+		return nil, err
 	}
 
 	result, err := h.requestImmediateAutodepositSweep(ctx, *target, slotID)

@@ -20,15 +20,13 @@ type KaminoWithdrawBundle struct {
 	LookupTables []solana.PublicKey
 }
 
-// KaminoWithdrawInstructions ports fetchKaminoWithdrawInstruction
-// (CL:2742-2791): wallet is the Earn vault, the amount is liquidity in
-// six-decimal API units.
-func KaminoWithdrawInstructions(ctx context.Context, client *http.Client, endpoint string, vault, market, reserve solana.PublicKey, amountRaw uint64) (KaminoWithdrawBundle, error) {
+// KaminoWithdrawInstructions ports fetchKaminoWithdrawInstruction (CL:2742-2791).
+func KaminoWithdrawInstructions(ctx context.Context, client *http.Client, endpoint string, vault, market, reserve solana.PublicKey, liquidityAmountRaw uint64) (KaminoWithdrawBundle, error) {
 	body, err := json.Marshal(kaminoDepositRequestBody{
-		Wallet:  vault.String(),
+		Vault:   vault.String(),
 		Market:  market.String(),
 		Reserve: reserve.String(),
-		Amount:  FormatRawTokenAmountForAPI(amountRaw, KaminoDepositUSDCDecimals),
+		Amount:  FormatRawTokenAmountForAPI(liquidityAmountRaw, KaminoDepositUSDCDecimals),
 	})
 	if err != nil {
 		return KaminoWithdrawBundle{}, err

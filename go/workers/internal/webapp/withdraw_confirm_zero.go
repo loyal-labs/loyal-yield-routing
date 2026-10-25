@@ -16,11 +16,9 @@ import (
 )
 
 const (
-	withdrawSlotLagAttempts = 3
-	// SLOT_LAG_RETRY_DELAY_MS.
-	withdrawSlotLagDelay = 500 * time.Millisecond
-	// EARN_FINAL_EXIT_IDLE_DUST_TOLERANCE_RAW
-	withdrawFinalExitDustRaw = 10_000
+	withdrawSlotLagAttempts       = 3
+	slotLagRetryDelay             = 500 * time.Millisecond
+	finalExitIdleDustToleranceRaw = 10_000
 )
 
 func withdrawIsMinContextSlotError(err error) bool {
@@ -148,7 +146,7 @@ func classifyWithdrawZeroProof(cluster string, holdingsSnapshot earnprep.Withdra
 	cleanup := []withdrawCleanupTokenAccount{}
 	for _, account := range vaultSnapshot.TokenAccounts {
 		asset, known := idleAssetByTokenAccount[account.Address.String()]
-		if account.Amount > 0 && (!known || asset.Mint != account.Mint || asset.TokenProgram != account.Program || account.Amount >= withdrawFinalExitDustRaw) {
+		if account.Amount > 0 && (!known || asset.Mint != account.Mint || asset.TokenProgram != account.Program || account.Amount >= finalExitIdleDustToleranceRaw) {
 			blocking = append(blocking, withdrawBlockingTokenAccount{
 				Address:        account.Address.String(),
 				AmountRaw:      strconv.FormatUint(account.Amount, 10),

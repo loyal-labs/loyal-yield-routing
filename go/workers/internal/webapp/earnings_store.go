@@ -114,7 +114,7 @@ ORDER BY id ASC`
 			return "", err
 		}
 		row.LastEvent = lastEvent
-		row.UpdatedAt = isoMS(msTime(updatedAt))
+		row.UpdatedAtISO = isoMS(msTime(updatedAt))
 		revisionRows = append(revisionRows, row)
 	}
 	if err := rows.Err(); err != nil {

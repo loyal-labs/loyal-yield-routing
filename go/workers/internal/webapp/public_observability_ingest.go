@@ -23,7 +23,7 @@ func parseOTLPConfig(rawEndpoint, ingestionKey string) *OTLP {
 		return nil
 	}
 	parsed, err := url.Parse(rawEndpoint)
-	if err != nil || !obsURLOriginLocal(parsed) {
+	if err != nil || !obsHTTPSOrLoopbackOrigin(parsed) {
 		return nil
 	}
 	return &OTLP{Endpoint: parsed, IngestionKey: ingestionKey}
@@ -277,7 +277,7 @@ func (h earnRoutes) exportOtlpPayload(ctx context.Context, payload any, signal s
 	if h.OTLP == nil || h.OTLP.Endpoint == nil || h.OTLP.IngestionKey == "" {
 		return false
 	}
-	if !obsURLOriginLocal(h.OTLP.Endpoint) {
+	if !obsHTTPSOrLoopbackOrigin(h.OTLP.Endpoint) {
 		return false
 	}
 	endpoint := *h.OTLP.Endpoint

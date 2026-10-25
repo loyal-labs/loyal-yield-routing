@@ -61,19 +61,18 @@ func FormatRawTokenAmountForAPI(amountRaw uint64, decimals int) string {
 }
 
 // KaminoDepositInstructionArgs carries fetchKaminoDepositInstruction's args
-// (CL:2691-2698). Wallet is the Earn vault: the API body's "wallet" field is
-// the vault, not the user's main wallet (CL:2703-2708).
+// (CL:2691-2698).
 type KaminoDepositInstructionArgs struct {
 	AmountRaw            uint64
 	DepositDiscriminator [8]byte
 	LendProgramID        solana.PublicKey
 	Market               solana.PublicKey
 	Reserve              solana.PublicKey
-	Wallet               solana.PublicKey
+	Vault                solana.PublicKey
 }
 
 type kaminoDepositRequestBody struct {
-	Wallet  string `json:"wallet"`
+	Vault   string `json:"wallet"`
 	Market  string `json:"market"`
 	Reserve string `json:"reserve"`
 	Amount  string `json:"amount"`
@@ -81,7 +80,7 @@ type kaminoDepositRequestBody struct {
 
 func KaminoDepositInstructions(ctx context.Context, client *http.Client, endpoint string, args KaminoDepositInstructionArgs) (KaminoInstructionBundle, error) {
 	body, err := json.Marshal(kaminoDepositRequestBody{
-		Wallet:  args.Wallet.String(),
+		Vault:   args.Vault.String(),
 		Market:  args.Market.String(),
 		Reserve: args.Reserve.String(),
 		Amount:  FormatRawTokenAmountForAPI(args.AmountRaw, KaminoDepositUSDCDecimals),

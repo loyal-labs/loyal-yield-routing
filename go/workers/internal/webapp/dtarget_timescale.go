@@ -125,12 +125,7 @@ func dtargetCurrentEligibleSafeReserves(ctx context.Context, q dtargetQuerier, g
 	return out, nil
 }
 
-// dtargetLatestReserveObservations reports whether the observer's active
-// current state samples each requested reserve. Deliberately no stale-flag or
-// APY-bounds filters: presence is the eligibility signal, and a transiently
-// stale row must not fail deposits (getLatestReserveObservationsByReserve
-// :685-718 and its comment :694-698).
-func dtargetLatestReserveObservations(ctx context.Context, q dtargetQuerier, getBlockTime dtargetBlockTimeFunc, reserves []string) ([]dtargetReserveObservation, error) {
+func dtargetReservePresenceOnlyObservations(ctx context.Context, q dtargetQuerier, getBlockTime dtargetBlockTimeFunc, reserves []string) ([]dtargetReserveObservation, error) {
 	if q == nil || len(reserves) == 0 {
 		return nil, nil
 	}

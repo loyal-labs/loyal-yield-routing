@@ -223,11 +223,11 @@ func earningsApyFingerprint(samples []reserveApySample, before int64, reserves [
 }
 
 type earningsSourceRevisionRow struct {
-	ID        int64
-	Status    string
-	Principal int64
-	LastEvent *int64
-	UpdatedAt string // ISO
+	ID           int64
+	Status       string
+	Principal    int64
+	LastEvent    *int64
+	UpdatedAtISO string
 }
 
 func (r earningsSourceRevisionRow) write(w *jsonWriter) {
@@ -240,7 +240,7 @@ func (r earningsSourceRevisionRow) write(w *jsonWriter) {
 	w.raw(`,"lastEvent":`)
 	w.optBigint(r.LastEvent)
 	w.raw(`,"updatedAt":`)
-	w.str(r.UpdatedAt)
+	w.str(r.UpdatedAtISO)
 	w.raw("}")
 }
 
