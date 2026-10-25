@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Apply comment-sweep #3 row decisions.
 
-delete <rows.tsv>
+delete <rows.tsv> [--skipped <path>]
     Delete the comment blocks of every DELETE row in the sweep TSV. A row is
     matched by its normalized quote of the block's first line: the stated
     line first, then a +-5-line window, then the whole file when that match
-    is unique. Skipped rows (unmatched, ambiguous, protected) are listed
-    with their reason in the foreman's skipped file.
+    is unique. Skipped rows (unmatched, ambiguous, protected) are printed
+    with their reason, and with --skipped also written to that file.
 
 strip-tails <paths...>
     Inside Go // comments, remove parentheticals whose content is only
@@ -23,7 +23,6 @@ import re
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-SKIPPED_PATH = '/Users/user/loyal/yield-comment-sweep-2026-10-24/foreman/l1-skipped.tsv'
 
 # Owner holds: no row may delete into these ranges (1-indexed, inclusive).
 # S1 owns deposit_context.go:115-160, R12 owns privy_provisioning.go:60-75.
@@ -396,19 +395,39 @@ def apply_strip(paths):
     return total_files, total_lines
 
 
+def parse_args(argv):
+    """Split `--skipped <path>` out of argv; the rest stays positional."""
+    skipped = None
+    rest = []
+    i = 0
+    while i < len(argv):
+        if argv[i] == '--skipped':
+            if i + 1 >= len(argv):
+                print('--skipped needs a path argument', file=sys.stderr)
+                return None, None
+            skipped = argv[i + 1]
+            i += 2
+        else:
+            rest.append(argv[i])
+            i += 1
+    return skipped, rest
+
+
 def main(argv):
-    if len(argv) < 3 or argv[1] not in ('delete', 'strip-tails'):
+    skipped, args = parse_args(argv)
+    if args is None or len(args) < 2 or args[0] not in ('delete', 'strip-tails'):
         print(__doc__.strip(), file=sys.stderr)
         return 2
-    if argv[1] == 'delete':
-        with open(argv[2], newline='', encoding='utf-8') as f:
+    if args[0] == 'delete':
+        with open(args[1], newline='', encoding='utf-8') as f:
             rows = [r for r in csv.reader(f, delimiter='\t') if r and r[1].strip()]
         applied, skips, changed = apply_delete(rows)
-        with open(SKIPPED_PATH, 'w', newline='', encoding='utf-8') as f:
-            w = csv.writer(f, delimiter='\t', lineterminator='\n')
-            w.writerow(['slice', 'ref', 'quote', 'verdict', 'kind', 'fix', 'owner', 'check', 'reason'])
-            for row, why in skips:
-                w.writerow(row[:8] + [why])
+        if skipped:
+            with open(skipped, 'w', newline='', encoding='utf-8') as f:
+                w = csv.writer(f, delimiter='\t', lineterminator='\n')
+                w.writerow(['slice', 'ref', 'quote', 'verdict', 'kind', 'fix', 'owner', 'check', 'reason'])
+                for row, why in skips:
+                    w.writerow(row[:8] + [why])
         print(f'applied {applied} skipped {len(skips)} ({len(changed)} files changed)')
         for row, why in skips:
             print(f"  skip {row[1][:48]}: {why}")
@@ -416,7 +435,7 @@ def main(argv):
             print('no changes: every DELETE row is already applied or unmatched')
         return 0
 
-    files, lines = apply_strip(argv[2:])
+    files, lines = apply_strip(args[1:])
     print(f'stripped {lines} line(s) across {files} file(s)')
     if lines == 0:
         print('no changes: no TypeScript ref tails left')
@@ -424,4 +443,4 @@ def main(argv):
 
 
 if __name__ == '__main__':
-    sys.exit(main(sys.argv))
+    sys.exit(main(sys.argv[1:]))

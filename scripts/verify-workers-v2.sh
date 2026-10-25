@@ -6,7 +6,7 @@ export GOENV=off
 cache_dir="${WORKERS_V2_CACHE_DIR:-${TMPDIR:-/tmp}/loyal-workers-v2-cache}"
 export GOMODCACHE="${WORKERS_V2_GOMODCACHE:-$cache_dir/gomod}"
 export GOCACHE="${WORKERS_V2_GOCACHE:-$cache_dir/gobuild}"
-bash "$(dirname "$0")/check-go-ts-refs.sh"
+bash ../../scripts/check-go-ts-refs.sh
 if test -n "$(gofmt -l cmd internal)"; then
   echo '{"gate":"format","verdict":"FAIL"}'
   exit 1
