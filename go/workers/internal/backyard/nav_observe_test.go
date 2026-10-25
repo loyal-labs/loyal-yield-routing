@@ -3,6 +3,8 @@ package backyard
 import (
 	"context"
 	"encoding/binary"
+	"errors"
+	"fmt"
 	"math"
 	"math/big"
 	"strings"
@@ -482,5 +484,33 @@ func TestFirstTickValuesUnseededLane(t *testing.T) {
 	}
 	if o.Snapshot.StrategyNAVRaw != 31_970_010 || o.Snapshot.ExitLiabilityRaw != 30_000 || len(recorded) != 1 {
 		t.Fatalf("first tick NAV %d exit %d recorded %v", o.Snapshot.StrategyNAVRaw, o.Snapshot.ExitLiabilityRaw, recorded)
+	}
+}
+
+func TestUnpricedLaneHoldsOnlyItsVault(t *testing.T) {
+	manifest, accounts := multiLaneFixture(t, nil)
+	quoter := &exitQuoter{
+		price: func(context.Context, heldExitBasis, int64, time.Time) (ExitCost, error) {
+			return ExitCost{}, fmt.Errorf("jupiter unavailable")
+		},
+		record: func(context.Context, ExitCost) (bool, error) { return true, nil },
+		now:    func() time.Time { return time.Unix(kaminoFixtureUnix, 0).UTC() },
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	var observeErr error
+	tick := func(ctx context.Context) error {
+		defer cancel()
+		_, _, observeErr = observeConfirmedRouteSnapshotWithAccounts(ctx, manifest, routeObservationRuntime{state: testVaultState, inputs: targetInputs{ExitCosts: exitCosts{}},
+			read:             fixtureBatchRuntime(77, accounts),
+			refreshValuation: fixtureRefresh(77, accounts),
+			now:              func() time.Time { return time.Unix(kaminoFixtureUnix, 0).UTC() },
+			exits:            quoter,
+		})
+		return observeErr
+	}
+	err := (&Worker{wake: make(chan struct{}, 1), interval: time.Hour}).runTicks(ctx, tick)
+	var hold *PreSendHold
+	if !errors.Is(err, context.Canceled) || !errors.As(observeErr, &hold) || holdCause(hold) != "exit_unpriced" {
+		t.Fatalf("unpriced lane: worker stopped with %v, observation %v", err, observeErr)
 	}
 }
