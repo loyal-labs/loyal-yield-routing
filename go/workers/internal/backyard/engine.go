@@ -85,11 +85,11 @@ func NewEngine(config EngineConfig) (*Engine, error) {
 	if config.Jupiter == nil {
 		return nil, fmt.Errorf("Backyard engine requires a Jupiter client")
 	}
-	config.Database.events, config.Database.exits, e.exits = routeEvents, routeExits, routeExits
+	config.Database.events, e.exits = routeEvents, routeExits
 	return e, nil
 }
 
-func (e *Engine) quoteStartupExits(ctx context.Context) {
+func (e *Engine) quoteExits(ctx context.Context, quoteStates []*vaultState, failed []string) {
 	for i, worker := range e.workers {
 		v, quoter := worker.manifest.vault, e.exits[worker.routeKey]
 		if quoter == nil {
@@ -99,20 +99,49 @@ func (e *Engine) quoteStartupExits(ctx context.Context) {
 		refreshObservationLagSlots(quoteCtx, e.rpc)
 		planning, err := e.database.readRoutePlanningState(quoteCtx, v.RouteKey)
 		if err == nil {
-			_, _, err = observeQuotingRouteSnapshot(quoteCtx, e.rpc, e.view, worker.manifest, e.states[i], planning.landedSlot, planning.inputs, quoter)
+			_, _, err = observeQuotingRouteSnapshot(quoteCtx, e.rpc, e.view, worker.manifest, quoteStates[i], planning.landedSlot, planning.inputs, quoter)
 		}
 		cancel()
+		code := ""
 		if err != nil {
-			_, _ = fmt.Fprintf(e.out, "backyard-rwa-worker: vault=%s startup exit quotes unavailable: %s\n", v.Name, sanitizedSelectorEvaluateFailure(err))
+			code = sanitizedSelectorEvaluateFailure(err)
 		}
+		if code != failed[i] && code != "" {
+			_, _ = fmt.Fprintf(e.out, "backyard-rwa-worker: vault=%s exit quotes unavailable: %s\n", v.Name, code)
+		}
+		failed[i] = code
 	}
+}
+
+func (e *Engine) runExitQuotes(ctx context.Context) func() {
+	quoteStates, failed := make([]*vaultState, len(e.workers)), make([]string, len(e.workers))
+	for i := range e.workers {
+		quoteStates[i] = &vaultState{events: e.states[i].events}
+	}
+	e.quoteExits(ctx, quoteStates, failed)
+	loopCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(selectorLiveSampleInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-loopCtx.Done():
+				return
+			case <-ticker.C:
+				e.quoteExits(loopCtx, quoteStates, failed)
+			}
+		}
+	}()
+	return func() { cancel(); <-done }
 }
 
 func (e *Engine) Run(ctx context.Context) error {
 	if e == nil || len(e.workers) == 0 {
 		return fmt.Errorf("Backyard engine is not constructed")
 	}
-	e.quoteStartupExits(ctx)
+	defer e.runExitQuotes(ctx)()
 	if e.runtime.Selector != SelectorOff {
 		feed, err := NewEconomicFeed(e.view)
 		if err != nil {

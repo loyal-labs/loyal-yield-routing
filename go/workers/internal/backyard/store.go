@@ -64,7 +64,6 @@ type Database struct {
 	pool   *pgxpool.Pool
 	writer bool
 	events map[string]*events
-	exits  map[string]*exitQuoter
 }
 
 var errWriterSessionLost = errors.New("writer session lost")
