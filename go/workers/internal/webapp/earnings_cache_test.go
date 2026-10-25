@@ -63,6 +63,24 @@ func TestEarningsRefreshLockLeavesTheRebuildItsCallersDeadline(t *testing.T) {
 	}
 }
 
+func TestEarningsRefreshLockBoundsTheHolderToTheRebuildBudget(t *testing.T) {
+	setup, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	pool := earningsLockTestPool(t, setup)
+
+	var taskDeadline time.Time
+	var bounded bool
+	acquired, err := withEarningsRefreshLock(context.Background(), pool, "earnings-lock-budget-test", func(ctx context.Context) error {
+		taskDeadline, bounded = ctx.Deadline()
+		return nil
+	})
+	latest := time.Now().Add(earningsRefreshBudget)
+
+	if err != nil || !acquired || !bounded || taskDeadline.After(latest) {
+		t.Fatalf("acquired=%v err=%v bounded=%v task deadline=%s, want a deadline by %s: a hung foreground rebuild must not hold the lock and a slot forever", acquired, err, bounded, taskDeadline, latest)
+	}
+}
+
 func TestEarningsRefreshLockOutlivesTheIdleInTransactionTimeout(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

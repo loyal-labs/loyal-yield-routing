@@ -69,8 +69,11 @@ func itoa4(v int) string { return formatInt64(int64(v)) }
 // withEarningsRefreshLock ports withEarnEarningsRefreshLock (cache:30). The
 // advisory lock is transaction-scoped on its own connection, opened outside
 // the pool so a held lock never takes a connection the refresh reads need;
-// closing the connection, or the process dying, releases it.
+// closing the connection, or the process dying, releases it. Wait, connect and
+// task together fit earningsRefreshBudget, so no holder outlives it.
 func withEarningsRefreshLock(ctx context.Context, pool *pgxpool.Pool, key string, task func(context.Context) error) (bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, earningsRefreshBudget)
+	defer cancel()
 	select {
 	case earningsRefreshLockSlots <- struct{}{}:
 	case <-ctx.Done():
