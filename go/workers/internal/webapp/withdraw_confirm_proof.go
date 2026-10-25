@@ -68,11 +68,7 @@ func withdrawBalanceAmount(balances map[solana.PublicKey]chain.TokenBalance, key
 	return 0
 }
 
-// withdrawTokenBalanceDeltaRaw ports getParsedTokenBalanceDeltaRaw
-// : the summed token-balance change
-// over every account the mint touches, matched by token account or, when no
-// account is given, by owner.
-func withdrawTokenBalanceDeltaRaw(execution chain.Execution, mint solana.PublicKey, tokenAccount, fallbackOwner string) int64 {
+func withdrawMintAccounts(execution chain.Execution, mint solana.PublicKey) map[solana.PublicKey]bool {
 	touched := map[solana.PublicKey]bool{}
 	for key, balance := range execution.Pre {
 		if balance.Mint == mint {
@@ -84,22 +80,38 @@ func withdrawTokenBalanceDeltaRaw(execution chain.Execution, mint solana.PublicK
 			touched[key] = true
 		}
 	}
+	return touched
+}
+
+func withdrawAccountChange(execution chain.Execution, key solana.PublicKey) int64 {
+	return int64(withdrawBalanceAmount(execution.Post, key)) - int64(withdrawBalanceAmount(execution.Pre, key))
+}
+
+func withdrawTokenAccountDeltaRaw(execution chain.Execution, mint solana.PublicKey, tokenAccount string) int64 {
 	var delta int64
-	for key := range touched {
-		owner := ""
+	for key := range withdrawMintAccounts(execution, mint) {
+		if key.String() == tokenAccount {
+			delta += withdrawAccountChange(execution, key)
+		}
+	}
+	return delta
+}
+
+func withdrawOwnerDeltaRaw(execution chain.Execution, mint solana.PublicKey, owner string) int64 {
+	if owner == "" {
+		return 0
+	}
+	var delta int64
+	for key := range withdrawMintAccounts(execution, mint) {
+		keyOwner := ""
 		if post, ok := execution.Post[key]; ok {
-			owner = post.Owner.String()
+			keyOwner = post.Owner.String()
 		} else if pre, ok := execution.Pre[key]; ok {
-			owner = pre.Owner.String()
+			keyOwner = pre.Owner.String()
 		}
-		if tokenAccount != "" {
-			if key.String() != tokenAccount {
-				continue
-			}
-		} else if fallbackOwner == "" || owner != fallbackOwner {
-			continue
+		if keyOwner == owner {
+			delta += withdrawAccountChange(execution, key)
 		}
-		delta += int64(withdrawBalanceAmount(execution.Post, key)) - int64(withdrawBalanceAmount(execution.Pre, key))
 	}
 	return delta
 }
@@ -166,15 +178,15 @@ func withdrawTransactionProof(ctx context.Context, client withdrawConfirmChain, 
 		return err
 	}
 
-	walletAtaDelta := withdrawTokenBalanceDeltaRaw(execution, liquidityMint, walletLiquidityAta.String(), "")
+	walletAtaDelta := withdrawTokenAccountDeltaRaw(execution, liquidityMint, walletLiquidityAta.String())
 	walletTransfer := walletAtaDelta
 	if walletTransfer <= 0 {
-		walletTransfer = withdrawTokenBalanceDeltaRaw(execution, liquidityMint, "", in.WalletAddress)
+		walletTransfer = withdrawOwnerDeltaRaw(execution, liquidityMint, in.WalletAddress)
 	}
 	if walletTransfer <= 0 {
 		return errors.New("Confirmed withdrawal transaction does not transfer the withdrawal mint to the authenticated wallet.")
 	}
-	vaultLiquidityDelta := withdrawTokenBalanceDeltaRaw(execution, liquidityMint, vaultLiquidityAta.String(), "")
+	vaultLiquidityDelta := withdrawTokenAccountDeltaRaw(execution, liquidityMint, vaultLiquidityAta.String())
 
 	if in.SourceType == "idle" {
 		if vaultLiquidityDelta >= 0 || -vaultLiquidityDelta != walletTransfer {
