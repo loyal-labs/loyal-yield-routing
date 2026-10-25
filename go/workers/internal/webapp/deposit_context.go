@@ -110,15 +110,9 @@ func (h earnRoutes) earnMaxContext(ctx context.Context, in *earnMaxContextInput)
 	}}, nil
 }
 
-// earnMaxContextSettings is mobile.ts:67-108: use the wallet's ready smart
-// account when one exists (findReadyCurrentUserSmartAccount's state and
-// on-chain signer check, mobile.ts:73-78), otherwise require $1 USDC
-// , create the app user and resolve the
-// account through the sponsored-provisioning seam. The
-// seam's chain reads are also the wallet-controls assert the Next route runs
-// at mobile.ts:109-113: findSettingsSignerAddresses is
-// that assert's own chain read, so an ensured account is verified by
-// construction.
+// earnMaxContextSettings returns a settings PDA only after a chain read lists
+// the wallet as a signer: promoteSmartAccount, createSponsoredSmartAccount or
+// delegatedRootSigner (earn_sponsor.go).
 func (h earnRoutes) earnMaxContextSettings(ctx context.Context, wallet solana.PublicKey) (string, error) {
 	userID, err := h.earnMaxContextUserID(ctx, wallet)
 	if err != nil {
