@@ -87,6 +87,7 @@ type routeObservationRuntime struct {
 	now              func() time.Time
 	inputs           targetInputs
 	state            *vaultState
+	exits            *exitQuoter
 }
 
 func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest RouteManifest, runtime routeObservationRuntime) (Observation, []ConfirmedAccount, error) {

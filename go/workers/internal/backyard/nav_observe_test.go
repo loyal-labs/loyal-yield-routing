@@ -1,6 +1,7 @@
 package backyard
 
 import (
+	"context"
 	"encoding/binary"
 	"math"
 	"math/big"
@@ -454,5 +455,32 @@ func TestRouteNAVEntryBelowMarkIsFlat(t *testing.T) {
 	}
 	if after.StrategyNAVRaw != 999_880_196 {
 		t.Fatalf("entry below the mark moved NAV from %d to %d, want 999880196", before.StrategyNAVRaw, after.StrategyNAVRaw)
+	}
+}
+
+func TestFirstTickValuesUnseededLane(t *testing.T) {
+	manifest, accounts := multiLaneFixture(t, nil)
+	var recorded []string
+	quoter := &exitQuoter{
+		price: func(_ context.Context, b heldExitBasis, slot int64, at time.Time) (ExitCost, error) {
+			return exitCostOf(b.st.route.Lane, exitCostQuote, b.heldRaw, b.markValue, b.markValue-b.markValue/1_000, b.mark, slot, at)
+		},
+		record: func(_ context.Context, c ExitCost) (bool, error) {
+			recorded = append(recorded, c.Lane)
+			return true, nil
+		},
+		now: func() time.Time { return time.Unix(kaminoFixtureUnix, 0).UTC() },
+	}
+	o, _, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), manifest, routeObservationRuntime{state: testVaultState, inputs: targetInputs{ExitCosts: exitCosts{}},
+		read:             fixtureBatchRuntime(77, accounts),
+		refreshValuation: fixtureRefresh(77, accounts),
+		now:              func() time.Time { return time.Unix(kaminoFixtureUnix, 0).UTC() },
+		exits:            quoter,
+	})
+	if err != nil {
+		t.Fatalf("first tick with no stored exit cost: %v", err)
+	}
+	if o.Snapshot.StrategyNAVRaw != 31_970_010 || o.Snapshot.ExitLiabilityRaw != 30_000 || len(recorded) != 1 {
+		t.Fatalf("first tick NAV %d exit %d recorded %v", o.Snapshot.StrategyNAVRaw, o.Snapshot.ExitLiabilityRaw, recorded)
 	}
 }

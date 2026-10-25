@@ -95,6 +95,14 @@ func (e exitCosts) quoteDue(b heldExitBasis, lastAttempt, now time.Time) bool {
 	return (quote == nil || !quote.fresh(b.heldRaw, b.mark)) && now.Sub(lastAttempt) >= exitQuoteInterval
 }
 
+type exitQuoter struct {
+	price     func(context.Context, heldExitBasis, int64, time.Time) (ExitCost, error)
+	record    func(context.Context, ExitCost) (bool, error)
+	now       func() time.Time
+	events    *events
+	attempted map[string]time.Time
+}
+
 type heldExitBasis struct {
 	st                 stepState
 	heldRaw, markValue uint64
