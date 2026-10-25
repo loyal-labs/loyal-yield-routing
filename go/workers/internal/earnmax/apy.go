@@ -7,10 +7,11 @@ import (
 )
 
 const (
-	apyCacheFor   = 5 * time.Minute
-	apyTimeout    = 3 * time.Second
-	apyWindowDays = 7
-	dayMs         = 86_400_000
+	apyCacheFor        = 5 * time.Minute
+	currentApyCacheFor = time.Minute
+	apyTimeout         = 3 * time.Second
+	apyWindowDays      = 7
+	dayMs              = 86_400_000
 )
 
 type APYPoint struct {
@@ -79,29 +80,29 @@ func ShareAPY(days []DailyStat, live *LiveShare, now time.Time) APY {
 		rounded := roundHalfUp(growth)
 		return &rounded, true
 	}
-	trailing := func(i int) (bps *int64, windowDays int64, defined bool) {
+	trailing := func(i int) (bps *int64, windowDays int64, full, defined bool) {
 		latest, from := points[i], points[0]
 		for j := i; j >= 0; j-- {
 			if latest.atMs-points[j].atMs >= apyWindowDays*dayMs-dayMs/2 {
-				from = points[j]
+				from, full = points[j], true
 				break
 			}
 		}
 		if latest.atMs-from.atMs < dayMs/2 {
-			return nil, 0, false
+			return nil, 0, false, false
 		}
 		bps, defined = annualize(from, latest)
-		return bps, min(apyWindowDays, roundHalfUp(float64(latest.atMs-from.atMs)/dayMs)), defined
+		return bps, min(apyWindowDays, roundHalfUp(float64(latest.atMs-from.atMs)/dayMs)), full, defined
 	}
 	for i := range points {
-		bps, window, defined := trailing(i)
+		bps, window, full, defined := trailing(i)
 		if !defined {
 			continue
 		}
 		if i == len(points)-1 {
 			out.Bps, out.WindowDays = bps, &window
 		}
-		if bps != nil {
+		if bps != nil && full {
 			out.History = append(out.History, HistoryPoint{APYBps: *bps, ObservedAt: time.UnixMilli(points[i].atMs).UTC().Format(time.RFC3339)})
 		}
 	}
@@ -124,10 +125,17 @@ type EarnMaxApy struct {
 	History       []HistoryPoint `json:"history" nullable:"false"`
 }
 
-func (r *Reader) PublicAPY(ctx context.Context) EarnMaxApy {
+func (r *Reader) PublicAPY() EarnMaxApy {
 	apy := r.APY()
-	current, _ := r.CurrentApyBps(ctx, r.now())
+	current := r.currentApy()
 	return EarnMaxApy{APYBps: apy.Bps, APYWindowDays: apy.WindowDays, CurrentApyBps: current, History: apy.History}
+}
+
+func (r *Reader) currentApy() *int64 {
+	value, _, _ := r.current.Get(func(ctx context.Context) (*int64, error) {
+		return r.CurrentApyBps(ctx, r.now())
+	})
+	return value
 }
 
 func (r *Reader) APY() APY {

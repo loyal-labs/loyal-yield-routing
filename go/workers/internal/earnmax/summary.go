@@ -27,7 +27,7 @@ type WithdrawalView struct {
 }
 
 type Summary struct {
-	ObservedSlot       string          `json:"observedSlot"`
+	ObservedSlot string `json:"observedSlot"`
 	// RN adapter: delete once shipped RN reads /api/earn-max/apy.
 	APYHistory         []APYPoint      `json:"apyHistory" nullable:"false"`
 	APYWindowDays      *int64          `json:"apyWindowDays"`
@@ -70,7 +70,7 @@ func (r *Reader) Summary(ctx context.Context, settings solana.PublicKey) (Summar
 	group, groupCtx := errgroup.WithContext(ctx)
 	group.Go(func() (err error) { position, history, err = r.snapshot(groupCtx, a, now); return err })
 	group.Go(func() error { apy = r.APY(); return nil })
-	group.Go(func() error { current, _ = r.CurrentApyBps(groupCtx, now); return nil })
+	group.Go(func() error { current = r.currentApy(); return nil })
 	if err := group.Wait(); err != nil {
 		return Summary{}, err
 	}
