@@ -62,3 +62,24 @@ func TestEarningsRefreshLockLeavesTheRebuildItsCallersDeadline(t *testing.T) {
 		t.Fatalf("acquired=%v err=%v task deadline=%s, want the caller's %s: a cold vault history rebuild runs past 15s", acquired, err, taskDeadline, deadline)
 	}
 }
+
+func TestEarningsRefreshLockOutlivesTheIdleInTransactionTimeout(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	config := earningsLockTestPool(t, ctx).Config()
+	config.ConnConfig.RuntimeParams["idle_in_transaction_session_timeout"] = "200ms"
+	pool, err := pgxpool.NewWithConfig(ctx, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+
+	acquired, err := withEarningsRefreshLock(ctx, pool, "earnings-lock-idle-test", func(ctx context.Context) error {
+		_, err := pool.Exec(ctx, `SELECT pg_sleep(0.6)`)
+		return err
+	})
+
+	if err != nil || !acquired {
+		t.Fatalf("acquired=%v err=%v, want the lock to outlive a rebuild longer than the server's idle_in_transaction_session_timeout (5min on Yield, the rebuild budget)", acquired, err)
+	}
+}

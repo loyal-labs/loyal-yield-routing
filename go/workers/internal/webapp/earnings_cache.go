@@ -15,6 +15,8 @@ import (
 
 const earningsFreshMs = int64(5 * 60 * 1000)
 
+var earningsRefreshLockSlots = make(chan struct{}, 4)
+
 // earningsRefreshLockKey mirrors the JSON.stringify lock key (cache:87): a
 // JS array literal with the scope fields in order.
 func earningsRefreshLockKey(input earningsReadInput, timezone string) string {
@@ -69,6 +71,12 @@ func itoa4(v int) string { return formatInt64(int64(v)) }
 // the pool so a held lock never takes a connection the refresh reads need;
 // closing the connection, or the process dying, releases it.
 func withEarningsRefreshLock(ctx context.Context, pool *pgxpool.Pool, key string, task func(context.Context) error) (bool, error) {
+	select {
+	case earningsRefreshLockSlots <- struct{}{}:
+	case <-ctx.Done():
+		return false, ctx.Err()
+	}
+	defer func() { <-earningsRefreshLockSlots }()
 	conn, err := pgx.ConnectConfig(ctx, pool.Config().ConnConfig)
 	if err != nil {
 		return false, err
@@ -79,7 +87,7 @@ func withEarningsRefreshLock(ctx context.Context, pool *pgxpool.Pool, key string
 		return false, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err := tx.Exec(ctx, `SET LOCAL statement_timeout = 10000`); err != nil {
+	if _, err := tx.Exec(ctx, `SET LOCAL statement_timeout = 10000; SET LOCAL idle_in_transaction_session_timeout = 0`); err != nil {
 		return false, err
 	}
 	var acquired bool
