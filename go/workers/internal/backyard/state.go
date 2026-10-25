@@ -57,6 +57,15 @@ func (s OperationStatus) preBroadcast() bool {
 
 type debtCustodyRaw int64
 
+// StageAllowance is what Squads lets the stage policy move now: RemainingRaw
+// until ResetAt (unix seconds, lastReset plus period), MaxRaw after it.
+type StageAllowance struct {
+	RemainingRaw int64
+	MaxRaw       int64
+	ResetAt      int64
+	ObservedAt   int64
+}
+
 type Snapshot struct {
 	ValuationSource             string `json:",omitempty"`
 	ValuationSlot               int64  `json:",omitempty"`
@@ -158,8 +167,9 @@ type Snapshot struct {
 	CapitalMutated                   bool
 	PostMutationNAVRequired          bool
 	LastReportAgeSeconds             int64
-	Target                           LaneTarget `json:",omitempty"`
-	TargetInputs                     string     `json:",omitempty"`
+	StageAllowance                   *StageAllowance `json:",omitempty"`
+	Target                           LaneTarget      `json:",omitempty"`
+	TargetInputs                     string          `json:",omitempty"`
 }
 
 func (s Snapshot) valued() bool {

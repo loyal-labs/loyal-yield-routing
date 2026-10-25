@@ -16,6 +16,8 @@ const (
 	holdStale        HoldReason = "stale"
 	holdChainRefused HoldReason = "chain_refused"
 	holdStopped      HoldReason = "stopped"
+
+	holdSpendingLimit HoldReason = "spending_limit"
 )
 
 type PreSendHold struct {
