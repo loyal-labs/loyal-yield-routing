@@ -243,13 +243,6 @@ func resetEarnForecastCacheForTests() {
 	forecastLastRealized = nil
 }
 
-// contextForSharedCacheRead detaches a read that fills a shared cache from the
-// calling request: the cached result serves every caller, so one caller
-// hanging up must not cancel the read and cache a miss.
-func contextForSharedCacheRead(ctx context.Context) context.Context {
-	return context.WithoutCancel(ctx)
-}
-
 // mediumFeeAwareEarnForecast serves a 5-minute cache with a 3-hour stale
 // fallback as availability "stale"; the lock single-flights the DB reads.
 func (h earnRoutes) mediumFeeAwareEarnForecast(ctx context.Context, deps forecastDeps, now time.Time) *forecastResult {
@@ -260,7 +253,7 @@ func (h earnRoutes) mediumFeeAwareEarnForecast(ctx context.Context, deps forecas
 		return forecastCacheValue
 	}
 
-	realized, err := h.realizedEarnForecast(contextForSharedCacheRead(ctx), deps, now)
+	realized, err := h.realizedEarnForecast(context.WithoutCancel(ctx), deps, now)
 	if err != nil {
 		slog.Warn("[earn-forecast] realized APY read failed", "error", err)
 	}
