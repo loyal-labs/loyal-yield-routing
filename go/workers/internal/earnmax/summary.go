@@ -27,7 +27,7 @@ type WithdrawalView struct {
 }
 
 type Summary struct {
-	ObservedSlot       string          `json:"observedSlot"`
+	ObservedSlot string `json:"observedSlot"`
 	// RN adapter: delete once shipped RN reads /api/earn-max/apy.
 	APYHistory         []APYPoint      `json:"apyHistory" nullable:"false"`
 	APYWindowDays      *int64          `json:"apyWindowDays"`
