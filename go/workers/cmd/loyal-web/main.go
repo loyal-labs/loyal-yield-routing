@@ -309,6 +309,8 @@ func run(ctx context.Context) error {
 		Addr:              cfg.Addr,
 		Handler:           webapp.New(cfg),
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      webapp.WriteTimeout,
 		IdleTimeout:       2 * time.Minute,
 	}
 	failed := make(chan error, 1)
