@@ -375,7 +375,7 @@ export function EarnChartPane({
           aside in the chart column's place, so no reserved slot is needed —
           only the expanded overlay below stays mounted. */}
       {hideAside ? null : (
-        <div className="hidden h-full w-[400px] shrink-0 flex-col gap-2 overflow-y-auto [scrollbar-width:none] min-[1204px]:flex [&::-webkit-scrollbar]:hidden">
+        <div data-earn-banner-room className="hidden h-full w-[400px] shrink-0 flex-col gap-2 overflow-y-auto [scrollbar-width:none] min-[1204px]:flex [&::-webkit-scrollbar]:hidden">
           <EarnChartCard
             actionAriaLabel="Expand chart"
             actionIconSrc={`${ASSET_BASE}/icon-expand.svg`}

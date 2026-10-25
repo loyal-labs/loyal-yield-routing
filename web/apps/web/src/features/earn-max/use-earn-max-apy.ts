@@ -47,7 +47,11 @@ async function fetchEarnMaxApy(): Promise<EarnMaxApy> {
   return inflight;
 }
 
-export function useEarnMaxApy(): {
+export function useEarnMaxApy({
+  enabled = true,
+}: {
+  enabled?: boolean;
+} = {}): {
   apy: EarnMaxApy | null;
   isLoaded: boolean;
 } {
@@ -57,6 +61,9 @@ export function useEarnMaxApy(): {
   }>({ apy: cached?.value ?? null, isLoaded: cached !== null });
 
   useEffect(() => {
+    if (!enabled) {
+      return;
+    }
     let mounted = true;
     const refresh = () => {
       fetchEarnMaxApy().then(
@@ -70,7 +77,7 @@ export function useEarnMaxApy(): {
       mounted = false;
       window.clearInterval(interval);
     };
-  }, []);
+  }, [enabled]);
 
   return state;
 }

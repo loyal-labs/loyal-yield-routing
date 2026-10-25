@@ -398,7 +398,6 @@ export function WorkspaceFaceliftShell() {
           activePage={activePage}
           earnBalanceUsd={earnData.earnBalanceUsd}
           earnMaxBalanceUsd={earnMax.view.balanceUsd}
-          earnMaxForecastApyBps={earnMax.view.forecastApyBps}
           flashedShortcut={flashedShortcut}
           isEarnBalanceLoading={isPositionLoading}
           isEarnMaxBalanceLoading={earnMax.view.isLoading}
@@ -407,7 +406,7 @@ export function WorkspaceFaceliftShell() {
           showEarnMax={EARN_MAX_VISIBLE}
         />
         <div
-          className={`relative flex h-full min-w-0 flex-1 flex-col min-[1204px]:[&_aside]:pb-[var(--earn-banner-room,0px)] ${
+          className={`relative flex h-full min-w-0 flex-1 flex-col min-[1204px]:[&_[data-earn-banner-room]]:pb-[var(--earn-banner-room,0px)] ${
             isMobileGrayBackground ? "" : "max-[795px]:bg-card"
           }`}
           ref={contentColumnRef}

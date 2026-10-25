@@ -290,7 +290,7 @@ export function ActivityPage({
           </section>
         </PaneReveal>
         {selectedItem ? (
-          <aside className="hidden h-full w-[400px] shrink-0 flex-col overflow-clip rounded-3xl bg-card min-[1204px]:flex">
+          <aside data-earn-banner-room className="hidden h-full w-[400px] shrink-0 flex-col overflow-clip rounded-3xl bg-card min-[1204px]:flex">
             <PaneReveal key={selectedItem.item.id}>
               {selectedItem.type === "earn" ? (
                 <EarnTransactionDetailPane
@@ -308,7 +308,7 @@ export function ActivityPage({
             </PaneReveal>
           </aside>
         ) : (
-          <aside className="hidden h-full w-[400px] shrink-0 flex-col items-center justify-center overflow-clip rounded-3xl border-2 border-border border-dashed min-[1204px]:flex">
+          <aside data-earn-banner-room className="hidden h-full w-[400px] shrink-0 flex-col items-center justify-center overflow-clip rounded-3xl border-2 border-border border-dashed min-[1204px]:flex">
             <div className="flex w-full flex-col items-center gap-4 px-6">
               <ThemedIcon
                 className="size-11 text-tertiary"
