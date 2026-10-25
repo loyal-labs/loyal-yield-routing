@@ -185,6 +185,7 @@ func NextPolicySeed(s Settings) uint64 {
 type Installed struct {
 	Account solana.PublicKey
 	View    *PolicyAccountView
+	Raw     *chain.Account
 }
 
 func Policies(ctx context.Context, c *chain.Client, settings solana.PublicKey, minSlot uint64) ([]Installed, error) {
@@ -218,7 +219,7 @@ func Policies(ctx context.Context, c *chain.Client, settings solana.PublicKey, m
 			continue
 		}
 		view, _ := DecodeCanonicalPolicy(account)
-		out = append(out, Installed{Account: account.Key, View: view})
+		out = append(out, Installed{Account: account.Key, View: view, Raw: account})
 	}
 	return out, nil
 }

@@ -636,3 +636,25 @@ func TestRotationCashFromUSDCDebtSourceEntersTheDestination(t *testing.T) {
 		t.Fatalf("ONyc holds %d, Maple %d+%d", dest.coll, l.coll, l.idle)
 	}
 }
+
+func TestStageWaitsForAllowanceReset(t *testing.T) {
+	const (
+		reset = int64(1_792_960_526)
+		day   = int64(86_400)
+		idle  = int64(1_547_993_272)
+	)
+	d := func(action Action, reason string, amount int64) Decision {
+		return Decision{Action: action, Reason: reason, AmountRaw: amount}
+	}
+	snapshot := func(now int64) Snapshot {
+		return Snapshot{SquadsIdleRaw: idle, StageAllowance: &StageAllowance{RemainingRaw: 0, MaxRaw: 200_000_000_000, ResetAt: reset + day, ObservedAt: now}}
+	}
+	held, _ := outboundStep(snapshot(reset+day/2), LaneTarget{}, d)
+	if held.Action != Hold || held.Reason != "spending_limit" || held.AmountRaw != 0 {
+		t.Fatalf("12h after the last reset: got %s %q %d, want HOLD spending_limit 0", held.Action, held.Reason, held.AmountRaw)
+	}
+	staged, _ := outboundStep(snapshot(reset+day+1), LaneTarget{}, d)
+	if staged.Action != StageSquadsToVoltr || staged.AmountRaw != idle {
+		t.Fatalf("24h and 1s after the last reset: got %s %d, want %s %d", staged.Action, staged.AmountRaw, StageSquadsToVoltr, idle)
+	}
+}

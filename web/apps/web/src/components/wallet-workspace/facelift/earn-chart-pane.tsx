@@ -34,6 +34,7 @@ export type ChartTab = (typeof CHART_TABS)[number];
 
 export type ChartCardCustomContent = {
   defaultTab: ChartTab;
+  loggedOutTooltip?: string;
   renderBody: (activeTab: ChartTab, isExpanded: boolean) => ReactNode;
   tabs: readonly ChartTab[];
 };
@@ -159,7 +160,10 @@ export function EarnChartCard({
               <InfoTooltip
                 iconClassName="size-6"
                 placement="bottom"
-                text="Historical APY of the Loyal Earn strategy over the last 30 days."
+                text={
+                  custom?.loggedOutTooltip ??
+                  "Historical APY of the Loyal Earn strategy over the last 30 days."
+                }
               />
             </div>
           ) : (
@@ -341,7 +345,6 @@ function ExpandedChartOverlay({
 }
 
 export function EarnChartPane({
-  banner,
   custom,
   earnData,
   hideAside = false,
@@ -353,7 +356,6 @@ export function EarnChartPane({
   statsPanel,
 }: {
   custom?: ChartCardCustomContent;
-  banner?: ReactNode;
   earnData: EarnPositionData;
   hideAside?: boolean;
   isExpanded: boolean;
@@ -373,7 +375,7 @@ export function EarnChartPane({
           aside in the chart column's place, so no reserved slot is needed —
           only the expanded overlay below stays mounted. */}
       {hideAside ? null : (
-        <div className="hidden h-full w-[400px] shrink-0 flex-col gap-2 overflow-y-auto [scrollbar-width:none] min-[1204px]:flex [&::-webkit-scrollbar]:hidden">
+        <div data-earn-banner-room className="hidden h-full w-[400px] shrink-0 flex-col gap-2 overflow-y-auto [scrollbar-width:none] min-[1204px]:flex [&::-webkit-scrollbar]:hidden">
           <EarnChartCard
             actionAriaLabel="Expand chart"
             actionIconSrc={`${ASSET_BASE}/icon-expand.svg`}
@@ -386,7 +388,6 @@ export function EarnChartPane({
             selectedTab={selectedTab}
           />
           {statsPanel}
-          {banner}
         </div>
       )}
 

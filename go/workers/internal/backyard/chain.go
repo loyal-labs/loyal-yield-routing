@@ -143,7 +143,8 @@ func simulateSigned(ctx context.Context, c *chain.Client, signedWire []byte) (Si
 		if len(logTail) > 8 {
 			logTail = logTail[len(logTail)-8:]
 		}
-		return SimulationResult{}, fmt.Errorf("signed transaction simulation failed: slot=%d err=%s log_tail=%q", slot, string(raw), strings.Join(logTail, " | "))
+		return SimulationResult{}, &simulationFailure{raw: raw, logs: failure.Logs,
+			text: fmt.Sprintf("signed transaction simulation failed: slot=%d err=%s log_tail=%q", slot, string(raw), strings.Join(logTail, " | "))}
 	}
 	if err != nil {
 		return SimulationResult{}, unavailable(err)

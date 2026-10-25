@@ -329,6 +329,23 @@ func (h earnMaxRoutes) registerReads(api huma.API) {
 	})
 }
 
+const earnMaxAPYPath = "/api/earn-max/apy"
+
+type apyOutput struct {
+	Body earnmax.EarnMaxApy
+}
+
+func (h earnMaxRoutes) registerPublicAPY(api huma.API) {
+	huma.Register(api, huma.Operation{
+		OperationID: "get-earn-max-apy",
+		Method:      http.MethodGet,
+		Path:        earnMaxAPYPath,
+		Summary:     "Earn MAX trailing 7-day realized APY and its history",
+	}, func(ctx context.Context, _ *struct{}) (*apyOutput, error) {
+		return &apyOutput{h.cfg.Reader.PublicAPY()}, nil
+	})
+}
+
 const invitePath = "/api/smart-accounts/earn-max/invite"
 
 func (h earnMaxRoutes) registerRedeem(api huma.API) {

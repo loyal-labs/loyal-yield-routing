@@ -42,7 +42,6 @@ import {
   EarnMaxWithdrawPane,
 } from "@/components/wallet-workspace/facelift/earn-max-action-panes";
 import { EarnEmptyPane } from "@/components/wallet-workspace/facelift/earn-empty-pane";
-import { EarnStatsPanel } from "@/components/wallet-workspace/facelift/earn-stats-panel";
 import {
   EarnMaxTransactionDetailPane,
   earnMaxActivityLabel,
@@ -81,7 +80,9 @@ import {
   type EarnMaxActions,
   type EarnMaxActivityItem,
   type EarnMaxViewModel,
+  useEarnMaxApy,
 } from "@/features/earn-max";
+import type { EarnMaxApy } from "@/features/earn-max/use-earn-max-apy";
 import { splitUsdBalance } from "@/hooks/use-wallet-desktop-data";
 import { useAuthCapability } from "@/lib/auth/capability";
 
@@ -124,83 +125,6 @@ function ApyBadge({
   );
 }
 
-function PanelHeader({ title }: { title: string }) {
-  return (
-    <header className="flex w-full items-center p-2">
-      <h2 className="min-w-0 flex-1 truncate py-2.5 pl-4 font-semibold text-[20px] text-foreground leading-6">
-        {title}
-      </h2>
-    </header>
-  );
-}
-
-export function EarnMaxStrategiesCard({
-  apy,
-}: {
-  apy: Pick<EarnMaxViewModel, "forecastApyBps" | "apyWindowDays"> | null;
-}) {
-  return (
-    <div className="flex shrink-0 flex-col rounded-3xl bg-card">
-      <PanelHeader title="Strategies" />
-      <div className="flex w-full flex-col gap-2 px-2 pb-2">
-        <div className="flex flex-col rounded-2xl bg-accent">
-          <div className="flex w-full items-center px-4">
-            <span className="flex items-center py-2">
-              <GrayInfinityIcon />
-            </span>
-            <span className="min-w-0 flex-1 py-2 font-medium text-[16px] text-foreground leading-5">
-              {EARN_MAX_STRATEGY_NAME}
-            </span>
-            <InfoTooltip
-              iconClassName="size-6"
-              text="A leveraged loop over tokenized real-world asset yield"
-            />
-          </div>
-          {apy !== null && (
-            <div className="flex flex-col gap-0.5 px-4 pt-2 pb-4">
-              <span className="flex items-center gap-1">
-                <span className="whitespace-nowrap text-[16px] text-muted-foreground leading-5">
-                  Average Net APY
-                </span>
-                <InfoTooltip
-                  text={
-                    apy.apyWindowDays !== null && apy.apyWindowDays < 7
-                      ? `Vault share-price growth over the ${apy.apyWindowDays} day${apy.apyWindowDays === 1 ? "" : "s"} since launch, annualized, after all costs`
-                      : "Vault share-price growth over the last 7 days, annualized, after all costs"
-                  }
-                />
-              </span>
-              <span className="font-semibold text-[28px] text-foreground leading-8">
-                {apy.forecastApyBps === null
-                  ? "—"
-                  : `${(apy.forecastApyBps / 100).toFixed(2)}%`}
-              </span>
-            </div>
-          )}
-        </div>
-        <div className="flex items-center rounded-2xl bg-accent px-4 opacity-40">
-          <span className="flex items-center py-2">
-            <span className="mr-3 flex size-11 shrink-0 items-center justify-center rounded-[11px] bg-accent">
-              <ThemedIcon
-                className="size-6 text-foreground"
-                src={`${ASSET_BASE}/icon-clock.svg`}
-              />
-            </span>
-          </span>
-          <span className="flex min-w-0 flex-1 flex-col gap-0.5 py-2">
-            <span className="font-medium text-[16px] text-foreground leading-5">
-              Delta neutral
-            </span>
-            <span className="text-[13px] text-foreground leading-4">
-              Coming soon
-            </span>
-          </span>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 const EARN_MAX_CHART_TABS: readonly ChartTab[] = ["APY", "Earned"];
 
 // ponytail: daily "earned" ≈ equity delta minus confirmed same-day flows
@@ -234,32 +158,18 @@ export function buildEarnMaxEarnedBars(view: EarnMaxViewModel): EarnedChartBar[]
   }));
 }
 
-// Earn MAX rides Earn's animated HistoricalApyChart: days with confirmed
-// history plot their realized daily APY, the rest sit at the realized /
-// forecast figure — the Kamino benchmark lines stay for comparison.
-// Vault share-price APY per day (not the user's own flows), so every holder
-// sees the same line; days before launch are left out.
-// The chart needs 2+ samples or it silently plots Earn's own history, so the
-// line always ends at "now" on the badge's figure (header = label). It also
-// spans the standard 30-day window: the x axis is set by these samples, and
-// a young vault's few-hour span squeezed Kamino's 30-day line into one
-// vertical stroke. Days before launch hold the first known figure flat.
-const EARN_MAX_APY_WINDOW_MS = 30 * 86_400_000;
-
-function buildEarnMaxApySamples(view: EarnMaxViewModel): HistoricalApySample[] {
-  const now = Date.now();
-  const samples = view.apyHistory.map((point) => ({
+// Earn MAX rides Earn's animated HistoricalApyChart on the vault's own
+// trailing 7-day realized APY series from the public read, one point per
+// sample as served. Fewer than two points render the chart's empty state;
+// an undefined sample list would plot Earn's own history under the MAX label.
+function buildEarnMaxApySamples(
+  apy: EarnMaxApy | null
+): HistoricalApySample[] {
+  const samples = (apy?.history ?? []).map((point) => ({
     apyPercent: point.apyBps / 100,
-    observedAtMs: Date.parse(`${point.date}T00:00:00Z`),
+    observedAtMs: Date.parse(point.observedAt),
   }));
-  if (view.forecastApyBps !== null) {
-    samples.push({ apyPercent: view.forecastApyBps / 100, observedAtMs: now });
-  }
-  const first = samples[0];
-  if (first && first.observedAtMs > now - EARN_MAX_APY_WINDOW_MS) {
-    samples.unshift({ ...first, observedAtMs: now - EARN_MAX_APY_WINDOW_MS });
-  }
-  return samples;
+  return samples.length >= 2 ? samples : [];
 }
 
 function SmallPill({
@@ -946,6 +856,7 @@ export function EarnMaxWorkspace({
     useState<EarnMaxActivityItem | null>(null);
   const transactionDetail = useLastValue(selectedTransaction);
   const { view, actions } = earnMax;
+  const { apy: publicApy, isLoaded: isPublicApyLoaded } = useEarnMaxApy();
   const isVirgin = isEarnMaxUntouched(view);
   useEffect(() => {
     if (isHydrated && !isSignedIn && screen !== "main") {
@@ -965,7 +876,9 @@ export function EarnMaxWorkspace({
     }
   });
   const chartCustom: ChartCardCustomContent = {
-    defaultTab: "Earned",
+    defaultTab: isSignedIn && !isVirgin ? "Earned" : "APY",
+    loggedOutTooltip:
+      "Historical APY of the Earn MAX strategy over the last 30 days.",
     renderBody: (activeTab) =>
       activeTab === "Earned" ? (
         <EarnedBarsChart
@@ -976,12 +889,14 @@ export function EarnMaxWorkspace({
           lifetimeEarnedUsd={view.earnedUsd ?? 0}
           note="Can dip for short periods as asset prices and rates move."
         />
+      ) : !isPublicApyLoaded ? (
+        <div aria-hidden="true" className="min-h-0 w-full flex-1" />
       ) : (
         <HistoricalApyChart
-          apyDataRevealed={!view.isLoading}
+          apyDataRevealed
           axisTickCount={2}
           primaryLabel="Earn MAX"
-          primarySamples={buildEarnMaxApySamples(view)}
+          primarySamples={buildEarnMaxApySamples(publicApy)}
           rangeId="30D"
         />
       ),
@@ -1072,19 +987,8 @@ export function EarnMaxWorkspace({
           />
         ) : null}
       </SheetReveal>
-      {screen !== "main" ? null : !isHydrated ||
-        !isSignedIn ||
-        isVirgin ? (
-        <aside className="hidden h-full w-[400px] shrink-0 flex-col gap-2 overflow-y-auto [scrollbar-width:none] min-[1204px]:flex [&::-webkit-scrollbar]:hidden">
-          {isHydrated && isSignedIn ? (
-            <EarnMaxStrategiesCard apy={view} />
-          ) : (
-            <EarnMaxInfoFaqsCard className="flex shrink-0" />
-          )}
-          <EarnStatsPanel />
-        </aside>
-      ) : selectedTransaction && transactionDetail ? (
-        <aside className="hidden h-full w-[400px] shrink-0 flex-col overflow-clip rounded-3xl bg-card min-[1204px]:flex">
+      {screen !== "main" ? null : selectedTransaction && transactionDetail ? (
+        <aside data-earn-banner-room className="hidden h-full w-[400px] shrink-0 flex-col overflow-clip rounded-3xl bg-card min-[1204px]:flex">
           <PaneReveal key={transactionDetail.id}>
             <EarnMaxTransactionDetailPane
               item={transactionDetail}
@@ -1098,11 +1002,12 @@ export function EarnMaxWorkspace({
           custom={chartCustom}
           earnData={earnData}
           isExpanded={isChartExpanded}
+          isLoggedOut={isHydrated && !isSignedIn}
           onExpandedChange={setIsChartExpanded}
           onSelectTab={setChartTab}
           selectedTab={chartTab}
           statsPanel={
-            <EarnMaxInfoFaqsCard className="flex min-h-[240px] w-full flex-1" />
+            <EarnMaxInfoFaqsCard className="flex w-full shrink-0" />
           }
         />
       )}

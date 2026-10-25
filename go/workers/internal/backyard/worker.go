@@ -503,6 +503,8 @@ type vaultState struct {
 	events        *events
 	refreshFailed failureStreak
 	staleHeld     staleStreak
+
+	stageAllowanceNote changeNote
 }
 
 type failureStreak struct{ consecutive atomic.Int64 }
