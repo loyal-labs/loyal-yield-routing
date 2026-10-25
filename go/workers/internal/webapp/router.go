@@ -49,7 +49,7 @@ func New(cfg Config) http.Handler {
 	r.Get("/readyz", ready(cfg.ready()))
 
 	r.Group(func(goAPI chi.Router) {
-		goAPI.Use(servedByGo)
+		goAPI.Use(servedByGo, onPath(earnMaxAPYPath, limitMobileEarn))
 		registerAPI(humachi.New(goAPI, apiConfig()), cfg)
 	})
 	proxied := forward(cfg.Upstream)
@@ -58,6 +58,19 @@ func New(cfg Config) http.Handler {
 	r.Handle("/ingest/*", proxied)
 	r.Handle("/*", site(cfg))
 	return r
+}
+
+func onPath(path string, wrap func(http.Handler) http.Handler) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		wrapped := wrap(next)
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == path {
+				wrapped.ServeHTTP(w, r)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 func servedByGo(next http.Handler) http.Handler {
@@ -75,6 +88,9 @@ func registerAPI(api huma.API, cfg Config) {
 		if cfg.ContentDB {
 			registerContent(api, cfg.AppDB)
 		}
+	}
+	if cfg.EarnMax != nil {
+		newEarnMaxRoutes(nil, nil, *cfg.EarnMax, cfg.Release).registerPublicAPY(api)
 	}
 	if cfg.Auth != nil && cfg.AppDB != nil {
 		if cfg.EarnMax != nil {
@@ -198,6 +214,7 @@ func OpenAPI() *huma.OpenAPI {
 	registerTokens(api, nil)
 	routes := newEarnMaxRoutes(nil, nil, EarnMax{}, "")
 	routes.registerReads(api)
+	routes.registerPublicAPY(api)
 	routes.registerRedeem(api)
 	registerPush(api, nil, nil)
 	documentEarn(api)
