@@ -66,6 +66,16 @@ type StageAllowance struct {
 	ObservedAt   int64
 }
 
+func (a *StageAllowance) cap(idle int64) int64 {
+	switch {
+	case a == nil:
+		return idle
+	case a.ObservedAt >= a.ResetAt:
+		return min(idle, a.MaxRaw)
+	}
+	return min(idle, a.RemainingRaw)
+}
+
 type Snapshot struct {
 	ValuationSource             string `json:",omitempty"`
 	ValuationSlot               int64  `json:",omitempty"`
