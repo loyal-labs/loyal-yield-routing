@@ -299,7 +299,7 @@ func prepareStepFromTickObservation(ctx context.Context, rpc *chain.Client, view
 		}
 	}
 	logStage("prepare_step", prepareStart)
-	return observation, withStepSale(accounts, route, evidence), err
+	return observation, evidence, err
 }
 
 func releaseLeg(ctx context.Context, rpc *chain.Client, view *View, client *jupiter.Client, manifest RouteManifest, policies installedPolicies, accounts []ConfirmedAccount, st stepState, s Snapshot, decision Decision) (StepExecutionEvidence, uint64, error) {

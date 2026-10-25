@@ -152,7 +152,7 @@ func decodeExitCosts(data []byte) (exitCosts, error) {
 	out := exitCosts{}
 	for _, row := range rows {
 		if !earnHeldLane(row.Lane) {
-			continue
+			return nil, staleHold("unknown_exit_cost_lane:" + row.Lane)
 		}
 		quoted, okQuoted := new(big.Int).SetString(row.QuotedCollateralRaw, 10)
 		mark, okMark := new(big.Int).SetString(row.MarkSF, 10)
