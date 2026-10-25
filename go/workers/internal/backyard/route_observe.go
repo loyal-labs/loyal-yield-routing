@@ -16,6 +16,9 @@ import (
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
+	"github.com/solana-foundation/solana-go/v2"
+	solanarpc "github.com/solana-foundation/solana-go/v2/rpc"
 )
 
 func ObserveConfirmedRouteSnapshot(ctx context.Context, rpc *chain.Client, view *View, manifest RouteManifest, state *vaultState, ownWriteSlot int64, inputs targetInputs) (Observation, []ConfirmedAccount, error) {
@@ -32,6 +35,9 @@ func ObserveConfirmedRouteSnapshot(ctx context.Context, rpc *chain.Client, view 
 		},
 		refreshValuation: func(ctx context.Context, routes []RuntimeRoute, addresses []string, minSlot int64) (int64, []ConfirmedAccount, error) {
 			return simulateRouteValuationRefresh(ctx, v, rpc, routes, addresses, minSlot)
+		},
+		stageAllowance: func(ctx context.Context, slot int64, now time.Time) (*StageAllowance, error) {
+			return observeStageAllowance(ctx, rpc, v, slot, now)
 		},
 		now: func() time.Time { return time.Now().UTC() },
 	})
@@ -78,6 +84,7 @@ type routeObservationRuntime struct {
 	refreshValuation func(context.Context, []RuntimeRoute, []string, int64) (int64, []ConfirmedAccount, error)
 	read             func(context.Context, []string, int64) (int64, []ConfirmedAccount, []programAccount, error)
 	minSlot          int64
+	stageAllowance   func(context.Context, int64, time.Time) (*StageAllowance, error)
 	now              func() time.Time
 	inputs           targetInputs
 	state            *vaultState
@@ -201,8 +208,15 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 		}
 		views = append(views, view)
 	}
+	var allowance *StageAllowance
+	if views[0].Snapshot.SquadsIdleRaw > 0 && runtime.stageAllowance != nil {
+		if allowance, err = runtime.stageAllowance(ctx, slot, runtime.now()); err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "backyard-rwa-worker: stage allowance unknown: %v\n", err)
+		}
+	}
 	snapshots := make([]Snapshot, len(views))
 	for i := range views {
+		views[i].Snapshot.StageAllowance = allowance
 		level := runtime.inputs.Levels[views[i].Snapshot.RouteLane]
 		views[i].Snapshot.LeverageTargetLevel, views[i].Snapshot.LeverageUpApproved = level.Level, level.UpApproved && level.Level > 1
 		snapshots[i] = views[i].Snapshot
@@ -743,4 +757,31 @@ func transientValuationRefreshFailure(err error) bool {
 		return holdCause(hold) == "price_refresh_simulation_failed" && strings.Trim(holdTransactionError(err), `"`) == "BlockhashNotFound"
 	}
 	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, errConfirmedObservationUnavailable)
+}
+
+func observeStageAllowance(ctx context.Context, rpc *chain.Client, v *Vault, slot int64, now time.Time) (*StageAllowance, error) {
+	policies, err := observeInstalledPolicies(ctx, rpc, v, slot)
+	if err != nil {
+		return nil, err
+	}
+	address, err := policies.account(bridgePolicyKey(v, StageSquadsToVoltr))
+	if err != nil {
+		return nil, err
+	}
+	_, read, err := rpc.Accounts(ctx, []solana.PublicKey{solanaKey(address)}, solanarpc.CommitmentConfirmed, uint64(max(slot, 0)))
+	if err != nil {
+		return nil, unavailable(err)
+	}
+	usage, err := squads.DecodeSpendingLimitUsage(read[0], solanaKey(fleet.USDCMint))
+	if err != nil {
+		return nil, err
+	}
+	period, err := usage.PeriodSeconds()
+	if err != nil {
+		return nil, err
+	}
+	if usage.MaxPerPeriod > math.MaxInt64 || usage.RemainingInPeriod > usage.MaxPerPeriod || usage.LastReset <= 0 || usage.LastReset > now.Unix()+period {
+		return nil, fmt.Errorf("stage spending limit usage is out of range")
+	}
+	return &StageAllowance{RemainingRaw: int64(usage.RemainingInPeriod), MaxRaw: int64(usage.MaxPerPeriod), ResetAt: usage.LastReset + period, ObservedAt: now.Unix()}, nil
 }
