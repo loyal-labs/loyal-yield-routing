@@ -296,7 +296,7 @@ func observeLaneView(ctx context.Context, manifest RouteManifest, runtime routeO
 	if err != nil {
 		return Observation{}, nil, err
 	}
-	nav, err := ComputeRouteNAVForRoutes(slot, navAccounts, manifest, nil, routes)
+	nav, err := ComputeRouteNAVForRoutes(slot, navAccounts, manifest, nil, routes, runtime.inputs.ExitCosts)
 	if err != nil {
 		hold, err := healthHold(err, route.Lane)
 		return Observation{}, hold, err
@@ -384,6 +384,7 @@ func observeLaneView(ctx context.Context, manifest RouteManifest, runtime routeO
 	base.Snapshot.PositionCollateralValueRaw = int64(nav.PositionCollateralValue)
 	base.Snapshot.PositionDebtValueRaw = int64(nav.PositionDebtValue)
 	base.Snapshot.StrategyNAVRaw = int64(nav.StrategyNAVRaw)
+	base.Snapshot.ExitLiabilityRaw = int64(nav.ExitLiabilityRaw)
 	base.Snapshot.LTVBPS = ltv
 	base.Snapshot.LiquidationThresholdBPS, base.Snapshot.MaxLTVBPS = position.LiquidationThresholdBPS, position.MaxLTVBPS()
 	entryUSDC, err := routeEntryCapacityUSDC(position, accounts, route)

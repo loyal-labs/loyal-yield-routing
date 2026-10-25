@@ -31,14 +31,15 @@ type ExpectedAccountEffect struct {
 }
 
 type ExpectedEffects struct {
-	Schema         string                       `json:"schema"`
-	Kind           effectsKind                  `json:"kind,omitempty"`
-	Conserved      bool                         `json:"conserved"`
-	Accounts       []ExpectedAccountEffect      `json:"accounts"`
-	ReturnData     *ExpectedReturnData          `json:"returnData,omitempty"`
-	Repayment      *ExpectedRepayment           `json:"repayment,omitempty"`
-	Deposit        *ExpectedDeposit             `json:"deposit,omitempty"`
-	Initialization *KaminoInitializationRequest `json:"initialization,omitempty"`
+	Schema           string                       `json:"schema"`
+	Kind             effectsKind                  `json:"kind,omitempty"`
+	Conserved        bool                         `json:"conserved"`
+	Accounts         []ExpectedAccountEffect      `json:"accounts"`
+	ReturnData       *ExpectedReturnData          `json:"returnData,omitempty"`
+	ExitLiabilityRaw *uint64                      `json:"exitLiabilityRaw,omitempty"`
+	Repayment        *ExpectedRepayment           `json:"repayment,omitempty"`
+	Deposit          *ExpectedDeposit             `json:"deposit,omitempty"`
+	Initialization   *KaminoInitializationRequest `json:"initialization,omitempty"`
 }
 
 type effectsKind string

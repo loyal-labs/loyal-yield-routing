@@ -19,9 +19,10 @@ type laneExit struct {
 }
 
 type targetInputs struct {
-	Levels map[string]laneLevel
-	Exits  map[string]laneExit
-	Entry  *SelectorResult
+	Levels    map[string]laneLevel
+	Exits     map[string]laneExit
+	Entry     *SelectorResult
+	ExitCosts exitCosts
 }
 
 func validLevel(level float64) bool {
@@ -29,8 +30,12 @@ func validLevel(level float64) bool {
 	return ok
 }
 
-func decodeTargetInputs(levels, exits, entry []byte) (targetInputs, error) {
+func decodeTargetInputs(levels, exits, entry, costs []byte) (targetInputs, error) {
 	var in targetInputs
+	var err error
+	if in.ExitCosts, err = decodeExitCosts(costs); err != nil {
+		return in, err
+	}
 	if err := json.Unmarshal(levels, &in.Levels); err != nil {
 		return in, staleHold("invalid_lane_levels")
 	}
@@ -60,7 +65,8 @@ func decodeTargetInputs(levels, exits, entry []byte) (targetInputs, error) {
 }
 
 const targetInputsSQL = `COALESCE((SELECT jsonb_object_agg(lane, jsonb_build_object('level', level, 'upApproved', up_approved)) FROM loyal_yield.backyard_lane_levels WHERE route_key = $1), '{}'::jsonb),
-	COALESCE((SELECT jsonb_object_agg(lane, jsonb_build_object('equityZero', equity_zero)) FROM loyal_yield.backyard_lane_exits WHERE route_key = $1), '{}'::jsonb)`
+	COALESCE((SELECT jsonb_object_agg(lane, jsonb_build_object('equityZero', equity_zero)) FROM loyal_yield.backyard_lane_exits WHERE route_key = $1), '{}'::jsonb),
+	` + exitCostsSQL
 
 func (d *Database) RecordLaneLevel(ctx context.Context, routeKey, lane string, level laneLevel) error {
 	if !earnActiveLane(lane) || !validLevel(level.Level) || (level.UpApproved && level.Level <= 1) {

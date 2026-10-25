@@ -474,6 +474,7 @@ type ReconciledBridgeJournalState struct {
 	StagedAmountRaw           int64
 	StageAfterTicket          bool
 	MutationAfterReport       bool
+	ExitAtReportRaw           int64
 }
 
 const journalOrderSQL = `confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id COLLATE "C" DESC`
@@ -501,7 +502,8 @@ SELECT
  (SELECT expected_effects->'expectedEffects'->'returnData'->>'dataBase64' FROM ticket),
  (SELECT (expected_effects->'decision'->>'amountRaw')::bigint FROM stage),
  ` + journalAfterSQL("stage", "ticket") + `,
- ` + journalAfterSQL("mutation", "report")
+ ` + journalAfterSQL("mutation", "report") + `,
+ COALESCE((SELECT (expected_effects->'expectedEffects'->>'exitLiabilityRaw')::bigint FROM ticket), 0)`
 
 func (d *Database) ReconciledBridgeJournal(ctx context.Context, routeKey string) (ReconciledBridgeJournalState, error) {
 	if d == nil || d.pool == nil || routeKey == "" {
@@ -514,7 +516,7 @@ func (d *Database) readReconciledBridgeJournal(ctx context.Context, routeKey str
 	var sequence, staged pgtype.Int8
 	var armed pgtype.Text
 	state := ReconciledBridgeJournalState{}
-	if err := d.pool.QueryRow(ctx, ReconciledBridgeJournalSQL, routeKey).Scan(&sequence, &armed, &staged, &state.StageAfterTicket, &state.MutationAfterReport); err != nil {
+	if err := d.pool.QueryRow(ctx, ReconciledBridgeJournalSQL, routeKey).Scan(&sequence, &armed, &staged, &state.StageAfterTicket, &state.MutationAfterReport, &state.ExitAtReportRaw); err != nil {
 		return ReconciledBridgeJournalState{}, fmt.Errorf("read reconciled bridge journal: %w", err)
 	}
 	if sequence.Valid {

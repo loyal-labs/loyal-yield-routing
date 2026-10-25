@@ -133,6 +133,7 @@ func mergeJournal(ctx context.Context, journal journalReader, routeKey string, o
 	observation.Snapshot.StagedAmountKnown = state.StagedAmountKnown
 	observation.Snapshot.StageTransient = state.StageAfterTicket
 	observation.Snapshot.CapitalMutated = state.MutationAfterReport
+	observation.Snapshot.JournalExitAtReportRaw = state.ExitAtReportRaw
 	return nil
 }
 

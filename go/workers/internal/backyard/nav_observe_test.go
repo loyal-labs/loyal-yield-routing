@@ -6,6 +6,7 @@ import (
 	"math/big"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
@@ -439,12 +440,15 @@ func TestRouteNAVEntryBelowMarkIsFlat(t *testing.T) {
 	t.Parallel()
 	manifest := readyWorkerManifest(t)
 	route, cash := onreEntryNAVFixture(t, 1_000_000_000, 0)
-	before, err := ComputeRouteNAVForRoutes(77, cash, manifest, nil, []RuntimeRoute{route})
+	var mark kamino.ScaledFraction
+	putScaledFraction(mark[:], new(big.Int).Quo(new(big.Int).Mul(big.NewInt(11_558), new(big.Int).Lsh(big.NewInt(1), 60)), big.NewInt(10_000)))
+	exits := exitCosts{route.Lane: {Quote: &ExitCost{Lane: route.Lane, BPS: 18_500_000, QuotedCollateralRaw: 866_701_334_720, MarkSF: mark, Source: exitCostQuote, Slot: 77, At: time.Unix(kaminoFixtureUnix, 0)}}}
+	before, err := ComputeRouteNAVForRoutes(77, cash, manifest, nil, []RuntimeRoute{route}, exits)
 	if err != nil || before.StrategyNAVRaw != 1_000_000_000 {
 		t.Fatalf("cash book: %d %v", before.StrategyNAVRaw, err)
 	}
 	_, bought := onreEntryNAVFixture(t, 0, 866_701_334_720)
-	after, err := ComputeRouteNAVForRoutes(77, bought, manifest, nil, []RuntimeRoute{route})
+	after, err := ComputeRouteNAVForRoutes(77, bought, manifest, nil, []RuntimeRoute{route}, exits)
 	if err != nil {
 		t.Fatal(err)
 	}

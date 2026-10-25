@@ -79,7 +79,7 @@ func TestUnheldOverflowRefreshRefusalNeverLatches(t *testing.T) {
 	valued := fixtureRefresh(77, accounts)
 	calls := 0
 	for i := 0; i < refreshSimulationLatchAfter+1; i++ {
-		o, _, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), manifest, routeObservationRuntime{state: testVaultState,
+		o, _, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), manifest, routeObservationRuntime{state: testVaultState, inputs: targetInputs{ExitCosts: fixtureExitCosts()},
 			read: fixtureBatchRuntime(77, accounts),
 			refreshValuation: func(ctx context.Context, routes []RuntimeRoute, addresses []string, minSlot int64) (int64, []ConfirmedAccount, error) {
 				calls++

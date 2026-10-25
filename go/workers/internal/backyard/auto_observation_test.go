@@ -190,7 +190,7 @@ func autoObservationBatch(t *testing.T, slot int64, mutate func([]ConfirmedAccou
 // open withdrawal receipts, chain time equal to the fixture's Clock instant.
 func autoObservationForAccounts(manifest RouteManifest, slot int64, accounts []ConfirmedAccount) func(context.Context) (Observation, []ConfirmedAccount, error) {
 	return func(ctx context.Context) (Observation, []ConfirmedAccount, error) {
-		return observeConfirmedRouteSnapshotWithAccounts(ctx, manifest, routeObservationRuntime{state: testVaultState,
+		return observeConfirmedRouteSnapshotWithAccounts(ctx, manifest, routeObservationRuntime{state: testVaultState, inputs: targetInputs{ExitCosts: fixtureExitCosts()},
 			read:             fixtureBatchRuntime(slot, accounts),
 			refreshValuation: fixtureRefresh(slot, accounts),
 			now:              func() time.Time { return time.Unix(kaminoFixtureUnix, 0).UTC() },
@@ -450,7 +450,7 @@ func TestKaminoStaleHealthHoldLatchesOnlyAfterWindow(t *testing.T) {
 	_, _, freshAccounts := autoObservationBatch(t, 77, nil)
 	clock := time.Unix(kaminoFixtureUnix, 0).UTC()
 	observe := func(accounts []ConfirmedAccount) (Observation, error) {
-		o, _, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), manifest, routeObservationRuntime{state: testVaultState,
+		o, _, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), manifest, routeObservationRuntime{state: testVaultState, inputs: targetInputs{ExitCosts: fixtureExitCosts()},
 			read:             fixtureBatchRuntime(77, accounts),
 			refreshValuation: fixtureRefresh(77, accounts),
 			now:              func() time.Time { return clock },
@@ -497,7 +497,7 @@ func TestStaleUSDCReferenceTriesRefreshBeforeHealthHold(t *testing.T) {
 		binary.LittleEndian.PutUint64(accountAt(accounts, primePRIMEUSDC.Kamino.DebtReserve).Data[16:24], uint64(77-adaptorMaxReportAgeSlots-8))
 	})
 	refreshCalls := 0
-	_, _, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), manifest, routeObservationRuntime{state: testVaultState,
+	_, _, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), manifest, routeObservationRuntime{state: testVaultState, inputs: targetInputs{ExitCosts: fixtureExitCosts()},
 		read: fixtureBatchRuntime(77, accounts),
 		now:  func() time.Time { return time.Unix(kaminoFixtureUnix, 0).UTC() },
 		refreshValuation: func(context.Context, []RuntimeRoute, []string, int64) (int64, []ConfirmedAccount, error) {

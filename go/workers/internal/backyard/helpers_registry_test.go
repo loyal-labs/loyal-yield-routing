@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"testing"
+	"time"
 )
 
 // Test shorthands over the registry's Prime/PRIME/USDC lane, the PRIME/USDC
@@ -14,11 +15,24 @@ func pinnedKaminoObservationConfig() (KaminoObservationConfig, error) {
 }
 
 func ComputeRouteNAV(slot int64, accounts []ConfirmedAccount, manifest RouteManifest, override *RouteNAVCustodies) (RouteNAVSnapshot, error) {
-	return ComputeRouteNAVForRoutes(slot, accounts, manifest, override, []RuntimeRoute{primePRIMEUSDC})
+	return ComputeRouteNAVForRoutes(slot, accounts, manifest, override, []RuntimeRoute{primePRIMEUSDC}, fixtureExitCosts())
+}
+
+func fixtureExitCosts() exitCosts {
+	out := exitCosts{}
+	for _, lane := range earnLanes {
+		out[lane.route.Lane] = laneExitCosts{Realized: &ExitCost{Lane: lane.route.Lane, BPS: 1, QuotedCollateralRaw: 1, MarkSF: kaminoOne(), Source: exitCostRealized, Slot: 1, At: time.Unix(kaminoFixtureUnix, 0).UTC()}}
+	}
+	return out
+}
+
+func kaminoOne() (sf [16]byte) {
+	sf[7] = 0x10
+	return sf
 }
 
 func ComputeRouteNAVForRoute(slot int64, accounts []ConfirmedAccount, manifest RouteManifest, override *RouteNAVCustodies, route RuntimeRoute) (RouteNAVSnapshot, error) {
-	return ComputeRouteNAVForRoutes(slot, accounts, manifest, override, []RuntimeRoute{route})
+	return ComputeRouteNAVForRoutes(slot, accounts, manifest, override, []RuntimeRoute{route}, fixtureExitCosts())
 }
 
 // fixtureRefresh is a valuation refresh over a fixture bank whose reserves

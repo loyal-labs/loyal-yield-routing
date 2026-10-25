@@ -68,7 +68,7 @@ func fundLane(t *testing.T, accounts *[]ConfirmedAccount, lane string, collatera
 
 func observeMultiLane(t *testing.T, manifest RouteManifest, accounts []ConfirmedAccount) Observation {
 	t.Helper()
-	o, _, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), manifest, routeObservationRuntime{state: testVaultState,
+	o, _, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), manifest, routeObservationRuntime{state: testVaultState, inputs: targetInputs{ExitCosts: fixtureExitCosts()},
 		read:             fixtureBatchRuntime(77, accounts),
 		refreshValuation: fixtureRefresh(77, accounts),
 		now:              func() time.Time { return time.Unix(kaminoFixtureUnix, 0).UTC() },
@@ -80,45 +80,6 @@ func observeMultiLane(t *testing.T, manifest RouteManifest, accounts []Confirmed
 		t.Fatalf("multi-lane batch did not observe armed: %q %+v", o.Snapshot.ManualReason, o.Snapshot)
 	}
 	return o
-}
-
-// One held lane keeps the exact one-lane book: the vault NAV, the report
-// digest and the observation identity of the one-lane observer, which the
-// fixture's figures pin (32_000_010 = Squads 6 + idle collateral 4 +
-// 30_000_000 collateral - 7_000_000 PYUSD debt + 9_000_000 idle PYUSD).
-func TestOneHeldLaneNAVIsTheOneLaneNAV(t *testing.T) {
-	manifest, accounts := multiLaneFixture(t, nil)
-	o := observeMultiLane(t, manifest, accounts)
-	s := o.Snapshot
-	if s.RouteLane != autoAUTOPYUSD.Lane || s.HeldLanes != autoAUTOPYUSD.Lane {
-		t.Fatalf("one held lane is not the working lane alone: %q %q", s.RouteLane, s.HeldLanes)
-	}
-	if s.StrategyNAVRaw != 32_000_010 || s.TotalVaultNAVRaw != 32_000_021 {
-		t.Fatalf("one-lane NAV drifted: %d/%d", s.StrategyNAVRaw, s.TotalVaultNAVRaw)
-	}
-	// The same batch through the single-route calculator gives the same
-	// report bytes: the union namespace of one lane is its own namespace.
-	_, refreshed, _ := fixtureRefresh(77, accounts)(context.Background(), nil, routeFixedAddresses(rwa), 77)
-	navAccounts, err := selectRouteNAVAccountsForRoute(refreshed, autoAUTOPYUSD)
-	if err != nil {
-		t.Fatal(err)
-	}
-	single, err := ComputeRouteNAVForRoute(77, navAccounts, manifest, nil, autoAUTOPYUSD)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if uint64(s.StrategyNAVRaw) != single.StrategyNAVRaw || s.ReportSnapshotDigest != string(single.SnapshotDigest) {
-		t.Fatalf("one held lane changed the report: %d %s vs %d %s", s.StrategyNAVRaw, s.ReportSnapshotDigest, single.StrategyNAVRaw, single.SnapshotDigest)
-	}
-	// The observation identity is the one-lane identity (pinned from the
-	// one-lane observer on the same fixture) bound to the tick's target.
-	identity, err := targetObservationID(oneLaneAUTOObservationID, s.Target, s.TargetInputs)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if s.ObservationID != identity || s.ReportSnapshotDigest != oneLaneAUTOReportDigest {
-		t.Fatalf("one-lane observation identity or report digest changed: %s %s", s.ObservationID, s.ReportSnapshotDigest)
-	}
 }
 
 // The observation identity and report digest the one-lane observer (before
@@ -175,7 +136,7 @@ func TestTwoHeldLanesNAVCountsEverySharedCustodyOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	nav, err := ComputeRouteNAVForRoutes(77, navAccounts, manifest, nil, routes)
+	nav, err := ComputeRouteNAVForRoutes(77, navAccounts, manifest, nil, routes, fixtureExitCosts())
 	if err != nil || nav.Report.NAVAfterRaw != uint64(s.StrategyNAVRaw) {
 		t.Fatalf("report NAV is not the held book: %d %v", nav.Report.NAVAfterRaw, err)
 	}

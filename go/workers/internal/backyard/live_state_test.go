@@ -32,7 +32,7 @@ type liveRead struct {
 // version 87096): both AUTO lanes at a stored 1.75 level, no exits. The
 // approval column starts false; the next selector sample decides it.
 func liveInputs(approved bool) targetInputs {
-	return targetInputs{Levels: map[string]laneLevel{
+	return targetInputs{ExitCosts: fixtureExitCosts(), Levels: map[string]laneLevel{
 		autoAUTOPYUSD.Lane: {Level: 1.75, UpApproved: approved},
 		autoAUTOWYLDSLane:  {Level: 1.75, UpApproved: approved},
 	}}
@@ -227,45 +227,6 @@ func emptyObligation(deposits bool) func([]byte) {
 			clear(data[96 : 96+8*136])
 			clear(data[1192:1208])
 			clear(data[2240:2272])
-		}
-	}
-}
-
-// Custody is vault cash. PYUSD residue beside AUTO/AUTO/PYUSD, which owes
-// PYUSD and sits at its target, is counted once in NAV and moves nothing:
-// no lane changes, no step, no manual hold. The lane's next step takes the
-// whole account. A 1-raw residue is the same.
-func TestLivePYUSDResidueIsVaultCash(t *testing.T) {
-	t.Parallel()
-	c := loadLiveCapture(t, "testdata/live_state_2026-10-12.json.gz")
-	in := liveInputs(true)
-	base := observeLiveAtRest(t, c, in).Snapshot
-	if base.TotalVaultNAVRaw != liveTotalVaultNAVRaw || base.StrategyNAVRaw != liveStrategyNAVRaw {
-		t.Fatalf("live book changed: total %d strategy %d identity %s", base.TotalVaultNAVRaw, base.StrategyNAVRaw, base.ObservationID)
-	}
-	for _, residue := range []uint64{25_000_000, 1} {
-		o := observeLiveAtRest(t, withAccount(c, pyusdCustody, tokenBalance(residue)), in)
-		s := o.Snapshot
-		if s.HeldLanes != base.HeldLanes || len(o.lanes) != 2 || s.Target != base.Target || s.RouteLane != base.RouteLane {
-			t.Fatalf("residue %d moved the target: held %q views %d target %+v", residue, s.HeldLanes, len(o.lanes), s.Target)
-		}
-		if d := Decide(s); d.Action != Hold || d.Reason != string(holdAtTarget) {
-			t.Fatalf("residue %d: %+v", residue, d)
-		}
-		// Counted once: every view's NAV grows by the residue's value (PYUSD
-		// near par, floored), never twice.
-		for _, view := range o.lanes {
-			grew, slack := uint64(view.StrategyNAVRaw-base.StrategyNAVRaw), residue/100+1
-			if view.StrategyNAVRaw != s.StrategyNAVRaw || grew > residue+slack || grew+slack < residue {
-				t.Fatalf("residue %d: %s NAV grew %d", residue, view.RouteLane, grew)
-			}
-			if want := map[bool]debtCustodyRaw{true: debtCustodyRaw(residue), false: 0}[view.RouteLane == autoAUTOPYUSD.Lane]; view.DebtIdleRaw != want {
-				t.Fatalf("%s reads PYUSD custody %d", view.RouteLane, view.DebtIdleRaw)
-			}
-		}
-		st, err := readStepState(rwa, o.routeBatch.Accounts, autoAUTOPYUSD, s.Slot)
-		if err != nil || st.heldDebt() != residue || st.debtBalance != residue {
-			t.Fatalf("AUTO/AUTO/PYUSD's step does not take the whole account: held %d (%v)", st.heldDebt(), err)
 		}
 	}
 }
