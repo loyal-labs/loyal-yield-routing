@@ -112,15 +112,19 @@ func (st stepState) heldDebt() uint64 {
 }
 
 func readStepState(v *Vault, accounts []ConfirmedAccount, route RuntimeRoute, slot int64) (stepState, error) {
+	obligation, err := kamino.DecodeObligation(chainAccount(accountAt(accounts, route.Kamino.Obligation), route.Kamino.Obligation))
+	if err != nil {
+		return stepState{}, err
+	}
+	return readStepStateWith(v, accounts, route, slot, obligation)
+}
+
+func readStepStateWith(v *Vault, accounts []ConfirmedAccount, route RuntimeRoute, slot int64, obligation kamino.Obligation) (stepState, error) {
 	position, err := observeKaminoFromFixedAccounts(slot, accounts, route.Kamino)
 	if err != nil {
 		return stepState{}, err
 	}
 	collateral, err := decodeKaminoReserve(accountAt(accounts, route.Kamino.CollateralReserve), route.Kamino.CollateralMint, route.Kamino)
-	if err != nil {
-		return stepState{}, err
-	}
-	obligation, err := kamino.DecodeObligation(chainAccount(accountAt(accounts, route.Kamino.Obligation), route.Kamino.Obligation))
 	if err != nil {
 		return stepState{}, err
 	}

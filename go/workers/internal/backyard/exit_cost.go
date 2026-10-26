@@ -211,7 +211,7 @@ type heldExitBasis struct {
 }
 
 func readHeldExitBasis(m RouteManifest, accounts []ConfirmedAccount, route RuntimeRoute, slot int64) (heldExitBasis, bool, error) {
-	st, err := readStepState(m.vault, accounts, route, slot)
+	st, err := readExitStepState(m.vault, accounts, route, slot)
 	if err != nil || st.position.CollateralDepositedRaw == 0 && st.collateralBalance == 0 {
 		return heldExitBasis{}, false, err
 	}
@@ -232,6 +232,13 @@ func readHeldExitBasis(m RouteManifest, accounts []ConfirmedAccount, route Runti
 		return heldExitBasis{}, false, err
 	}
 	return heldExitBasis{st: st, heldRaw: held, markValue: uint64(value), mark: prices.collateral}, true, nil
+}
+
+func readExitStepState(v *Vault, accounts []ConfirmedAccount, route RuntimeRoute, slot int64) (stepState, error) {
+	if account := accountAt(accounts, route.Kamino.Obligation); account.Address == route.Kamino.Obligation && account.Lamports == 0 && len(account.Data) == 0 {
+		return readStepStateWith(v, accounts, route, slot, kamino.Obligation{})
+	}
+	return readStepState(v, accounts, route, slot)
 }
 
 type exitCostRow struct {
