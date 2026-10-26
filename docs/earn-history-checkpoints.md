@@ -24,3 +24,9 @@ Local contract verification (disposable PostgreSQL only): create a database name
 -f scripts/verify-earned-history-revisions.sql`. The script checks inserts,
 corrections, deletes, timestamp and scope moves, and bookkeeping isolation, then
 rolls back its fixtures and migration.
+
+Authenticated reads preserve session failures before accessing chart history:
+`GET /api/smart-accounts/yield-optimization/earnings` returns
+`401 invalid_mobile_session` for an invalid or expired mobile bearer, allowing
+the mobile client to renew it, and `409 smart_account_required` for a missing
+smart account. These responses must not become `503 earnings_unavailable`.

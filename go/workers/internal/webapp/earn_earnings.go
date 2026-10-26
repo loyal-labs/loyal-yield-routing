@@ -47,7 +47,7 @@ type earningsOutput struct {
 }
 
 func (h earnRoutes) registerEarnings(api huma.API) {
-	responses := errorResponses[routeError](api, 401)
+	responses := errorResponses[routeError](api, 401, 409)
 	maps.Copy(responses, errorResponses[earningsError](api, 503))
 	huma.Register(api, huma.Operation{
 		OperationID: "get-earn-earnings",
@@ -73,7 +73,8 @@ func (h earnRoutes) scheduleEarningsRefresh(ctx context.Context) earningsSchedul
 func (h earnRoutes) earnEarnings(ctx context.Context, in *earningsRequest) (*earningsOutput, error) {
 	account, err := h.account(ctx, in.SessionInput)
 	if err != nil {
-		if refused, ok := authRefusal(err); ok {
+		var refused *routeError
+		if errors.As(err, &refused) {
 			return nil, refused
 		}
 		warnEarningsRead("auth", err)
