@@ -30,7 +30,6 @@ type Summary struct {
 	ObservedSlot string `json:"observedSlot"`
 	// RN adapter: delete once shipped RN reads /api/earn-max/apy.
 	APYHistory         []APYPoint      `json:"apyHistory" nullable:"false"`
-	APYWindowDays      *int64          `json:"apyWindowDays"`
 	BalanceUsd         float64         `json:"balanceUsd"`
 	ClaimAmountRaw     string          `json:"claimAmountRaw"`
 	Coverage           string          `json:"coverage"`
@@ -65,19 +64,20 @@ func (r *Reader) Summary(ctx context.Context, settings solana.PublicKey) (Summar
 		position Position
 		history  History
 		apy      APY
-		current  *int64
+		rate     CurrentRate
 	)
 	group, groupCtx := errgroup.WithContext(ctx)
 	group.Go(func() (err error) { position, history, err = r.snapshot(groupCtx, a, now); return err })
 	group.Go(func() error { apy = r.APY(); return nil })
-	group.Go(func() error { current = r.currentApy(); return nil })
+	group.Go(func() error { rate = r.currentRate(); return nil })
 	if err := group.Wait(); err != nil {
 		return Summary{}, err
 	}
+	public := publicAPY(apy, rate)
 	summary := Summary{
-		ObservedSlot: strconv.FormatUint(position.ObservedSlot, 10), APYHistory: apy.RNHistory(), APYWindowDays: apy.WindowDays,
-		BalanceUsd: float64(position.Value) / 1e6, ClaimAmountRaw: "0", Coverage: "complete", CurrentApyBps: current,
-		ForecastApyBps: apy.Bps, Goal: "active", PolicyAccounts: []PolicyBinding{}, PolicyStatus: "ready", RealizedApyBps: apy.Bps,
+		ObservedSlot: strconv.FormatUint(position.ObservedSlot, 10), APYHistory: rnHistory(public.History),
+		BalanceUsd: float64(position.Value) / 1e6, ClaimAmountRaw: "0", Coverage: "complete", CurrentApyBps: public.CurrentApyBps,
+		ForecastApyBps: public.APYBps, Goal: "active", PolicyAccounts: []PolicyBinding{}, PolicyStatus: "ready", RealizedApyBps: apy.Bps,
 	}
 	if !history.Complete() {
 		summary.Coverage = "history_incomplete"

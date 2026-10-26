@@ -20,11 +20,9 @@ export type {
 
 export type EarnMaxViewModel = {
   activity: EarnMaxActivityItem[];
-  apyWindowDays: number | null;
   balanceUsd: number;
   canWithdraw: boolean;
   coverage: EarnMaxCoverage;
-  currentApyBps: number | null;
   earnedUsd: number | null;
   error: string | null;
   forecastApyBps: number | null;

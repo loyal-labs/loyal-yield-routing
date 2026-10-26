@@ -73,11 +73,16 @@ func (d *Database) RecordCurrentAPY(ctx context.Context, routeKey string, value 
 	if err != nil {
 		return err
 	}
-	update := `jsonb_set(state,'{currentApy}',$2::jsonb,true)`
 	if value.Flat {
-		update = `jsonb_set(state,'{currentApy}',COALESCE(state->'currentApy','{}'::jsonb) || jsonb_build_object('flat',true,'observedAt',$2::jsonb->'observedAt'),true)`
+		_, err = d.pool.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state=jsonb_set(state,'{currentApy}',COALESCE(state->'currentApy','{}'::jsonb) || jsonb_build_object('flat',true,'observedAt',$2::jsonb->'observedAt'),true),updated_at=clock_timestamp() WHERE route_key=$1`, routeKey, string(raw))
+		return err
 	}
-	_, err = d.pool.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state=`+update+`,updated_at=clock_timestamp() WHERE route_key=$1`, routeKey, string(raw))
+	_, err = d.pool.Exec(ctx, `WITH route AS (
+  UPDATE loyal_yield.multiply_route_states SET state=jsonb_set(state,'{currentApy}',$2::jsonb,true),updated_at=clock_timestamp() WHERE route_key=$1 RETURNING route_key)
+INSERT INTO loyal_yield.multiply_route_current_apy_days (route_key, day, apy_bps, observed_at)
+SELECT route_key, ($3::timestamptz AT TIME ZONE 'America/Los_Angeles')::date, $4, $3 FROM route
+ON CONFLICT (route_key, day) DO UPDATE SET apy_bps=EXCLUDED.apy_bps, observed_at=EXCLUDED.observed_at
+WHERE multiply_route_current_apy_days.observed_at <= EXCLUDED.observed_at`, routeKey, string(raw), value.ObservedAt, value.APYBPS)
 	return err
 }
 

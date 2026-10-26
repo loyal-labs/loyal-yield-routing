@@ -80,7 +80,6 @@ const view = {
   balanceUsd: 0,
   withdrawal: null,
   forecastApyBps: 1079,
-  apyWindowDays: 3,
 };
 function render(
   isHydrated: boolean,

@@ -61,6 +61,7 @@ var PushGrants = []Grant{
 
 var YieldGrants = []Grant{
 	TableGrant("loyal_yield.multiply_route_states", "SELECT"),
+	TableGrant("loyal_yield.multiply_route_current_apy_days", "SELECT"),
 }
 
 func MissingGrants(ctx context.Context, pool *pgxpool.Pool, want []Grant) ([]Grant, error) {
