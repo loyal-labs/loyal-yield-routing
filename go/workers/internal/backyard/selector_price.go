@@ -594,6 +594,9 @@ func (p lanePricer) priceHeldExit(ctx context.Context, b heldExitBasis, slot int
 		if receipts, err = payoffReceiptsForLiquidity(b.st.collateral.totalLiquiditySF, b.st.collateral.terms.CollateralMintTotalSupply, b.heldRaw); err != nil {
 			return ExitCost{}, staleHoldFrom(err, "exit_quote_unavailable")
 		}
+		if len(b.st.topology) == 0 {
+			b.st.topology = []string{b.st.route.Kamino.CollateralReserve}
+		}
 	}
 	if limit := stepLegCap(b.st.route); limit.exceeded(receipts) {
 		receipts = limit.raw
