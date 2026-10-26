@@ -464,7 +464,7 @@ func stepUpBorrowWithinCap(st stepState, borrow uint64) (uint64, error) {
 }
 
 func quoteEntryExit(ctx context.Context, p lanePricer, record func(context.Context, ExitCost) (bool, error), costs exitCosts, entry heldExitBasis, slot int64, at time.Time) error {
-	if c := costs[entry.st.route.Lane]; c.Quote != nil || c.Realized != nil {
+	if c := costs[entry.st.route.Lane]; c.Quote != nil && c.Quote.fresh(entry.heldRaw, entry.mark) {
 		return nil
 	}
 	cost, err := p.priceHeldExit(ctx, entry, slot, at)

@@ -146,7 +146,11 @@ func (q *exitQuoter) quote(ctx context.Context, m RouteManifest, slot int64, acc
 		}
 		basis, held, err := readHeldExitBasis(m, accounts, route, slot)
 		now := q.now()
-		if err != nil || !held || !costs.quoteDue(basis, q.attempted[lane], now) {
+		if err != nil {
+			q.events.exitQuoteFailed(lane, err)
+			continue
+		}
+		if !held || !costs.quoteDue(basis, q.attempted[lane], now) {
 			continue
 		}
 		q.attempted[lane] = now

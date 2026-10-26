@@ -109,6 +109,9 @@ func (e *Engine) quoteExits(ctx context.Context, quoteStates []*vaultState, fail
 		if code != failed[i] && code != "" {
 			_, _ = fmt.Fprintf(e.out, "backyard-rwa-worker: vault=%s exit quotes unavailable: %s\n", v.Name, code)
 		}
+		if code == "" && failed[i] != "" {
+			_, _ = fmt.Fprintf(e.out, "backyard-rwa-worker: vault=%s exit quotes recovered\n", v.Name)
+		}
 		failed[i] = code
 	}
 }
