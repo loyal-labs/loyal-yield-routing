@@ -185,3 +185,4 @@ jobs:
         with:
           name: ${{ steps.key.outputs.name }}
           path: verified-commit
+          overwrite: true
