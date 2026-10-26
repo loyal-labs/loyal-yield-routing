@@ -2,6 +2,16 @@ package autodeposit
 
 import "testing"
 
+func TestUnknownOutcomeNeverProvesCompletion(t *testing.T) {
+	for _, result := range []ExecutorResult{ResultUnknown, "future_outcome"} {
+		var outcome ExecutorOutcome
+		alert := outcome.RecordExecutorResult(result)
+		if outcome.ExecutionsCompleted != 0 || alert == nil || alert.Code != "autodeposit_executor_failed" || outcome.ExecutionsUnknown+outcome.ExecutionsFailed != 1 {
+			t.Fatalf("unknown result %q: %+v, alert %v", result, outcome, alert)
+		}
+	}
+}
+
 func TestClaimHoldingAttemptStates(t *testing.T) {
 	// A confirmed pull has already moved funds out of the wallet, so the claim
 	// must survive a restart and a restarted worker resumes it.

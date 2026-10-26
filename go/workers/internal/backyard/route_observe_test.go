@@ -213,6 +213,20 @@ func TestRouteNAVCadenceRejectsMixedSlotsAndBoundsFutureClockSkew(t *testing.T) 
 	}
 }
 
+// The view holds every account the route observer reads, on every lane.
+func TestViewHoldsEveryRouteObservationAccount(t *testing.T) {
+	t.Parallel()
+	held := map[string]bool{}
+	for _, address := range viewAddresses() {
+		held[address] = true
+	}
+	for _, address := range routeFixedAddresses(rwa) {
+		if !held[address] {
+			t.Fatalf("the observation reads %s outside the view", address)
+		}
+	}
+}
+
 // Review of #396: an entry that started while the queue was covered swapped
 // its cash to collateral, then held stale with that collateral undeposited
 // until the queue was claimed.
