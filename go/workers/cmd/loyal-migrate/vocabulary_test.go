@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -131,50 +132,96 @@ var (
 	listItemRE        = regexp.MustCompile(`'(?:[^']|'')*'(?:::[A-Za-z_][A-Za-z0-9_ ]*(?:\[\])?)?|-?\d+(?:\.\d+)?`)
 )
 
-func migrationVocabulary(t *testing.T, v vocabulary) ([]string, string) {
-	t.Helper()
-	items, source, err := readVocabulary(yieldMigrations, v)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return items, source
+type migrationFile struct {
+	base  string
+	stmts []string
+	err   error
 }
 
-func readVocabulary(dir string, v vocabulary) ([]string, string, error) {
-	files, err := filepath.Glob(filepath.Join(dir, "*.sql"))
+var loadMigrations = sync.OnceValues(func() ([]migrationFile, error) {
+	files, err := filepath.Glob(filepath.Join(yieldMigrations, "*.sql"))
 	if err != nil || len(files) == 0 {
-		return nil, "", fmt.Errorf("migrations: %v (%d files)", err, len(files))
+		return nil, fmt.Errorf("migrations: %v (%d files)", err, len(files))
 	}
 	slices.Sort(files)
-	mention := regexp.MustCompile(`(?i)\b` + regexp.QuoteMeta(v.name) + `\b`)
-	var def definition
+	out := make([]migrationFile, 0, len(files))
 	for _, f := range files {
 		base := filepath.Base(f)
 		b, err := os.ReadFile(f)
 		if err != nil {
-			return nil, "", err
+			out = append(out, migrationFile{base: base, err: err})
+			break
 		}
 		stmts, err := splitStatements(string(b))
 		if err == nil {
 			stmts, err = unwrapDoBlocks(stmts)
 		}
 		if err != nil {
-			return nil, "", fmt.Errorf("%s: %w", base, err)
+			err = fmt.Errorf("%s: %w", base, err)
 		}
-		for _, s := range stmts {
-			if v.removesBacking(s) {
-				return nil, "", fmt.Errorf("%s: statement removes the table or column behind %s: %.200s", base, v.name, s)
+		out = append(out, migrationFile{base: base, stmts: stmts, err: err})
+		if err != nil {
+			break
+		}
+	}
+	return out, nil
+})
+
+func migrationVocabulary(t *testing.T, v vocabulary) ([]string, string) {
+	t.Helper()
+	files, err := loadMigrations()
+	if err == nil {
+		var items []string
+		var source string
+		items, source, err = readVocabulary(files, v)
+		if err == nil {
+			return items, source
+		}
+	}
+	t.Fatal(err)
+	return nil, ""
+}
+
+type vocabularyRE struct {
+	mention, dropTable, dropColumn, listOpen, column, notIn, enumCreate, enumAlter *regexp.Regexp
+}
+
+func (v vocabulary) compile() vocabularyRE {
+	table, column, name := regexp.QuoteMeta(v.table), regexp.QuoteMeta(v.column), regexp.QuoteMeta(v.name)
+	enumName := `(?:\w+\.)?` + name
+	return vocabularyRE{
+		mention:    regexp.MustCompile(`(?i)\b` + name + `\b`),
+		dropTable:  regexp.MustCompile(`(?i)^DROP\s+TABLE\b.*\b` + table + `\b`),
+		dropColumn: regexp.MustCompile(`(?i)^ALTER\s+TABLE\s+(?:ONLY\s+)?(?:IF\s+EXISTS\s+)?(?:\w+\.)?` + table + `\b.*\bDROP\s+(?:COLUMN\s+)?(?:IF\s+EXISTS\s+)?` + column + `\b`),
+		listOpen:   regexp.MustCompile(`(?i)\b` + column + `(?:\s+IN\s*(\()|\s*=\s*ANY\s*\(\s*ARRAY\s*(\[))`),
+		column:     regexp.MustCompile(`(?i)\b` + column + `\b`),
+		notIn:      regexp.MustCompile(`(?i)\b` + column + `\s+NOT\s+IN\s*\(`),
+		enumCreate: regexp.MustCompile(`(?is)^CREATE\s+TYPE\s+` + enumName + `\s+AS\s+ENUM\s*\((.*)\)$`),
+		enumAlter:  regexp.MustCompile(`(?is)^ALTER\s+TYPE\s+` + enumName + `\s+ADD\s+VALUE\s+(?:IF\s+NOT\s+EXISTS\s+)?('(?:[^']|'')*')(?:\s+(?:BEFORE|AFTER)\s+'(?:[^']|'')*')?$`),
+	}
+}
+
+func readVocabulary(files []migrationFile, v vocabulary) ([]string, string, error) {
+	re := v.compile()
+	var def definition
+	for _, f := range files {
+		if f.err != nil {
+			return nil, "", f.err
+		}
+		for _, s := range f.stmts {
+			if v.removesBacking(s, re) {
+				return nil, "", fmt.Errorf("%s: statement removes the table or column behind %s: %.200s", f.base, v.name, s)
 			}
-			locs := mention.FindAllStringIndex(s, -1)
+			locs := re.mention.FindAllStringIndex(s, -1)
 			if len(locs) == 0 {
 				continue
 			}
 			was, wasItems := def.present, slices.Clone(def.items)
-			if err := v.apply(&def, s, locs); err != nil {
-				return nil, "", fmt.Errorf("%s: cannot read the %s statement (%w): %.200s", base, v.name, err, s)
+			if err := v.apply(&def, s, locs, re); err != nil {
+				return nil, "", fmt.Errorf("%s: cannot read the %s statement (%w): %.200s", f.base, v.name, err, s)
 			}
 			if def.present != was || !slices.Equal(def.items, wasItems) {
-				def.source = base
+				def.source = f.base
 			}
 		}
 	}
@@ -184,27 +231,25 @@ func readVocabulary(dir string, v vocabulary) ([]string, string, error) {
 	return def.items, def.source, nil
 }
 
-func (v vocabulary) removesBacking(stmt string) bool {
+func (v vocabulary) removesBacking(stmt string, re vocabularyRE) bool {
 	if v.table == "" {
 		return false
 	}
-	table, column := regexp.QuoteMeta(v.table), regexp.QuoteMeta(v.column)
-	return regexp.MustCompile(`(?i)^DROP\s+TABLE\b.*\b`+table+`\b`).MatchString(stmt) ||
-		regexp.MustCompile(`(?i)^ALTER\s+TABLE\s+(?:ONLY\s+)?(?:IF\s+EXISTS\s+)?(?:\w+\.)?`+table+`\b.*\bDROP\s+(?:COLUMN\s+)?(?:IF\s+EXISTS\s+)?`+column+`\b`).MatchString(stmt)
+	return re.dropTable.MatchString(stmt) || re.dropColumn.MatchString(stmt)
 }
 
-func (v vocabulary) apply(def *definition, stmt string, locs [][]int) error {
+func (v vocabulary) apply(def *definition, stmt string, locs [][]int, re vocabularyRE) error {
 	if v.kind == enumType {
-		return v.applyEnum(def, stmt)
+		return v.applyEnum(def, stmt, re)
 	}
 	for _, loc := range locs {
 		before, after := stmt[:loc[0]], stmt[loc[1]:]
 		var err error
 		switch v.kind {
 		case checkConstraint:
-			err = v.applyCheck(def, before, after)
+			err = v.applyCheck(def, before, after, re)
 		case partialIndex:
-			err = v.applyIndex(def, before, after)
+			err = v.applyIndex(def, before, after, re)
 		case notifyFunction:
 			err = v.applyFunction(def, stmt, before)
 		}
@@ -215,12 +260,11 @@ func (v vocabulary) apply(def *definition, stmt string, locs [][]int) error {
 	return nil
 }
 
-func (v vocabulary) applyEnum(def *definition, stmt string) error {
+func (v vocabulary) applyEnum(def *definition, stmt string, re vocabularyRE) error {
 	if !enumStatementRE.MatchString(stmt) {
 		return nil
 	}
-	name := `(?:\w+\.)?` + regexp.QuoteMeta(v.name)
-	if m := regexp.MustCompile(`(?is)^CREATE\s+TYPE\s+` + name + `\s+AS\s+ENUM\s*\((.*)\)$`).FindStringSubmatch(stmt); m != nil {
+	if m := re.enumCreate.FindStringSubmatch(stmt); m != nil {
 		items, err := parseItems(m[1])
 		if err != nil {
 			return err
@@ -234,7 +278,7 @@ func (v vocabulary) applyEnum(def *definition, stmt string) error {
 		*def = definition{present: true, items: items}
 		return nil
 	}
-	if m := regexp.MustCompile(`(?is)^ALTER\s+TYPE\s+` + name + `\s+ADD\s+VALUE\s+(?:IF\s+NOT\s+EXISTS\s+)?('(?:[^']|'')*')(?:\s+(?:BEFORE|AFTER)\s+'(?:[^']|'')*')?$`).FindStringSubmatch(stmt); m != nil && def.present {
+	if m := re.enumAlter.FindStringSubmatch(stmt); m != nil && def.present {
 		items, err := parseItems(m[1])
 		if err == nil && !slices.Contains(def.items, items[0]) {
 			def.items = append(def.items, items[0])
@@ -244,7 +288,7 @@ func (v vocabulary) applyEnum(def *definition, stmt string) error {
 	return errors.New("not CREATE TYPE ... AS ENUM or ALTER TYPE ... ADD VALUE after the CREATE")
 }
 
-func (v vocabulary) applyCheck(def *definition, before, after string) error {
+func (v vocabulary) applyCheck(def *definition, before, after string, re vocabularyRE) error {
 	switch {
 	case dropConstraintRE.MatchString(before):
 		*def = definition{}
@@ -256,8 +300,7 @@ func (v vocabulary) applyCheck(def *definition, before, after string) error {
 		if err != nil {
 			return err
 		}
-		re := regexp.MustCompile(`(?i)\b` + regexp.QuoteMeta(v.column) + `(?:\s+IN\s*(\()|\s*=\s*ANY\s*\(\s*ARRAY\s*(\[))`)
-		hits := re.FindAllStringSubmatchIndex(body, -1)
+		hits := re.listOpen.FindAllStringSubmatchIndex(body, -1)
 		if len(hits) != 1 {
 			return fmt.Errorf("%d `%s IN (...)` or `%s = ANY(ARRAY[...])` forms, want 1", len(hits), v.column, v.column)
 		}
@@ -276,7 +319,7 @@ func (v vocabulary) applyCheck(def *definition, before, after string) error {
 	return errors.New("neither DROP CONSTRAINT nor CONSTRAINT ... CHECK (")
 }
 
-func (v vocabulary) applyIndex(def *definition, before, after string) error {
+func (v vocabulary) applyIndex(def *definition, before, after string, re vocabularyRE) error {
 	switch {
 	case dropIndexRE.MatchString(before):
 		*def = definition{}
@@ -287,12 +330,10 @@ func (v vocabulary) applyIndex(def *definition, before, after string) error {
 			return errors.New("no WHERE clause")
 		}
 		predicate := after[where[1]:]
-		column := regexp.MustCompile(`(?i)\b` + regexp.QuoteMeta(v.column) + `\b`)
-		notIn := regexp.MustCompile(`(?i)\b` + regexp.QuoteMeta(v.column) + `\s+NOT\s+IN\s*\(`)
-		if n := len(column.FindAllString(predicate, -1)); n != 1 || !notIn.MatchString(predicate) {
+		if n := len(re.column.FindAllString(predicate, -1)); n != 1 || !re.notIn.MatchString(predicate) {
 			return fmt.Errorf("WHERE is not a single `%s NOT IN (...)`", v.column)
 		}
-		loc := notIn.FindStringIndex(predicate)
+		loc := re.notIn.FindStringIndex(predicate)
 		list, err := balanced(predicate[loc[1]-1:], '(', ')')
 		if err != nil {
 			return err
