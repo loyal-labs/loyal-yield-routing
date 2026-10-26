@@ -3115,6 +3115,10 @@ export type GetEarnEarningsErrors = {
      */
     401: RouteError;
     /**
+     * Conflict
+     */
+    409: RouteError;
+    /**
      * Service Unavailable
      */
     503: EarningsError;
