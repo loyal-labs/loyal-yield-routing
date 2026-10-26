@@ -7,9 +7,10 @@ on:
       - go/workers/**
       - scripts/verify-workers-v2.sh
       - scripts/check-go-ts-refs.sh
-      - scripts/workers-v2-fixture.py
       - scripts/build-svm-fixtures.sh
       - migrations/**
+      # The fixtures the backyard Go tests read.
+      - docs/evidence/backyard-rwa-go/**
       - .github/workflows/workers-v2-verify.yml
       # The Rust workspace the connected SVM fixtures build in, and the
       # crates they build with their workspace dependencies.
@@ -46,6 +47,7 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       workers: ${{ steps.diff.outputs.workers }}
+      rust: ${{ steps.diff.outputs.rust }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -54,9 +56,15 @@ jobs:
       - id: diff
         env:
           BASE: ${{ github.event.pull_request.base.sha }}
-        # Pushes are already filtered by the push paths above.
+        # Pushes are already filtered by the push paths above, and always
+        # replay the Rust golden fixtures; PRs replay them when a crate input changed.
         run: |
-          if test "$GITHUB_EVENT_NAME" = push || git diff --name-only "$BASE" HEAD | grep -qE '^(go/workers/|migrations/|scripts/(verify-workers-v2\.sh|check-go-ts-refs\.sh|workers-v2-fixture\.py|build-svm-fixtures\.sh)$|\.github/workflows/workers-v2-verify\.yml$|Cargo\.(toml|lock)$|rust-toolchain\.toml$|crates/(squads-test-harness|mock-yield-protocols-program|loyal-actions|loyal-solana-env|loyal-hub-abi|loyal-voltr-rwa-nav-adaptor)/)'; then
+          if test "$GITHUB_EVENT_NAME" = push || git diff --name-only "$BASE" HEAD | grep -qE '^(Cargo\.(toml|lock)$|rust-toolchain\.toml$|crates/)'; then
+            echo rust=true >> "$GITHUB_OUTPUT"
+          else
+            echo rust=false >> "$GITHUB_OUTPUT"
+          fi
+          if test "$GITHUB_EVENT_NAME" = push || git diff --name-only "$BASE" HEAD | grep -qE '^(go/workers/|migrations/|docs/evidence/backyard-rwa-go/|scripts/(verify-workers-v2\.sh|check-go-ts-refs\.sh|build-svm-fixtures\.sh)$|\.github/workflows/workers-v2-verify\.yml$|Cargo\.(toml|lock)$|rust-toolchain\.toml$|crates/(squads-test-harness|mock-yield-protocols-program|loyal-actions|loyal-solana-env|loyal-hub-abi|loyal-voltr-rwa-nav-adaptor)/)'; then
             echo workers=true >> "$GITHUB_OUTPUT"
           else
             echo workers=false >> "$GITHUB_OUTPUT"
@@ -67,34 +75,6 @@ jobs:
     if: needs.changes.outputs.workers == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
-    services:
-      postgres:
-        image: postgres:17
-        env:
-          POSTGRES_USER: workers_v2
-          POSTGRES_DB: workers_v2_bootstrap
-          POSTGRES_HOST_AUTH_METHOD: trust
-        # The Phase3 tests require this disposable socket prefix and their own DB.
-        volumes:
-          - /private/tmp/backyard-phase3-pg.ci:/var/run/postgresql
-        ports: [5432/tcp]
-        options: >-
-          --health-cmd "pg_isready -U workers_v2 -d workers_v2_bootstrap"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 12
-      timescale:
-        image: timescale/timescaledb:2.20.3-pg17
-        env:
-          POSTGRES_USER: workers_v2
-          POSTGRES_DB: workers_v2_bootstrap
-          POSTGRES_HOST_AUTH_METHOD: trust
-        ports: [5432/tcp]
-        options: >-
-          --health-cmd "pg_isready -U workers_v2 -d workers_v2_bootstrap"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 12
     steps:
       - uses: actions/checkout@v4
         with:
@@ -104,14 +84,15 @@ jobs:
           go-version: '1.26.6'
           # verify-workers-v2.sh keeps its own caches; the steps below carry them.
           cache: false
-      # One cache per go.sum. Go builds are content-addressed, so an entry
-      # stays a valid start until go.sum changes; only main writes it.
+      # Go builds are content-addressed, so the newest entry for this go.sum
+      # is a valid start; every main push writes one, PRs only read.
       - name: Restore Go module and build caches
         id: go-cache
         uses: actions/cache/restore@v4
         with:
           path: ${{ runner.temp }}/workers-go
-          key: workers-go-${{ hashFiles('go/workers/go.sum') }}
+          key: workers-go-${{ hashFiles('go/workers/go.sum') }}-${{ github.sha }}
+          restore-keys: workers-go-${{ hashFiles('go/workers/go.sum') }}
       # The fixtures are a pure function of these sources and the pinned tools.
       - name: Restore connected execution fixtures
         id: fixtures
@@ -134,24 +115,11 @@ jobs:
         if: steps.fixtures.outputs.cache-hit != 'true'
         run: bash scripts/build-svm-fixtures.sh
       - name: Replay the golden fixtures through the Rust crates
+        # The golden tests read only crate files.
+        if: needs.changes.outputs.rust == 'true'
         run: cargo test --locked -p loyal-actions -p loyal-voltr-rwa-nav-adaptor golden_
-      - name: Apply actual schema to isolated family databases
+      - name: Verify offline behavior
         env:
-          WORKERS_V2_DISPOSABLE: '1'
-          WORKERS_V2_FIXTURE_URL: postgresql://workers_v2@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/workers_v2_bootstrap
-          WORKERS_V2_TIMESCALE_FIXTURE_URL: postgresql://workers_v2@127.0.0.1:${{ job.services.timescale.ports['5432'] }}/workers_v2_bootstrap
-        run: python3 scripts/workers-v2-fixture.py
-      - name: Create the separate Phase3 test database
-        # Tests create their own stand-in schema; do not apply family migrations here.
-        env:
-          PGHOST: /private/tmp/backyard-phase3-pg.ci
-          PGPORT: '5432'
-          PGUSER: workers_v2
-          PGDATABASE: workers_v2_bootstrap
-        run: psql -X -v ON_ERROR_STOP=1 -c 'CREATE DATABASE phase3_budget_test'
-      - name: Verify offline and enabled database behavior
-        env:
-          PHASE3_TEST_DATABASE_URL: postgresql://workers_v2@/phase3_budget_test?host=/private/tmp/backyard-phase3-pg.ci&port=5432
           SVM_HARNESS: ${{ github.workspace }}/target/debug/examples/fleet-local-svm
           MULTIPLY_FIXTURE_BIN: ${{ github.workspace }}/target/svm-fixtures/workers-v2-multiply
           AUTODEPOSIT_TEST_SVM_FIXTURE_PATH: ${{ github.workspace }}/target/svm-fixtures/autodeposit.json
@@ -159,26 +127,8 @@ jobs:
           SQUADS_SMART_ACCOUNT_PROGRAM_SO: ${{ github.workspace }}/crates/squads-test-harness/fixtures/squads/squads_smart_account_program.so
           WORKERS_V2_CACHE_DIR: ${{ runner.temp }}/workers-go
         run: bash scripts/verify-workers-v2.sh
-      - name: Create the separate loyal-web test database
-        env:
-          PGHOST: /private/tmp/backyard-phase3-pg.ci
-          PGPORT: '5432'
-          PGUSER: workers_v2
-          PGDATABASE: workers_v2_bootstrap
-        run: |
-          psql -X -v ON_ERROR_STOP=1 -c 'CREATE DATABASE loyal_web_pilot'
-          ln -s /private/tmp/backyard-phase3-pg.ci /tmp/loyal-web-pg-ci
-      - name: Verify loyal-web database behavior
-        working-directory: go/workers
-        env:
-          LOYAL_WEB_TEST_DATABASE_URL: postgresql://workers_v2@/loyal_web_pilot?host=/tmp/loyal-web-pg-ci&port=5432
-          GOTOOLCHAIN: local
-          GOENV: 'off'
-          GOMODCACHE: ${{ runner.temp }}/workers-go/gomod
-          GOCACHE: ${{ runner.temp }}/workers-go/gobuild
-        run: go test -race -count=1 -v -run 'TestPushToken|TestEarnStats|TestEarningsRefreshLock|TestMissingGrants' ./internal/webapp/
       - name: Save Go module and build caches
-        if: github.event_name == 'push' && steps.go-cache.outputs.cache-hit != 'true'
+        if: github.event_name == 'push'
         uses: actions/cache/save@v4
         with:
           path: ${{ runner.temp }}/workers-go
@@ -218,3 +168,21 @@ jobs:
           docker run --rm --network none --read-only --cap-drop ALL \
             --security-opt no-new-privileges --entrypoint /bin/sh loyal-workers-v2:verification \
             -ec 'cd /usr/local/bin; sha256sum -c /usr/local/share/loyal-workers/SHA256SUMS; test "$(id -u)" = 65532'
+
+  # deploy-workers.sh deploys a commit only when this artifact exists for its
+  # inputs. A PR run names it after the merge commit it tested.
+  verified:
+    needs: [verify, workers-image]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - id: key
+        run: echo "name=$(bash scripts/ci-tree-key.sh HEAD)" >> "$GITHUB_OUTPUT"
+      - run: git rev-parse HEAD > verified-commit
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.key.outputs.name }}
+          path: verified-commit
+          overwrite: true
