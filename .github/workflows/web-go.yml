@@ -47,10 +47,11 @@ jobs:
       - name: install web
         run: cd web && bun install --frozen-lockfile
       - name: assets survive releases and startup recovers without reload loops
+        timeout-minutes: 2
         run: |
           sh scripts/web/verify-retained-assets.sh
-          cd web/apps/web && bunx playwright install --with-deps chromium && cd ../../..
-          node scripts/web/verify-startup-recovery.mjs
+          browser_path="$(command -v google-chrome)"
+          CHROMIUM_PATH="$browser_path" node scripts/web/verify-startup-recovery.mjs
       - name: every Next page has a route
         run: |
           bun scripts/web/gen-routes.ts --check

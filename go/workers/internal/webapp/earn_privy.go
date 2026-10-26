@@ -76,7 +76,7 @@ type privyCompleteInput struct {
 
 func (i *privyCompleteInput) Resolve(ctx huma.Context) []error {
 	i.scheme = ctx.URL().Scheme
-	return nil
+	return i.SessionInput.Resolve(ctx)
 }
 
 type privyCompleteOutput struct {
