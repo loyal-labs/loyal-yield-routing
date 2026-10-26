@@ -1,1 +1,1 @@
-Critical update: restart now to keep using the app. Balances and transactions will stop working on older versions.
+Improved accuracy of the Earn MAX performance chart.

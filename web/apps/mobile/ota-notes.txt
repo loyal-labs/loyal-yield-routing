@@ -1,1 +1,1 @@
-Loyal 0.6.0: Earn MAX and improved wallet unlock.
+Improved accuracy of the Earn MAX performance chart.

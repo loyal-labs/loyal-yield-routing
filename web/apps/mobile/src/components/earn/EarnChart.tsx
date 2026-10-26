@@ -104,9 +104,9 @@ function splitDollars(value: number, decimals = 2) {
   };
 }
 
-function formatShortDate(iso: string): string {
+function formatShortDate(iso: string, utc = false): string {
   const date = new Date(iso);
-  return `${SHORT_MONTHS[date.getMonth()]} ${date.getDate()}`;
+  return `${SHORT_MONTHS[utc ? date.getUTCMonth() : date.getMonth()]} ${utc ? date.getUTCDate() : date.getDate()}`;
 }
 
 function niceAxisMax(maxValue: number): number {
@@ -584,13 +584,15 @@ export function EarnChartContent({
       <View style={styles.subtitleRow}>
         {scrubbing && selectedBar ? (
           <Text style={styles.subtitleDate}>
-            {formatShortDate(selectedBar.endAt)}
+            {formatShortDate(selectedBar.endAt, settled)}
           </Text>
         ) : (
           <Text style={styles.subtitleGain}>
-            {`${rangeEarned < 0 ? "−" : "+"}${formatGain(
-              Math.abs(rangeEarned)
-            )} past month`}
+            {settled
+              ? "Investment performance"
+              : `${rangeEarned < 0 ? "−" : "+"}${formatGain(
+                  Math.abs(rangeEarned)
+                )} past month`}
           </Text>
         )}
         <Text style={styles.axisMax}>{formatAxisLabel(axisMax)}</Text>
@@ -665,10 +667,10 @@ export function EarnChartContent({
 
       <View style={styles.dateAxis}>
         <Text style={[styles.dateLabel, styles.dateStart]}>
-          {hasData ? formatShortDate(bars[0].startAt) : ""}
+          {hasData ? formatShortDate(bars[0].startAt, settled) : ""}
         </Text>
         <Text style={[styles.dateLabel, styles.dateEnd]}>
-          {hasData ? formatShortDate(bars[lastIndex].endAt) : ""}
+          {hasData ? formatShortDate(bars[lastIndex].endAt, settled) : ""}
         </Text>
       </View>
     </Animated.View>
