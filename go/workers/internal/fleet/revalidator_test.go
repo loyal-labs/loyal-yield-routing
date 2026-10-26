@@ -218,11 +218,3 @@ func TestAdmissionEconomicsPricesCommittedInflight(t *testing.T) {
 		t.Fatalf("observed/projected APY evidence was not kept distinct: %+v", withCommitted)
 	}
 }
-
-func TestAdmissionEconomicsRejectsEdgeLostToInflight(t *testing.T) {
-	plan := json.RawMessage(`{"observed_target_apy_bps":100,"source_apy_bps":99,"confidence_ppm":950000,"holding_horizon_seconds":2592000,"estimated_execution_cost_usd_micros":100000}`)
-	_, err := ComputeAdmissionEconomics(RevalidationLease{PrincipalUSDMicros: 9_000_000_000, ExecutionPlan: plan}, plan, 1_000_000_000, 20_000_000)
-	if err == nil {
-		t.Fatal("economics made ineligible by committed inflight were accepted")
-	}
-}

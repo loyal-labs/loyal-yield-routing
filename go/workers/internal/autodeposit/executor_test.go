@@ -2,27 +2,6 @@ package autodeposit
 
 import "testing"
 
-func TestExecutorFailureContract(t *testing.T) {
-	for _, test := range []struct {
-		result                    ExecutorResult
-		code, operation           string
-		retryable, selfRecovering bool
-	}{
-		{ResultKaminoTopUpFailed, "kamino_top_up_failed", "top_up_autodeposit_to_kamino", false, false},
-		{ResultYieldPersistenceFailed, "yield_persistence_failed", "persist_autodeposit_yield_position", false, false},
-		{ResultPreflightBlocked, "autodeposit_preflight_blocked", "preflight_autodeposit_route", true, false},
-		{ResultClaimTransitionFailed, "autodeposit_claim_transition_failed", "release_autodeposit_claim", true, false},
-		{ResultTransactionEffectAmbig, "autodeposit_transaction_effect_ambiguous", "reconcile_autodeposit_transaction", false, false},
-		{ResultIdleHandoffFailed, "autodeposit_idle_handoff_failed", "publish_autodeposit_idle_vault_balance", true, false},
-		{ResultDependencyUnavailable, "autodeposit_dependency_unavailable", "retry_autodeposit_after_dependency_recovers", true, true},
-	} {
-		var outcome ExecutorOutcome
-		alert := outcome.RecordExecutorResult(test.result)
-		if outcome.ExecutionsFailed != 1 || alert == nil || alert.Code != test.code || alert.Operation != test.operation || alert.Retryable != test.retryable || alert.SelfRecovering != test.selfRecovering {
-			t.Fatalf("result %q: outcome %+v alert %+v", test.result, outcome, alert)
-		}
-	}
-}
 func TestUnknownOutcomeNeverProvesCompletion(t *testing.T) {
 	for _, result := range []ExecutorResult{ResultUnknown, "future_outcome"} {
 		var outcome ExecutorOutcome

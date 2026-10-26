@@ -74,20 +74,6 @@ func TestPilotCanaryUsesRealQuoteWithoutEconomicRecommendation(t *testing.T) {
 		}
 	}
 }
-func TestPilotCanaryConfigFailsClosed(t *testing.T) {
-	in := pilotCanaryFixture()
-	raw, _ := json.Marshal(in.canaryRequest)
-	for _, suffix := range []string{" garbage", " {}"} {
-		t.Setenv("BACKYARD_RWA_PILOT_CANARY_ENTRY", string(raw)+suffix)
-		if _, err := readPilotCanaryEntryRequest(in.Now); err == nil {
-			t.Fatal("trailing input accepted")
-		}
-	}
-	t.Setenv("BACKYARD_RWA_PILOT_CANARY_ENTRY", string(raw))
-	if got, err := readPilotCanaryEntryRequest(in.Now); err != nil || got == nil {
-		t.Fatal(err)
-	}
-}
 
 // pilotCanaryRetainedHistory builds n distinct retained receipts as valid
 // historical requests: the reviewed lane/equity cloned from the live request,

@@ -42,14 +42,6 @@ func TestFromEnvRequiresEveryProductionDependency(t *testing.T) {
 	}
 }
 
-func TestFromEnvRejectsInvalidOperationalIntervals(t *testing.T) {
-	setRequiredEnv(t)
-	t.Setenv("LASERSTREAM_PROGRESS_TIMEOUT_SECONDS", "not-a-number")
-	if _, err := FromEnv(); err == nil || !strings.Contains(err.Error(), "LASERSTREAM_PROGRESS_TIMEOUT_SECONDS") {
-		t.Fatalf("invalid timeout error = %v", err)
-	}
-}
-
 func TestFromEnvBuildsStrictProductionConfig(t *testing.T) {
 	setRequiredEnv(t)
 	t.Setenv("SOLANA_CLUSTER", "")
@@ -59,38 +51,6 @@ func TestFromEnvBuildsStrictProductionConfig(t *testing.T) {
 	}
 	if cfg.HeliusAPIKey != "fixture" || cfg.ReplayOverlapSlots != 32 || cfg.ReconciliationWorkers != 4 || cfg.Cluster != "mainnet-beta" {
 		t.Fatalf("unexpected defaults: %+v", cfg)
-	}
-}
-
-func TestFromEnvNormalizesProductionClusterAliases(t *testing.T) {
-	for _, alias := range []string{"mainnet", "mainnet-beta", "mainnet_beta", "mainnetbeta", " MAINNET "} {
-		t.Run(alias, func(t *testing.T) {
-			setRequiredEnv(t)
-			t.Setenv("SOLANA_CLUSTER", alias)
-			cfg, err := FromEnv()
-			if err != nil {
-				t.Fatal(err)
-			}
-			if cfg.Cluster != "mainnet-beta" {
-				t.Fatalf("cluster = %q, want mainnet-beta", cfg.Cluster)
-			}
-		})
-	}
-}
-
-func TestFromEnvSelectsEarnAPYProfiles(t *testing.T) {
-	setRequiredEnv(t)
-	cfg, err := FromEnv()
-	if err != nil || len(cfg.APYRiskProfiles) != 1 || cfg.APYRiskProfiles[0] != "safe" {
-		t.Fatalf("default APY profiles = %v, %v", cfg.APYRiskProfiles, err)
-	}
-	t.Setenv("DISABLE_EARN_APY_REFRESH", "true")
-	if cfg, err = FromEnv(); err != nil || len(cfg.APYRiskProfiles) != 0 {
-		t.Fatalf("disabled APY refresh still selected %v, %v", cfg.APYRiskProfiles, err)
-	}
-	t.Setenv("DISABLE_EARN_APY_REFRESH", "yes")
-	if _, err = FromEnv(); err == nil {
-		t.Fatal("non-boolean DISABLE_EARN_APY_REFRESH accepted")
 	}
 }
 

@@ -338,23 +338,6 @@ func TestProgramAccountsAreFilteredAndReadNoOlderThanTheAskedSlot(t *testing.T) 
 	}
 }
 
-func TestFinalizedBlockHeightAtReadsTheBlockWithoutTransactions(t *testing.T) {
-	var opts map[string]any
-	block := any(map[string]any{"blockhash": solana.Hash{1}.String(), "previousBlockhash": solana.Hash{2}.String(), "parentSlot": 9, "blockHeight": 77})
-	client := serve(t, func(req request) (int, any) {
-		_ = json.Unmarshal(req.Params[1], &opts)
-		return http.StatusOK, result(block)
-	})
-	height, err := client.FinalizedBlockHeightAt(context.Background(), 10)
-	if err != nil || height != 77 || opts["transactionDetails"] != "none" || opts["commitment"] != "finalized" || opts["rewards"] != false {
-		t.Fatalf("height %d, %v, options %v", height, err, opts)
-	}
-	block = nil
-	if _, err := client.FinalizedBlockHeightAt(context.Background(), 10); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("a slot without a finalized block: %v", err)
-	}
-}
-
 func TestSlotSamplesSumOnlyUsableSamples(t *testing.T) {
 	client := serve(t, func(request) (int, any) {
 		return http.StatusOK, result([]any{

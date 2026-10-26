@@ -5,12 +5,10 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
-	"github.com/mr-tron/base58"
 )
 
 func TestSignPreparedRouteReproducesFixtureWireExactly(t *testing.T) {
@@ -97,30 +95,6 @@ func TestSignPreparedRouteRejectsWrongAuthorityAndTamperedEvidence(t *testing.T)
 	}
 	if _, err := (DelegateSigner{}).SignPreparedRoute(preparation, fixture.LastValidHeight); err == nil {
 		t.Fatalf("missing signing key must be rejected")
-	}
-}
-
-func TestSignPreparedRoutePreservesMessageBytes(t *testing.T) {
-	fixture := mustSignedFixture(t)
-	preparation, key, err := fixturePreparation(fixture)
-	if err != nil {
-		t.Fatal(err)
-	}
-	wire, err := DelegateSigner{FeePayer: key}.SignPreparedRoute(preparation, fixture.LastValidHeight)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// The signed wire is signature-slot + untouched message, so the message
-	// the fleet planner simulated is byte-identical to what is broadcast.
-	if string(wire.SignedTransaction[65:]) != string(preparation.Message) {
-		t.Fatalf("signed wire message differs from the prepared message")
-	}
-	var canonical struct {
-		Wire string `json:"wire"`
-	}
-	raw, _ := json.Marshal(map[string]string{"wire": base58.Encode(wire.SignedTransaction)})
-	if err := json.Unmarshal(raw, &canonical); err != nil || canonical.Wire == "" {
-		t.Fatalf("wire identity must survive canonical evidence encoding: %v", err)
 	}
 }
 

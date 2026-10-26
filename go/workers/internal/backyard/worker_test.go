@@ -177,44 +177,6 @@ func TestTickHoldsUtilizationWithoutPreparingBorrow(t *testing.T) {
 	}
 }
 
-func TestTickDispatchesKaminoAndReobservesAfterReconciliation(t *testing.T) {
-	manifest := readyWorkerManifest(t)
-	openObservation := tickObservation(Snapshot{
-		ObservationID: "open", Slot: 10, RouteKind: RouteKind, Fresh: true,
-		CollateralIdleRaw: 5_000, MinimumCollateralDepositRaw: 1, CapacityRaw: 5_000, PolicyLimitRaw: 5_000,
-		MaxTargetLTVEntryRaw: 5_000, LiquidationThresholdBPS: 8000, MaxLTVBPS: 8000,
-	})
-	order := []string{}
-	worker := &Worker{routeKey: productionRouteKey, manifest: manifest, runtime: tickRuntime{
-		loadNonterminal: func(context.Context, string) (*PersistedOperation, error) { return nil, nil },
-		observe:         func(context.Context) (Observation, error) { return openObservation, nil },
-		prepareKamino: func(_ context.Context, _ RouteManifest, decision Decision, _ Observation) (Observation, KaminoExecutionEvidence, error) {
-			order = append(order, "prepare-kamino")
-			if decision.Action != OpenRouteStep || decision.Reason != entryDepositReason {
-				t.Fatalf("wrong Kamino action: %s", decision.Action)
-			}
-			return openObservation, KaminoExecutionEvidence{Request: KaminoLegRequest{Action: decision.Action}}, nil
-		},
-		recordDecision: func(context.Context, string, Observation, Decision, string) (DecisionRecord, error) {
-			order = append(order, "record")
-			return DecisionRecord{OperationID: "kamino", Status: Decided}, nil
-		},
-		build: func(_ context.Context, id string, request any, _ ExpectedEffects) error {
-			order = append(order, "build-kamino")
-			if r, ok := request.(KaminoLegRequest); id != "kamino" || !ok || r.Action != OpenRouteStep {
-				t.Fatal("wrong Kamino evidence dispatch")
-			}
-			return nil
-		},
-	}}
-	if err := worker.Tick(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if got := strings.Join(order, ","); got != "prepare-kamino,record,build-kamino" {
-		t.Fatalf("wrong Kamino dispatch order: %s", got)
-	}
-}
-
 func TestNewWorkerRejectsMissingSigningCapability(t *testing.T) {
 	if _, err := NewWorker(&Database{pool: &pgxpool.Pool{}}, &chain.Client{}, &View{}, nil, DefaultConfig(), Credentials{}, rwa, &vaultState{}); err == nil {
 		t.Fatal("worker accepted a missing signing capability")

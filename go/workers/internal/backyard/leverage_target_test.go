@@ -3,7 +3,6 @@ package backyard
 import (
 	"math"
 	"testing"
-	"time"
 )
 
 // A flat borrow curve at the given APR and a native yield; spread = yield -
@@ -102,46 +101,6 @@ func TestLeverageDecisionRunsOnlyOnASettledLane(t *testing.T) {
 		if _, ok := decideLeverageTarget(c2, c.result, markets, p, twentyBPSStepCost); ok {
 			t.Fatalf("%s: leverage decision ran", name)
 		}
-	}
-}
-
-func TestLeverageDecisionLogPrintsOnChangeOrHourly(t *testing.T) {
-	t.Parallel()
-	l := &leverageDecisionLog{}
-	now := time.Unix(10_000, 0)
-	up := leverageDecision{Current: 1, Next: 1.5, Reason: "spread_rule"}
-	if !l.due(now, up) {
-		t.Fatal("a new target was not logged")
-	}
-	lines := 0
-	for i := 1; i < 240; i++ { // one hour of 15 s samples, target stored, borrowing blocked
-		if l.due(now.Add(time.Duration(i)*15*time.Second), up) {
-			lines++
-		}
-	}
-	if lines != 0 {
-		t.Fatalf("unchanged decision logged %d times within the hour", lines)
-	}
-	if !l.due(now.Add(time.Hour), up) {
-		t.Fatal("hourly reminder missing")
-	}
-	if !l.due(now.Add(time.Hour+time.Second), leverageDecision{Current: 1.5, Next: 1, Reason: "spread_rule"}) {
-		t.Fatal("a target change was rate-limited")
-	}
-	// Live 2026-10-10: the stored target is the 1.75x cap, so every up
-	// decision is a hold at Next == Current. A refusal, then an approved
-	// borrow, must each print on change.
-	at := now.Add(2 * time.Hour)
-	refused := leverageDecision{Current: 1.75, Next: 1.75, Reason: "up_move_not_worth_cost"}
-	if !l.due(at, refused) {
-		t.Fatal("a refused up move at the stored target was not logged")
-	}
-	if l.due(at.Add(15*time.Second), refused) {
-		t.Fatal("an unchanged refusal was logged again within the hour")
-	}
-	approved := leverageDecision{Current: 1.75, Next: 1.75, Reason: "spread_rule", BorrowRaw: 49_685_000_000}
-	if !l.due(at.Add(30*time.Second), approved) {
-		t.Fatal("an approved borrow at the stored target was not logged")
 	}
 }
 

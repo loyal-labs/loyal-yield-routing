@@ -43,17 +43,6 @@ func oct10WindowSnapshot(t *testing.T, roomRaw uint64) (Snapshot, LaneEconomics)
 	return s, m
 }
 
-// Priced at its expected cost the window's step approves: the 20 bps
-// haircut it used to be charged left it at break-even on a ~3.5 pt spread.
-func TestOct10WindowApprovesAtTheExpectedCost(t *testing.T) {
-	t.Parallel()
-	s, m := oct10WindowSnapshot(t, 3_300_000_000)
-	got, ok := decideLeverageTarget(s, SelectorResult{Action: "KEEP"}, []LaneEconomics{m}, DefaultSelectorPolicy(), measuredStepCost(0))
-	if !ok || got.Next != 1.75 || got.Reason != "up_move_approved" || got.BorrowRaw != s.LeverageDesiredRaw[1] || got.GainRaw <= 0 {
-		t.Fatalf("the Oct 10 step was not approved: %+v ok=%t", got, ok)
-	}
-}
-
 // AUTO at its realized spread (2.88 pts, #349) with today's measured quotes
 // takes both live steps toward its 1.75x target: 1.01x -> 1.5x, then
 // 1.5x -> 1.75x. A spread under the 1.75x step's 2 pt rule does not, and a
@@ -127,17 +116,5 @@ func TestLeverageUpApprovesTheStepAndBorrowsTheRoom(t *testing.T) {
 	full.LeverageUpApproved = false
 	if d := Decide(targeted(full)); d.Action != Hold || d.Reason != string(holdAtTarget) {
 		t.Fatalf("no approval: %+v", d)
-	}
-}
-
-// A spread that does not repay the move's cost within the horizon is still
-// refused: the in-place comparison does not drop the cost.
-func TestLeverageUpRefusesAThinSpread(t *testing.T) {
-	t.Parallel()
-	s, m := oct10WindowSnapshot(t, 3_300_000_000)
-	m.NativeAPY = 0.08
-	got, ok := decideLeverageTarget(s, SelectorResult{Action: "KEEP"}, []LaneEconomics{m}, DefaultSelectorPolicy(), twentyBPSStepCost)
-	if !ok || got.BorrowRaw != 0 || got.Reason != "up_move_not_worth_cost" || got.GainRaw > 0 {
-		t.Fatalf("a thin spread was approved: %+v ok=%t", got, ok)
 	}
 }

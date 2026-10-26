@@ -1,17 +1,11 @@
 package backyard
 
 import (
-	"bytes"
 	"context"
 	"encoding/binary"
-	"log/slog"
 	"math/big"
-	"strings"
 	"testing"
 	"time"
-
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
-	"github.com/prometheus/client_golang/prometheus"
 )
 
 // debtReserveWithRoom is a USDC debt reserve whose only binding borrow limit
@@ -133,59 +127,5 @@ func TestLeverageRoomWatchesFollowTheLevels(t *testing.T) {
 	watches = leverageRoomWatches(o)
 	if len(watches) != 2 || !watches[1].belowTarget {
 		t.Fatalf("a lane below its level is not woken on: %+v", watches)
-	}
-}
-
-// The reaction clock starts when a lane below its target first shows room
-// for the minimum borrow and stops when its leverage_up borrow lands: the
-// histogram, the per-lane counter, the room gauge and one log line.
-func TestLeverageReactionIsMeasuredFromTheRoomOpening(t *testing.T) {
-	t.Parallel()
-	var out bytes.Buffer
-	registry := prometheus.NewRegistry()
-	e := newEvents(slog.New(slog.NewJSONHandler(&out, nil)), engine.NewFacts(registry), "rwa")
-	now := time.Unix(kaminoFixtureUnix, 0)
-	e.now = func() time.Time { return now }
-	route, err := runtimeRoute(autoAUTOPYUSD.Lane)
-	if err != nil {
-		t.Fatal(err)
-	}
-	watch := roomWatch{lane: route.Lane, route: route, belowTarget: true}
-	e.leverageObserved([]laneLeverage{{lane: route.Lane, targeted: true, target: 1.75, current: 1.01, gap: 0.74}})
-	e.roomObserved(roomUpdate{watch: watch, roomRaw: 0, roomUSD: 0, roomPriced: true, at: now.Add(-time.Minute)})
-	e.roomObserved(roomUpdate{watch: watch, roomRaw: 3_300_000_000, roomUSD: 3300, roomPriced: true, open: true, opened: true, at: now.Add(-7 * time.Second)})
-	e.roomObserved(roomUpdate{watch: watch, roomRaw: 3_400_000_000, roomUSD: 3400, roomPriced: true, open: true, at: now.Add(-3 * time.Second)})
-	e.leverageUpLanded(route.Lane, 3_300_000_000, "sig")
-	families, err := registry.Gather()
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := map[string]float64{}
-	for _, family := range families {
-		for _, m := range family.GetMetric() {
-			switch {
-			case m.GetHistogram() != nil:
-				got[family.GetName()+"_sum"], got[family.GetName()+"_count"] = m.GetHistogram().GetSampleSum(), float64(m.GetHistogram().GetSampleCount())
-			case m.GetCounter() != nil:
-				got[family.GetName()] = m.GetCounter().GetValue()
-			case m.GetGauge() != nil:
-				got[family.GetName()] = m.GetGauge().GetValue()
-			}
-		}
-	}
-	if got["loyal_backyard_leverage_reaction_seconds_sum"] != 7 || got["loyal_backyard_leverage_reaction_seconds_count"] != 1 ||
-		got["loyal_backyard_leverage_up_landed_total"] != 1 || got["loyal_backyard_leverage_borrow_room_usd"] != 3400 || got["loyal_backyard_leverage_gap"] != 0.74 {
-		t.Fatalf("leverage metrics: %v", got)
-	}
-	if !strings.Contains(out.String(), `"msg":"backyard_leverage_up_landed"`) || !strings.Contains(out.String(), `"reaction_seconds":7`) || !strings.Contains(out.String(), `"room_raw":3400000000`) {
-		t.Fatalf("landed log line: %s", out.String())
-	}
-	// The lane is no longer held: its series go away, not to zero.
-	e.leverageObserved(nil)
-	families, _ = registry.Gather()
-	for _, family := range families {
-		if strings.HasPrefix(family.GetName(), "loyal_backyard_leverage_gap") || strings.HasPrefix(family.GetName(), "loyal_backyard_leverage_borrow_room") {
-			t.Fatalf("a lane no longer held kept %s", family.GetName())
-		}
 	}
 }

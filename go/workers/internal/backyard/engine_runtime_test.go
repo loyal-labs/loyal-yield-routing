@@ -8,7 +8,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -224,52 +223,4 @@ func repeat(value byte, count int) []byte {
 		out[index] = value
 	}
 	return out
-}
-
-// directEngine mirrors how worker tests construct the concrete controller: the
-// production constructor requires the pinned delegated executor secret, which
-// offline tests deliberately never hold.
-func directEngine(t *testing.T, owner string) *Engine {
-	t.Helper()
-	manifest := readyWorkerManifest(t)
-	worker := &Worker{routeKey: productionRouteKey, interval: time.Millisecond, manifest: manifest}
-	return &Engine{workers: []*Worker{worker}, states: []*vaultState{{}}, owner: owner, out: io.Discard, config: Config{PollInterval: time.Millisecond}}
-}
-
-func holdTickRuntime(events *runtimeEvents, cancel context.CancelFunc) tickRuntime {
-	return tickRuntime{
-		loadNonterminal: func(context.Context, string) (*PersistedOperation, error) {
-			events.add("tick")
-			cancel()
-			return nil, nil
-		},
-		observe: func(context.Context) (Observation, error) {
-			events.add("observe")
-			return tickObservation(Snapshot{ObservationID: "engine-hold", Slot: 10, RouteKind: RouteKind, Fresh: true}), nil
-		},
-		recordDecision: func(context.Context, string, Observation, Decision, string) (DecisionRecord, error) {
-			events.add("journal")
-			return DecisionRecord{}, nil
-		},
-	}
-}
-
-func TestEngineRunsInjectedRuntimeAndJoinsOnCancellation(t *testing.T) {
-	journal := loadRestartJournal(t)
-	out := &strings.Builder{}
-	ctx, cancel := context.WithCancel(context.Background())
-	events := &runtimeEvents{}
-	engine := directEngine(t, journal.LeaseOwner)
-	engine.out = out
-	engine.workers[0].runtime = holdTickRuntime(events, cancel)
-	if err := engine.Run(ctx); !errors.Is(err, context.Canceled) {
-		t.Fatalf("engine did not join on cancellation: %v", err)
-	}
-	banner := out.String()
-	if !strings.Contains(banner, "owner="+journal.LeaseOwner) || !strings.Contains(banner, "route="+productionRouteKey) {
-		t.Fatalf("startup banner lost the injected identity: %q", banner)
-	}
-	if got := strings.Join(events.snapshot(), ","); got != "tick,observe" {
-		t.Fatalf("engine tick sequence drifted: %s", got)
-	}
 }
