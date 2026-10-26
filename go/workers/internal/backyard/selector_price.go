@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+	"math/big"
+	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
@@ -233,6 +235,7 @@ type entryCost struct {
 	NetworkMicros        usdMicros        `json:"networkMicros"`
 	SetupMicros          usdMicros        `json:"setupMicros,omitempty"`
 	ReleaseNetworkMicros usdMicros        `json:"releaseMicros,omitempty"`
+	ReleaseExitMicros    usdMicros        `json:"releaseExitMicros,omitempty"`
 	Step                 leverageStepCost `json:"step"`
 	TotalMicros          usdMicros        `json:"totalMicros"`
 }
@@ -426,6 +429,11 @@ func (p lanePricer) priceMove(ctx context.Context, o Observation, source *Snapsh
 	}
 	cost.EntrySwapCostMicros = usdMicros(equity) - boughtValue
 	cost.ExitSwapCostMicros = boughtValue - usdMicros(conversionQuotedOutput(exit.Request))
+	destinationExit, err := exitCostOf(lane, exitCostQuote, bought, uint64(max(boughtValue, 0)), conversionQuotedOutput(exit.Request), prices.collateral, slot, o.ObservedAt)
+	if err != nil {
+		return q, staleHoldFrom(err, selectorDestinationExitUnpriced)
+	}
+	q.DestinationExit = &destinationExit
 	blockhash := LatestBlockhash{Blockhash: entry.Request.RecentBlockhash, LastValidBlockHeight: entry.Request.LastValidBlockHeight}
 	deposit, err := p.manifest.kaminoPacketForRoute(p.policies, OpenRouteStep, kaminoLegDeposit, guaranteed, blockhash, lane)
 	if err != nil {
@@ -463,8 +471,11 @@ func (p lanePricer) priceMove(ctx context.Context, o Observation, source *Snapsh
 		if cost.ReleaseNetworkMicros, err = p.releaseNetworkMicros(ctx, o, *source, equity); err != nil {
 			return q, err
 		}
+		if cost.ReleaseExitMicros, err = releaseExitMicros(*source, equity); err != nil {
+			return q, err
+		}
 	}
-	fees, err := sumMicros(cost.NetworkMicros, cost.SetupMicros, cost.ReleaseNetworkMicros, cost.Step.TotalMicros)
+	fees, err := sumMicros(cost.NetworkMicros, cost.SetupMicros, cost.ReleaseNetworkMicros, cost.ReleaseExitMicros, cost.Step.TotalMicros)
 	if err != nil {
 		return q, err
 	}
@@ -574,6 +585,53 @@ func (p lanePricer) settleHeld(ctx context.Context, o Observation, s Snapshot, m
 		out = heldSettlement{Level: level, CollateralValueRaw: int64(collateral), DebtValueRaw: int64(debt), RateDebtRaw: rateDebt, CostRaw: int64(max(cost.TotalMicros, 0))}
 	}
 	return out, nil
+}
+
+func (p lanePricer) priceHeldExit(ctx context.Context, b heldExitBasis, slot int64, at time.Time) (ExitCost, error) {
+	receipts, sold, value := b.st.position.CollateralDepositedRaw, b.heldRaw, b.markValue
+	if receipts == 0 {
+		var err error
+		if receipts, err = payoffReceiptsForLiquidity(b.st.collateral.totalLiquiditySF, b.st.collateral.terms.CollateralMintTotalSupply, b.heldRaw); err != nil {
+			return ExitCost{}, staleHoldFrom(err, "exit_quote_unavailable")
+		}
+		if len(b.st.topology) == 0 {
+			b.st.topology = []string{b.st.route.Kamino.CollateralReserve}
+		}
+	}
+	if limit := stepLegCap(b.st.route); limit.exceeded(receipts) {
+		receipts = limit.raw
+		liquidity, err := b.st.collateral.redeemLiquidityRaw(receipts)
+		if err != nil || liquidity > math.MaxUint64-b.st.collateralBalance {
+			return ExitCost{}, staleHoldFrom(err, "exit_quote_unavailable")
+		}
+		sold = liquidity + b.st.collateralBalance
+		scaled := new(big.Int).Mul(new(big.Int).SetUint64(b.markValue), new(big.Int).SetUint64(sold))
+		value = scaled.Quo(scaled, new(big.Int).SetUint64(b.heldRaw)).Uint64()
+	}
+	exit, _, err := assembleStep(ctx, p.rpc, p.view, p.client, p.manifest, p.policies, b.st, stepExit, receipts, sold, slot)
+	if err != nil {
+		return ExitCost{}, err
+	}
+	cost, err := exitCostOf(b.st.route.Lane, exitCostQuote, sold, value, conversionQuotedOutput(exit.Request), b.mark, slot, at)
+	cost.QuotedCollateralRaw = b.heldRaw
+	return cost, err
+}
+
+func releaseExitMicros(source Snapshot, equity uint64) (usdMicros, error) {
+	rel := newSourceRelease(source, int64(min(equity, math.MaxInt64)))
+	if rel == nil || source.ExitCostBPS == 0 || source.PositionCollateralRaw <= 0 || source.PositionCollateralValueRaw < 0 {
+		return 0, staleHold("selector_release_unpriced")
+	}
+	released := new(big.Int).Mul(big.NewInt(source.PositionCollateralValueRaw), big.NewInt(rel.CollateralRaw-rel.CollateralTargetRaw))
+	released.Quo(released, big.NewInt(source.PositionCollateralRaw))
+	if !released.IsUint64() {
+		return 0, staleHold("selector_release_unpriced")
+	}
+	cost, err := ExitCost{BPS: source.ExitCostBPS}.liabilityRaw(released.Uint64())
+	if err != nil || cost > math.MaxInt64 {
+		return 0, staleHold("selector_release_unpriced")
+	}
+	return usdMicros(cost), nil
 }
 
 func (p lanePricer) releaseNetworkMicros(ctx context.Context, o Observation, source Snapshot, equity uint64) (usdMicros, error) {

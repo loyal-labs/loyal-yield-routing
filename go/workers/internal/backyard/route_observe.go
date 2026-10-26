@@ -21,6 +21,10 @@ import (
 )
 
 func ObserveConfirmedRouteSnapshot(ctx context.Context, rpc *chain.Client, view *View, manifest RouteManifest, state *vaultState, ownWriteSlot int64, inputs targetInputs) (Observation, []ConfirmedAccount, error) {
+	return observeQuotingRouteSnapshot(ctx, rpc, view, manifest, state, ownWriteSlot, inputs, nil)
+}
+
+func observeQuotingRouteSnapshot(ctx context.Context, rpc *chain.Client, view *View, manifest RouteManifest, state *vaultState, ownWriteSlot int64, inputs targetInputs, exits *exitQuoter) (Observation, []ConfirmedAccount, error) {
 	if rpc == nil || view == nil {
 		return Observation{}, nil, fmt.Errorf("RPC client and account view are required")
 	}
@@ -38,7 +42,8 @@ func ObserveConfirmedRouteSnapshot(ctx context.Context, rpc *chain.Client, view 
 		stageAllowance: func(ctx context.Context, slot, chainNow int64) (*StageAllowance, error) {
 			return observeStageAllowance(ctx, rpc, v, slot, chainNow)
 		},
-		now: func() time.Time { return time.Now().UTC() },
+		now:   func() time.Time { return time.Now().UTC() },
+		exits: exits,
 	})
 }
 
@@ -87,6 +92,7 @@ type routeObservationRuntime struct {
 	now              func() time.Time
 	inputs           targetInputs
 	state            *vaultState
+	exits            *exitQuoter
 }
 
 func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest RouteManifest, runtime routeObservationRuntime) (Observation, []ConfirmedAccount, error) {
@@ -191,6 +197,9 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 			refreshExhausted = true
 			runtime.state.events.noteCause(holdDetail(refreshErr))
 		}
+	}
+	if runtime.exits != nil {
+		runtime.inputs.ExitCosts = runtime.exits.quote(ctx, manifest, slot, accounts, valued, runtime.inputs.ExitCosts)
 	}
 	views := make([]Observation, 0, len(viewLanes))
 	for _, lane := range viewLanes {
@@ -314,11 +323,16 @@ func observeLaneView(ctx context.Context, manifest RouteManifest, runtime routeO
 	if err != nil {
 		return Observation{}, nil, err
 	}
-	nav, err := ComputeRouteNAVForRoutes(slot, navAccounts, manifest, nil, routes)
+	nav, err := ComputeRouteNAVForRoutes(slot, navAccounts, manifest, nil, routes, runtime.inputs.ExitCosts)
+	if lane, unpriced := unpricedExitLane(err); unpriced {
+		noteUnpricedExit(runtime.state, v, lane, err)
+		return Observation{}, nil, unpricedExitHeld(v, accounts, slot, demand, fingerprint, runtime.now(), lane, err)
+	}
 	if err != nil {
 		hold, err := healthHold(err, route.Lane)
 		return Observation{}, hold, err
 	}
+	noteUnpricedExit(runtime.state, v, "", nil)
 	runtime.state.staleHeld.clear()
 	collateralMint, err := decodeBase58PublicKey(route.Kamino.CollateralMint)
 	if err != nil {
@@ -402,6 +416,10 @@ func observeLaneView(ctx context.Context, manifest RouteManifest, runtime routeO
 	base.Snapshot.PositionCollateralValueRaw = int64(nav.PositionCollateralValue)
 	base.Snapshot.PositionDebtValueRaw = int64(nav.PositionDebtValue)
 	base.Snapshot.StrategyNAVRaw = int64(nav.StrategyNAVRaw)
+	base.Snapshot.ExitLiabilityRaw = int64(nav.ExitLiabilityRaw)
+	if nav.ExitCost != nil {
+		base.Snapshot.ExitCostBPS = nav.ExitCost.BPS
+	}
 	base.Snapshot.LTVBPS = ltv
 	base.Snapshot.LiquidationThresholdBPS, base.Snapshot.MaxLTVBPS = position.LiquidationThresholdBPS, position.MaxLTVBPS()
 	entryUSDC, err := routeEntryCapacityUSDC(position, accounts, route)
@@ -720,6 +738,28 @@ func ltvBPSFromTokenPrices(collateralRaw uint64, collateralPriceSF [16]byte, col
 		return 0, fmt.Errorf("Kamino LTV is outside bounded range")
 	}
 	return debt.Int64(), nil
+}
+
+func unpricedExitHeld(v *Vault, accounts []ConfirmedAccount, slot, demand int64, fingerprint string, now time.Time, lane string, hold error) error {
+	idleRaw := int64(0)
+	if idle, err := decodePinnedUSDC(accountAt(accounts, v.idleATA), v.idleAuth); err == nil && idle.Raw <= math.MaxInt64 {
+		idleRaw = int64(idle.Raw)
+	}
+	id := sha256Bytes([]byte(fmt.Sprintf("exit-unpriced:%s|%s|voltr-idle:%d", lane, fingerprint, idleRaw)))
+	return &unpricedExitHealth{error: hold, lane: lane, health: Observation{ObservedAt: now, Snapshot: Snapshot{
+		ObservationID: id, Slot: slot, RouteKind: RouteKind, Fresh: true, WithdrawalDemandRaw: demand, VoltrIdleRaw: idleRaw}}}
+}
+
+func noteUnpricedExit(state *vaultState, v *Vault, lane string, err error) {
+	if !state.unpricedExitNote.changed(lane) {
+		return
+	}
+	if lane == "" {
+		_, _ = fmt.Fprintf(os.Stderr, "backyard-rwa-worker: exit unpriced hold cleared vault=%s\n", v.Name)
+		return
+	}
+	_, _ = fmt.Fprintf(os.Stderr, "backyard-rwa-worker: exit unpriced hold vault=%s lane=%s: %v\n", v.Name, lane, err)
+	state.events.noteCause(err.Error())
 }
 
 func kaminoHealthHold(state *vaultState, err error, slot int64, now time.Time, lane string) (Observation, bool) {

@@ -51,6 +51,14 @@ func (d *Database) RecordSelectorEvaluation(ctx context.Context, routeKey string
 		if err != nil || !record {
 			return err
 		}
+		if result.Action.entersOrRotates() {
+			if result.SelectedQuote == nil || result.SelectedQuote.DestinationExit == nil {
+				return staleHold(selectorDestinationExitUnpriced)
+			}
+			if _, err = tx.Exec(ctx, recordExitCostSQL, exitCostArgs(*result.SelectedQuote.DestinationExit)...); err != nil {
+				return err
+			}
+		}
 		encoded, err := json.Marshal(map[string]any{"mode": "live", "observationId": input.Snapshot.ObservationID, "slot": input.Snapshot.Slot, "result": result})
 		if err != nil {
 			return err

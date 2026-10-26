@@ -126,7 +126,7 @@ func prepareBridgeFromObservedAccounts(ctx context.Context, rpc *chain.Client, m
 	if err != nil {
 		return Observation{}, BridgeExecutionEvidence{}, err
 	}
-	nav, err := ComputeRouteNAVForRoutes(observation.Snapshot.Slot, navAccounts, manifest, &postCustodies, routes)
+	nav, err := ComputeRouteNAVForRoutes(observation.Snapshot.Slot, navAccounts, manifest, &postCustodies, routes, observation.exitCosts())
 	if err != nil {
 		return Observation{}, BridgeExecutionEvidence{}, err
 	}
@@ -134,6 +134,8 @@ func prepareBridgeFromObservedAccounts(ctx context.Context, rpc *chain.Client, m
 		return Observation{}, BridgeExecutionEvidence{}, fmt.Errorf("report ticket sequence is not fresh")
 	}
 	effects.Kind = "bridge"
+	exitAtReport := nav.ExitLiabilityRaw
+	effects.ExitLiabilityRaw = &exitAtReport
 	// FSj27 returns the NAV each report-bearing leg arms; Trustful's
 	// deposit_strategy returns its end value. A Trustful withdrawal returns
 	// nothing.

@@ -3,6 +3,7 @@ package backyard
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -11,6 +12,14 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnmax"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/voltr"
 )
+
+type unpricedExitHealth struct {
+	error
+	lane   string
+	health Observation
+}
+
+func (h *unpricedExitHealth) Unwrap() error { return h.error }
 
 type withdrawalAssessment struct {
 	earnmax.WithdrawalHealth
@@ -42,6 +51,10 @@ func assessWithdrawalHealth(v *Vault, o Observation, decision Decision, tickErr 
 			h.Status, h.Reason = "waiting", "withdrawal_in_progress"
 			h.preserveAttention = decision.Action == ReportNAV || decision.Action == RecoverTransaction
 		}
+	}
+	var unpriced *unpricedExitHealth
+	if errors.As(tickErr, &unpriced) {
+		h.Reason = "held:unpriced_lane:" + unpriced.lane
 	}
 	return h, true
 }
@@ -100,6 +113,10 @@ func (w *Worker) publishWithdrawalHealth(ctx context.Context, o Observation, dec
 	}
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
+	var unpriced *unpricedExitHealth
+	if o.Validate() != nil && errors.As(tickErr, &unpriced) {
+		o = unpriced.health
+	}
 	if o.Validate() != nil {
 		manualStopHasNoLiveWorkToDelay := decision.Action == HoldManualRecovery
 		if !manualStopHasNoLiveWorkToDelay || w.runtime.observeWithdrawalHealth == nil {

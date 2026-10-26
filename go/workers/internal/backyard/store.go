@@ -474,6 +474,7 @@ type ReconciledBridgeJournalState struct {
 	StagedAmountRaw           int64
 	StageAfterTicket          bool
 	MutationAfterReport       bool
+	ExitAtReportRaw           int64
 }
 
 const journalOrderSQL = `confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id COLLATE "C" DESC`
@@ -501,7 +502,8 @@ SELECT
  (SELECT expected_effects->'expectedEffects'->'returnData'->>'dataBase64' FROM ticket),
  (SELECT (expected_effects->'decision'->>'amountRaw')::bigint FROM stage),
  ` + journalAfterSQL("stage", "ticket") + `,
- ` + journalAfterSQL("mutation", "report")
+ ` + journalAfterSQL("mutation", "report") + `,
+ COALESCE((SELECT (expected_effects->'expectedEffects'->>'exitLiabilityRaw')::bigint FROM ticket), 0)`
 
 func (d *Database) ReconciledBridgeJournal(ctx context.Context, routeKey string) (ReconciledBridgeJournalState, error) {
 	if d == nil || d.pool == nil || routeKey == "" {
@@ -514,7 +516,7 @@ func (d *Database) readReconciledBridgeJournal(ctx context.Context, routeKey str
 	var sequence, staged pgtype.Int8
 	var armed pgtype.Text
 	state := ReconciledBridgeJournalState{}
-	if err := d.pool.QueryRow(ctx, ReconciledBridgeJournalSQL, routeKey).Scan(&sequence, &armed, &staged, &state.StageAfterTicket, &state.MutationAfterReport); err != nil {
+	if err := d.pool.QueryRow(ctx, ReconciledBridgeJournalSQL, routeKey).Scan(&sequence, &armed, &staged, &state.StageAfterTicket, &state.MutationAfterReport, &state.ExitAtReportRaw); err != nil {
 		return ReconciledBridgeJournalState{}, fmt.Errorf("read reconciled bridge journal: %w", err)
 	}
 	if sequence.Valid {
@@ -764,12 +766,33 @@ func (d *Database) MarkReconciled(ctx context.Context, operationID string, recon
 	if err := reconciliation.Validate(); err != nil || !json.Valid(effects) {
 		return fmt.Errorf("invalid reconciliation evidence")
 	}
-	tag, err := d.pool.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET status='reconciled',confirmation_status='finalized',reconciliation_sha256=$2,reconciled_effects=$3::jsonb,updated_at=clock_timestamp() WHERE operation_id=$1 AND status IN ('confirmed','reconciling')`, operationID, reconciliation.EffectsSHA256, string(effects))
+	var body struct {
+		Sale *realizedSale `json:"sale"`
+	}
+	if err := json.Unmarshal(effects, &body); err != nil {
+		return fmt.Errorf("invalid reconciliation evidence")
+	}
+	tx, err := d.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	tag, err := tx.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET status='reconciled',confirmation_status='finalized',reconciliation_sha256=$2,reconciled_effects=$3::jsonb,updated_at=clock_timestamp() WHERE operation_id=$1 AND status IN ('confirmed','reconciling')`, operationID, reconciliation.EffectsSHA256, string(effects))
 	if err != nil {
 		return err
 	}
 	if tag.RowsAffected() != 1 {
 		return fmt.Errorf("reconciliation found no landed operation")
+	}
+	if body.Sale != nil {
+		if cost, ok := body.Sale.exitCost(time.Now().UTC()); ok {
+			if _, err := tx.Exec(ctx, recordExitCostSQL, exitCostArgs(cost)...); err != nil {
+				return err
+			}
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
 	}
 	d.eventReconciled(ctx, operationID)
 	return nil

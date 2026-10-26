@@ -33,6 +33,7 @@ func canaryFixtureInput(t *testing.T) SelectorInput {
 	in := fundedAutoFixture(t)
 	equity := in.Quotes[0].EquityRaw
 	armFeeAuthorityFixture(t, &in.Snapshot)
+	in.Quotes[0].DestinationExit = &ExitCost{Lane: testAutoLane, BPS: 1, QuotedCollateralRaw: uint64(equity), MarkSF: kaminoOne(), Source: exitCostQuote, Slot: in.Snapshot.Slot, At: in.Now}
 	in.canaryRequest = &pilotCanaryEntryRequest{
 		ID: sha256Bytes([]byte("selector-evaluate-command")), Lane: testAutoLane,
 		EquityRaw: equity, ExpiresAt: time.Now().UTC().Add(10 * time.Minute),

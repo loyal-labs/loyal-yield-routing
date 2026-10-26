@@ -133,6 +133,7 @@ func mergeJournal(ctx context.Context, journal journalReader, routeKey string, o
 	observation.Snapshot.StagedAmountKnown = state.StagedAmountKnown
 	observation.Snapshot.StageTransient = state.StageAfterTicket
 	observation.Snapshot.CapitalMutated = state.MutationAfterReport
+	observation.Snapshot.JournalExitAtReportRaw = state.ExitAtReportRaw
 	return nil
 }
 
@@ -192,7 +193,7 @@ func productionTickRuntime(database *Database, rpc *chain.Client, view *View, ju
 			return prepareHastraFromTickObservation(ctx, rpc, view, manifest, decision, observation)
 		},
 		prepareStep: func(ctx context.Context, manifest RouteManifest, decision Decision, observation Observation) (Observation, StepExecutionEvidence, error) {
-			return prepareStepFromTickObservation(ctx, rpc, view, manifest, jupiterClient, decision, observation)
+			return prepareStepFromTickObservation(ctx, rpc, view, manifest, jupiterClient, database.RecordExitCost, decision, observation)
 		},
 		recordDecision: func(ctx context.Context, routeKey string, observation Observation, decision Decision, manifestSHA256 string) (DecisionRecord, error) {
 			return database.RecordDecisionOnManifest(ctx, manifest, routeKey, observation, decision, manifestSHA256)
@@ -504,6 +505,7 @@ type vaultState struct {
 	staleHeld     staleStreak
 
 	stageAllowanceNote changeNote
+	unpricedExitNote   changeNote
 }
 
 type failureStreak struct{ consecutive atomic.Int64 }

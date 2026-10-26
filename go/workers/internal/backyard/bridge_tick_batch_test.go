@@ -20,6 +20,7 @@ func TestBridgeTickBatchSkipsAccountReadsAndRejectsStaleOrTamperedEvidence(t *te
 	o := Observation{ObservedAt: time.Now().UTC(), Snapshot: Snapshot{ObservationID: "tick-batch", Slot: 77, RouteKind: RouteKind, RouteLane: PrimeUSDCLaneID, StrategyKey: PrimeUSDCLaneID, Fresh: true, VoltrIdleRaw: 11, VoltrStrategyIdleRaw: 0, SquadsIdleRaw: 6, LastReportAgeSeconds: 3600}}
 	o.Snapshot = targeted(o.Snapshot)
 	o.routeBatch = &routeObservationBatch{Slot: 77, ObservationID: o.Snapshot.ObservationID, ManifestSHA256: m.SHA256, Accounts: accounts}
+	o.planning = &routePlanningState{inputs: targetInputs{ExitCosts: fixtureExitCosts()}}
 	decision := Decide(o.Snapshot)
 	if decision.Action != ReportNAV {
 		t.Fatalf("fixture expected report: %+v", decision)

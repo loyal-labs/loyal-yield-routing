@@ -57,6 +57,9 @@ func prepareJupiterFromTickObservation(ctx context.Context, rpc *chain.Client, m
 	}
 	evidence, err := prepareJupiterQuoteEvidence(ctx, rpc, client, manifest, observation.policies, decision, sourceRaw, destinationRaw, observation.Snapshot.Slot)
 	logStage("prepare_jupiter_quote", prepareStart)
+	if route, routeErr := v.route(decision.StrategyKey); routeErr == nil {
+		evidence.ExpectedEffects.Sale = collateralSale(accounts, route, decision.Action, amount, evidence.ExpectedEffects)
+	}
 	return observation, evidence, err
 }
 

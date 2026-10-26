@@ -1,11 +1,16 @@
 package backyard
 
 import (
+	"context"
 	"encoding/binary"
+	"errors"
+	"fmt"
 	"math"
 	"math/big"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
@@ -407,5 +412,184 @@ func TestStrategyTwoReceiptVersionAndTrackedCustody(t *testing.T) {
 	a.Data[136] = 1
 	if _, err := decodeStrategyReceipt(rwa, a); err == nil {
 		t.Fatal("unknown reserved field accepted")
+	}
+}
+
+func onreEntryNAVFixture(t *testing.T, squadsUSDCRaw, onycRaw uint64) (RuntimeRoute, []ConfirmedAccount) {
+	t.Helper()
+	route, err := runtimeRoute(onreONycUSDC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mark := new(big.Int).Quo(new(big.Int).Mul(big.NewInt(11_558), new(big.Int).Lsh(big.NewInt(1), 60)), big.NewInt(10_000))
+	custody := tokenAccountFixture(t, route.CollateralCustody, route.Kamino.CollateralMint, bridgeVault, onycRaw)
+	custody.Owner = route.CollateralTokenProgram
+	return route, []ConfirmedAccount{
+		exactAdaptorConfigAccount(t),
+		strategyReceiptFixture(t, 1_000_000_000),
+		tokenAccountFixture(t, bridgeIdleATA, fleet.USDCMint, bridgeIdleAuthority, 0),
+		tokenAccountFixture(t, bridgeStrategyATA, fleet.USDCMint, bridgeStrategyAuth, 0),
+		tokenAccountFixture(t, bridgeSquadsATA, fleet.USDCMint, bridgeVault, squadsUSDCRaw),
+		custody,
+		{Address: route.Kamino.Obligation},
+		kaminoReserveImage(t, route.Kamino.Market, route.Kamino.CollateralReserve, route.Kamino.CollateralMint, 77, mark, 1_000_000_000_000, 0, 1_000_000_000_000, 9),
+		kaminoReserveImage(t, route.Kamino.Market, route.Kamino.DebtReserve, fleet.USDCMint, 77, new(big.Int).Lsh(big.NewInt(1), 60), 1_000_000_000, 0, 1_000_000_000, 6),
+		marketFixture(t, route.Kamino.Market),
+		voltrVaultFixture(t, 1_000_000_000),
+		voltrLPMintFixture(t, 1_000),
+	}
+}
+
+func TestRouteNAVEntryBelowMarkIsFlat(t *testing.T) {
+	t.Parallel()
+	manifest := readyWorkerManifest(t)
+	route, cash := onreEntryNAVFixture(t, 1_000_000_000, 0)
+	var mark kamino.ScaledFraction
+	putScaledFraction(mark[:], new(big.Int).Quo(new(big.Int).Mul(big.NewInt(11_558), new(big.Int).Lsh(big.NewInt(1), 60)), big.NewInt(10_000)))
+	exits := exitCosts{route.Lane: {Quote: &ExitCost{Lane: route.Lane, BPS: 18_500_000, QuotedCollateralRaw: 866_701_334_720, MarkSF: mark, Source: exitCostQuote, Slot: 77, At: time.Unix(kaminoFixtureUnix, 0)}}}
+	before, err := ComputeRouteNAVForRoutes(77, cash, manifest, nil, []RuntimeRoute{route}, exits)
+	if err != nil || before.StrategyNAVRaw != 1_000_000_000 {
+		t.Fatalf("cash book: %d %v", before.StrategyNAVRaw, err)
+	}
+	_, bought := onreEntryNAVFixture(t, 0, 866_701_334_720)
+	after, err := ComputeRouteNAVForRoutes(77, bought, manifest, nil, []RuntimeRoute{route}, exits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.StrategyNAVRaw != 999_880_196 {
+		t.Fatalf("entry below the mark moved NAV from %d to %d, want 999880196", before.StrategyNAVRaw, after.StrategyNAVRaw)
+	}
+}
+
+func TestFirstTickValuesUnseededLane(t *testing.T) {
+	manifest, accounts := multiLaneFixture(t, nil)
+	var recorded []string
+	quoter := &exitQuoter{
+		price: func(_ context.Context, b heldExitBasis, slot int64, at time.Time) (ExitCost, error) {
+			return exitCostOf(b.st.route.Lane, exitCostQuote, b.heldRaw, b.markValue, b.markValue-b.markValue/1_000, b.mark, slot, at)
+		},
+		record: func(_ context.Context, c ExitCost) (bool, error) {
+			recorded = append(recorded, c.Lane)
+			return true, nil
+		},
+		now: func() time.Time { return time.Unix(kaminoFixtureUnix, 0).UTC() },
+	}
+	o, _, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), manifest, routeObservationRuntime{state: testVaultState, inputs: targetInputs{ExitCosts: exitCosts{}},
+		read:             fixtureBatchRuntime(77, accounts),
+		refreshValuation: fixtureRefresh(77, accounts),
+		now:              func() time.Time { return time.Unix(kaminoFixtureUnix, 0).UTC() },
+		exits:            quoter,
+	})
+	if err != nil {
+		t.Fatalf("first tick with no stored exit cost: %v", err)
+	}
+	if o.Snapshot.StrategyNAVRaw != 31_970_010 || o.Snapshot.ExitLiabilityRaw != 30_000 || len(recorded) != 1 {
+		t.Fatalf("first tick NAV %d exit %d recorded %v", o.Snapshot.StrategyNAVRaw, o.Snapshot.ExitLiabilityRaw, recorded)
+	}
+}
+
+func TestUnpricedLaneHoldsOnlyItsVault(t *testing.T) {
+	manifest, accounts := multiLaneFixture(t, nil)
+	quoter := &exitQuoter{
+		price: func(context.Context, heldExitBasis, int64, time.Time) (ExitCost, error) {
+			return ExitCost{}, fmt.Errorf("jupiter unavailable")
+		},
+		record: func(context.Context, ExitCost) (bool, error) { return true, nil },
+		now:    func() time.Time { return time.Unix(kaminoFixtureUnix, 0).UTC() },
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	var observeErr error
+	tick := func(ctx context.Context) error {
+		defer cancel()
+		_, _, observeErr = observeConfirmedRouteSnapshotWithAccounts(ctx, manifest, routeObservationRuntime{state: testVaultState, inputs: targetInputs{ExitCosts: exitCosts{}},
+			read:             fixtureBatchRuntime(77, accounts),
+			refreshValuation: fixtureRefresh(77, accounts),
+			now:              func() time.Time { return time.Unix(kaminoFixtureUnix, 0).UTC() },
+			exits:            quoter,
+		})
+		return observeErr
+	}
+	err := (&Worker{wake: make(chan struct{}, 1), interval: time.Hour}).runTicks(ctx, tick)
+	var hold *PreSendHold
+	if !errors.Is(err, context.Canceled) || !errors.As(observeErr, &hold) || holdCause(hold) != "exit_unpriced" {
+		t.Fatalf("unpriced lane: worker stopped with %v, observation %v", err, observeErr)
+	}
+}
+
+func TestDustLaneWithoutExitCostDoesNotHoldVault(t *testing.T) {
+	manifest, accounts := multiLaneFixture(t, func(accounts *[]ConfirmedAccount) {
+		route, err := runtimeRoute(onreONycUSDC)
+		if err != nil {
+			t.Fatal(err)
+		}
+		peg := new(big.Int).Lsh(big.NewInt(1), 60)
+		upsertConfirmedAccount(accounts, kaminoReserveImage(t, route.Kamino.Market, route.Kamino.CollateralReserve, route.Kamino.CollateralMint, 77, peg, 1_000_000_000, 0, 1_000_000_000, 6))
+		upsertConfirmedAccount(accounts, kaminoReserveImage(t, route.Kamino.Market, route.Kamino.DebtReserve, route.Kamino.DebtMint, 77, peg, 1_000_000_000, 0, 1_000_000_000, 6))
+		upsertConfirmedAccount(accounts, marketFixture(t, route.Kamino.Market))
+		custody := tokenAccountFixture(t, route.CollateralCustody, route.Kamino.CollateralMint, bridgeVault, 500_000)
+		custody.Owner = route.CollateralTokenProgram
+		upsertConfirmedAccount(accounts, custody)
+	})
+	costs := fixtureExitCosts()
+	delete(costs, onreONycUSDC)
+	quoter := &exitQuoter{
+		price: func(context.Context, heldExitBasis, int64, time.Time) (ExitCost, error) {
+			return ExitCost{}, fmt.Errorf("jupiter refuses dust")
+		},
+		record: func(context.Context, ExitCost) (bool, error) { return true, nil },
+		now:    func() time.Time { return time.Unix(kaminoFixtureUnix, 0).UTC() },
+	}
+	o, _, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), manifest, routeObservationRuntime{state: testVaultState, inputs: targetInputs{ExitCosts: costs},
+		read:             fixtureBatchRuntime(77, accounts),
+		refreshValuation: fixtureRefresh(77, accounts),
+		now:              func() time.Time { return time.Unix(kaminoFixtureUnix, 0).UTC() },
+		exits:            quoter,
+	})
+	if err != nil {
+		t.Fatalf("dust lane held the vault: %v", err)
+	}
+	if o.Snapshot.StrategyNAVRaw != 32_000_010 || o.Snapshot.ExitLiabilityRaw != 500_000 {
+		t.Fatalf("dust lane NAV %d exit %d, want 32000010 and 500000", o.Snapshot.StrategyNAVRaw, o.Snapshot.ExitLiabilityRaw)
+	}
+}
+
+func TestIdleOnlyLaneWithoutObligationIsQuoted(t *testing.T) {
+	manifest, accounts := multiLaneFixture(t, func(accounts *[]ConfirmedAccount) {
+		route, err := runtimeRoute(onreONycUSDC)
+		if err != nil {
+			t.Fatal(err)
+		}
+		peg := new(big.Int).Lsh(big.NewInt(1), 60)
+		upsertConfirmedAccount(accounts, kaminoReserveImage(t, route.Kamino.Market, route.Kamino.CollateralReserve, route.Kamino.CollateralMint, 77, peg, 1_000_000_000, 0, 1_000_000_000, 6))
+		upsertConfirmedAccount(accounts, kaminoReserveImage(t, route.Kamino.Market, route.Kamino.DebtReserve, route.Kamino.DebtMint, 77, peg, 1_000_000_000, 0, 1_000_000_000, 6))
+		upsertConfirmedAccount(accounts, marketFixture(t, route.Kamino.Market))
+		custody := tokenAccountFixture(t, route.CollateralCustody, route.Kamino.CollateralMint, bridgeVault, 2_000_000)
+		custody.Owner = route.CollateralTokenProgram
+		upsertConfirmedAccount(accounts, custody)
+	})
+	costs := fixtureExitCosts()
+	delete(costs, onreONycUSDC)
+	var recorded []string
+	quoter := &exitQuoter{
+		price: func(_ context.Context, b heldExitBasis, slot int64, at time.Time) (ExitCost, error) {
+			return exitCostOf(b.st.route.Lane, exitCostQuote, b.heldRaw, b.markValue, b.markValue-b.markValue/1_000, b.mark, slot, at)
+		},
+		record: func(_ context.Context, c ExitCost) (bool, error) {
+			recorded = append(recorded, c.Lane)
+			return true, nil
+		},
+		now: func() time.Time { return time.Unix(kaminoFixtureUnix, 0).UTC() },
+	}
+	o, _, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), manifest, routeObservationRuntime{state: testVaultState, inputs: targetInputs{ExitCosts: costs},
+		read:             fixtureBatchRuntime(77, accounts),
+		refreshValuation: fixtureRefresh(77, accounts),
+		now:              func() time.Time { return time.Unix(kaminoFixtureUnix, 0).UTC() },
+		exits:            quoter,
+	})
+	if err != nil {
+		t.Fatalf("idle-only lane with no obligation held the vault: %v", err)
+	}
+	if o.Snapshot.StrategyNAVRaw != 33_998_010 || o.Snapshot.ExitLiabilityRaw != 2_000 || !slices.Contains(recorded, onreONycUSDC) {
+		t.Fatalf("idle-only lane NAV %d exit %d recorded %v, want 33998010, 2000 and an OnRe quote", o.Snapshot.StrategyNAVRaw, o.Snapshot.ExitLiabilityRaw, recorded)
 	}
 }

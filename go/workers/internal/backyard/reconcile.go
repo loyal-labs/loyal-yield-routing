@@ -31,14 +31,16 @@ type ExpectedAccountEffect struct {
 }
 
 type ExpectedEffects struct {
-	Schema         string                       `json:"schema"`
-	Kind           effectsKind                  `json:"kind,omitempty"`
-	Conserved      bool                         `json:"conserved"`
-	Accounts       []ExpectedAccountEffect      `json:"accounts"`
-	ReturnData     *ExpectedReturnData          `json:"returnData,omitempty"`
-	Repayment      *ExpectedRepayment           `json:"repayment,omitempty"`
-	Deposit        *ExpectedDeposit             `json:"deposit,omitempty"`
-	Initialization *KaminoInitializationRequest `json:"initialization,omitempty"`
+	Schema           string                       `json:"schema"`
+	Kind             effectsKind                  `json:"kind,omitempty"`
+	Conserved        bool                         `json:"conserved"`
+	Accounts         []ExpectedAccountEffect      `json:"accounts"`
+	ReturnData       *ExpectedReturnData          `json:"returnData,omitempty"`
+	ExitLiabilityRaw *uint64                      `json:"exitLiabilityRaw,omitempty"`
+	Sale             *ExpectedSale                `json:"sale,omitempty"`
+	Repayment        *ExpectedRepayment           `json:"repayment,omitempty"`
+	Deposit          *ExpectedDeposit             `json:"deposit,omitempty"`
+	Initialization   *KaminoInitializationRequest `json:"initialization,omitempty"`
 }
 
 type effectsKind string
@@ -275,6 +277,12 @@ func ReconcileConfirmedTransaction(v *Vault, expected ExpectedEffects, receipt C
 	}
 	if expected.ReturnData != nil {
 		evidenceBody["returnData"] = expected.ReturnData
+	}
+	if sale := expected.Sale; sale != nil {
+		pre, post := preByAddress[sale.OutputAccount], postByAddress[sale.OutputAccount]
+		if post.Raw > pre.Raw {
+			evidenceBody["sale"] = realizedSale{ExpectedSale: *sale, ReturnedRaw: post.Raw - pre.Raw, Slot: receipt.Slot}
+		}
 	}
 	evidence, err := json.Marshal(evidenceBody)
 	if err != nil {

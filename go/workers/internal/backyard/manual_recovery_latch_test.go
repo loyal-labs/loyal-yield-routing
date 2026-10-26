@@ -282,10 +282,14 @@ func ensureManualRecoveryTestSchema(ctx context.Context, db *Database) error {
 // applyTargetInputMigration applies the shipped 0103 migration: target()'s
 // stored inputs, the lane levels and the operator exits.
 func applyTargetInputMigration(ctx context.Context, db *Database) error {
-	raw, err := os.ReadFile("../../../../migrations/yield/0103_backyard_target_inputs.sql")
-	if err != nil {
-		return err
+	for _, file := range []string{"0103_backyard_target_inputs.sql", "0123_backyard_lane_exit_costs.sql"} {
+		raw, err := os.ReadFile("../../../../migrations/yield/" + file)
+		if err != nil {
+			return err
+		}
+		if _, err = db.pool.Exec(ctx, string(raw)); err != nil {
+			return err
+		}
 	}
-	_, err = db.pool.Exec(ctx, string(raw))
-	return err
+	return nil
 }

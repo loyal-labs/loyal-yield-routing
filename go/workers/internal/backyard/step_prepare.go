@@ -112,15 +112,19 @@ func (st stepState) heldDebt() uint64 {
 }
 
 func readStepState(v *Vault, accounts []ConfirmedAccount, route RuntimeRoute, slot int64) (stepState, error) {
+	obligation, err := kamino.DecodeObligation(chainAccount(accountAt(accounts, route.Kamino.Obligation), route.Kamino.Obligation))
+	if err != nil {
+		return stepState{}, err
+	}
+	return readStepStateWith(v, accounts, route, slot, obligation)
+}
+
+func readStepStateWith(v *Vault, accounts []ConfirmedAccount, route RuntimeRoute, slot int64, obligation kamino.Obligation) (stepState, error) {
 	position, err := observeKaminoFromFixedAccounts(slot, accounts, route.Kamino)
 	if err != nil {
 		return stepState{}, err
 	}
 	collateral, err := decodeKaminoReserve(accountAt(accounts, route.Kamino.CollateralReserve), route.Kamino.CollateralMint, route.Kamino)
-	if err != nil {
-		return stepState{}, err
-	}
-	obligation, err := kamino.DecodeObligation(chainAccount(accountAt(accounts, route.Kamino.Obligation), route.Kamino.Obligation))
 	if err != nil {
 		return stepState{}, err
 	}
@@ -228,7 +232,7 @@ func planDownStep(s Snapshot, d Decision, st stepState, repayRaw uint64) (downSt
 	return downStepPlan{receipts, liquidity + st.collateralBalance}, nil
 }
 
-func prepareStepFromTickObservation(ctx context.Context, rpc *chain.Client, view *View, manifest RouteManifest, client *jupiter.Client, decision Decision, observation Observation) (Observation, StepExecutionEvidence, error) {
+func prepareStepFromTickObservation(ctx context.Context, rpc *chain.Client, view *View, manifest RouteManifest, client *jupiter.Client, recordExit func(context.Context, ExitCost) (bool, error), decision Decision, observation Observation) (Observation, StepExecutionEvidence, error) {
 	kind := stepKind(decision)
 	if kind == notStep || rpc == nil || view == nil || observation.routeBatch == nil || decision.AmountRaw <= 0 {
 		return Observation{}, StepExecutionEvidence{}, fmt.Errorf("invalid step evidence request")
@@ -247,7 +251,10 @@ func prepareStepFromTickObservation(ctx context.Context, rpc *chain.Client, view
 	}
 	switch kind {
 	case stepMove:
-		evidence, err := assembleMove(ctx, rpc, manifest, observation.policies, accounts, st, s, decision)
+		evidence, entry, err := assembleMove(ctx, rpc, manifest, observation.policies, accounts, st, s, decision)
+		if err == nil {
+			err = quoteEntryExit(ctx, lanePricer{rpc: rpc, view: view, client: client, manifest: manifest, policies: observation.policies}, recordExit, observation.exitCosts(), entry, s.Slot, observation.ObservedAt)
+		}
 		logStage("prepare_step", prepareStart)
 		return observation, evidence, err
 	case stepRelease:
@@ -331,7 +338,7 @@ func releaseLeg(ctx context.Context, rpc *chain.Client, view *View, client *jupi
 		return StepExecutionEvidence{}, 0, err
 	}
 	evidence, _, err := assembleStep(ctx, rpc, view, client, manifest, policies, st, stepExit, receipts, liquidity+st.collateralBalance, s.Slot)
-	return evidence, 0, err
+	return withStepSale(accounts, st.route, evidence), 0, err
 }
 
 func assembleStep(ctx context.Context, rpc *chain.Client, view *View, client *jupiter.Client, manifest RouteManifest, policies installedPolicies, st stepState, kind StepKind, openRaw, convertRaw uint64, slot int64) (StepExecutionEvidence, uint64, error) {
@@ -460,63 +467,93 @@ func stepUpBorrowWithinCap(st stepState, borrow uint64) (uint64, error) {
 	return borrow, nil
 }
 
-func assembleMove(ctx context.Context, rpc *chain.Client, manifest RouteManifest, policies installedPolicies, accounts []ConfirmedAccount, st stepState, s Snapshot, decision Decision) (StepExecutionEvidence, error) {
+func quoteEntryExit(ctx context.Context, p lanePricer, record func(context.Context, ExitCost) (bool, error), costs exitCosts, entry heldExitBasis, slot int64, at time.Time) error {
+	if c := costs[entry.st.route.Lane]; c.Quote != nil && c.Quote.fresh(entry.heldRaw, entry.mark) {
+		return nil
+	}
+	cost, err := p.priceHeldExit(ctx, entry, slot, at)
+	if err == nil {
+		_, err = record(ctx, cost)
+	}
+	if err != nil {
+		return staleHoldFrom(err, exitUnpriced)
+	}
+	return nil
+}
+
+func assembleMove(ctx context.Context, rpc *chain.Client, manifest RouteManifest, policies installedPolicies, accounts []ConfirmedAccount, st stepState, s Snapshot, decision Decision) (StepExecutionEvidence, heldExitBasis, error) {
 	v := manifest.vault
 	route := st.route
 	lane, ok := overflowLaneOf(route.Lane)
 	if !ok {
-		return StepExecutionEvidence{}, fmt.Errorf("lane %s has no overflow lane", route.Lane)
+		return StepExecutionEvidence{}, heldExitBasis{}, fmt.Errorf("lane %s has no overflow lane", route.Lane)
 	}
 	destination, err := v.route(lane)
 	if err != nil {
-		return StepExecutionEvidence{}, err
+		return StepExecutionEvidence{}, heldExitBasis{}, err
 	}
 	if destination.CollateralCustody != route.CollateralCustody || destination.Kamino.CollateralReserve != route.Kamino.CollateralReserve {
-		return StepExecutionEvidence{}, fmt.Errorf("an overflow lane shares its source's collateral")
+		return StepExecutionEvidence{}, heldExitBasis{}, fmt.Errorf("an overflow lane shares its source's collateral")
 	}
 	limit, err := st.stepWithdrawReceipts()
 	if err != nil {
-		return StepExecutionEvidence{}, err
+		return StepExecutionEvidence{}, heldExitBasis{}, err
 	}
 	receipts := min(uint64(max(overflowReleaseReceipts(s, decision.AmountRaw), 0)), limit, st.position.CollateralDepositedRaw-1)
 	liquidity, err := st.collateral.redeemLiquidityRaw(receipts)
 	if err != nil || receipts == 0 || liquidity == 0 {
-		return StepExecutionEvidence{}, roomHold("overflow_move_no_withdraw_room", err)
+		return StepExecutionEvidence{}, heldExitBasis{}, roomHold("overflow_move_no_withdraw_room", err)
 	}
 	deposit := st.collateralBalance + liquidity
 	if stepLegCap(route).exceeded(receipts) || stepLegCap(destination).exceeded(deposit) {
-		return StepExecutionEvidence{}, staleHold("step_over_policy_cap")
+		return StepExecutionEvidence{}, heldExitBasis{}, staleHold("step_over_policy_cap")
 	}
 	account := accountAt(accounts, destination.Kamino.Obligation)
 	if account.Address != destination.Kamino.Obligation || account.Lamports == 0 {
-		return StepExecutionEvidence{}, staleHold("overflow_obligation_absent")
+		return StepExecutionEvidence{}, heldExitBasis{}, staleHold("overflow_obligation_absent")
 	}
 	if _, err := decodeKaminoObligation(account, destination.Kamino); err != nil {
-		return StepExecutionEvidence{}, err
+		return StepExecutionEvidence{}, heldExitBasis{}, err
 	}
 	topology, err := observedObligationTopology(accounts, destination)
 	if err != nil {
-		return StepExecutionEvidence{}, err
+		return StepExecutionEvidence{}, heldExitBasis{}, err
 	}
 	blockhash, err := latestBlockhash(ctx, rpc)
 	if err != nil {
-		return StepExecutionEvidence{}, err
+		return StepExecutionEvidence{}, heldExitBasis{}, err
 	}
 	open, err := manifest.kaminoPacketForRoute(policies, DeleverRouteStep, kaminoLegWithdraw, receipts, blockhash, route.Lane)
 	if err != nil {
-		return StepExecutionEvidence{}, err
+		return StepExecutionEvidence{}, heldExitBasis{}, err
 	}
 	open.ObligationReserves = st.topology
 	closing, err := manifest.kaminoPacketForRoute(policies, DeleverRouteStep, kaminoLegDeposit, deposit, blockhash, destination.Lane)
 	if err != nil {
-		return StepExecutionEvidence{}, err
+		return StepExecutionEvidence{}, heldExitBasis{}, err
 	}
 	closing.ObligationReserves = topology
 	request := StepRequest{Open: open, Close: &closing}
 	if _, err := compileStepMessageForDelegate(v, request, mustKey(backyardDelegate)); err != nil {
-		return StepExecutionEvidence{}, staleHoldFrom(err, "step_does_not_compile")
+		return StepExecutionEvidence{}, heldExitBasis{}, staleHoldFrom(err, "step_does_not_compile")
 	}
-	return StepExecutionEvidence{Request: request, ExpectedEffects: moveEffects(route, st.collateralBalance)}, nil
+	entrySt, err := readStepState(v, accounts, destination, s.Slot)
+	if err != nil {
+		return StepExecutionEvidence{}, heldExitBasis{}, err
+	}
+	prices, err := batchLanePrices(accounts, destination)
+	if err != nil {
+		return StepExecutionEvidence{}, heldExitBasis{}, err
+	}
+	value, err := prices.collateralMicros(deposit)
+	if err != nil {
+		return StepExecutionEvidence{}, heldExitBasis{}, err
+	}
+	if entrySt.cash, err = vaultCustodyRaw(v, accounts, v.cash, fleet.USDCMint, bridgeTokenProgram); err != nil {
+		return StepExecutionEvidence{}, heldExitBasis{}, err
+	}
+	entry := heldExitBasis{st: entrySt, heldRaw: deposit, markValue: uint64(value), mark: prices.collateral}
+	return StepExecutionEvidence{Request: request, ExpectedEffects: moveEffects(route, st.collateralBalance)}, entry, nil
 }
 
 func moveEffects(route RuntimeRoute, balance uint64) ExpectedEffects {

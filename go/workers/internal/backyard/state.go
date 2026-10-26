@@ -181,6 +181,16 @@ type Snapshot struct {
 	StageAllowance                   *StageAllowance `json:",omitempty"`
 	Target                           LaneTarget      `json:",omitempty"`
 	TargetInputs                     string          `json:",omitempty"`
+	ExitLiabilityRaw                 int64           `json:",omitempty"`
+	JournalExitAtReportRaw           int64           `json:",omitempty"`
+	ExitCostBPS                      microBPS        `json:",omitempty"`
+}
+
+func (o Observation) exitCosts() exitCosts {
+	if o.planning == nil {
+		return nil
+	}
+	return o.planning.inputs.ExitCosts
 }
 
 func (s Snapshot) valued() bool {

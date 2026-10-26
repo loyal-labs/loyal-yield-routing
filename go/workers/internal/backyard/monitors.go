@@ -65,14 +65,14 @@ func unexplainedNAVDriftHold(s Snapshot) (Decision, bool) {
 	if !s.MonitorsArmed || s.PostMutationNAVRequired || s.CapitalMutated {
 		return Decision{}, false
 	}
-	if navDriftOutsideTolerance(uint64(s.StrategyNAVRaw), uint64(s.PriorReportedNAVRaw)) {
+	if navDriftOutsideBand(s) {
 		return monitorHold(s, "nav_drift_unexplained"), true
 	}
 	return Decision{}, false
 }
 
 func capitalMutationReports(s Snapshot) bool {
-	return s.CapitalMutated && navDriftOutsideTolerance(uint64(s.StrategyNAVRaw), uint64(s.PriorReportedNAVRaw))
+	return s.CapitalMutated && navDriftOutsideBand(s)
 }
 
 const capitalMutationReportAgeSeconds int64 = 60
@@ -83,8 +83,12 @@ func scheduledNAVReportDue(s Snapshot) bool {
 }
 
 func trustfulReportDue(s Snapshot) bool {
-	return navDriftOutsideTolerance(uint64(s.StrategyNAVRaw), uint64(s.PriorReportedNAVRaw)) ||
+	return navDriftOutsideBand(s) ||
 		s.LastReportAgeSeconds >= int64(routineNAVReportInterval.Seconds())
+}
+
+func navDriftOutsideBand(s Snapshot) bool {
+	return navDriftOutsideTolerance(uint64(s.StrategyNAVRaw)+uint64(s.ExitLiabilityRaw), uint64(s.PriorReportedNAVRaw)+uint64(s.JournalExitAtReportRaw))
 }
 
 func navDriftOutsideTolerance(observed, reported uint64) bool {

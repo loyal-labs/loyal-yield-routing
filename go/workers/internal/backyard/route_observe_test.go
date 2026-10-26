@@ -260,7 +260,7 @@ func TestCoveredDemandObservationDepositsSwappedCollateral(t *testing.T) {
 	})
 	address, data := receiptFixture(t, m.vault.VoltrVault, testPublicKey(44), 5, 5<<48)
 	read := fixtureBatchRuntime(77, accounts)
-	o, _, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), m, routeObservationRuntime{state: testVaultState,
+	o, _, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), m, routeObservationRuntime{state: testVaultState, inputs: targetInputs{ExitCosts: fixtureExitCosts()},
 		read: func(ctx context.Context, addresses []string, minSlot int64) (int64, []ConfirmedAccount, []programAccount, error) {
 			slot, observed, _, err := read(ctx, addresses, minSlot)
 			return slot, observed, []programAccount{{Address: address, Account: ConfirmedAccount{Address: address, Owner: voltr.ProgramID.String(), Lamports: 1, Data: data}}}, err
