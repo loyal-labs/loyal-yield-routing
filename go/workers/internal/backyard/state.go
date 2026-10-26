@@ -138,6 +138,7 @@ type Snapshot struct {
 	StagedAmountKnown              bool
 	Trustful                       bool  `json:",omitempty"`
 	ApprovedAdminPerformanceFeeBPS int64 `json:",omitempty"`
+	ApprovedIssuanceFeeBPS         int64 `json:",omitempty"`
 	// Phase 2 monitor inputs. MonitorsArmed is set only when the serialized
 	// worker merged a coherent confirmed route NAV batch, so hand-built unit
 	// snapshots keep their existing decisions. The journal, ticket, and
