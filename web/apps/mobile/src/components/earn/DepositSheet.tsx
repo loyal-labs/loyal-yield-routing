@@ -8,6 +8,7 @@ import {
   BottomSheetTextInput,
   BottomSheetView,
 } from "@gorhom/bottom-sheet";
+import { earnMaxEntryFeeNote } from "@loyal-labs/shared";
 import * as Haptics from "expo-haptics";
 import { Check, ChevronDown, X } from "lucide-react-native";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -121,6 +122,7 @@ type DepositSheetProps = {
   isFirstDeposit?: boolean;
   earnMax?: boolean;
   earnMaxApyBps?: number | null;
+  earnMaxIssuanceFeeBps?: number;
 };
 
 export function DepositSheet({
@@ -132,6 +134,7 @@ export function DepositSheet({
   isFirstDeposit,
   earnMax = false,
   earnMaxApyBps,
+  earnMaxIssuanceFeeBps = 0,
 }: DepositSheetProps) {
   const sheetRef = useRef<BottomSheetModal>(null);
   const sourceSheetRef = useRef<BottomSheetModal>(null);
@@ -282,6 +285,9 @@ export function DepositSheet({
   const displayValue = formatAmountDisplay(amount);
   const enteredUsd = amountToUsd(amount);
   const needsSolTopUp = solShortfallBlocks(firstDepositSolShortfall);
+  const entryFeeNote = earnMax
+    ? earnMaxEntryFeeNote(earnMaxIssuanceFeeBps, enteredUsd)
+    : null;
   const belowMinimum = enteredUsd < MIN_DEPOSIT_USD;
   const insufficientFunds = !belowMinimum && enteredUsd > available;
   const hasError = needsSolTopUp || belowMinimum || insufficientFunds;
@@ -407,6 +413,12 @@ export function DepositSheet({
                     Your first deposit creates Solana accounts and requires SOL
                     in your wallet for account rent and transaction fees.
                   </Text>
+                </View>
+              ) : null}
+              {entryFeeNote ? (
+                <View style={styles.maxRentCaption}>
+                  <DepositInfo />
+                  <Text style={styles.maxRentText}>{entryFeeNote}</Text>
                 </View>
               ) : null}
             </View>

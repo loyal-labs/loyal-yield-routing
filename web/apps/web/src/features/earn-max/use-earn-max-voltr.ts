@@ -92,6 +92,7 @@ export function viewModel(input: {
     forecastApyBps: summary?.forecastApyBps ?? null,
     isBusy: controls.busy,
     isLoading: input.loading,
+    issuanceFeeBps: summary?.issuanceFeeBps ?? 0,
     performance: input.activity?.performance ?? [],
     policyStatus: summary?.policyStatus ?? null,
     realizedApyBps: summary?.realizedApyBps ?? null,

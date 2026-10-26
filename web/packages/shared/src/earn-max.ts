@@ -59,6 +59,7 @@ export type EarnMaxSummary = {
   earnedUsd: number | null;
   forecastApyBps: number | null;
   goal: string;
+  issuanceFeeBps?: number;
   policyAccounts: EarnMaxPolicyBinding[];
   policyStatus: string | null;
   realizedApyBps: number | null;

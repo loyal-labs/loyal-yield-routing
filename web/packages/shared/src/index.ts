@@ -27,6 +27,7 @@ export {
   earnMaxApyFigure,
   earnMaxControls,
   earnMaxDailySeries,
+  earnMaxEntryFeeNote,
   earnMaxPending,
   earnMaxPendingMessage,
   earnMaxPendingSubtitle,
