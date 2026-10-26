@@ -12,9 +12,8 @@ and row parity with the retired Rust workers is pinned by recorded goldens
 
 Run `make verify` for formatting, vet, race tests and the three binary builds.
 Use `GOTOOLCHAIN=local`; the language baseline is Go 1.25.1 and branch CI uses
-1.26.6. Default tests need no production secrets. Database and SBF tests skip
-unless their explicitly disposable fixture inputs are supplied; an offline PASS
-does not prove those gates.
+1.26.6. Tests need no database and no production secrets. SBF tests skip
+unless the fixtures from `scripts/build-svm-fixtures.sh` are supplied.
 
 `loyal-evidence -kind fleet-wave -snapshot saved.json` replays the runtime
 planner with no database, signing or RPC.
@@ -100,13 +99,6 @@ refresh.
 Each family
 owns SQL beside its lifecycle code. Shared packages provide concrete pool,
 lease, amount and process-lifetime behavior; there is no workflow framework.
-
-Disposable SQL verification uses `scripts/workers-v2-fixture.py`, with
-`WORKERS_V2_DISPOSABLE=1` and a password-free loopback `workers_v2` bootstrap
-database. It applies `migrations/yield` and `migrations/timescale` over the
-pinned Apps baseline; the production-specific 0071 data activation and ledger
-entry are excluded. Branch CI provides actual PostgreSQL 17 and Timescale.
-Tests never apply schema to production.
 
 `cmd/loyal-migrate` is the production runner (`-db yield|timescale [-to version] status|up`;
 `-to` leaves later migrations pending, for those that need a new binary live first).

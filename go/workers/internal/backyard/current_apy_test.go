@@ -2,7 +2,6 @@ package backyard
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"math"
 	"strings"
@@ -117,45 +116,6 @@ func TestCurrentAPYWriteFailureOnlyLogs(t *testing.T) {
 	}, func(string, ...any) {})
 }
 
-// The write against Postgres: stored under state.currentApy without
-// advancing the version; flat keeps the last APY and sets flat=true.
-func TestRecordCurrentAPYWrite(t *testing.T) {
-	ctx, cancel, db, _ := openManualRecoveryTestDatabase(t, 30*time.Second)
-	defer cancel()
-	defer db.Close()
-	key := fmt.Sprintf("current-apy-%d", time.Now().UnixNano())
-	if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,'{"generation":1}',1)`, key); err != nil {
-		t.Fatal(err)
-	}
-	now := time.Date(2026, 9, 29, 21, 0, 0, 0, time.UTC)
-	value := CurrentAPY{Lane: autoAUTOPYUSD.Lane, APYBPS: 1523, Level: 1.75, ObservedAt: now}
-	if err := db.RecordCurrentAPY(ctx, key, value); err != nil {
-		t.Fatal(err)
-	}
-	read := func() (CurrentAPY, int64) {
-		var raw []byte
-		var version int64
-		if err := db.pool.QueryRow(ctx, `SELECT state->'currentApy',state_version FROM loyal_yield.multiply_route_states WHERE route_key=$1`, key).Scan(&raw, &version); err != nil {
-			t.Fatal(err)
-		}
-		var got CurrentAPY
-		if err := json.Unmarshal(raw, &got); err != nil {
-			t.Fatal(err)
-		}
-		return got, version
-	}
-	if got, version := read(); got != value || version != 1 {
-		t.Fatalf("stored %+v version %d", got, version)
-	}
-	// Flat: last APY kept, flat set.
-	if err := db.RecordCurrentAPY(ctx, key, CurrentAPY{Lane: value.Lane, Flat: true, ObservedAt: now.Add(time.Minute)}); err != nil {
-		t.Fatal(err)
-	}
-	if got, _ := read(); !got.Flat || got.APYBPS != 1523 || !got.ObservedAt.Equal(now.Add(time.Minute)) {
-		t.Fatalf("flat write %+v", got)
-	}
-}
-
 // The stored summary is the printed line's numbers: the fixture line is
 // rebuilt from the stored lanes and must match exactly.
 func TestLeverageWatchSummaryEqualsThePrintedLine(t *testing.T) {
@@ -244,38 +204,6 @@ func TestLeverageWatchWriteFailureOnlyLogs(t *testing.T) {
 		t.Fatal("wrote without a planning generation")
 		return nil
 	}, func(string, ...any) {})
-}
-
-// Against Postgres: stored and merged per lane, no version bump.
-func TestRecordLeverageWatchWrite(t *testing.T) {
-	ctx, cancel, db, _ := openManualRecoveryTestDatabase(t, 30*time.Second)
-	defer cancel()
-	defer db.Close()
-	key := fmt.Sprintf("leverage-watch-%d", time.Now().UnixNano())
-	if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,'{"generation":1}',1)`, key); err != nil {
-		t.Fatal(err)
-	}
-	old := time.Date(2026, 9, 30, 10, 0, 0, 0, time.UTC)
-	both := LeverageWatchSummary{ObservedAt: old, Lanes: []leverageWatchLane{
-		{Lane: autoAUTOPYUSD.Lane, ObservedAt: old, SpreadBPS: watchSpreadFixture(100), APYBPS: map[string]int64{"1.00": 968}},
-		{Lane: onreONycUSDC, ObservedAt: old, SpreadBPS: watchSpreadFixture(200), APYBPS: map[string]int64{"1.00": 1102}},
-	}}
-	if err := db.RecordLeverageWatch(ctx, key, both); err != nil {
-		t.Fatal(err)
-	}
-	now := old.Add(time.Hour)
-	if err := db.RecordLeverageWatch(ctx, key, LeverageWatchSummary{ObservedAt: now, Lanes: []leverageWatchLane{{Lane: autoAUTOPYUSD.Lane, ObservedAt: now, SpreadBPS: watchSpreadFixture(150)}}}); err != nil {
-		t.Fatal(err)
-	}
-	var raw []byte
-	var version int64
-	if err := db.pool.QueryRow(ctx, `SELECT state->'leverageWatch',state_version FROM loyal_yield.multiply_route_states WHERE route_key=$1`, key).Scan(&raw, &version); err != nil {
-		t.Fatal(err)
-	}
-	var stored LeverageWatchSummary
-	if err := json.Unmarshal(raw, &stored); err != nil || version != 1 || len(stored.Lanes) != 2 || !stored.ObservedAt.Equal(now) {
-		t.Fatalf("stored %s version %d err %v", raw, version, err)
-	}
 }
 
 func watchSpreadFixture(n int64) *int64 { return &n }

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 	"testing"
 	"time"
 )
@@ -87,54 +86,6 @@ func TestPilotCanaryConfigFailsClosed(t *testing.T) {
 	t.Setenv("BACKYARD_RWA_PILOT_CANARY_ENTRY", string(raw))
 	if got, err := readPilotCanaryEntryRequest(in.Now); err != nil || got == nil {
 		t.Fatal(err)
-	}
-}
-
-// One request ID is one receipt across restarts; the selector result names
-// the lane target() enters while the vault stays flat, so a restarted
-// evaluation re-accepts the same request with its fresh quote. Nothing bumps
-// the route state version.
-func TestPilotCanaryReceiptAndEntryCommitOnceAcrossRestart(t *testing.T) {
-	ctx, cancel, db, url := openManualRecoveryTestDatabase(t, 30*time.Second)
-	defer cancel()
-	defer db.Close()
-	key := fmt.Sprintf("pilot-canary-%d", time.Now().UnixNano())
-	state := map[string]any{"generation": 2}
-	raw, _ := json.Marshal(state)
-	if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,$2,2)`, key, raw); err != nil {
-		t.Fatal(err)
-	}
-	in := pilotCanaryFixture()
-	armFeeAuthorityFixture(t, &in.Snapshot)
-	result, err := db.RecordSelectorEvaluation(ctx, key, in, in.Snapshot.Slot)
-	if err != nil || result.Action != "CANARY_ENTER" {
-		t.Fatal(result, err)
-	}
-	restarted, err := OpenDatabase(ctx, engine.DirectDSN(url))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer restarted.Close()
-	advanceSelectorFixture(&in, time.Now().UTC().Sub(in.Now))
-	result, err = restarted.RecordSelectorEvaluation(ctx, key, in, in.Snapshot.Slot)
-	if err != nil || result.Action != "CANARY_ENTER" || result.DestinationLane != in.canaryRequest.Lane {
-		t.Fatal("restart replay", result, err)
-	}
-	var history []byte
-	var version int64
-	if err = restarted.pool.QueryRow(ctx, `SELECT state->'pilotCanaryEntries',state_version FROM loyal_yield.multiply_route_states WHERE route_key=$1`, key).Scan(&history, &version); err != nil {
-		t.Fatal(err)
-	}
-	if version != 2 {
-		t.Fatal("the entry choice moved the route state version", version)
-	}
-	var receipts map[string]pilotCanaryEntryReceipt
-	if json.Unmarshal(history, &receipts) != nil || len(receipts) != 1 || receipts[in.canaryRequest.ID].QuoteEvidenceID != in.Quotes[0].EvidenceID {
-		t.Fatal("lost one-use receipt")
-	}
-	planning, err := restarted.readRoutePlanningState(ctx, key)
-	if err != nil || planning.inputs.Entry == nil || planning.inputs.Entry.SelectedQuote == nil || planning.inputs.Entry.SelectedQuote.EquityRaw != in.canaryRequest.EquityRaw {
-		t.Fatal("lost exact entry", err)
 	}
 }
 

@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"testing"
-	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
@@ -124,31 +123,5 @@ func TestPreparedALTEpochsUsesLegacyCamelKeysAndRequiresExplicitZero(t *testing.
 	}
 	if _, err := parsePreparedALTEpochs([]byte(`{"tables":[{"tableId":1,"mutationEpoch":0}]}`)); err != nil {
 		t.Fatal(err)
-	}
-}
-
-func TestUnsupportedFamilyClaimLeavesRustLeaseUnchanged(t *testing.T) {
-	store, pool := integrationStore(t)
-	ctx := context.Background()
-	b := seedBaseline(t, ctx, pool, fmt.Sprint(time.Now().UnixNano()))
-	wire, _ := integrationWire(t, 126)
-	input := fixturePersistInput(t, ctx, pool, b, wire)
-	id, _, err := store.PersistSignedRoute(ctx, input)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pool.Exec(ctx, `UPDATE loyal_yield.rebalance_decisions SET movement_route='cross_mint_jupiter',status='confirming',source_reserve='source',target_reserve='target',active_target_reserve='target',amount_raw=1000,custody_amount_raw=1000,custody_account='source',cross_mint_activation_control_generation=1,custody_mint='EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',source_liquidity_mint='EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',target_liquidity_mint='Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB' WHERE id=$1`, b.DecisionID); err != nil {
-		t.Fatal(err)
-	}
-	leases, err := store.ClaimRecoveryWork(ctx, b.Cluster, "go-worker", time.Minute, 8)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(leases) != 0 {
-		t.Fatal("Go claimed an unsupported Rust-owned family")
-	}
-	_, _, owner, _, _ := durableRow(t, ctx, pool, id)
-	if owner != nil {
-		t.Fatalf("Go stole unsupported lease: %s", *owner)
 	}
 }

@@ -2,13 +2,10 @@ package backyard
 
 import (
 	"bytes"
-	"encoding/binary"
-	"math"
 	"strings"
 	"testing"
 
 	lanepolicy "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/policy"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
@@ -21,76 +18,6 @@ func autoInitializerRequestFixture(t *testing.T) (RouteManifest, KaminoInitializ
 		RecentBlockhash:      bridgeVault,
 		LastValidBlockHeight: 100, RentLamports: 17_637_760, MaximumFeeLamports: 5000}
 	return manifest, r
-}
-
-// autoInitializerPrestateAccounts mirrors initializationPrestateFixture for the
-// candidate AUTO lane: same Settings, same metadata image, same rent
-// arithmetic — with the PYUSD debt mint under Token-2022.
-func autoInitializerPrestateAccounts(t *testing.T, r KaminoInitializationRequest) map[string]ConfirmedAccount {
-	t.Helper()
-	route, err := runtimeRoute(r.RouteLane)
-	if err != nil {
-		t.Fatal(err)
-	}
-	inner, err := kaminoRouteInitializer(route)
-	if err != nil {
-		t.Fatal(err)
-	}
-	metadataAddress := encodeBase58(inner.accounts[6].key[:])
-	rentAddress := "SysvarRent111111111111111111111111111111111"
-	system := "11111111111111111111111111111111"
-	accounts := map[string]ConfirmedAccount{}
-	for _, meta := range inner.accounts {
-		address := encodeBase58(meta.key[:])
-		accounts[address] = ConfirmedAccount{Address: address, Owner: system, Lamports: 1}
-	}
-	delete(accounts, route.Kamino.Obligation)
-	accounts[bridgeVault] = ConfirmedAccount{Address: bridgeVault, Owner: system, Lamports: r.RentLamports}
-	accounts[backyardDelegate] = ConfirmedAccount{Address: backyardDelegate, Owner: system, Lamports: r.MaximumFeeLamports}
-	m := ConfirmedAccount{Address: metadataAddress, Owner: kamino.ProgramID.String(), Lamports: 1, Data: make([]byte, 1032)}
-	copy(m.Data, kamino.UserMetadataDiscriminator[:])
-	putKey(t, m.Data[80:112], bridgeVault)
-	accounts[metadataAddress] = m
-	accounts[route.Kamino.Market] = marketFixture(t, route.Kamino.Market)
-	collateral := ConfirmedAccount{Address: route.Kamino.CollateralMint, Owner: classicTokenProgram, Lamports: 1, Data: make([]byte, 82)}
-	collateral.Data[45] = 1
-	accounts[route.Kamino.CollateralMint] = collateral
-	accounts[route.Kamino.DebtMint] = ConfirmedAccount{Address: route.Kamino.DebtMint, Owner: token2022Program, Lamports: 1,
-		Data: token2022DebtMintImage("valid")}
-	rent := ConfirmedAccount{Address: rentAddress, Owner: "Sysvar1111111111111111111111111111111111111", Lamports: 1, Data: make([]byte, 17)}
-	binary.LittleEndian.PutUint64(rent.Data, 5080)
-	binary.LittleEndian.PutUint64(rent.Data[8:16], math.Float64bits(1))
-	accounts[rentAddress] = rent
-	return accounts
-}
-
-// token2022DebtMintImage builds the reviewed PYUSD-shaped Token-2022 mint:
-// classic base layout plus the supported extension set (zeroed transfer fee,
-// disabled transfer hook). Variants exercise the refusals.
-func token2022DebtMintImage(variant string) []byte {
-	data := make([]byte, 166)
-	data[44], data[45], data[165] = 6, 1, 1
-	appendExtension := func(kind uint16, value []byte) {
-		header := make([]byte, 4)
-		binary.LittleEndian.PutUint16(header, kind)
-		binary.LittleEndian.PutUint16(header[2:], uint16(len(value)))
-		data = append(data, header...)
-		data = append(data, value...)
-	}
-	appendExtension(1, make([]byte, 108)) // TransferFeeConfig, both fee windows off.
-	hook := make([]byte, 64)              // TransferHook: disabled program.
-	vault := mustKey(bridgeVault)
-	copy(hook[:32], vault[:])
-	appendExtension(14, hook)
-	switch variant {
-	case "unsupported":
-		data[166] = 99
-	case "fee_enabled":
-		data[170+88] = 1
-	case "truncated":
-		data[168] = 200 // Declared length exceeds the remaining tail.
-	}
-	return data
 }
 
 // The AUTO initializer message wraps the initializer at the AUTO policy's

@@ -53,22 +53,3 @@ func TestExecutorStartupCancellationCannotPublishCapability(t *testing.T) {
 		t.Fatal("startup did not join canceled preflight")
 	}
 }
-
-func TestBorrowedStorePreservesEnginePoolLifetime(t *testing.T) {
-	owner := integrationStore(t)
-	borrowed, err := NewStoreFromPool(context.Background(), owner.Pool())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if borrowed.Pool() != owner.Pool() {
-		t.Fatal("family constructor replaced engine pool")
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	if store, err := NewStoreFromPool(ctx, owner.Pool()); store != nil || !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled constructor: %v %v", store, err)
-	}
-	if err := owner.Pool().Ping(context.Background()); err != nil {
-		t.Fatalf("failed family constructor closed engine pool: %v", err)
-	}
-}

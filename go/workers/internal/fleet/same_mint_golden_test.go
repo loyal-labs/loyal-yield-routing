@@ -54,13 +54,6 @@ type sameMintGoldenCase struct {
 	Error string `json:"error,omitempty"`
 }
 
-func putPolicySeed(data []byte, seed uint64, bump uint8) {
-	for i := 0; i < 8; i++ {
-		data[40+i] = byte(seed >> (8 * i))
-	}
-	data[48] = bump
-}
-
 func mustKey(t *testing.T, address string) []byte {
 	t.Helper()
 	key, err := decodePublicKey(address)

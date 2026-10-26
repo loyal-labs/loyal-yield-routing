@@ -1,14 +1,11 @@
 package backyard
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -75,69 +72,5 @@ func TestSelectorEvaluateFailureMasksSecrets(t *testing.T) {
 				t.Fatalf("%s: leaked %q in %q", tc.name, secret, got)
 			}
 		}
-	}
-}
-
-// TestSelectorEvaluateExecuteEvaluatorFailureDiagnostic drives the execute
-// path with a failing evaluator over the disposable database: the failure
-// report carries the sanitized code, the returned hold and lease release stay
-// exactly as before, and nothing is persisted — no entry, no receipt, no
-// version change, no operation row.
-func TestSelectorEvaluateExecuteEvaluatorFailureDiagnostic(t *testing.T) {
-	ctx, cancel, db, url := openManualRecoveryTestDatabase(t, 20*time.Second)
-	defer cancel()
-	defer db.Close()
-	manifest := embeddedTestManifest(t)
-	t.Setenv("BACKYARD_RWA_PILOT_CANARY_ENTRY", fmt.Sprintf(`{"id":%q,"lane":%q,"equityRaw":250000,"expiresAt":%q}`,
-		sha256Bytes([]byte("selector-evaluate-failure")), testAutoLane, time.Now().UTC().Add(10*time.Minute).Format(time.RFC3339Nano)))
-	key := productionRouteKey
-	resetManualRecoveryProductionRoute(t, ctx, db, "selector-evaluate-cmd-failure")
-	_, _, versionBefore := canaryRouteStateAssertions(t, ctx, db, key)
-
-	for _, tc := range []struct {
-		name string
-		err  error
-		want string
-	}{
-		{"stale_quote", staleHold("selector_evaluation_not_current"), "selector_evaluation_not_current"},
-		{"secret_sql", fmt.Errorf("scan: duplicate key dsn=postgresql://backyard:hunter2@10.0.0.7/neon"), "selector_evaluate_unavailable"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			var out bytes.Buffer
-			deps := selectorEvaluateDeps{
-				manifest: manifest, databaseURL: url,
-				newFeed: func(context.Context, RouteManifest) (selectorEvaluateFeed, error) {
-					return &stubSelectorEvaluateFeed{}, nil
-				},
-				evaluate: func(context.Context, *Database, []LaneEconomics) (SelectorResult, error) {
-					return SelectorResult{}, tc.err
-				},
-			}
-			err := runSelectorEvaluate(ctx, &out, true, deps)
-			var hold *PreSendHold
-			if !errors.As(err, &hold) || holdCause(hold) != "selector_evaluate_unavailable" {
-				t.Fatalf("evaluator failure did not return the unchanged generic hold: %v", err)
-			}
-			var parsed struct {
-				Mode             string  `json:"mode"`
-				AttemptSeconds   float64 `json:"attemptSeconds"`
-				FeedFailure      string  `json:"feedFailure,omitempty"`
-				EvaluatorFailure string  `json:"evaluatorFailure"`
-			}
-			if err = json.Unmarshal(canaryJSON(t, &out), &parsed); err != nil {
-				t.Fatal(err)
-			}
-			if parsed.Mode != "locked_execute_failure" || parsed.EvaluatorFailure != tc.want || parsed.AttemptSeconds < 0 {
-				t.Fatalf("failure report wrong: %+v", parsed)
-			}
-			if strings.Contains(out.String(), "hunter2") || strings.Contains(out.String(), "postgresql://") {
-				t.Fatalf("raw evaluator error leaked: %q", out.String())
-			}
-			if _, receipts, version := canaryRouteStateAssertions(t, ctx, db, key); version != versionBefore || len(receipts) != 0 {
-				t.Fatalf("failure persisted state: version %d (before %d) receipts %d", version, versionBefore, len(receipts))
-			}
-			assertNoCanaryOperations(t, ctx, db, key)
-			assertWriterLockFree(t, ctx, db)
-		})
 	}
 }

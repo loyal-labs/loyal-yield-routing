@@ -121,7 +121,6 @@ jobs:
       - name: Verify offline behavior
         env:
           SVM_HARNESS: ${{ github.workspace }}/target/debug/examples/fleet-local-svm
-          MULTIPLY_FIXTURE_BIN: ${{ github.workspace }}/target/svm-fixtures/workers-v2-multiply
           AUTODEPOSIT_TEST_SVM_FIXTURE_PATH: ${{ github.workspace }}/target/svm-fixtures/autodeposit.json
           MOCK_YIELD_PROTOCOLS_PROGRAM_SO: ${{ github.workspace }}/target/deploy/mock_yield_protocols_program.so
           SQUADS_SMART_ACCOUNT_PROGRAM_SO: ${{ github.workspace }}/crates/squads-test-harness/fixtures/squads/squads_smart_account_program.so
