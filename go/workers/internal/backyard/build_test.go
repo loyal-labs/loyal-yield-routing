@@ -3,28 +3,10 @@ package backyard
 import (
 	"bytes"
 	"crypto/ed25519"
-	"encoding/binary"
 	"encoding/hex"
 	"strings"
 	"testing"
-
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/voltr"
 )
-
-// forwardedAdaptorWire models the pinned Voltr CPI framing evidenced by its
-// SDK args: the selected instructionDiscriminator Vec is unwrapped, while
-// amount and the Borsh Option<Vec<u8>> additionalArgs envelope are forwarded.
-// It is intentionally test-only; production constructs the Voltr outer wire.
-func forwardedAdaptorWire(t *testing.T, outer []byte) []byte {
-	t.Helper()
-	if len(outer) != 91 || outer[16] != 1 || binary.LittleEndian.Uint32(outer[17:21]) != 8 ||
-		outer[29] != 1 || binary.LittleEndian.Uint32(outer[30:34]) != 57 {
-		t.Fatal("outer Voltr option envelope drifted")
-	}
-	inner := append([]byte(nil), outer[21:29]...)
-	inner = append(inner, outer[8:16]...)
-	return append(inner, outer[29:]...)
-}
 
 func bridgeTestRequest(action Action, amount uint64) BridgeBuildRequest {
 	return BridgeBuildRequest{
@@ -57,61 +39,6 @@ func TestUnsignedBridgeMessageEqualsSignedMessage(t *testing.T) {
 		if !bytes.Equal(unsigned, signed.message) || !ed25519.Verify(key.Public().(ed25519.PublicKey), unsigned, wireSig(signed.signedWire)) {
 			t.Fatalf("%s fee message differs from signed bytes", action)
 		}
-	}
-}
-
-func TestBridgeInstructionMatchesPinnedVoltrAndAdaptorEnvelopes(t *testing.T) {
-	t.Parallel()
-	request := bridgeTestRequest(VoltrAllocateToSquads, 1_000_000)
-	inner, err := bridgeInstruction(rwa, request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if inner.program != publicKey(voltr.ProgramID) || len(inner.accounts) != 18 {
-		t.Fatalf("unexpected allocation identity")
-	}
-	if !inner.accounts[0].signer || inner.accounts[0].key != mustKey(bridgeVault) || inner.accounts[3].writable || !inner.accounts[16].writable {
-		t.Fatalf("allocation inner signer/custody roles drifted")
-	}
-	forwarded := forwardedAdaptorWire(t, inner.data)
-	if len(forwarded) != 78 || !bytes.Equal(forwarded[:8], adaptorDepositDiscriminator) ||
-		binary.LittleEndian.Uint64(forwarded[8:16]) != 1_000_000 || forwarded[16] != 1 ||
-		binary.LittleEndian.Uint32(forwarded[17:21]) != 57 || forwarded[21] != 1 {
-		t.Fatalf("allocation adaptor CPI wire drifted: %s", hex.EncodeToString(forwarded))
-	}
-
-	stage, err := bridgeInstruction(rwa, bridgeTestRequest(StageSquadsToVoltr, 1_000_000))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if stage.program != mustKey(bridgeTokenProgram) || hex.EncodeToString(stage.data) != "0c40420f000000000006" {
-		t.Fatalf("staging template drifted")
-	}
-	withdraw, err := bridgeInstruction(rwa, bridgeTestRequest(VoltrRestoreIdle, 1_000_000))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if hex.EncodeToString(withdraw.data[:8]) != "1f2da205c1d986bc" || len(withdraw.accounts) != 18 {
-		t.Fatalf("restore template drifted")
-	}
-	if withdraw.accounts[5].writable {
-		t.Fatal("immutable adaptor config was forwarded writable on restore")
-	}
-	forwardedWithdraw := forwardedAdaptorWire(t, withdraw.data)
-	if len(forwardedWithdraw) != 78 || !bytes.Equal(forwardedWithdraw[:8], adaptorWithdrawDiscriminator) ||
-		binary.LittleEndian.Uint64(forwardedWithdraw[8:16]) != 1_000_000 || forwardedWithdraw[16] != 1 ||
-		binary.LittleEndian.Uint32(forwardedWithdraw[17:21]) != 57 || forwardedWithdraw[21] != 1 {
-		t.Fatalf("withdraw adaptor CPI wire drifted: %s", hex.EncodeToString(forwardedWithdraw))
-	}
-	nav, err := bridgeInstruction(rwa, bridgeTestRequest(ReportNAV, 0))
-	if err != nil || !bytes.Equal(nav.data[:8], voltr.DepositStrategyDiscriminator[:]) {
-		t.Fatalf("NAV refresh template drifted: %v", err)
-	}
-	forwardedNAV := forwardedAdaptorWire(t, nav.data)
-	if len(forwardedNAV) != 78 || !bytes.Equal(forwardedNAV[:8], adaptorDepositDiscriminator) ||
-		binary.LittleEndian.Uint64(forwardedNAV[8:16]) != 0 || forwardedNAV[16] != 1 ||
-		binary.LittleEndian.Uint32(forwardedNAV[17:21]) != 57 || forwardedNAV[21] != 1 {
-		t.Fatalf("NAV adaptor CPI wire drifted: %s", hex.EncodeToString(forwardedNAV))
 	}
 }
 

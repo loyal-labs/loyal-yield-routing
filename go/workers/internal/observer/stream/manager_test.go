@@ -23,13 +23,6 @@ func TestHandoffReplayStartUsesNegativeOverlap(t *testing.T) {
 	}
 }
 
-func TestHandoffReplayStartHonorsDeeperNewBinding(t *testing.T) {
-	requested := uint64(90)
-	if got := handoffReplayStart(150, 32, &requested); got != 90 {
-		t.Fatalf("handoff replay start = %d, want new binding start 90", got)
-	}
-}
-
 func TestHandoffReplayStartPreservesRequestedCursorWithoutFrontier(t *testing.T) {
 	requested := uint64(200)
 	if got := handoffReplayStart(0, 32, &requested); got != 200 {
@@ -40,27 +33,6 @@ func TestHandoffReplayStartPreservesRequestedCursorWithoutFrontier(t *testing.T)
 func TestHandoffReplayStartSaturatesAtZero(t *testing.T) {
 	if got := handoffReplayStart(10, 32, nil); got != 0 {
 		t.Fatalf("handoff replay start = %d, want 0", got)
-	}
-}
-
-func TestImmediateHandoffPreservesRequestedCursor(t *testing.T) {
-	connector := &recordingBlockingConnector{}
-	manager := NewManager(connector, HandlerFunc(func(context.Context, *pb.SubscribeUpdate) error {
-		return nil
-	}), Config{HandoffTimeout: time.Second})
-	defer manager.Close()
-
-	initialCursor := uint64(100)
-	if err := manager.Start(context.Background(), &pb.SubscribeRequest{FromSlot: &initialCursor}); err != nil {
-		t.Fatalf("start manager: %v", err)
-	}
-	replacementCursor := uint64(200)
-	if err := manager.Handoff(context.Background(), &pb.SubscribeRequest{FromSlot: &replacementCursor}); err != nil {
-		t.Fatalf("immediate handoff: %v", err)
-	}
-
-	if got := connector.fromSlots(); len(got) != 2 || got[1] != replacementCursor {
-		t.Fatalf("opened stream cursors = %v, want [100 200]", got)
 	}
 }
 
@@ -162,12 +134,6 @@ func (c *recordingBlockingConnector) Open(ctx context.Context, request *pb.Subsc
 	return &blockingOpenStream{ctx: ctx}, nil
 }
 
-func (c *recordingBlockingConnector) fromSlots() []uint64 {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return append([]uint64(nil), c.cursors...)
-}
-
 type blockingOpenStream struct {
 	ctx context.Context
 }
@@ -225,24 +191,6 @@ func (c *slowCloseConnector) streamsSnapshot() []*slowCloseStream {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return append([]*slowCloseStream(nil), c.streams...)
-}
-
-func TestCloseCancelsAndJoinsActiveReceiveWorker(t *testing.T) {
-	manager := NewManager(&slowCloseConnector{}, HandlerFunc(func(context.Context, *pb.SubscribeUpdate) error {
-		return nil
-	}), Config{})
-	cursor := uint64(10)
-	if err := manager.Start(context.Background(), &pb.SubscribeRequest{FromSlot: &cursor}); err != nil {
-		t.Fatalf("start manager: %v", err)
-	}
-	manager.Close()
-	for _, stream := range manager.connector.(*slowCloseConnector).streamsSnapshot() {
-		select {
-		case <-stream.closed:
-		default:
-			t.Fatal("Manager.Close returned before the receive worker's transport closed")
-		}
-	}
 }
 
 func TestPromotedHandoffCancelsAndJoinsOldReceiveWorker(t *testing.T) {

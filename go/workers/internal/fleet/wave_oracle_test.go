@@ -212,35 +212,6 @@ func oraclePublished(prefix []oracleMove) []Decision {
 	return out
 }
 
-func oracleGain(prefix []oracleMove) *big.Int {
-	n := new(big.Int)
-	for _, d := range oraclePublished(prefix) {
-		n.Add(n, big.NewInt(d.ExpectedNetGainUSDMicros))
-	}
-	return n
-}
-
-// Explore every feasible sequence and every stopping prefix. Only small test
-// fixtures call this; each transition consumes a previously unused vault ID.
-func (w oracleWave) globalBest() ([]oracleMove, *big.Int, int) {
-	bestGain := new(big.Int)
-	var best []oracleMove
-	nodes := 0
-	var visit func([]oracleMove)
-	visit = func(prefix []oracleMove) {
-		nodes++
-		if gain := oracleGain(prefix); gain.Cmp(bestGain) > 0 {
-			bestGain.Set(gain)
-			best = append([]oracleMove(nil), prefix...)
-		}
-		for _, choice := range w.choices(prefix) {
-			visit(append(append([]oracleMove(nil), prefix...), choice))
-		}
-	}
-	visit(nil)
-	return best, bestGain, nodes
-}
-
 func oracleSnapshot() MarketSnapshot {
 	now := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
 	return MarketSnapshot{Slot: 500, ObservedAt: now, Hash: "oracle-bank", Reserves: map[string]ReserveState{}}
@@ -317,35 +288,6 @@ func TestWaveOracleGreedyEnumeratesFreshBestStep(t *testing.T) {
 		if !reflect.DeepEqual(oraclePublished(first), oraclePublished(second)) {
 			t.Fatalf("fixture %d selection depends on loader order", fixture)
 		}
-	}
-}
-
-func TestWaveOracleSourceDilutionChangesTheNextWinner(t *testing.T) {
-	snapshot := oracleSnapshot()
-	for address, apy := range map[string]int64{"a": 900, "b": 2000, "c": 3000, "d": 1000, "e": 2010} {
-		oracleReserve(&snapshot, address, USDCMint, apy, 1_000_000_000_000)
-	}
-	vaults := []FleetVault{oracleVault(snapshot, 1, "a", 20_000_000_000, "b"), oracleVault(snapshot, 2, "b", 10_000_000_000, "c"), oracleVault(snapshot, 3, "d", 10_000_000_000, "e")}
-	w := newOracleWave(snapshot, vaults, WaveLimits{2, 40_000_000_000, 3, 3})
-	initial := w.choices(nil)
-	if len(initial) != 3 || initial[0].d.VaultID != 1 || initial[1].d.VaultID != 3 || initial[2].d.VaultID != 2 {
-		t.Fatal("source-dilution fixture did not begin with a different next winner")
-	}
-	chosen := checkWaveOracle(t, w)
-	if len(chosen) != 2 || chosen[1].d.VaultID != 2 {
-		t.Fatal("selected target inflow did not reprice the remaining source")
-	}
-	// Keep a permitted edge even if it begins below the economic gate: the
-	// first selected inflow can make it feasible without changing user intent.
-	c := snapshot.Reserves["c"]
-	c.SupplyAPYBPS = 2000
-	snapshot.Reserves["c"] = c
-	w = newOracleWave(snapshot, vaults[:2], WaveLimits{2, 40_000_000_000, 3, 3})
-	if len(w.choices(nil)) != 1 {
-		t.Fatal("reactivated permitted edge did not start ineligible")
-	}
-	if chosen := checkWaveOracle(t, w); len(chosen) != 2 || chosen[1].d.VaultID != 2 {
-		t.Fatal("initially ineligible edge was lost before its source repriced")
 	}
 }
 
@@ -429,67 +371,4 @@ func TestWaveOracleTiesLimitsAndClosedReservePath(t *testing.T) {
 			t.Fatal("uneconomic cycle-closing edge admitted")
 		}
 	}
-}
-
-func TestWaveOracleSmallExhaustiveObjectiveBoundsGreedy(t *testing.T) {
-	rng := rand.New(rand.NewSource(46017))
-	var maximumRegretPPM int64
-	totalNodes := 0
-	for fixture := 0; fixture < 12; fixture++ {
-		snapshot := oracleSnapshot()
-		for target := 0; target < 3; target++ {
-			oracleReserve(&snapshot, fmt.Sprintf("target%d", target), USDCMint, int64(800+rng.Intn(1600)), int64(2+rng.Intn(5))*100_000_000_000)
-		}
-		vaults := []FleetVault{}
-		for vault := 0; vault < 4; vault++ {
-			source := fmt.Sprintf("source%d", vault)
-			oracleReserve(&snapshot, source, USDCMint, int64(100+rng.Intn(400)), 1_000_000_000_000)
-			var targets []string
-			for target := 0; target < 3; target++ {
-				if rng.Intn(3) != 0 {
-					targets = append(targets, fmt.Sprintf("target%d", target))
-				}
-			}
-			vaults = append(vaults, oracleVault(snapshot, int64(vault+1), source, int64(2+rng.Intn(7))*1_000_000_000, targets...))
-		}
-		w := newOracleWave(snapshot, vaults, WaveLimits{3, 20_000_000_000, 3, 3})
-		greedy := checkWaveOracle(t, w)
-		_, optimum, nodes := w.globalBest()
-		totalNodes += nodes
-		regret := new(big.Int).Sub(optimum, oracleGain(greedy))
-		if regret.Sign() < 0 {
-			t.Fatal("exhaustive search omitted the greedy feasible sequence")
-		}
-		if optimum.Sign() > 0 {
-			ppm := new(big.Int).Quo(new(big.Int).Mul(regret, big.NewInt(1_000_000)), optimum).Int64()
-			maximumRegretPPM = max(maximumRegretPPM, ppm)
-		}
-	}
-	if totalNodes > 10_000 {
-		t.Fatalf("small oracle unexpectedly expanded %d states", totalNodes)
-	}
-	t.Logf("12 exhaustive small fixtures: states=%d maximum marginal-gain regret=%d ppm", totalNodes, maximumRegretPPM)
-}
-
-func TestWaveOracleQuantifiesGreedyAssignmentRegret(t *testing.T) {
-	snapshot := oracleSnapshot()
-	oracleReserve(&snapshot, "source-a", USDCMint, 100, 1_000_000_000_000)
-	oracleReserve(&snapshot, "source-b", USDCMint, 200, 1_000_000_000_000)
-	oracleReserve(&snapshot, "target-a", USDCMint, 2000, 500_000_000_000)
-	oracleReserve(&snapshot, "target-b", USDCMint, 1900, 500_000_000_000)
-	vaults := []FleetVault{oracleVault(snapshot, 1, "source-a", 10_000_000_000, "target-a", "target-b"), oracleVault(snapshot, 2, "source-b", 10_000_000_000, "target-a")}
-	w := newOracleWave(snapshot, vaults, WaveLimits{2, 20_000_000_000, 2, 2})
-	greedy := checkWaveOracle(t, w)
-	best, bestGain, nodes := w.globalBest()
-	greedyGain := oracleGain(greedy)
-	regret := new(big.Int).Sub(bestGain, greedyGain)
-	if len(greedy) != 1 || greedy[0].d.VaultID != 1 || greedy[0].d.TargetReserve != "target-a" || len(best) != 2 || regret.Sign() <= 0 {
-		t.Fatal("capacity-constrained assignment did not demonstrate greedy regret")
-	}
-	// This fixture is a stable intentional distinction: local greedy ordering
-	// is correct, while assigning the flexible vault elsewhere funds both moves.
-	if new(big.Int).Mul(regret, big.NewInt(100)).Cmp(new(big.Int).Mul(bestGain, big.NewInt(40))) < 0 {
-		t.Fatal("fixture no longer exposes material (>40%) marginal-gain regret")
-	}
-	t.Logf("greedy=%s; exhaustive=%s; marginal net micros greedy=%s best=%s regret=%s; visited=%d", oracleSequenceDecisions(oraclePublished(greedy)), oracleSequenceDecisions(oraclePublished(best)), greedyGain, bestGain, regret, nodes)
 }

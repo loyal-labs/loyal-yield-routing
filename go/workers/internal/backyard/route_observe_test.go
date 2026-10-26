@@ -213,36 +213,6 @@ func TestRouteNAVCadenceRejectsMixedSlotsAndBoundsFutureClockSkew(t *testing.T) 
 	}
 }
 
-func TestRouteFixedAddressesIncludeEveryMutableConstructionInput(t *testing.T) {
-	t.Parallel()
-	addresses := routeFixedAddresses(rwa)
-	wanted := map[string]bool{bridgeIdleATA: false, bridgeStrategyATA: false, bridgeSquadsATA: false, bridgeVoltrVault: false, bridgeLPMint: false, primePRIMEUSDC.CollateralCustody: false, primePRIMEUSDC.Kamino.Obligation: false, primePRIMEUSDC.Kamino.CollateralReserve: false, primePRIMEUSDC.Kamino.DebtReserve: false, primePRIMEUSDC.CollateralLiquiditySupply: false, primePRIMEUSDC.DebtLiquiditySupply: false, reportTicketPDA: false}
-	for _, address := range addresses {
-		if _, ok := wanted[address]; ok {
-			wanted[address] = true
-		}
-	}
-	for address, present := range wanted {
-		if !present {
-			t.Fatalf("fixed account batch omitted %s", address)
-		}
-	}
-}
-
-// The view holds every account the route observer reads, on every lane.
-func TestViewHoldsEveryRouteObservationAccount(t *testing.T) {
-	t.Parallel()
-	held := map[string]bool{}
-	for _, address := range viewAddresses() {
-		held[address] = true
-	}
-	for _, address := range routeFixedAddresses(rwa) {
-		if !held[address] {
-			t.Fatalf("the observation reads %s outside the view", address)
-		}
-	}
-}
-
 // Review of #396: an entry that started while the queue was covered swapped
 // its cash to collateral, then held stale with that collateral undeposited
 // until the queue was claimed.

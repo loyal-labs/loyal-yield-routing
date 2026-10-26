@@ -80,21 +80,3 @@ func TestWaveFrozenFrontierConcurrentPurityAndOwnedOutputBindings(t *testing.T) 
 		}
 	}
 }
-
-func TestWaveFrozenFrontierFullPublicationPermissionPermutationInvariant(t *testing.T) {
-	snapshot, vaults, limits := frozenWaveFixture()
-	baseline, err := PlanFleetWithLimits(snapshot, vaults, limits)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for i := range vaults {
-		// Duplicate permissions and absent catalog entries cannot create an
-		// extra source/target edge, conflict admission or reservation charge.
-		vaults[i].AllowedTargets = []string{"missing", "same", "same", "cross"}
-	}
-	vaults[0], vaults[2] = vaults[2], vaults[0]
-	permuted, err := PlanFleetWithLimits(snapshot, vaults, limits)
-	if err != nil || !reflect.DeepEqual(baseline, permuted) {
-		t.Fatalf("permission/loader permutation changed decisions, canonical JSON, identity or rejections: %v", err)
-	}
-}

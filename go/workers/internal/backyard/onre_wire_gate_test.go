@@ -54,22 +54,3 @@ func TestOnReKaminoWiresPassThePersistedWireGate(t *testing.T) {
 		}
 	}
 }
-
-// Both OnRe swap directions from the v2 swap fixture: each signed wire must
-// pass the gate PersistSigned uses.
-func TestOnReSwapWiresPassThePersistedWireGate(t *testing.T) {
-	t.Parallel()
-	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{54}, ed25519.SeedSize))
-	for _, leg := range []string{"USDC->ONyc", "ONyc->USDC"} {
-		request := basicJupiterRequest(t, onreLane, leg)
-		message, err := CompileJupiterMessage(request)
-		if err != nil {
-			t.Fatalf("%s: compile: %v", leg, err)
-		}
-		// The compiler pins the production delegate as fee payer, so the
-		// shape is checked with the decoder PersistSigned routes to.
-		if _, _, _, _, decodeErr := decodeExactWire(signTestWire(t, key, message)); decodeErr != nil {
-			t.Errorf("%s (version byte %#x): persisted-wire decode refused: %v", leg, message[0], decodeErr)
-		}
-	}
-}

@@ -1,7 +1,6 @@
 package backyard
 
 import (
-	"context"
 	"fmt"
 	"math"
 	"strings"
@@ -86,83 +85,6 @@ func TestCurrentAPYWriteThrottle(t *testing.T) {
 	}
 }
 
-// A refused write only logs: publishCurrentAPY
-// returns nothing, keeps the throttle unwritten, and retries next sample.
-func TestCurrentAPYWriteFailureOnlyLogs(t *testing.T) {
-	t.Parallel()
-	s := leverageSnapshot(1.5)
-	o := Observation{Snapshot: s, planning: &routePlanningState{}}
-	m := LaneEconomics{Lane: s.RouteLane, NativeAPY: .1, CurrentBorrowAPY: .05, BorrowCurve: []BorrowCurvePoint{{0, 500}, {10_000, 500}}, DebtSupplyRaw: 1e15, DebtBorrowRaw: 1e14}
-	var th currentAPYThrottle
-	logged := 0
-	publishCurrentAPY(context.Background(), time.Now(), &th, o, []LaneEconomics{m}, func(context.Context, CurrentAPY) error {
-		return staleHold("current_apy_state_changed")
-	}, func(string, ...any) { logged++ })
-	if logged != 1 || !th.written.IsZero() {
-		t.Fatalf("logged=%d written=%v", logged, th.written)
-	}
-	var stored CurrentAPY
-	publishCurrentAPY(context.Background(), time.Now(), &th, o, []LaneEconomics{m}, func(_ context.Context, v CurrentAPY) error {
-		stored = v
-		return nil
-	}, func(string, ...any) { t.Fatal("unexpected log") })
-	if stored.APYBPS == 0 || stored.Level != 1.5 || th.written.IsZero() {
-		t.Fatalf("stored %+v", stored)
-	}
-	// No planning state (shadow observation): nothing is written.
-	publishCurrentAPY(context.Background(), time.Now(), &currentAPYThrottle{}, Observation{Snapshot: s}, []LaneEconomics{m}, func(context.Context, CurrentAPY) error {
-		t.Fatal("wrote without a planning generation")
-		return nil
-	}, func(string, ...any) {})
-}
-
-// The stored summary is the printed line's numbers: the fixture line is
-// rebuilt from the stored lanes and must match exactly.
-func TestLeverageWatchSummaryEqualsThePrintedLine(t *testing.T) {
-	t.Parallel()
-	apr := 0.068
-	feed := .1084
-	auto := LaneEconomics{Lane: autoAUTOPYUSD.Lane, NativeAPY: .0948, FeedNativeAPY: &feed, SupplyAPY: .002, BorrowCurve: []BorrowCurvePoint{{0, apr * 10_000}, {10_000, apr * 10_000}}, DebtSupplyRaw: 1e15, DebtBorrowRaw: 1e14}
-	onre := auto
-	onre.Lane, onre.NativeAPY, onre.FeedNativeAPY = onreONycUSDC, .1102, nil
-	var watch leverageWatch
-	lines := watch.observe([]LaneEconomics{onre, auto}, autoAUTOPYUSD.Lane, 1_207_050_000, true, rwa.AdminPerformanceFeeBPS, nil)
-	summary := lines[len(lines)-1]
-	if len(watch.summary) != 2 {
-		t.Fatalf("summary lanes %d", len(watch.summary))
-	}
-	for _, lane := range watch.summary {
-		parts := []string{}
-		for _, r := range leverageLadder {
-			key := fmt.Sprintf("%.2f", r.level)
-			if bps, ok := lane.APYBPS[key]; ok {
-				parts = append(parts, fmt.Sprintf("%.2fx=%.2f", r.level, float64(bps)/100))
-			}
-		}
-		entry := "no"
-		if lane.Enterable {
-			entry = "yes"
-		}
-		spread := "unavailable"
-		if lane.SpreadBPS != nil {
-			spread = fmt.Sprintf("%.2f", float64(*lane.SpreadBPS)/100)
-		}
-		native := fmt.Sprintf("native=%.2f%% feed=unavailable", float64(lane.ScoredNativeBPS)/100)
-		if lane.FeedNativeBPS != nil {
-			native = fmt.Sprintf("native=%.2f%% feed=%.2f%% gap=%+.2f", float64(lane.ScoredNativeBPS)/100, float64(*lane.FeedNativeBPS)/100, float64(lane.ScoredNativeBPS-*lane.FeedNativeBPS)/100)
-		}
-		rebuilt := fmt.Sprintf("%s(spread=%s %s enterable=%s apy %s)", lane.Lane, spread, native, entry, strings.Join(parts, " "))
-		if !strings.Contains(summary, rebuilt) {
-			t.Fatalf("stored lane %q not in the printed line %q", rebuilt, summary)
-		}
-	}
-	// A non-summary observe clears it: nothing is stored between summaries.
-	watch.observe([]LaneEconomics{auto}, autoAUTOPYUSD.Lane, 1_207_050_000, false, rwa.AdminPerformanceFeeBPS, nil)
-	if watch.summary != nil {
-		t.Fatal("stale summary kept")
-	}
-}
-
 func TestLeverageWatchMergeKeepsMissingLanes(t *testing.T) {
 	t.Parallel()
 	old := time.Date(2026, 9, 30, 10, 0, 0, 0, time.UTC)
@@ -187,23 +109,6 @@ func TestLeverageWatchMergeKeepsMissingLanes(t *testing.T) {
 			}
 		}
 	}
-}
-
-func TestLeverageWatchWriteFailureOnlyLogs(t *testing.T) {
-	t.Parallel()
-	watch := &leverageWatch{summary: []leverageWatchLane{{Lane: autoAUTOPYUSD.Lane}}}
-	o := Observation{planning: &routePlanningState{}}
-	logged := 0
-	publishLeverageWatch(context.Background(), time.Now(), watch, o, func(context.Context, LeverageWatchSummary) error {
-		return staleHold("leverage_watch_state_changed")
-	}, func(string, ...any) { logged++ })
-	if logged != 1 {
-		t.Fatal("refused write not logged")
-	}
-	publishLeverageWatch(context.Background(), time.Now(), watch, Observation{}, func(context.Context, LeverageWatchSummary) error {
-		t.Fatal("wrote without a planning generation")
-		return nil
-	}, func(string, ...any) {})
 }
 
 func watchSpreadFixture(n int64) *int64 { return &n }

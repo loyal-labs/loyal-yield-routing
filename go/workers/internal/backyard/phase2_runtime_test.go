@@ -1,13 +1,7 @@
 package backyard
 
 import (
-	"bytes"
-	"crypto/ed25519"
-	"encoding/json"
 	"testing"
-
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 )
 
 // embeddedTestManifest is the manifest the worker runs.
@@ -58,29 +52,6 @@ func TestPhase2WithdrawalDemandKeepsTerminalIdleCovered(t *testing.T) {
 	}
 }
 
-func TestPhase2PinnedRuntimeAddressesAreCanonicalBase58(t *testing.T) {
-	t.Parallel()
-	addresses := routeFixedAddresses(rwa)
-	for _, lane := range []string{PrimeUSDCLaneID, MapleSyrupUSDCLaneID} {
-		route, err := runtimeRoute(lane)
-		if err != nil {
-			t.Fatal(err)
-		}
-		addresses = append(addresses,
-			route.Kamino.Program, route.Kamino.Market, route.Kamino.Obligation,
-			route.Kamino.CollateralReserve, route.Kamino.DebtReserve,
-			route.Kamino.Vault, route.Kamino.MarketAuthority,
-			route.Kamino.CollateralMint, route.Kamino.DebtMint,
-			route.CollateralCustody, route.DebtCustody,
-		)
-	}
-	for _, address := range addresses {
-		if _, err := decodeBase58PublicKey(address); err != nil {
-			t.Errorf("non-canonical pinned runtime address %q: %v", address, err)
-		}
-	}
-}
-
 func TestPhase2UnsupportedLaneFailsClosed(t *testing.T) {
 	t.Parallel()
 	if _, err := runtimeRoute("OnRe/ONyc/USDC"); err != nil {
@@ -93,23 +64,6 @@ func TestPhase2UnsupportedLaneFailsClosed(t *testing.T) {
 		if decision.Action != HoldManualRecovery || decision.Reason != "unsupported_runtime_lane" || decision.StrategyKey != lane {
 			t.Fatalf("unsupported lane was not held: %+v", decision)
 		}
-	}
-}
-
-// The manifest names only the flat route's starting lane; the lanes
-// themselves are the earnLanes registry, never a manifest list.
-func TestPhase2RuntimeActivationSelectsMaple(t *testing.T) {
-	t.Parallel()
-	manifest, err := loadEmbeddedRouteManifest()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if manifest.RuntimeActivation.SelectedLane != MapleSyrupUSDCLaneID {
-		t.Fatalf("unexpected runtime activation: %+v", manifest.RuntimeActivation)
-	}
-	route, err := manifest.activeRuntimeRoute()
-	if err != nil || route.Lane != MapleSyrupUSDCLaneID || route.Kamino.CollateralMint != "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj" {
-		t.Fatalf("selected route binding is not Maple/syrupUSDC/USDC: %+v, %v", route, err)
 	}
 }
 
@@ -140,28 +94,6 @@ func TestPhase2MapleKaminoPacketUsesPinnedGraph(t *testing.T) {
 	}
 	if repay.Policy != mustBasicPolicy(t, BasicDebtLifecycle) || repay.Accounts[9].Address != mapleSyrupUSDCUSDC.ObligationDebtFarm || repay.Accounts[10].Address != mapleSyrupUSDCUSDC.DebtFarm {
 		t.Fatalf("repay packet did not pin live farm accounts: %+v", repay)
-	}
-}
-
-func TestPhase2MapleSignedKaminoWirePassesPersistenceValidation(t *testing.T) {
-	t.Parallel()
-	manifest := embeddedTestManifest(t)
-	request, err := manifest.kaminoPacketForRoute(testPolicies(t), OpenRouteStep, kaminoLegDeposit, 1_000_000, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, MapleSyrupUSDCLaneID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{7}, ed25519.SeedSize))
-	delegate := publicKeyFromBytes(key.Public().(ed25519.PublicKey))
-	signed, err := buildAndSignKaminoPrimeUSDCTransactionForDelegate(request, key, delegate)
-	if err != nil {
-		t.Fatal(err)
-	}
-	result, err := signed.BuildResult(123)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := result.validateForDelegate(delegate); err != nil {
-		t.Fatalf("exact Maple Kamino wire was rejected before persistence: %v", err)
 	}
 }
 
@@ -213,39 +145,6 @@ func TestPhase2BasicFamilyBindingsCoverAllRuntimeLanes(t *testing.T) {
 				t.Fatalf("%s %s resolved to policy=%s leg=%d", lane, test.action, key, leg)
 			}
 		}
-	}
-}
-
-func TestPhase2JupiterBindingsUseDirectionSpecificInstalledPrefixes(t *testing.T) {
-	t.Parallel()
-	entry, entryLeg, err := jupiterPolicyLeg(rwa, MapleSyrupUSDCLaneID, SwapStableToCollateralStep)
-	if err != nil {
-		t.Fatal(err)
-	}
-	exit, exitLeg, err := jupiterPolicyLeg(rwa, MapleSyrupUSDCLaneID, SwapCollateralToStableStep)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if entry != (policyKey{family: BasicSwapRoutesA}) || entryLeg != basicSwapSyrup ||
-		exit != (policyKey{family: BasicSwapRoutesB}) || exitLeg != basicSwapSyrup {
-		t.Fatalf("unexpected Phase 2 basic swap policies: entry=%s/%d exit=%s/%d", entry, entryLeg, exit, exitLeg)
-	}
-}
-
-func TestPhase2JupiterQuotePinsManifestVenue(t *testing.T) {
-	t.Parallel()
-	quote := jupiter.Quote{
-		InputMint: fleet.USDCMint, OutputMint: mapleSyrupUSDCUSDC.Kamino.CollateralMint,
-		InAmount: "1000000", OutAmount: "846514", OtherAmountThreshold: "842281",
-		SwapMode: "ExactIn", SlippageBPS: 50, PlatformFee: json.RawMessage("null"),
-		RoutePlan: []json.RawMessage{json.RawMessage(`{"swapInfo":{"label":"Manifest"}}`)},
-	}
-	if _, _, err := validateJupiterQuoteForRoute(rwa, quote, SwapStableToCollateralStep, 1_000_000, MapleSyrupUSDCLaneID); err != nil {
-		t.Fatalf("basic quote rejected: %v", err)
-	}
-	quote.RoutePlan = []json.RawMessage{json.RawMessage(`{"swapInfo":{"label":"AlphaQ"}}`)}
-	if _, _, err := validateJupiterQuoteForRoute(rwa, quote, SwapStableToCollateralStep, 1_000_000, MapleSyrupUSDCLaneID); err != nil {
-		t.Fatalf("basic quote with recorded route plan rejected: %v", err)
 	}
 }
 

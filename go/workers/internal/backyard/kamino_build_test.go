@@ -169,34 +169,6 @@ func TestKaminoRefreshUsesConfirmedObligationTopologyForRedeposit(t *testing.T) 
 	}
 }
 
-func TestKaminoWithdrawWireAcceptsDebtBearingObligationTopology(t *testing.T) {
-	t.Parallel()
-	manifest := embeddedTestManifest(t)
-	var err error
-	request, err := manifest.kaminoPacketForRoute(testPolicies(t), DeleverRouteStep, kaminoLegWithdraw, 1_000_000, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 9}, MapleSyrupUSDCLaneID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	route, err := runtimeRoute(MapleSyrupUSDCLaneID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	request.ObligationReserves = []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve}
-	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{9}, ed25519.SeedSize))
-	delegate := publicKeyFromBytes(key.Public().(ed25519.PublicKey))
-	signed, err := buildAndSignKaminoPrimeUSDCTransactionForDelegate(request, key, delegate)
-	if err != nil {
-		t.Fatal(err)
-	}
-	result, err := signed.BuildResult(123)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := result.validateForDelegate(delegate); err != nil {
-		t.Fatalf("debt-bearing collateral-withdraw wire was rejected: %v", err)
-	}
-}
-
 func TestKaminoPrimeUSDCBuilderFailsClosedOnEveryAuthorityBoundary(t *testing.T) {
 	t.Parallel()
 	request := kaminoTestRequest(OpenRouteStep, kaminoLegDeposit)

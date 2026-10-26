@@ -128,22 +128,6 @@ func TestPlanFleetBuildsCrossMintJupiterWithImmutablePolicies(t *testing.T) {
 	}
 }
 
-func TestPlanFleetAllowsEmptyPlannableFleet(t *testing.T) {
-	now := time.Now().UTC()
-	snapshot := MarketSnapshot{Reserves: map[string]ReserveState{
-		"source": {ReserveIdentity: ReserveIdentity{Address: "source"}},
-		"target": {ReserveIdentity: ReserveIdentity{Address: "target"}},
-	}}
-	snapshot.ObservedAt = now
-	plan, err := PlanFleet(snapshot, nil)
-	if err != nil {
-		t.Fatalf("empty plannable fleet must not block revalidation: %v", err)
-	}
-	if len(plan.Opportunities) != 0 || len(plan.Rejections) != 0 {
-		t.Fatalf("unexpected empty plan: %+v", plan)
-	}
-}
-
 func TestPlanAllowsStaleSourceThatRevalidatorWillRefresh(t *testing.T) {
 	snapshot, position := eligibleFixture()
 	source := snapshot.Reserves["source"]

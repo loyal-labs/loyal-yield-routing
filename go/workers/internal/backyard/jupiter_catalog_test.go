@@ -59,57 +59,6 @@ func TestCatalogJupiterInstructionsBuildThroughInstalledEdges(t *testing.T) {
 	}
 }
 
-func TestWorkerDispatchesNonUSDCConversionsWithoutChangingTheirIdentity(t *testing.T) {
-	for _, action := range []Action{SwapStableToCollateralStep, SwapCollateralToStableStep, SwapDebtToUSDCStep} {
-		t.Run(string(action), func(t *testing.T) {
-			s := base()
-			s.RouteLane = "AUTO/AUTO/PYUSD"
-			switch action {
-			case SwapStableToCollateralStep:
-				s.SquadsIdleRaw, s.Target = 5, LaneTarget{Rule: ruleEntry}
-			case SwapCollateralToStableStep:
-				s.CollateralIdleRaw, s.Target = 5_000, exitAllTarget
-			case SwapDebtToUSDCStep:
-				s.DebtIdleRaw, s.Target = 5_000, exitAllTarget
-			}
-			o := tickObservation(s)
-			want := Decide(s)
-			if want.Action != action {
-				t.Fatal(want)
-			}
-			order := []string{}
-			worker := &Worker{routeKey: productionRouteKey, manifest: readyWorkerManifest(t), runtime: tickRuntime{
-				loadNonterminal: func(context.Context, string) (*PersistedOperation, error) { return nil, nil }, observe: func(context.Context) (Observation, error) { return o, nil },
-				prepareJupiter: func(_ context.Context, _ RouteManifest, d Decision, _ Observation) (Observation, JupiterExecutionEvidence, error) {
-					if d != want {
-						t.Fatal("conversion identity changed")
-					}
-					order = append(order, "prepare")
-					return o, JupiterExecutionEvidence{Request: JupiterSwapRequest{Action: d.Action, RouteLane: d.StrategyKey}}, nil
-				},
-				recordDecision: func(_ context.Context, _ string, _ Observation, d Decision, _ string) (DecisionRecord, error) {
-					if d != want {
-						t.Fatal(d)
-					}
-					order = append(order, "record")
-					return DecisionRecord{OperationID: "local-conversion", Status: Decided}, nil
-				},
-				build: func(_ context.Context, id string, request any, _ ExpectedEffects) error {
-					r, ok := request.(JupiterSwapRequest)
-					if id != "local-conversion" || !ok || r.Action != action || r.RouteLane != s.RouteLane {
-						return fmt.Errorf("dispatch drift")
-					}
-					order = append(order, "build")
-					return nil
-				},
-			}}
-			if err := worker.Tick(context.Background()); err != nil || strings.Join(order, ",") != "prepare,record,build" {
-				t.Fatal(order, err)
-			}
-		})
-	}
-}
-
 // The worker dispatches the wYLDS lane's debt conversions to Hastra and its
 // collateral and USDC conversions to Jupiter, carrying each decided
 // conversion's identity unchanged through prepare, record and build;

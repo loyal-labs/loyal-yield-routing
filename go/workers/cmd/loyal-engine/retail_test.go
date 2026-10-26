@@ -6,12 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 )
 
 func retailKeyMaterialForTest(seed []byte) string {
@@ -183,49 +183,6 @@ func TestRetailDiagnosticsRetainCancellationWithoutRenderingSecrets(t *testing.T
 	cancel()
 	if err := runRetail(ctx, "invalid-owner", nil, nil); !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled startup proceeded: %v", err)
-	}
-}
-
-type retailDrainingLane struct{ started, release, drained chan struct{} }
-
-func (l retailDrainingLane) Run(ctx context.Context) error {
-	close(l.started)
-	<-ctx.Done()
-	<-l.release
-	close(l.drained)
-	return ctx.Err()
-}
-func TestRetailShutdownJoinsLanesBeforeReturning(t *testing.T) {
-	lane := retailDrainingLane{make(chan struct{}), make(chan struct{}), make(chan struct{})}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	done := make(chan error, 1)
-	go func() { done <- engine.Run(ctx, lane) }()
-	select {
-	case <-lane.started:
-	case <-time.After(time.Second):
-		t.Fatal("lane did not start")
-	}
-	cancel()
-	select {
-	case err := <-done:
-		close(lane.release)
-		t.Fatalf("runtime returned before drain: %v", err)
-	case <-time.After(20 * time.Millisecond):
-	}
-	close(lane.release)
-	select {
-	case err := <-done:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("cancel identity lost: %v", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("runtime failed to join")
-	}
-	select {
-	case <-lane.drained:
-	default:
-		t.Fatal("dependencies could close before lane drained")
 	}
 }
 

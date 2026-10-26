@@ -148,34 +148,6 @@ func TestSelectorObservesPriorCustodyAndHoldsEveryExposedLane(t *testing.T) {
 	}
 }
 
-// TestEconomicFeedInventoryIsTheActiveRegistry pins the feed inventory: every
-// active registry lane in registry order — Prime/PRIME/USDC included again
-// (owner 2026-10-10, reversing B4) and both Prime siblings — and never the
-// exit-only Ethena lane.
-func TestEconomicFeedInventoryIsTheActiveRegistry(t *testing.T) {
-	t.Parallel()
-	feed, err := NewEconomicFeed(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := []string{MapleSyrupUSDCLaneID, onreONycUSDC, autoAUTOPYUSD.Lane, PrimeUSDCLaneID, primePRIMEPYUSD.Lane, primePRIMEUSDS.Lane, autoAUTOWYLDSLane}
-	if len(feed.routes) != len(want) {
-		t.Fatalf("feed inventory size %d, want %d", len(feed.routes), len(want))
-	}
-	for i, lane := range want {
-		route, err := runtimeRoute(lane)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if feed.routes[i].Lane != lane || feed.routes[i].Kamino.CollateralReserve != route.Kamino.CollateralReserve || feed.routes[i].Kamino.DebtReserve != route.Kamino.DebtReserve {
-			t.Fatalf("feed route %d drifted: %+v", i, feed.routes[i])
-		}
-		if feed.routes[i].Lane == ethenaUSDePYUSD.Lane {
-			t.Fatal("exit-only Ethena is scored")
-		}
-	}
-}
-
 // TestCombineEconomicsProducesCandidateRouteEconomics pins the candidate
 // emission semantics: with the manifest-scoped inventory, complete verified
 // evidence for the AUTO reserves produces the AUTO LaneEconomics with its

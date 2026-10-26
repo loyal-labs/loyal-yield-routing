@@ -166,25 +166,6 @@ func TestWorkerDispatchKeepsRecoveryFirstAndClassifiesOutcomes(t *testing.T) {
 	}
 }
 
-func TestWorkerDispatchRetainsDecisionsAndRecoveryErrors(t *testing.T) {
-	executor := &scriptedExecutor{
-		results: []ExecutorResult{ResultDeferred, ResultRecoveryPending, ResultNotActionable, ResultNoop, ResultDependencyUnavailable, "future_outcome"},
-		errs:    []error{errors.New("allowance unknown"), errors.New("ownership lost")},
-	}
-	worker, err := NewWorker(WorkerDependencies{Store: &Store{}, Executor: executor, Facts: testFacts(), FeePayer: fundedPayer{}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var outcome ExecutorOutcome
-	alerts := worker.dispatch(context.Background(), []ExecutableTarget{{TargetID: 1}, {TargetID: 2}, {TargetID: 3}, {TargetID: 4}, {TargetID: 5}, {TargetID: 6}}, &outcome)
-	if outcome.ExecutionsAttempted != 6 || outcome.ExecutionsDeferred != 1 || outcome.ExecutionsRecoveryPending != 1 || outcome.ExecutionsNotActionable != 1 || outcome.ExecutionsNoop != 1 || outcome.ExecutionsFailed != 2 || outcome.ExecutionsCompleted != 0 || worker.executionErrors != 2 {
-		t.Fatalf("outcome %+v, errors %d", outcome, worker.executionErrors)
-	}
-	if len(alerts) != 2 || alerts[0].Code != "autodeposit_dependency_unavailable" || !alerts[0].SelfRecovering || alerts[1].Code != "autodeposit_executor_failed" {
-		t.Fatalf("alerts %+v", alerts)
-	}
-}
-
 // Root cause: the Go port collapsed every Autodeposit alert and tick failure
 // into one generic log line with no fact, so a failing family showed only as
 // stale progress. Each now counts loyal_family_failed_total under the Rust

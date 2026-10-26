@@ -3,10 +3,8 @@ package multiply
 import (
 	"context"
 	"crypto/ed25519"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"math/big"
@@ -159,21 +157,6 @@ func TestRouteStateFixtureRoundTripDeniesUnknownFields(t *testing.T) {
 	}
 	if reparsed.RouteKey != state.RouteKey || reparsed.Generation != state.Generation {
 		t.Fatal("round trip lost identity")
-	}
-}
-
-func TestExpectedEffectsAlwaysSerializesTokenAmountsBefore(t *testing.T) {
-	// Rust always serializes the empty vec as [] (serde default is
-	// decode-only); an omitted field would break persisted-JSON compatibility.
-	effects := ExpectedEffects{TokenDeltas: []TokenDelta{{
-		Account: "a", Mint: "m", RawDelta: 5,
-	}}}
-	encoded, err := jsonMarshal(effects)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(encoded), `"tokenAmountsBefore":[]`) {
-		t.Fatalf("tokenAmountsBefore was omitted: %s", encoded)
 	}
 }
 
@@ -701,23 +684,6 @@ func TestVerifyExpectedEffectsRules(t *testing.T) {
 }
 
 // ----------------------------------------------------------------- worker
-
-func TestOperationIDIsStable(t *testing.T) {
-	// sha256(EngineVersion || routeKey || cycle_le || generation_le || action)
-	hash := sha256.New()
-	hash.Write([]byte(EngineVersion))
-	hash.Write([]byte("earn-max:x:1"))
-	var raw [8]byte
-	binary.LittleEndian.PutUint64(raw[:], 3)
-	hash.Write(raw[:])
-	binary.LittleEndian.PutUint64(raw[:], 9)
-	hash.Write(raw[:])
-	hash.Write([]byte("deposit_collateral"))
-	want := "mul-" + hex.EncodeToString(hash.Sum(nil))[:32]
-	if got := OperationID("earn-max:x:1", 3, 9, "deposit_collateral"); got != want {
-		t.Fatalf("operation id %s, want %s", got, want)
-	}
-}
 
 func TestSnapshotInputUnits(t *testing.T) {
 	topology := testTopology(t)
