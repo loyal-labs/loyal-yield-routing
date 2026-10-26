@@ -189,10 +189,10 @@ export function WorkspaceFaceliftShell() {
       : earnEarned.dailyBars.reduce((sum, bar) => sum + bar.earnedUsd, 0);
   const earnMaxEarned30dUsd = useMemo(
     () =>
-      earnMax.view.isLoading
+      earnMax.view.isLoading || earnMax.view.earnings?.days.length !== 30
         ? null
         : buildEarnMaxEarnedBars(earnMax.view).reduce(
-            (sum, bar) => sum + bar.earnedUsd,
+            (sum, bar) => sum + (bar.netEarnedUsd ?? 0),
             0
           ),
     [earnMax.view]

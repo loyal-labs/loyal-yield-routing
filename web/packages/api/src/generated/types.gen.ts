@@ -525,6 +525,7 @@ export type EarnForecastSummaryResponse = {
 };
 
 export type EarnMaxActivity = {
+    earnings: Earnings | null;
     operations: Array<ActivityItem>;
     performance: Array<PerformancePoint>;
 };
@@ -1315,6 +1316,13 @@ export type EarnWithdrawVault = {
     usdcAta: string;
 };
 
+export type Earnings = {
+    days: Array<EarningsDay>;
+    netEarnedUsd: number;
+    performanceUsd: number;
+    sellingCostChangeUsd: number;
+};
+
 export type EarningsBar = {
     apyBps: number | null;
     avgPrincipalUsd: number;
@@ -1337,6 +1345,13 @@ export type EarningsCoverage = {
     sampleCount: number;
     sampledReserveCount: number;
     staleReserves: Array<string> | null;
+};
+
+export type EarningsDay = {
+    date: string;
+    netEarnedUsd: number;
+    performanceUsd: number;
+    sellingCostChangeUsd: number;
 };
 
 export type EarningsError = {

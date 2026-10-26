@@ -26,8 +26,9 @@ type HistoryPoint struct {
 }
 
 type DayEnd struct {
-	At    time.Time
-	Price float64
+	At     time.Time
+	Price  float64
+	PoolLP uint64
 }
 
 type APY struct {
@@ -41,9 +42,10 @@ type LiveShare struct {
 }
 
 type sharePoint struct {
-	atMs  int64
-	date  string
-	price float64
+	atMs   int64
+	date   string
+	price  float64
+	poolLP uint64
 }
 
 func ShareAPY(days []DailyStat, live *LiveShare, now time.Time) APY {
@@ -51,15 +53,15 @@ func ShareAPY(days []DailyStat, live *LiveShare, now time.Time) APY {
 	points := []sharePoint{}
 	for _, day := range days {
 		at, err := time.Parse(time.RFC3339, day.Day+"T23:59:59Z")
-		if day.TVLRaw > 0 && day.LPRaw > 0 && err == nil {
-			points = append(points, sharePoint{atMs: min(at.UnixMilli(), nowMs), date: day.Day, price: day.TVLRaw / day.LPRaw})
+		if day.TVLRaw > 0 && !math.IsInf(day.TVLRaw, 0) && day.LPRaw > 0 && day.LPRaw < math.MaxUint64 && err == nil {
+			points = append(points, sharePoint{atMs: min(at.UnixMilli(), nowMs), date: day.Day, price: day.TVLRaw / day.LPRaw, poolLP: uint64(day.LPRaw)})
 		}
 	}
 	today := now.UTC().Format(time.DateOnly)
 	out := APY{History: []HistoryPoint{}, DayEnd: []DayEnd{}}
 	for _, p := range points {
 		if p.date < today {
-			out.DayEnd = append(out.DayEnd, DayEnd{At: time.UnixMilli(p.atMs).UTC(), Price: p.price})
+			out.DayEnd = append(out.DayEnd, DayEnd{At: time.UnixMilli(p.atMs).UTC(), Price: p.price, PoolLP: p.poolLP})
 		}
 	}
 	if live != nil && live.TVL > 0 && live.LP > 0 {

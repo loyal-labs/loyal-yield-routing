@@ -1,7 +1,6 @@
 "use client";
 
 import {
-  earnMaxDailySeries,
   earnMaxPending,
   earnMaxPendingMessage,
   earnMaxPendingSubtitle,
@@ -113,9 +112,7 @@ function ApyBadge({ label }: { label: string }) {
 
 const EARN_MAX_CHART_TABS: readonly ChartTab[] = ["APY", "Earned"];
 
-// ponytail: daily "earned" ≈ equity delta minus confirmed same-day flows
-// (deposits in, withdrawal requests out) — replace with a dedicated earnings
-// feed when the indexer grows one.
+// The API separates investment performance from changes in exit-cost estimates.
 // ponytail: mock tooltip copy — real copy comes with the wiring pass
 const EARN_MAX_TOOLTIP_TEXT =
   "Higher-yield strategies through your own smart account";
@@ -130,17 +127,18 @@ export function isEarnMaxUntouched(view: EarnMaxViewModel): boolean {
 }
 
 export function buildEarnMaxEarnedBars(view: EarnMaxViewModel): EarnedChartBar[] {
-  return earnMaxDailySeries(view).days.map((day) => ({
+  return (view.earnings?.days ?? []).map((day) => ({
     apyBps: null,
-    earnedUsd: day.earnedUsd,
-    endAt: day.date.toISOString(),
-    isCurrent: day.isCurrent,
-    label: day.date.toLocaleDateString("en-US", {
+    earnedUsd: day.performanceUsd,
+    netEarnedUsd: day.netEarnedUsd,
+    endAt: `${day.date}T23:59:59.000Z`,
+    isCurrent: day.date === new Date().toISOString().slice(0, 10),
+    label: new Date(`${day.date}T00:00:00Z`).toLocaleDateString("en-US", {
       day: "numeric",
       month: "short",
       timeZone: "UTC",
     }),
-    startAt: day.date.toISOString(),
+    startAt: `${day.date}T00:00:00.000Z`,
   }));
 }
 
@@ -538,7 +536,7 @@ function EarnMaxMainPane({
   const { isBalanceHidden } = useBalanceVisibility();
   const balance = splitUsdBalance(view.balanceUsd);
   const earnedCents =
-    view.earnedUsd === null ? null : Math.round(view.earnedUsd * 100);
+    view.earnings ? Math.round(view.earnings.netEarnedUsd * 100) : null;
   const earnedLabel =
     earnedCents === null
       ? null
@@ -855,9 +853,10 @@ export function EarnMaxWorkspace({
           bars={buildEarnMaxEarnedBars(view)}
           isLoading={view.isLoading}
           isStale={false}
-          isUnavailable={false}
-          lifetimeEarnedUsd={view.earnedUsd ?? 0}
-          note="Can dip for short periods as asset prices and rates move."
+          isUnavailable={!view.isLoading && !view.earnings}
+          lifetimeEarnedUsd={view.earnings?.performanceUsd ?? 0}
+          metric="performance"
+          onRetry={() => void actions.refresh()}
         />
       ) : !isPublicApyLoaded ? (
         <div aria-hidden="true" className="min-h-0 w-full flex-1" />

@@ -79,16 +79,24 @@ func (v Vault) lockedProfit(now time.Time) *big.Int {
 	return locked.Quo(locked, duration)
 }
 
-func (v Vault) LPToAssets(lpRaw, lpMintSupplyRaw uint64, now time.Time) (uint64, error) {
+func (v Vault) TotalLP(lpMintSupplyRaw uint64, now time.Time) (*big.Int, error) {
 	totalLP := new(big.Int).SetUint64(lpMintSupplyRaw)
 	for _, raw := range []uint64{v.FeeAccumulatorManagerRaw, v.FeeAccumulatorAdminRaw, v.FeeAccumulatorProtocolRaw, v.LPSupplyDeadWeightRaw} {
 		totalLP.Add(totalLP, new(big.Int).SetUint64(raw))
 	}
 	feeLP, err := v.unrealisedManagementFeeLP(totalLP, now)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	totalLP.Add(totalLP, feeLP)
+	return totalLP, nil
+}
+
+func (v Vault) LPToAssets(lpRaw, lpMintSupplyRaw uint64, now time.Time) (uint64, error) {
+	totalLP, err := v.TotalLP(lpMintSupplyRaw, now)
+	if err != nil {
+		return 0, err
+	}
 	if totalLP.Sign() == 0 {
 		return 0, nil
 	}
