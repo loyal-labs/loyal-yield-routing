@@ -2,8 +2,6 @@ package backyard
 
 import (
 	"context"
-	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -39,7 +37,7 @@ type fakeNode struct {
 	Transport http.RoundTripper
 }
 
-var fakeNodes sync.Map // *chain.Client -> *fakeNode
+var fakeNodes sync.Map
 
 // newFakeChain is a chain client of a fake node answering through transport.
 func newFakeChain(t testing.TB, transport http.RoundTripper) *chain.Client {
@@ -85,32 +83,8 @@ func finalizedEpoch(height int64) map[string]any {
 	return map[string]any{"absoluteSlot": 1000 + height, "blockHeight": height, "epoch": 1, "slotIndex": 1, "slotsInEpoch": 432000, "transactionCount": 1}
 }
 
-// finalizedEpochJSON is finalizedEpoch as a JSON-RPC response body.
-func finalizedEpochJSON(height int64) string {
-	encoded, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "result": finalizedEpoch(height)})
-	return string(encoded)
-}
-
 // testSignature is a well-formed transaction signature.
 var testSignature = solana.Signature{5}.String()
-
-// minimalWire is a well-formed legacy transaction: one signer, no
-// instructions.
-var minimalWire = append(append([]byte{1}, make([]byte, 64)...), append([]byte{1, 0, 0, 1}, make([]byte, 64+1)...)...)
-
-// transactionResult is getTransaction's base64 result for wire (minimalWire
-// when nil) landed at slot with meta.
-func transactionResult(t testing.TB, slot int64, wire []byte, meta map[string]any) string {
-	t.Helper()
-	if wire == nil {
-		wire = minimalWire
-	}
-	encoded, err := json.Marshal(map[string]any{"slot": slot, "transaction": []string{base64.StdEncoding.EncodeToString(wire), "base64"}, "meta": meta})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(encoded)
-}
 
 // A node that could not answer, a node behind the asked slot and a receipt the
 // cluster does not have yet end the tick as a wait. A required account the

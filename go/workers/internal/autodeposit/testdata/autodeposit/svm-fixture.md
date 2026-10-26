@@ -34,8 +34,6 @@ Run `go test -race ./internal/autodeposit -run '^TestSVM' -count=1 -v` from
 - `AUTODEPOSIT_TEST_SVM_FIXTURE_PATH`: generated JSON path.
 - `SVM_HARNESS`: built `fleet-local-svm` executable.
 - The same program artifact path environment variables used by the producer.
-- `AUTODEPOSIT_TEST_DATABASE_URL`: the existing allowlisted, disposable
-  `workers_v2_autodeposit` fixture URL for the current-floor publication test.
 
 CI builds both artifacts and runs the suite on every workers change.
 The suite uses no provider, wallet secret, or production connection.
@@ -45,10 +43,6 @@ proves exact receipt deltas, actual remaining budget, frozen nonce identity
 rejection, funded unauthorized signer rejection by Squads, and over-budget
 rejection by Subscriptions CPI. Nonce identity belongs to the Go guard: the
 canonical wallet-authorized policy intentionally does not pin a recurring nonce.
-The current-floor test uses an actual signed pull and actual confirmed source
-balance: a changed floor refuses durable publication before broadcast, while
-the exact inclusive boundary admits the same packet with broadcast count zero.
-It tests this store boundary, not full controller/bootstrap admission.
 
 The official Go top-up packet executes real Squads/SPL plus the explicitly
 fixed-price KLend mock SBF. Actual SPL transfer, collateral mint, obligation

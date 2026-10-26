@@ -10,7 +10,6 @@ import (
 	"errors"
 	"os"
 	"testing"
-	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earncatalog"
@@ -73,39 +72,6 @@ func installControlSnapshot(t *testing.T, f controlGolden, b *SweepWireBuilder, 
 	accounts := map[string]testAccount{f.Settings: {Address: f.Settings, Owner: squads.ProgramID.String(), Data: goldenHex(t, f.SettingsDataHex)}, f.Policy: {Address: f.Policy, Owner: squads.ProgramID.String(), Data: goldenHex(t, f.PolicyDataHex)}, f.SubscriptionAuthority: {Address: f.SubscriptionAuthority, Owner: earncatalog.SubscriptionsProgram}, f.RecurringDelegation: {Address: f.RecurringDelegation, Owner: earncatalog.SubscriptionsProgram, Data: testDelegationData(f.Wallet, f.Vault, USDCMint, perPeriod, 0)}, f.WalletATA: {Address: f.WalletATA, Owner: earncatalog.SPLTokenProgram, Data: token}}
 	b.read = fixtureReader(200, accounts)
 	return accounts
-}
-
-type countingControlReader struct {
-	reader ControlReader
-	calls  int
-}
-
-func (r *countingControlReader) ObserveControl(ctx context.Context, t ControlTarget, slot int64) (ControlObservation, error) {
-	r.calls++
-	return r.reader.ObserveControl(ctx, t, slot)
-}
-
-// seedControlRuntime seeds one mainnet target whose policy and delegation
-// match the golden fixture, and a counting control reader over it.
-func seedControlRuntime(t *testing.T, s *Store) (int64, *countingControlReader) {
-	t.Helper()
-	f, target, b := controlFixture(t)
-	installControlSnapshot(t, f, b, uint64(f.MaxAmountPerPeriod))
-	seeded := seedIntegrationTarget(t, s, "control")
-	target.TargetID = seeded.TargetID
-	seedProjectedSurplus(t, s, seeded, 1, 9_000_000)
-	_, err := s.pool.Exec(t.Context(), `UPDATE loyal_yield.balance_sweep_targets SET settings=$2,authority=$3,policy_seed=$4,policy_account=$5,wallet=$6,wallet_usdc_ata=$7,wallet_token_ata=$7,vault_pubkey=$8,vault_usdc_ata=$9,vault_token_ata=$9,subscription_authority=$10,recurring_delegation=$11,recurring_delegation_nonce=$12,max_amount_per_period=$13,period_length_seconds=$14,start_timestamp=$15,recurring_delegation_expiry_timestamp=$16,setup_generation=$17 WHERE id=$1`, target.TargetID, target.Settings, f.RootAuthority, target.PolicySeed, target.Policy, target.Wallet, target.WalletTokenATA, target.Vault, target.VaultTokenATA, target.SubscriptionAuthority, target.RecurringDelegation, target.Nonce, *target.MaxAmountPerPeriod, f.PeriodLength, *target.StartTimestamp, f.ExpiryTimestamp, target.SetupGeneration)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = s.pool.Exec(t.Context(), `UPDATE loyal_yield.managed_vaults SET settings=$2,vault_pubkey=$3 WHERE id=$1`, seeded.ManagedVaultID, target.Settings, target.Vault); err != nil {
-		t.Fatal(err)
-	}
-	if _, err = s.pool.Exec(t.Context(), `UPDATE loyal_yield.route_policies SET settings=$2,authority=$3,vault_pubkey=$4 WHERE id=(SELECT active_policy_id FROM loyal_yield.managed_vaults WHERE id=$1)`, seeded.ManagedVaultID, target.Settings, f.RootAuthority, target.Vault); err != nil {
-		t.Fatal(err)
-	}
-	seedTargetLiveReserve(t, s, target.TargetID, "control-reserve", "control-market", 1, time.Now())
-	return target.TargetID, &countingControlReader{reader: b}
 }
 
 // The policy's per-period cap is an account-data constraint, which the

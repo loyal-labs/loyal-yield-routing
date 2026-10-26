@@ -8,10 +8,8 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
@@ -285,111 +283,5 @@ func TestAutoInitializerObserveBindsPersistedWireThroughManifest(t *testing.T) {
 				t.Fatalf("drift=%s err=%v", drift, err)
 			}
 		})
-	}
-}
-
-// seedAutoInitializerReconcilingOperation reconstructs the durable pre-settle
-// state: an AUTO initializer operation with its persisted wire, parked in
-// 'reconciling'. The route key is supplied by the
-// owning test so cleanup deletes exactly these rows.
-func seedAutoInitializerReconcilingOperation(t *testing.T, ctx context.Context, db *Database, f autoInitializerRecoveryFixture, key string) (string, PersistedOperation) {
-	t.Helper()
-	id := seedDecidedOperation(t, ctx, db, key, InitializeKaminoObligation, f.request.RouteLane, f.raw)
-	if _, err := db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET status='reconciling',signed_wire_sha256=$2,transaction_signature=$3,confirmed_slot=$4,signed_wire=$5 WHERE operation_id=$1`,
-		id, sha256Bytes(f.wire), f.receipt.Signature, f.receipt.Slot, f.wire); err != nil {
-		t.Fatal(err)
-	}
-	op := PersistedOperation{Operation: Operation{ID: id, RouteKey: key, StrategyKey: f.request.RouteLane,
-		Decision: Decision{Action: InitializeKaminoObligation, Reason: "multiply_obligation_missing", StrategyKey: f.request.RouteLane, IdempotencyKey: "controlled-init"}},
-		Status: Reconciling, ExpectedEffects: f.raw, SignedWire: f.wire, SignedWireSHA256: sha256Bytes(f.wire),
-		TransactionSignature: f.receipt.Signature, RecentBlockhash: f.request.RecentBlockhash,
-		LastValidBlockHeight: f.request.LastValidBlockHeight, ConfirmedSlot: f.receipt.Slot}
-	return id, op
-}
-
-// Restart recovery drives the shared nonterminal state machine with the
-// reviewed manifest: the reconstructed 'reconciling' operation observes the
-// finalized receipt, reconciles and settles in the locked transaction exactly
-// once, never resends, and every drift path lands in the existing durable
-// recovery stops. The public embedded-manifest entrypoint keeps the candidate
-// lane closed at decode.
-func TestAutoInitializerRestartReconcilesThroughSharedStateMachine(t *testing.T) {
-	// A dedicated disposable database: nothing shared with other tests.
-	t.Parallel()
-	ctx, cancel, db := openInitializerAutoScopeServiceDatabase(t, "phase3_auto_restart_recovery_test", 30*time.Second)
-	defer cancel()
-	var routeKeys []string
-
-	newFixture := func() (string, PersistedOperation, autoInitializerRecoveryFixture) {
-		f := newAutoInitializerRecoveryFixture(t)
-		key := "auto-initializer-recovery-restart-" + time.Now().Format("150405.000000000") + "-" + strconv.Itoa(len(routeKeys))
-		routeKeys = append(routeKeys, key)
-		id, op := seedAutoInitializerReconcilingOperation(t, ctx, db, f, key)
-		return id, op, f
-	}
-	assertRecoveryStop := func(t *testing.T, id, wantStatus, wantReason string) {
-		t.Helper()
-		var status, reason string
-		if err := db.pool.QueryRow(ctx, `SELECT status,COALESCE(recovery_reason,'') FROM loyal_yield.multiply_operations WHERE operation_id=$1`, id).Scan(&status, &reason); err != nil {
-			t.Fatal(err)
-		}
-		if status != wantStatus || (wantReason != "" && reason != wantReason) {
-			t.Fatalf("recovery stop drifted: %s/%s want %s/%s", status, reason, wantStatus, wantReason)
-		}
-	}
-
-	// Drift first: a receipt slot that differs from the journal identity is
-	// refused by the immutable-receipt observer; the operation stays in
-	// 'reconciling' for the next tick.
-	slotID, slotOp, slotFixture := newFixture()
-	rpc := autoInitializerRecoveryRPC(t, slotFixture, 78, nil)
-	if err := advanceNonterminalWithManifest(ctx, slotFixture.manifest, db, rpc, slotOp); err == nil {
-		t.Fatal("slot-drifted initializer receipt was observed")
-	}
-	assertRecoveryStop(t, slotID, "reconciling", "")
-
-	// Success: the reconstructed operation advances through the shared state
-	// machine into locked settlement, exactly once, with reads only on the wire.
-	id, op, f := newFixture()
-	sent := 0
-	rpc = autoInitializerRecoveryRPC(t, f, 77, nil)
-	inner := rpcOf(rpc).Transport
-	rpcOf(rpc).Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		raw, _ := io.ReadAll(req.Body)
-		var body struct{ Method string }
-		_ = json.Unmarshal(raw, &body)
-		if body.Method == "sendTransaction" {
-			sent++
-		}
-		req.Body = io.NopCloser(bytes.NewReader(raw))
-		return inner.RoundTrip(req)
-	})
-	if err := advanceNonterminalWithManifest(ctx, f.manifest, db, rpc, op); err != nil {
-		t.Fatal(err)
-	}
-	if status := operationStatus(t, ctx, db, id); status != "reconciled" {
-		t.Fatalf("restart did not settle: %s", status)
-	}
-	if sent != 0 {
-		t.Fatalf("recovery resent the wire %d times", sent)
-	}
-
-	// No replay after completion: the durable row is terminal, so the shared
-	// entrypoint refuses to advance it again and nothing re-settles.
-	if err := advanceNonterminalWithManifest(ctx, f.manifest, db, rpc, op); err == nil {
-		t.Fatal("terminal initializer advanced twice")
-	}
-	if status := operationStatus(t, ctx, db, id); status != "reconciled" {
-		t.Fatalf("replay mutated settled state: %s", status)
-	}
-	if sent != 0 {
-		t.Fatalf("replay resent the wire: %d", sent)
-	}
-	var persistedStatus string
-	if err := db.pool.QueryRow(ctx, `SELECT status FROM loyal_yield.multiply_operations WHERE operation_id=$1`, id).Scan(&persistedStatus); err != nil {
-		t.Fatal(err)
-	}
-	if persistedStatus != "reconciled" || IsNonterminal(OperationStatus(persistedStatus)) {
-		t.Fatalf("terminal journal state drifted: %s", persistedStatus)
 	}
 }

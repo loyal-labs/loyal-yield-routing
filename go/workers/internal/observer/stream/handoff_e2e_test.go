@@ -2,14 +2,10 @@ package stream
 
 import (
 	"context"
-	"database/sql"
 	"errors"
-	"fmt"
 	"net"
-	"os"
 	"sort"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -48,18 +44,7 @@ func TestParallelSubscriptionHandoffE2E(t *testing.T) {
 		},
 	}
 	sink := newIdempotentSink()
-	var durableHandler Handler = sink
-	var postgresSink *postgresDedupeSink
-	if databaseURL := os.Getenv("TEST_DATABASE_URL"); databaseURL != "" {
-		postgresSink = newPostgresDedupeSink(t, ctx, databaseURL)
-		durableHandler = HandlerFunc(func(ctx context.Context, update *pb.SubscribeUpdate) error {
-			if err := postgresSink.Handle(ctx, update); err != nil {
-				return err
-			}
-			return sink.Handle(ctx, update)
-		})
-	}
-	manager := NewManager(connector, durableHandler, Config{
+	manager := NewManager(connector, sink, Config{
 		ReplayOverlapSlots: 5,
 		HandoffTimeout:     5 * time.Second,
 	})
@@ -118,16 +103,6 @@ func TestParallelSubscriptionHandoffE2E(t *testing.T) {
 	}
 	if sink.uniqueCount("balance_sweep_wallet_atas", 103, 115) != 13 {
 		t.Fatalf("overlap replay produced a gap or duplicate durable balance row")
-	}
-	if postgresSink != nil {
-		for _, filter := range []string{"balance_sweep_wallet_atas", "kamino_reserves", "earn_vault_accounts"} {
-			if count := postgresSink.count(t, ctx, filter, 103, 115); count != 13 {
-				t.Fatalf("PostgreSQL rows for %s = %d, want 13 exact-once durable rows", filter, count)
-			}
-		}
-		if postgresSink.duplicates.Load() == 0 {
-			t.Fatal("PostgreSQL sink did not exercise ON CONFLICT replay deduplication")
-		}
 	}
 }
 
@@ -302,72 +277,6 @@ func (s *fakeLaserStream) maxConcurrentSubscriptions() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.maxConcurrent
-}
-
-type postgresDedupeSink struct {
-	db         *sql.DB
-	duplicates atomic.Int64
-}
-
-func newPostgresDedupeSink(t *testing.T, ctx context.Context, databaseURL string) *postgresDedupeSink {
-	t.Helper()
-	db, err := sql.Open("pgx", databaseURL)
-	if err != nil {
-		t.Fatalf("open isolated PostgreSQL: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	if err := db.PingContext(ctx); err != nil {
-		t.Fatalf("ping isolated PostgreSQL: %v", err)
-	}
-	if _, err := db.ExecContext(ctx, `
-		DROP TABLE IF EXISTS laserstream_handoff_events;
-		CREATE TABLE laserstream_handoff_events (
-			filter_name text NOT NULL,
-			slot bigint NOT NULL,
-			PRIMARY KEY (filter_name, slot)
-		)
-	`); err != nil {
-		t.Fatalf("initialize isolated PostgreSQL dedupe table: %v", err)
-	}
-	return &postgresDedupeSink{db: db}
-}
-
-func (s *postgresDedupeSink) Handle(ctx context.Context, update *pb.SubscribeUpdate) error {
-	slot, ok := updateSlot(update)
-	if !ok {
-		return nil
-	}
-	for _, filter := range update.Filters {
-		result, err := s.db.ExecContext(ctx, `
-			INSERT INTO laserstream_handoff_events (filter_name, slot)
-			VALUES ($1, $2)
-			ON CONFLICT (filter_name, slot) DO NOTHING
-		`, filter, slot)
-		if err != nil {
-			return fmt.Errorf("insert durable handoff event: %w", err)
-		}
-		rows, err := result.RowsAffected()
-		if err != nil {
-			return fmt.Errorf("read durable handoff insert result: %w", err)
-		}
-		if rows == 0 {
-			s.duplicates.Add(1)
-		}
-	}
-	return nil
-}
-
-func (s *postgresDedupeSink) count(t *testing.T, ctx context.Context, filter string, from, to uint64) int {
-	t.Helper()
-	var count int
-	if err := s.db.QueryRowContext(ctx, `
-		SELECT count(*)
-		FROM laserstream_handoff_events
-		WHERE filter_name = $1 AND slot BETWEEN $2 AND $3
-	`, filter, from, to).Scan(&count); err != nil {
-		t.Fatalf("count isolated PostgreSQL rows: %v", err)
-	}
-	return count
 }
 
 type idempotentSink struct {

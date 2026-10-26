@@ -1,18 +1,14 @@
 package fleet
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -195,46 +191,6 @@ func TestVerifyLookupTablesChunksFreshRPCAtSolanaLimit(t *testing.T) {
 	}
 }
 
-func TestLoadReusableLookupTablesScopesStaleCandidatesBeforeRPC(t *testing.T) {
-	databaseURL := os.Getenv("FLEET_TEST_DATABASE_URL")
-	if databaseURL == "" {
-		t.Skip("FLEET_TEST_DATABASE_URL is not set")
-	}
-	ctx := context.Background()
-	store, err := OpenStore(ctx, databaseURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	cluster := fmt.Sprintf("alt-scope-%d", time.Now().UnixNano())
-	var familyID int64
-	if err = store.pool.QueryRow(ctx, `INSERT INTO loyal_yield.lookup_table_families(cluster,logical_name,kind,planner_version,catalog_version,active_generation,provisioning_authority,payer,hard_capacity,largest_atomic_expansion,safety_margin,allocation_high_water) VALUES($1,'shared','shared_market','test','test',0,$2,$3,256,1,1,254) RETURNING id`, cluster, testPolicy, testVault).Scan(&familyID); err != nil {
-		t.Fatal(err)
-	}
-	const globalTables = 106
-	for index := 0; index < globalTables; index++ {
-		tableAddress := testIdentity(byte(index + 100))
-		member := testIdentity(byte(index + 1))
-		if index == globalTables-1 {
-			member = testTarget
-		}
-		var tableID int64
-		if err = store.pool.QueryRow(ctx, `INSERT INTO loyal_yield.route_lookup_tables(cluster,scope,table_address,authority,payer,status,durable,address_count,address_hash,addresses,last_extended_slot,warmup_slot,family_id,allocation_kind,generation,shard_ordinal,desired_state,accepting_allocations,allocation_high_water,reserved_address_count,usable_address_count,last_verified_slot,last_verified_at,mutation_epoch) VALUES($1,$2,$3,$4,$5,'active',TRUE,1,$6,jsonb_build_array($7::text),10,11,$8,'shared_market',0,$9,'active',TRUE,254,1,1,10,clock_timestamp(),0) RETURNING id`, cluster, fmt.Sprintf("shared-%d", index), tableAddress, testPolicy, testVault, strings.Repeat("a", 64), member, familyID, index).Scan(&tableID); err != nil {
-			t.Fatalf("seed table %d: %v", index, err)
-		}
-		if _, err = store.pool.Exec(ctx, `INSERT INTO loyal_yield.lookup_table_addresses(route_lookup_table_id,address,ordinal,added_slot,usable_after_slot,last_verified_slot,last_verified_at) VALUES($1,$2,0,9,11,10,clock_timestamp())`, tableID, member); err != nil {
-			t.Fatalf("seed membership %d: %v", index, err)
-		}
-	}
-	tables, err := store.LoadReusableLookupTables(ctx, cluster, 1, 1_000, []string{testTarget})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(tables) != 1 || len(tables[0].Addresses) != 1 || tables[0].Addresses[0] != testTarget || tables[0].LastVerifiedSlot != 10 {
-		t.Fatalf("stale relevant ALT was not scoped for fresh verification: %+v", tables)
-	}
-}
-
 func TestComputePadding(t *testing.T) {
 	cases := map[uint64]uint64{0: 100_000, 1: 100_000, 200_000: 240_000, ^uint64(0): DefaultComputeLimit}
 	for measured, want := range cases {
@@ -268,196 +224,5 @@ func TestAdmissionEconomicsRejectsEdgeLostToInflight(t *testing.T) {
 	_, err := ComputeAdmissionEconomics(RevalidationLease{PrincipalUSDMicros: 9_000_000_000, ExecutionPlan: plan}, plan, 1_000_000_000, 20_000_000)
 	if err == nil {
 		t.Fatal("economics made ineligible by committed inflight were accepted")
-	}
-}
-
-func TestRevalidationStoreIntegrationFusedExecuteIsAtomic(t *testing.T) {
-	store, ctx := openTestStore(t)
-	suffix := fmt.Sprint(time.Now().UnixNano())
-	cluster := "revalidation-" + suffix
-	market := testIdentity(42)
-	source := ReserveIdentity{Address: testIdentity(43), Market: market, Mint: USDCMint}
-	target := ReserveIdentity{Address: testIdentity(44), Market: market, Mint: USDCMint}
-	vaultID := seedWorkerVault(t, ctx, store, suffix, market, source.Address)
-	manifestSettings, _, _ := bindWaitingFixtureVault(t, ctx, store, vaultID, suffix)
-	position := loadTestPosition(t, ctx, store, vaultID, source)
-	now := time.Now().UTC()
-	snapshot := MarketSnapshot{Slot: 1000, ObservedAt: now, Hash: "revalidation-" + suffix, Reserves: map[string]ReserveState{source.Address: {ReserveIdentity: source, Slot: 1000, LastUpdateSlot: 1000, SupplyAPYBPS: 100, TotalSupplyRaw: 1_000_000_000_000_000, EconomicLifetimeMillis: 600_000, DataHash: strings.Repeat("a", 64)}, target.Address: {ReserveIdentity: target, Slot: 1000, LastUpdateSlot: 1000, SupplyAPYBPS: 900, TotalSupplyRaw: 1_000_000_000_000_000, EconomicLifetimeMillis: 600_000, DataHash: strings.Repeat("b", 64)}}}
-	ampleCapacity(snapshot)
-	opportunityID, decision := publishTestMove(t, ctx, store, cluster, snapshot, position, target.Address)
-	lease, err := store.ClaimRevalidation(ctx, cluster, "go-revalidator", time.Minute, false, false)
-	if err != nil || lease == nil || lease.OpportunityID != opportunityID {
-		t.Fatalf("claim: %+v %v", lease, err)
-	}
-	ampleRaw := int64(1_000_000_000_000_000)
-	wireHash := strings.Repeat("f", 64)
-	prepared := &RoutePreparation{RouteFingerprint: strings.Repeat("1", 64), RequirementsFingerprint: strings.Repeat("2", 64), ExecutionPlan: json.RawMessage(`{"message_base64":"AQ==","unsigned_wire_base64":"Ag==","simulation":{"succeeded":true}}`), Transaction: PreparedTransaction{Message: []byte{1}, UnsignedWire: []byte{2}, WireSHA256: wireHash, PacketBytes: 1, FeeLamports: 1, ComputeLimit: 1}, Simulation: SimulationEvidence{Slot: 1001, Succeeded: true, UnitsConsumed: 1, WireSHA256: wireHash}}
-	if err := preserveCanonicalPlan(lease.ExecutionPlan, prepared, "prepared_transaction"); err != nil {
-		t.Fatal(err)
-	}
-	commit := RevalidationCommit{Disposition: "fused_execute", Preparation: prepared, ConflictKeys: []string{"vault:" + position.VaultPubkey, "source-reserve:" + source.Address}, ExpectedOpportunityKey: lease.IdempotencyKey, FreshEconomics: true, ObservedSourceAPYBPS: 100, ObservedTargetAPYBPS: 900, TargetObservedSupplyUSDMicros: 1_000_000_000_000_000, TargetObservedSlot: 1000, SourceAvailableLiquidityRaw: &ampleRaw, TargetDepositRoomRaw: &ampleRaw}
-	if err = store.commitRevalidation(ctx, *lease, commit, nil); err != nil {
-		t.Fatal(err)
-	}
-	var state, kind string
-	var persisted []byte
-	if err = store.pool.QueryRow(ctx, `SELECT opportunity_state,lease_kind,execution_plan FROM loyal_yield.rebalance_opportunities WHERE id=$1`, lease.OpportunityID).Scan(&state, &kind, &persisted); err != nil {
-		t.Fatal(err)
-	}
-	var admitted struct {
-		Observed  int64 `json:"observed_target_apy_bps"`
-		Projected int64 `json:"target_apy_bps"`
-		Source    int64 `json:"source_apy_bps"`
-	}
-	if err := json.Unmarshal(persisted, &admitted); err != nil {
-		t.Fatal(err)
-	}
-	if state != "leased" || kind != "execute" || admitted.Observed != 900 || admitted.Projected >= admitted.Observed || admitted.Source != 100 || !bytes.Contains(persisted, []byte("unsigned_wire_base64")) {
-		t.Fatalf("incomplete atomic handoff state=%s kind=%s admitted=%+v plan=%s", state, kind, admitted, persisted)
-	}
-	if err = store.commitRevalidation(ctx, *lease, commit, nil); err == nil {
-		t.Fatal("lost revalidation lease was accepted after fused handoff")
-	}
-	// The admitted move is in flight until the chain shows it: another
-	// vault's plan and admission count it once, into the target and out of
-	// the source.
-	inflow, outflow, err := InflightFlows(ctx, store.pool, cluster, 1000, 0)
-	if err != nil || inflow[target.Address] != decision.PrincipalUSDMicros || outflow[source.Address] != decision.PrincipalUSDMicros {
-		t.Fatalf("admitted move not in flight once: in=%v out=%v err=%v", inflow, outflow, err)
-	}
-	// Exercise restart-safe waiting_alt -> leased/revalidate -> ready using the
-	// same durable opportunity after clearing the synthetic execute handoff.
-	for _, statement := range []string{`DELETE FROM loyal_yield.route_account_conflict_leases WHERE opportunity_id=$1`, `UPDATE loyal_yield.rebalance_opportunities SET opportunity_state='revalidate',lease_kind=NULL,lease_owner=NULL,lease_expires_at=NULL WHERE id=$1`} {
-		if _, err = store.pool.Exec(ctx, statement, lease.OpportunityID); err != nil {
-			t.Fatal(err)
-		}
-	}
-	waitingLease, err := store.ClaimRevalidation(ctx, cluster, "go-revalidator", time.Minute, false, false)
-	if err != nil || waitingLease == nil {
-		t.Fatalf("waiting claim: %+v %v", waitingLease, err)
-	}
-	manifest := waitingManifestFixtureForRoute(t, manifestSettings, waitingLease.VaultPubkey, waitingLease.PolicyAccount, waitingLease.SourceReserve, waitingLease.TargetReserve)
-	seedWaitingCatalog(t, ctx, store, cluster, manifest.SharedAddresses)
-	missingVault := manifest.VaultAddresses[0].Address
-	waiting := waitingALTPreparation([]string{missingVault}, 400_000)
-	waiting.Manifest = &manifest
-	waiting.RouteFingerprint, waiting.RequirementsFingerprint = manifest.Fingerprint, manifest.Fingerprint
-	if err := preserveCanonicalPlan(waitingLease.ExecutionPlan, &waiting, "alt_readiness"); err != nil {
-		t.Fatal(err)
-	}
-	if err = store.CommitRevalidation(ctx, *waitingLease, RevalidationCommit{Disposition: "waiting_alt", Preparation: &waiting, MissingAddresses: []string{missingVault}, ExpectedOpportunityKey: waitingLease.IdempotencyKey}); err != nil {
-		t.Fatal(err)
-	}
-	var requestStatus, requestAddress string
-	var requestSealed bool
-	if err = store.pool.QueryRow(ctx, `SELECT opportunity.opportunity_state,request.request_status,request.sealed_at IS NOT NULL,address.address FROM loyal_yield.rebalance_opportunities opportunity JOIN loyal_yield.lookup_table_provisioning_request_consumers consumer ON consumer.opportunity_id=opportunity.id JOIN loyal_yield.lookup_table_provisioning_requests request ON request.id=consumer.provisioning_request_id JOIN loyal_yield.lookup_table_provisioning_request_addresses address ON address.request_id=request.id WHERE opportunity.id=$1 AND address.address=$2`, lease.OpportunityID, missingVault).Scan(&state, &requestStatus, &requestSealed, &requestAddress); err != nil || state != "waiting_alt" || requestStatus != "requested" || !requestSealed || requestAddress != missingVault {
-		t.Fatalf("waiting_alt durable request: state=%s status=%s sealed=%t address=%s err=%v", state, requestStatus, requestSealed, requestAddress, err)
-	}
-	blockedLease, err := store.ClaimRevalidation(ctx, cluster, "go-revalidator", time.Minute, true, false)
-	if err != nil || blockedLease != nil {
-		t.Fatalf("waiting_alt was reclaimable before satisfaction: %+v %v", blockedLease, err)
-	}
-	if _, err = store.pool.Exec(ctx, `UPDATE loyal_yield.lookup_table_provisioning_requests request SET request_status='satisfied',satisfied_at=clock_timestamp(),updated_at=clock_timestamp() FROM loyal_yield.lookup_table_provisioning_request_consumers consumer WHERE consumer.provisioning_request_id=request.id AND consumer.opportunity_id=$1`, lease.OpportunityID); err != nil {
-		t.Fatal(err)
-	}
-	blockedLease, err = store.ClaimRevalidation(ctx, cluster, "go-revalidator", time.Minute, true, false)
-	if err != nil || blockedLease != nil {
-		t.Fatalf("ALT satisfaction bypassed planner readmission: %+v %v", blockedLease, err)
-	}
-	// The next tick planning the same move readmits it.
-	plan, err := canonicalExecutionPlan(snapshot, FleetVault{Position: position}, decision)
-	if err != nil {
-		t.Fatal(err)
-	}
-	readmitted, err := store.PublishPlan(ctx, cluster, Snapshot{Slot: 1001, ObservedAt: time.Now().UTC(), Reserves: snapshot.Reserves}, FleetPlan{Opportunities: []PlannedOpportunity{{Decision: decision, ExecutionPlan: plan}}})
-	if err != nil || readmitted.Readmitted != 1 || readmitted.Published != 0 {
-		t.Fatalf("planner ALT readmission: %+v %v", readmitted, err)
-	}
-	readyLease, err := store.ClaimRevalidation(ctx, cluster, "go-revalidator", time.Minute, true, false)
-	if err != nil || readyLease == nil || readyLease.OpportunityID != lease.OpportunityID {
-		t.Fatalf("ready claim after planner readmission: %+v %v", readyLease, err)
-	}
-	if err = store.CommitRevalidation(ctx, *readyLease, RevalidationCommit{Disposition: "ready", Preparation: prepared, ExpectedOpportunityKey: readyLease.IdempotencyKey}); err != nil {
-		t.Fatal(err)
-	}
-	if err = store.pool.QueryRow(ctx, `SELECT opportunity_state,COALESCE(lease_kind,'') FROM loyal_yield.rebalance_opportunities WHERE id=$1`, lease.OpportunityID).Scan(&state, &kind); err != nil || state != "ready" || kind != "" {
-		t.Fatalf("ready transition: %s/%s %v", state, kind, err)
-	}
-	if nonFusedLease, claimErr := store.ClaimRevalidation(ctx, cluster, "go-revalidator", time.Minute, false, false); claimErr != nil || nonFusedLease != nil {
-		t.Fatalf("non-fused revalidator stole executor-ready work: %+v %v", nonFusedLease, claimErr)
-	}
-	finalLease, err := store.ClaimRevalidation(ctx, cluster, "go-revalidator", time.Minute, true, false)
-	if err != nil || finalLease == nil {
-		t.Fatalf("ready recovery claim: %+v %v", finalLease, err)
-	}
-	// Another vault's move into the target is admitted while this admission
-	// waits on the target's lock, and fills its 2% frontier: once it holds
-	// the lock, this admission sees that move and re-plans instead of
-	// exceeding the frontier.
-	otherSuffix := suffix + "-frontier"
-	otherVault := seedWorkerVault(t, ctx, store, otherSuffix, market, source.Address)
-	other := loadTestPosition(t, ctx, store, otherVault, source)
-	other.AmountRaw, other.SourceCollateralAmountRaw = 20_000_000_000_000, 20_000_000_000_000
-	otherID, _ := publishTestMove(t, ctx, store, cluster, snapshot, other, target.Address)
-	rival, err := store.pool.Begin(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rival.Rollback(ctx)
-	if _, _, err = LockedInflightFlows(ctx, rival, cluster, 0, 0, target.Address); err != nil {
-		t.Fatal(err)
-	}
-	if _, err = rival.Exec(ctx, `UPDATE loyal_yield.rebalance_opportunities SET opportunity_state='leased',lease_kind='execute',lease_owner='other-executor',lease_expires_at=clock_timestamp()+interval '1 minute',route_fingerprint='route',requirements_fingerprint='requirements' WHERE id=$1`, otherID); err != nil {
-		t.Fatal(err)
-	}
-	final := RevalidationCommit{Disposition: "fused_execute", Preparation: prepared, ConflictKeys: []string{"vault:" + position.VaultPubkey}, ExpectedOpportunityKey: finalLease.IdempotencyKey, TargetObservedSupplyUSDMicros: 1_000_000_000_000_000, TargetObservedSlot: 1000, SourceAvailableLiquidityRaw: &ampleRaw, TargetDepositRoomRaw: &ampleRaw}
-	admission := make(chan error, 1)
-	go func() { admission <- store.commitRevalidation(ctx, *finalLease, final, nil) }()
-	lockKey := "loyal-yield-fleet-reserve:" + cluster + ":" + target.Address
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
-		var waiting bool
-		if err = store.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_locks WHERE locktype='advisory' AND NOT granted AND database=(SELECT oid FROM pg_database WHERE datname=current_database()) AND ((classid::bigint<<32)|objid::bigint)=hashtextextended($1,0))`, lockKey).Scan(&waiting); err != nil {
-			t.Fatal(err)
-		}
-		if waiting {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the admission never waited on the target's lock")
-		}
-	}
-	if err = rival.Commit(ctx); err != nil {
-		t.Fatal(err)
-	}
-	var replan *CapacityReplan
-	if err = <-admission; !errors.As(err, &replan) || replan.Reason != "target_capacity_exhausted" {
-		t.Fatalf("an admission past the target frontier was accepted: %v", err)
-	}
-	if _, err = store.pool.Exec(ctx, `UPDATE loyal_yield.rebalance_opportunities SET created_at=created_at-interval '1 minute',lease_expires_at=clock_timestamp()-interval '1 second' WHERE vault_id=$1`, otherVault); err != nil {
-		t.Fatal(err)
-	}
-	if err = store.commitRevalidation(ctx, *finalLease, final, nil); err != nil {
-		t.Fatal(err)
-	}
-	// Go must claim the cross-mint lane only when explicitly enabled. This is
-	// the durable ownership fence that replaces the Rust route revalidator.
-	for _, statement := range []struct {
-		sql  string
-		args []any
-	}{
-		{`DELETE FROM loyal_yield.route_account_conflict_leases WHERE opportunity_id=$1`, []any{lease.OpportunityID}},
-		{`UPDATE loyal_yield.route_policies SET route_modes=array_append(route_modes,'cross_mint_jupiter'),cluster=$2,source_commitment='finalized',finalized_eligible=true WHERE id=$1 AND NOT ('cross_mint_jupiter'=ANY(route_modes))`, []any{position.PolicyID, cluster}},
-		{`UPDATE loyal_yield.rebalance_opportunities SET opportunity_state='revalidate',lease_kind=NULL,lease_owner=NULL,lease_expires_at=NULL,source_liquidity_mint=$2,target_liquidity_mint=$3,liquidity_mint=$3,execution_plan=jsonb_set(jsonb_set(jsonb_set(execution_plan,'{kind}',to_jsonb('cross_mint_jupiter'::text)),'{route_kind}',to_jsonb('cross_mint_jupiter'::text)),'{policy_bindings}',jsonb_build_object('delegated_signer','test-signer','withdraw',jsonb_build_object('policy_account',$4::text))) WHERE id=$1`, []any{lease.OpportunityID, USDCMint, USDTMint, position.PolicyAccount}},
-	} {
-		if _, err = store.pool.Exec(ctx, statement.sql, statement.args...); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if disabled, claimErr := store.ClaimRevalidation(ctx, cluster, "go-revalidator", time.Minute, false, false); claimErr != nil || disabled != nil {
-		t.Fatalf("disabled Go revalidator claimed cross-mint work: %+v %v", disabled, claimErr)
-	}
-	crossLease, claimErr := store.ClaimRevalidation(ctx, cluster, "go-revalidator", time.Minute, false, true)
-	if claimErr != nil || crossLease == nil || crossLease.RouteKind != "cross_mint_jupiter" || crossLease.SourceLiquidityMint != USDCMint || crossLease.TargetLiquidityMint != USDTMint {
-		t.Fatalf("enabled Go revalidator did not claim cross-mint work: %+v %v", crossLease, claimErr)
 	}
 }

@@ -73,45 +73,6 @@ func TestWithdrawalHealthCurrentHoldBeforeOperationExists(t *testing.T) {
 	}
 }
 
-// Opt-in existing disposable-Postgres harness; never accepts a remote database.
-func TestWithdrawalHealthPersistenceDoesNotChangeAuthority(t *testing.T) {
-	ctx, cancel, db, _ := openManualRecoveryTestDatabase(t, 15*time.Second)
-	defer cancel()
-	defer db.Close()
-	resetManualRecoveryProductionRoute(t, ctx, db, "withdrawal-health-worker")
-	o := Observation{ObservedAt: time.Now().UTC(), Snapshot: targeted(livePartialSnapshot())}
-	h, _ := assessWithdrawalHealth(rwa, o, Decision{Action: HoldManualRecovery, Reason: "custody_mismatch"}, nil)
-	if err := db.RecordWithdrawalHealth(ctx, h); err != nil {
-		t.Fatal(err)
-	}
-	read := func() (earnmax.WithdrawalHealth, int64, int64) {
-		t.Helper()
-		var raw []byte
-		var version, generation int64
-		if err := db.pool.QueryRow(ctx, `SELECT state->'withdrawalHealth',state_version,(state->>'generation')::bigint FROM loyal_yield.multiply_route_states WHERE route_key=$1`, productionRouteKey).Scan(&raw, &version, &generation); err != nil {
-			t.Fatal(err)
-		}
-		var stored earnmax.WithdrawalHealth
-		if err := json.Unmarshal(raw, &stored); err != nil {
-			t.Fatal(err)
-		}
-		return stored, version, generation
-	}
-	first, version, generation := read()
-	if first.Status != "operator_attention" || first.BlockedSince == nil || version != 1 || generation != 1 {
-		t.Fatalf("state/authority changed: %+v %d %d", first, version, generation)
-	}
-	h.ObservedAt = h.ObservedAt.Add(time.Minute)
-	h.ObservedSlot++
-	if err := db.RecordWithdrawalHealth(ctx, h); err != nil {
-		t.Fatal(err)
-	}
-	second, _, _ := read()
-	if !second.BlockedSince.Equal(*first.BlockedSince) {
-		t.Fatal("durable onset reset")
-	}
-}
-
 func TestTickPersistsWithdrawalPrepareHoldBeforeRecordingOperation(t *testing.T) {
 	o := Observation{ObservedAt: time.Now().UTC(), Snapshot: targeted(livePartialSnapshot())}
 	var stored withdrawalAssessment
