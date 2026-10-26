@@ -223,7 +223,7 @@ func (p *selectorSampler) sample(ctx, feedCtx context.Context, markets []LaneEco
 		_, _ = fmt.Fprintf(e.out, "backyard-rwa-worker: vault=%s "+format, append([]any{worker.manifest.vault.Name}, args...)...)
 	}
 	logf := func(format string, args ...any) { _, _ = fmt.Fprintf(e.out, format, args...) }
-	result, observed, err := database.evaluateSelectorObserved(ctx, rpc, view, e.runtime.Jupiter, worker.manifest, p.state, markets, p.identity, DefaultSelectorPolicy())
+	result, observed, err := database.evaluateSelectorObserved(ctx, rpc, view, e.runtime.Jupiter, worker.manifest, p.state, markets, p.identity, worker.manifest.vault.selectorPolicy())
 	if err != nil {
 		code := sanitizedSelectorEvaluateFailure(err)
 		events.selectorSampleError(err)
@@ -245,7 +245,7 @@ func (p *selectorSampler) sample(ctx, feedCtx context.Context, markets []LaneEco
 		}, logf)
 	}
 	for _, lane := range observed.lanes {
-		decision, ok := decideLeverageTarget(lane, result, markets, DefaultSelectorPolicy(), productionLeverageStepPricer(feedCtx, rpc, view, e.runtime.Jupiter, worker.manifest, observed, lane))
+		decision, ok := decideLeverageTarget(lane, result, markets, worker.manifest.vault.selectorPolicy(), productionLeverageStepPricer(feedCtx, rpc, view, e.runtime.Jupiter, worker.manifest, observed, lane))
 		if !ok {
 			continue
 		}
@@ -262,7 +262,7 @@ func (p *selectorSampler) sample(ctx, feedCtx context.Context, markets []LaneEco
 		}
 	}
 	for _, source := range observed.lanes {
-		if lane, level, ok := decideOverflowLevel(source, markets, DefaultSelectorPolicy(), time.Now().UTC()); ok && observed.planning != nil && observed.planning.inputs.Levels[lane] != level {
+		if lane, level, ok := decideOverflowLevel(source, markets, worker.manifest.vault.selectorPolicy(), time.Now().UTC()); ok && observed.planning != nil && observed.planning.inputs.Levels[lane] != level {
 			if err := database.RecordLaneLevel(ctx, routeKey, lane, level); err != nil {
 				printf("overflow lane level not stored: %s\n", sanitizedSelectorEvaluateFailure(err))
 			}

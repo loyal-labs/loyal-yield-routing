@@ -16,6 +16,7 @@ type Vault struct {
 	SquadsIndex                   uint8
 	RouteKey                      string
 	AdminPerformanceFeeBPS        int64
+	IdleBufferRaw                 int64
 
 	squads, cash                               string
 	protocol, idleAuth, idleATA, lpMint        string
@@ -28,13 +29,19 @@ type Vault struct {
 
 var rwa = newVault(Vault{Name: "rwa", VoltrVault: "HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA",
 	Strategy: "DCpR24Eb6xCWxDyaZvCBTkadkxCB2vkqJN1EfYNWtLxY", Adaptor: fsj27Program, SquadsIndex: 0,
-	RouteKey: "rwa-multiply:ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh", AdminPerformanceFeeBPS: 0})
+	RouteKey: "rwa-multiply:ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh", AdminPerformanceFeeBPS: 0, IdleBufferRaw: 5_000_000_000})
 
 var looping = newVault(Vault{Name: "looping", VoltrVault: "GrHZD15bMiUwrVPsmBwz8GRoQeDZN6wNEQVdW8k8SxV1",
 	Strategy: "GUCvzfn1hqThWp5uQNF7CqoxC1XckCPTjsRGKVXHPxu1", Adaptor: voltr.TrustfulProgramID.String(), SquadsIndex: 2,
-	RouteKey: "backyard:6HTfVjwk5FfW4GH67hmEen7VHeURdB5EJj6E429qTrUY", AdminPerformanceFeeBPS: 0})
+	RouteKey: "backyard:6HTfVjwk5FfW4GH67hmEen7VHeURdB5EJj6E429qTrUY", AdminPerformanceFeeBPS: 0, IdleBufferRaw: 0})
 
 var vaults = []*Vault{rwa, looping}
+
+func (v *Vault) selectorPolicy() SelectorPolicy {
+	p := DefaultSelectorPolicy()
+	p.IdleBufferRaw = v.IdleBufferRaw
+	return p
+}
 
 const fsj27Program = "FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW"
 

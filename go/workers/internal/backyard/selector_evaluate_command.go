@@ -55,7 +55,7 @@ func RunSelectorEvaluate(ctx context.Context, out io.Writer, config RuntimeConfi
 			return observeSelectorShadow(ctx, db, rpc, view, manifest, state, newProgramIdentityWatcher(viewProgramIdentity(view)).observe)
 		},
 		evaluate: func(ctx context.Context, db *Database, markets []LaneEconomics) (SelectorResult, error) {
-			return db.evaluateSelector(ctx, rpc, view, config.Jupiter, manifest, state, markets, newProgramIdentityWatcher(viewProgramIdentity(view)).observe, DefaultSelectorPolicy())
+			return db.evaluateSelector(ctx, rpc, view, config.Jupiter, manifest, state, markets, newProgramIdentityWatcher(viewProgramIdentity(view)).observe, v.selectorPolicy())
 		},
 	})
 }
@@ -100,7 +100,7 @@ func selectorEvaluateDryRun(ctx context.Context, out io.Writer, deps selectorEva
 		return staleHoldFrom(err, "selector_evaluate_observation_unavailable")
 	}
 	markets, _ := feed.Snapshot()
-	selection := SelectOpportunity(SelectorInput{Now: time.Now().UTC(), Snapshot: observation.Snapshot, Lanes: observation.lanes, Markets: markets, Policy: DefaultSelectorPolicy()}, SelectorState{})
+	selection := SelectOpportunity(SelectorInput{Now: time.Now().UTC(), Snapshot: observation.Snapshot, Lanes: observation.lanes, Markets: markets, Policy: deps.manifest.vault.selectorPolicy()}, SelectorState{})
 	request, requestErr := readPilotCanaryEntryRequest(time.Now().UTC())
 	report := struct {
 		Mode                string         `json:"mode"`
