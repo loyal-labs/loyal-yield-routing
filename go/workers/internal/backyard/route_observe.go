@@ -324,6 +324,9 @@ func observeLaneView(ctx context.Context, manifest RouteManifest, runtime routeO
 		return Observation{}, nil, err
 	}
 	nav, err := ComputeRouteNAVForRoutes(slot, navAccounts, manifest, nil, routes, runtime.inputs.ExitCosts)
+	if lane, unpriced := unpricedExitLane(err); unpriced {
+		return Observation{}, nil, unpricedExitHeld(v, accounts, slot, demand, fingerprint, runtime.now(), lane, err)
+	}
 	if err != nil {
 		hold, err := healthHold(err, route.Lane)
 		return Observation{}, hold, err
@@ -733,6 +736,16 @@ func ltvBPSFromTokenPrices(collateralRaw uint64, collateralPriceSF [16]byte, col
 		return 0, fmt.Errorf("Kamino LTV is outside bounded range")
 	}
 	return debt.Int64(), nil
+}
+
+func unpricedExitHeld(v *Vault, accounts []ConfirmedAccount, slot, demand int64, fingerprint string, now time.Time, lane string, hold error) error {
+	idle, err := decodePinnedUSDC(accountAt(accounts, v.idleATA), v.idleAuth)
+	if err != nil || idle.Raw > math.MaxInt64 {
+		return hold
+	}
+	id := sha256Bytes([]byte(fmt.Sprintf("exit-unpriced:%s|%s|voltr-idle:%d", lane, fingerprint, idle.Raw)))
+	return &unpricedExitHealth{error: hold, lane: lane, health: Observation{ObservedAt: now, Snapshot: Snapshot{
+		ObservationID: id, Slot: slot, RouteKind: RouteKind, Fresh: true, WithdrawalDemandRaw: demand, VoltrIdleRaw: int64(idle.Raw)}}}
 }
 
 func kaminoHealthHold(state *vaultState, err error, slot int64, now time.Time, lane string) (Observation, bool) {
