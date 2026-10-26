@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-usage="usage: bun run deploy backyard|retail|observer|web|admin|stats [sha] [--migrations-applied] [--stopped]"
+usage="usage: bun run deploy backyard|retail|observer|web|admin|stats [sha] [--migrations-applied] [--stopped] [--check-ci]"
 family=${1:-}
 [[ $# -gt 0 ]] && shift
 case $family in
@@ -15,10 +15,12 @@ esac
 target=origin/main
 migrations_applied=no
 mode=running
+check_ci=no
 for arg in "$@"; do
   case $arg in
     --migrations-applied) migrations_applied=yes ;;
     --stopped) mode=stopped ;;
+    --check-ci) check_ci=yes ;;
     -*) echo "$usage" >&2; exit 2 ;;
     *) target=$arg ;;
   esac
@@ -49,11 +51,30 @@ sha=$(git rev-parse --verify --quiet "${target}^{commit}") || {
   echo "unknown commit '$target'" >&2
   exit 1
 }
-if [[ $web_family == yes && ${LOYAL_DEPLOY_DRY_RUN:-} == 1 ]]; then
+if [[ $check_ci == yes || ( $web_family == yes && ${LOYAL_DEPLOY_DRY_RUN:-} == 1 ) ]]; then
   :
 elif ! git merge-base --is-ancestor "$sha" origin/main; then
   echo "$sha is not on origin/main; deploy only merged commits" >&2
   exit 1
+fi
+
+# web-go.yml runs on PRs only, so web families have no verification to look up.
+if [[ $web_family == no ]]; then
+  artifact=$(scripts/ci-tree-key.sh "$sha")
+  green=$(gh api -X GET "repos/{owner}/{repo}/actions/artifacts" -f name="$artifact" \
+    --jq '[.artifacts[] | select(.expired == false and .workflow_run.head_repository_id == .workflow_run.repository_id)] | length')
+  if [[ ! $green =~ ^[0-9]+$ ]]; then
+    echo "cannot read Workers v2 verification artifacts from GitHub: $green" >&2
+    exit 1
+  fi
+  if [[ $green == 0 ]]; then
+    echo "no green Workers v2 verification for tree key $artifact; wait for CI or push" >&2
+    exit 1
+  fi
+  echo "$sha has a green Workers v2 verification: $artifact"
+fi
+if [[ $check_ci == yes ]]; then
+  exit 0
 fi
 
 if [[ $family == web ]]; then
