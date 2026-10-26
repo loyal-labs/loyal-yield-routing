@@ -83,11 +83,9 @@ export function viewModel(input: {
   };
   return {
     activity: input.activity?.operations ?? [],
-    apyWindowDays: summary?.apyWindowDays ?? null,
     balanceUsd: summary?.balanceUsd ?? 0,
     canWithdraw: controls.canWithdraw,
     coverage: summary?.coverage ?? "history_incomplete",
-    currentApyBps: summary?.currentApyBps ?? null,
     earnedUsd: summary?.earnedUsd ?? null,
     error: input.error,
     forecastApyBps: summary?.forecastApyBps ?? null,

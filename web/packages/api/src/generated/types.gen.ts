@@ -531,7 +531,6 @@ export type EarnMaxActivity = {
 
 export type EarnMaxApy = {
     apyBps: number | null;
-    apyWindowDays: number | null;
     currentApyBps: number | null;
     history: Array<HistoryPoint>;
 };
@@ -561,7 +560,6 @@ export type EarnMaxErrorDetail = {
 
 export type EarnMaxSummary = {
     apyHistory: Array<ApyPoint>;
-    apyWindowDays: number | null;
     balanceUsd: number;
     claimAmountRaw: string;
     coverage: string;
