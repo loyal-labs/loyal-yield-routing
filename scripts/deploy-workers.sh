@@ -72,6 +72,16 @@ if [[ $web_family == no ]]; then
     exit 1
   fi
   echo "$sha has a green Workers v2 verification: $artifact"
+  failed=$(gh api -X GET "repos/{owner}/{repo}/actions/workflows/workers-v2-verify.yml/runs" -f head_sha="$sha" -f event=push \
+    --jq '[.workflow_runs[] | select(.status == "completed" and .conclusion == "failure")] | length')
+  if [[ ! $failed =~ ^[0-9]+$ ]]; then
+    echo "cannot read Workers v2 verification runs from GitHub: $failed" >&2
+    exit 1
+  fi
+  if [[ $failed != 0 ]]; then
+    echo "main's race-checked run failed for $sha; fix main before deploying" >&2
+    exit 1
+  fi
 fi
 if [[ $check_ci == yes ]]; then
   exit 0
