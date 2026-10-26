@@ -102,6 +102,7 @@ export async function readEarnMaxVoltrSummary(
     currentApyBps,
     forecastApyBps: apy.apyBps,
     goal: "active",
+    issuanceFeeBps: position.issuanceFeeBps,
     policyAccounts: [],
     policyStatus: "ready",
     realizedApyBps: apy.apyBps,

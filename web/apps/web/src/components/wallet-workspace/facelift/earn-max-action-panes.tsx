@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  earnMaxEntryFeeNote,
   earnMaxWithdrawalPending,
   formatEarnMaxApyLabel,
 } from "@loyal-labs/shared";
@@ -289,6 +290,7 @@ export function EarnMaxDepositPane({
   const isInsufficient = !isBelowMinimum && amountUsd > sourceUsd;
   const isValidAmount = !(isBelowMinimum || isInsufficient);
   const isFirstDeposit = view.policyStatus !== "ready";
+  const entryFeeNote = earnMaxEntryFeeNote(view.issuanceFeeBps, amountUsd);
 
   const handleAmountChange = (rawValue: string) => {
     const sanitized = sanitizeBucksAmountInput(rawValue, amount);
@@ -326,6 +328,9 @@ export function EarnMaxDepositPane({
                 text="Your first deposit takes ~0.06 SOL from your wallet for Solana account rent — it is returned when you fully withdraw."
                 tone="info"
               />
+            ) : null}
+            {entryFeeNote ? (
+              <CaptionNote text={entryFeeNote} tone="info" />
             ) : null}
           </div>
 

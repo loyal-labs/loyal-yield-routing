@@ -231,6 +231,7 @@ export type VoltrPosition = {
   escrowLpAtaExists: boolean;
   /** Validated pooled idle USDC, or null when unavailable. Not a reservation. */
   idleAssetRaw: bigint | null;
+  issuanceFeeBps: number;
   lpRaw: bigint;
   /** USDC raw the free LP redeems for right now. */
   valueRaw: bigint;
@@ -362,6 +363,7 @@ export async function readVoltrPosition(
     authorityLamports: authorityAccount?.lamports ?? 0,
     escrowLpAtaExists: escrow !== null,
     idleAssetRaw,
+    issuanceFeeBps: Number(readU16(v, 522)),
     lpRaw,
     valueRaw: lpToAssets(lpRaw),
     withdrawal,

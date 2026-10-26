@@ -30,6 +30,7 @@ export type EarnMaxViewModel = {
   forecastApyBps: number | null;
   isBusy: boolean;
   isLoading: boolean;
+  issuanceFeeBps: number;
   performance: EarnMaxPerformancePoint[];
   policyStatus: string | null;
   realizedApyBps: number | null;

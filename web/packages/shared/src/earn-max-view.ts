@@ -96,6 +96,21 @@ export function formatEarnMaxApyLabel(bps: number | null): string {
   return bps === null ? "— APY" : `${(bps / 100).toFixed(2)}% APY`;
 }
 
+export function earnMaxEntryFeeNote(
+  issuanceFeeBps: number,
+  amountUsd: number
+): string | null {
+  if (!(issuanceFeeBps > 0 && amountUsd > 0)) return null;
+  const netCents = Math.floor(
+    (Math.round(amountUsd * 100) * (10_000 - issuanceFeeBps)) / 10_000
+  );
+  const net = (netCents / 100).toLocaleString("en-US", {
+    maximumFractionDigits: 2,
+    minimumFractionDigits: 2,
+  });
+  return `Entry fee ${(issuanceFeeBps / 100).toFixed(2)}% · you'll get ≈ $${net}`;
+}
+
 export function earnMaxApyFigure(
   summary: Pick<EarnMaxSummary, "forecastApyBps"> | null
 ): { label: string } | null {

@@ -38,6 +38,7 @@ type Summary struct {
 	EarnedUsd          *float64        `json:"earnedUsd"`
 	ForecastApyBps     *int64          `json:"forecastApyBps"`
 	Goal               string          `json:"goal"`
+	IssuanceFeeBps     uint16          `json:"issuanceFeeBps"`
 	PolicyAccounts     []PolicyBinding `json:"policyAccounts" nullable:"false"`
 	PolicyStatus       string          `json:"policyStatus"`
 	RealizedApyBps     *int64          `json:"realizedApyBps"`
@@ -77,7 +78,7 @@ func (r *Reader) Summary(ctx context.Context, settings solana.PublicKey) (Summar
 	summary := Summary{
 		ObservedSlot: strconv.FormatUint(position.ObservedSlot, 10), APYHistory: rnHistory(public.History),
 		BalanceUsd: float64(position.Value) / 1e6, ClaimAmountRaw: "0", Coverage: "complete", CurrentApyBps: public.CurrentApyBps,
-		ForecastApyBps: public.APYBps, Goal: "active", PolicyAccounts: []PolicyBinding{}, PolicyStatus: "ready", RealizedApyBps: apy.Bps,
+		ForecastApyBps: public.APYBps, Goal: "active", IssuanceFeeBps: position.IssuanceBPS, PolicyAccounts: []PolicyBinding{}, PolicyStatus: "ready", RealizedApyBps: apy.Bps,
 	}
 	if !history.Complete() {
 		summary.Coverage = "history_incomplete"

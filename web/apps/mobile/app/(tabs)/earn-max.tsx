@@ -150,6 +150,7 @@ export default function EarnMaxScreen() {
       <DepositSheet
         earnMax
         earnMaxApyBps={apy}
+        earnMaxIssuanceFeeBps={summary?.issuanceFeeBps ?? 0}
         isFirstDeposit={!summary?.balanceUsd}
         open={sheet === "deposit"}
         onClose={() =>

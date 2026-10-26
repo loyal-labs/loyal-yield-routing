@@ -35,6 +35,7 @@ type Position struct {
 	Value        USDCRaw
 	Idle         *USDCRaw
 	Withdrawal   *PendingWithdrawal
+	IssuanceBPS  uint16
 }
 
 type ClaimBlock string
@@ -104,7 +105,7 @@ func (r *Reader) Position(ctx context.Context, a Authority, now time.Time) (Posi
 	if err != nil {
 		return Position{}, err
 	}
-	position := Position{ObservedSlot: slot, Idle: idleAssets(idle), PoolLP: totalLP.Uint64(), PoolValue: poolValue}
+	position := Position{ObservedSlot: slot, Idle: idleAssets(idle), PoolLP: totalLP.Uint64(), PoolValue: poolValue, IssuanceBPS: vault.IssuanceFeeBPS}
 	if lpAccount != nil {
 		token, err := spl.DecodeTokenAccount(lpAccount)
 		if err != nil {
