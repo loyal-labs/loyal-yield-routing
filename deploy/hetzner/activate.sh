@@ -110,6 +110,10 @@ else
 	say "previous release $prev"
 fi
 
+if [ "$family" = web ]; then
+	/bin/sh "$releases/$sha/retain-web-assets.sh" "$releases/$sha/assets" /opt/loyal/assets/web
+fi
+
 if [ "$mode" = running ]; then
 	say "stopping $unit ($prev)"
 	if ! systemctl stop "$unit"; then

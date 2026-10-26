@@ -10,6 +10,31 @@
         if (localStorage.getItem("theme") === "dark")
           document.documentElement.classList.add("dark");
       } catch (e) {}
+      const recoverStartup = () => {
+        if (!document.getElementById("app-bootstrap")) return;
+        // Never reload a running wallet or loop when a blocker/network stays down.
+        try {
+          const key = "loyal-startup-reload";
+          const now = Date.now();
+          if (now - Number(sessionStorage.getItem(key)) > 60000) {
+            sessionStorage.setItem(key, String(now));
+            location.reload();
+            return;
+          }
+        } catch (e) {}
+        document.getElementById("root").hidden = true;
+        document.getElementById("app-load-error").hidden = false;
+      };
+      const onStartupError = () => {
+        if (document.readyState === "loading") {
+          document.addEventListener("DOMContentLoaded", recoverStartup, {
+            once: true,
+          });
+        } else {
+          recoverStartup();
+        }
+      };
+      window.addEventListener("vite:preloadError", onStartupError);
       window.addEventListener(
         "error",
         (event) => {
@@ -18,18 +43,7 @@
             event.target.type !== "module"
           )
             return;
-          const showLoadError = () => {
-            if (!document.getElementById("app-bootstrap")) return;
-            document.getElementById("root").hidden = true;
-            document.getElementById("app-load-error").hidden = false;
-          };
-          if (document.readyState === "loading") {
-            document.addEventListener("DOMContentLoaded", showLoadError, {
-              once: true,
-            });
-          } else {
-            showLoadError();
-          }
+          onStartupError();
         },
         true
       );
