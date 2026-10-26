@@ -514,3 +514,40 @@ func TestUnpricedLaneHoldsOnlyItsVault(t *testing.T) {
 		t.Fatalf("unpriced lane: worker stopped with %v, observation %v", err, observeErr)
 	}
 }
+
+func TestDustLaneWithoutExitCostDoesNotHoldVault(t *testing.T) {
+	manifest, accounts := multiLaneFixture(t, func(accounts *[]ConfirmedAccount) {
+		route, err := runtimeRoute(onreONycUSDC)
+		if err != nil {
+			t.Fatal(err)
+		}
+		peg := new(big.Int).Lsh(big.NewInt(1), 60)
+		upsertConfirmedAccount(accounts, kaminoReserveImage(t, route.Kamino.Market, route.Kamino.CollateralReserve, route.Kamino.CollateralMint, 77, peg, 1_000_000_000, 0, 1_000_000_000, 6))
+		upsertConfirmedAccount(accounts, kaminoReserveImage(t, route.Kamino.Market, route.Kamino.DebtReserve, route.Kamino.DebtMint, 77, peg, 1_000_000_000, 0, 1_000_000_000, 6))
+		upsertConfirmedAccount(accounts, marketFixture(t, route.Kamino.Market))
+		custody := tokenAccountFixture(t, route.CollateralCustody, route.Kamino.CollateralMint, bridgeVault, 500_000)
+		custody.Owner = route.CollateralTokenProgram
+		upsertConfirmedAccount(accounts, custody)
+	})
+	costs := fixtureExitCosts()
+	delete(costs, onreONycUSDC)
+	quoter := &exitQuoter{
+		price: func(context.Context, heldExitBasis, int64, time.Time) (ExitCost, error) {
+			return ExitCost{}, fmt.Errorf("jupiter refuses dust")
+		},
+		record: func(context.Context, ExitCost) (bool, error) { return true, nil },
+		now:    func() time.Time { return time.Unix(kaminoFixtureUnix, 0).UTC() },
+	}
+	o, _, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), manifest, routeObservationRuntime{state: testVaultState, inputs: targetInputs{ExitCosts: costs},
+		read:             fixtureBatchRuntime(77, accounts),
+		refreshValuation: fixtureRefresh(77, accounts),
+		now:              func() time.Time { return time.Unix(kaminoFixtureUnix, 0).UTC() },
+		exits:            quoter,
+	})
+	if err != nil {
+		t.Fatalf("dust lane held the vault: %v", err)
+	}
+	if o.Snapshot.StrategyNAVRaw != 32_000_010 || o.Snapshot.ExitLiabilityRaw != 500_000 {
+		t.Fatalf("dust lane NAV %d exit %d, want 32000010 and 500000", o.Snapshot.StrategyNAVRaw, o.Snapshot.ExitLiabilityRaw)
+	}
+}
