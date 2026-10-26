@@ -240,4 +240,8 @@ labels. Ordinary Earn keeps Forecast and Autodeposit.
 MAX's funding balance follows the wallet USDC account at confirmed commitment
 (`useEarnMaxFundingUsdc`), ordered by slot and re-read on foreground. Its amount and positions sheets use the supplied Figma assets and
 layout; the expanded positions card leaves the header and tab bar accessible.
-Earnings use the same cash-flow-adjusted daily series as web.
+Earn MAX charts use the activity API’s `earnings.performanceUsd` headline and
+`earnings.days[].performanceUsd` bars, labeled Investment performance. Actual
+trading losses remain included; changes in estimated exit costs are excluded.
+Missing attribution shows unavailable, and missing daily marks are omitted.
+Balances, withdrawal amounts, and the positions sheet retain their net values.

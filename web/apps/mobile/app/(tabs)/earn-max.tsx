@@ -6,7 +6,7 @@ import {
   EarnHeader,
 } from "@/components/earn/EarnScreenControls";
 import * as Haptics from "expo-haptics";
-import { earnMaxApyFigure, earnMaxDailySeries } from "@loyal-labs/shared";
+import { earnMaxApyFigure } from "@loyal-labs/shared";
 import { router } from "expo-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Pressable, Text, View } from "react-native";
@@ -53,35 +53,32 @@ export default function EarnMaxScreen() {
   const earnings = useMemo<EarnEarningsResponse | null>(() => {
     if (
       !summary ||
-      !activity ||
-      summary.earnedUsd === null ||
+      !activity?.earnings ||
       summary.coverage !== "complete"
     )
       return null;
-    const days = earnMaxDailySeries({
-      performance: activity.performance,
-      activity: activity.operations,
-    }).days;
+    const { performanceUsd, days } = activity.earnings;
+    const today = new Date().toISOString().slice(0, 10);
     return {
       bars: days.map((day) => ({
         apyBps: null,
         avgPrincipalUsd: 0,
-        earnedUsd: day.earnedUsd,
-        endAt: new Date(day.date.getTime() + 86400000).toISOString(),
-        isCurrent: day.isCurrent,
-        label: String(day.date.getUTCDate()),
+        earnedUsd: day.performanceUsd,
+        endAt: `${day.date}T23:59:59.000Z`,
+        isCurrent: day.date === today,
+        label: String(Number(day.date.slice(-2))),
         principalAmountRaw: "0",
         principalUsd: 0,
-        startAt: day.date.toISOString(),
+        startAt: `${day.date}T00:00:00.000Z`,
       })),
       currentApyBps: null,
       lastDepositAt: null,
-      lifetimeEarnedUsd: summary.earnedUsd,
+      lifetimeEarnedUsd: performanceUsd,
       principalAmountRaw: "0",
       principalUsd: 0,
-      rangeEarnedUsd: days.reduce((sum, day) => sum + day.earnedUsd, 0),
-      sinceLastDepositEarnedUsd: summary.earnedUsd,
-      todayEarnedUsd: days.at(-1)?.earnedUsd ?? 0,
+      rangeEarnedUsd: days.reduce((sum, day) => sum + day.performanceUsd, 0),
+      sinceLastDepositEarnedUsd: performanceUsd,
+      todayEarnedUsd: days.find((day) => day.date === today)?.performanceUsd ?? 0,
     };
   }, [summary, activity]);
   const activityLink = () =>
