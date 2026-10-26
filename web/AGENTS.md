@@ -738,6 +738,11 @@ caught dynamic imports. The Vite app uses hashed UI chunk names to avoid blocker
 false positives on component filenames; optional X pixel, Mixpanel and Datadog
 chunks retain recognizable names and their network requests remain blockable.
 
+Web deploys retain hashed assets for 30 days after their last deployment under
+`/opt/loyal/assets/web`; the current embedded build takes precedence. The entry
+HTML retries a failed module load once per minute per tab during bootstrap only.
+An already mounted wallet never automatically reloads on a chunk failure.
+
 Landing CTAs navigate directly to the app hostname without a timed splash.
 The Vite entry HTML and router pending state render `WorkspaceSkeleton`; the
 workspace keeps it until auth hydration settles, then uses a pane skeleton for

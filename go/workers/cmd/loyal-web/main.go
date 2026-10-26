@@ -44,6 +44,7 @@ func config() (webapp.Config, error) {
 	if cfg.Dist, err = fs.Sub(embedded, "dist"); err != nil {
 		return cfg, err
 	}
+	cfg.Dist = webserve.WithAssetFallback(cfg.Dist, os.DirFS("/opt/loyal/assets/web"))
 	if cfg.Upstream, err = parseOrigin("LOYAL_WEB_UPSTREAM", "https://app.askloyal.com"); err != nil {
 		return cfg, err
 	}

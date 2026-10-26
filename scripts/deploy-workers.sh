@@ -225,6 +225,10 @@ if [[ $running != "$sha" || $mode == stopped ]]; then
   ssh "$host" mkdir -p "$dir"
   scp -q "$binary" "$host:$dir/$binary_name.tmp"
   scp -q "$tree/deploy/hetzner/activate.sh" "$host:$dir/activate.sh.tmp"
+  if [[ $family == web && -f $tree/deploy/hetzner/retain-web-assets.sh ]]; then
+    scp -q -r "$tree/go/workers/cmd/loyal-web/dist/assets" "$host:$dir/"
+    scp -q "$tree/deploy/hetzner/retain-web-assets.sh" "$host:$dir/"
+  fi
   ssh "$host" sh -s -- "$dir" "$binary_name" <<'REMOTE'
 chmod 555 "$1/$2.tmp" "$1/activate.sh.tmp" &&
   mv -f "$1/$2.tmp" "$1/$2" &&

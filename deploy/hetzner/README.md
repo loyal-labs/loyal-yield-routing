@@ -595,6 +595,18 @@ The differences:
 Roll back with `bun run deploy web <prev-sha>`. The host log is
 `/var/log/loyal-deploy/web-<sha>.log`.
 
+Web deploys also upload the build's `assets/` and `retain-web-assets.sh` beside
+the binary. Before stopping the old process, activation copies missing hashed
+files into `/opt/loyal/assets/web`, refreshes the retention time for the new
+build's assets, and removes files unused by a deployment for over 30 days.
+The directory contains public build assets only; `loyal-web` reads it as a
+fallback for missing `/assets/*` files, never for HTML or API responses.
+No service configuration change is required. Retention starts with the first
+deploy using this flow; previously deleted chunks cannot be recovered from it.
+After two releases, an asset URL from the first should still return 200 with
+`Cache-Control: public, max-age=31536000, immutable`. A nonexistent asset must
+return 404 with `Cache-Control: no-store`.
+
 ### Cloudflare tunnel
 
 `next.askloyal.com` is served the way robinx.trade is: a proxied Cloudflare
