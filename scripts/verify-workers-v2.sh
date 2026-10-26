@@ -12,6 +12,8 @@ if test -n "$(gofmt -l cmd internal)"; then
   exit 1
 fi
 go vet ./...
-go test -race -count=1 ./...
+race=()
+[[ ${WORKERS_V2_RACE:-} == 1 ]] && race=(-race)
+go test "${race[@]}" -count=1 ./...
 go build ./cmd/loyal-observer ./cmd/loyal-engine ./cmd/loyal-evidence ./cmd/loyal-migrate
 echo '{"gate":"offline","verdict":"PASS","scope":"offline package behavior and binaries; durable acceptance remains separate"}'

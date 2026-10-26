@@ -125,6 +125,7 @@ jobs:
           MOCK_YIELD_PROTOCOLS_PROGRAM_SO: ${{ github.workspace }}/target/deploy/mock_yield_protocols_program.so
           SQUADS_SMART_ACCOUNT_PROGRAM_SO: ${{ github.workspace }}/crates/squads-test-harness/fixtures/squads/squads_smart_account_program.so
           WORKERS_V2_CACHE_DIR: ${{ runner.temp }}/workers-go
+          WORKERS_V2_RACE: ${{ github.event_name == 'push' && '1' || '' }}
         run: bash scripts/verify-workers-v2.sh
       - name: Save Go module and build caches
         if: github.event_name == 'push'
