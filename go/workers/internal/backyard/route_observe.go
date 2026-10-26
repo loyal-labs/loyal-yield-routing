@@ -325,12 +325,14 @@ func observeLaneView(ctx context.Context, manifest RouteManifest, runtime routeO
 	}
 	nav, err := ComputeRouteNAVForRoutes(slot, navAccounts, manifest, nil, routes, runtime.inputs.ExitCosts)
 	if lane, unpriced := unpricedExitLane(err); unpriced {
+		noteUnpricedExit(runtime.state, v, lane, err)
 		return Observation{}, nil, unpricedExitHeld(v, accounts, slot, demand, fingerprint, runtime.now(), lane, err)
 	}
 	if err != nil {
 		hold, err := healthHold(err, route.Lane)
 		return Observation{}, hold, err
 	}
+	noteUnpricedExit(runtime.state, v, "", nil)
 	runtime.state.staleHeld.clear()
 	collateralMint, err := decodeBase58PublicKey(route.Kamino.CollateralMint)
 	if err != nil {
@@ -739,13 +741,25 @@ func ltvBPSFromTokenPrices(collateralRaw uint64, collateralPriceSF [16]byte, col
 }
 
 func unpricedExitHeld(v *Vault, accounts []ConfirmedAccount, slot, demand int64, fingerprint string, now time.Time, lane string, hold error) error {
-	idle, err := decodePinnedUSDC(accountAt(accounts, v.idleATA), v.idleAuth)
-	if err != nil || idle.Raw > math.MaxInt64 {
-		return hold
+	idleRaw := int64(0)
+	if idle, err := decodePinnedUSDC(accountAt(accounts, v.idleATA), v.idleAuth); err == nil && idle.Raw <= math.MaxInt64 {
+		idleRaw = int64(idle.Raw)
 	}
-	id := sha256Bytes([]byte(fmt.Sprintf("exit-unpriced:%s|%s|voltr-idle:%d", lane, fingerprint, idle.Raw)))
+	id := sha256Bytes([]byte(fmt.Sprintf("exit-unpriced:%s|%s|voltr-idle:%d", lane, fingerprint, idleRaw)))
 	return &unpricedExitHealth{error: hold, lane: lane, health: Observation{ObservedAt: now, Snapshot: Snapshot{
-		ObservationID: id, Slot: slot, RouteKind: RouteKind, Fresh: true, WithdrawalDemandRaw: demand, VoltrIdleRaw: int64(idle.Raw)}}}
+		ObservationID: id, Slot: slot, RouteKind: RouteKind, Fresh: true, WithdrawalDemandRaw: demand, VoltrIdleRaw: idleRaw}}}
+}
+
+func noteUnpricedExit(state *vaultState, v *Vault, lane string, err error) {
+	if !state.unpricedExitNote.changed(lane) {
+		return
+	}
+	if lane == "" {
+		_, _ = fmt.Fprintf(os.Stderr, "backyard-rwa-worker: exit unpriced hold cleared vault=%s\n", v.Name)
+		return
+	}
+	_, _ = fmt.Fprintf(os.Stderr, "backyard-rwa-worker: exit unpriced hold vault=%s lane=%s: %v\n", v.Name, lane, err)
+	state.events.noteCause(err.Error())
 }
 
 func kaminoHealthHold(state *vaultState, err error, slot int64, now time.Time, lane string) (Observation, bool) {

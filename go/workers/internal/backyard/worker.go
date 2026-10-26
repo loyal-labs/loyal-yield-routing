@@ -505,6 +505,7 @@ type vaultState struct {
 	staleHeld     staleStreak
 
 	stageAllowanceNote changeNote
+	unpricedExitNote   changeNote
 }
 
 type failureStreak struct{ consecutive atomic.Int64 }
