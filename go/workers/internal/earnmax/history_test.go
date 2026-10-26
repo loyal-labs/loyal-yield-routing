@@ -187,3 +187,33 @@ func TestUnknownWithdrawalDropsLaterPerformancePoints(t *testing.T) {
 		t.Fatalf("performance=%s", got)
 	}
 }
+
+// Recorded mainnet Voltr events, 2026-10-26; no RPC calls or signing.
+func TestRecordedCashFlowSupplyIncludesFeesAndDeadWeight(t *testing.T) {
+	raw, err := os.ReadFile("testdata/supply-events.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixtures []struct {
+		Event, Data               string
+		UserBytes                 []byte
+		Amount, LP, Before, After uint64
+	}
+	if err := json.Unmarshal(raw, &fixtures); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range fixtures {
+		user := solana.PublicKey(f.UserBytes)
+		logs := []string{programData + f.Data}
+		before, after, _, _ := eventSupply(logs, f.Event, user, f.Amount, f.LP)
+		if before != f.Before || after != f.After {
+			t.Fatalf("%s supply=%d/%d want=%d/%d", f.Event, before, after, f.Before, f.After)
+		}
+		if before, _, _, _ := eventSupply(logs, f.Event, user, f.Amount+1, f.LP); before != 0 {
+			t.Fatal("accepted another cash flow's event")
+		}
+		if before, _, _, _ := eventSupply(append(logs, logs...), f.Event, user, f.Amount, f.LP); before != 0 {
+			t.Fatal("accepted ambiguous events")
+		}
+	}
+}

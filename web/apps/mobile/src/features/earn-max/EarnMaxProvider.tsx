@@ -20,7 +20,11 @@ import { getSolanaEnv } from "@/lib/solana/rpc/connection";
 import { isWalletUnlocked, useWallet } from "@/lib/wallet/wallet-provider";
 import { fetchEarnMax } from "@/services/api";
 
-const NO_ACTIVITY: EarnMaxActivity = { operations: [], performance: [] };
+const NO_ACTIVITY: EarnMaxActivity = {
+  earnings: null,
+  operations: [],
+  performance: [],
+};
 
 function useModel() {
   const { publicKey, signer, state } = useWallet();

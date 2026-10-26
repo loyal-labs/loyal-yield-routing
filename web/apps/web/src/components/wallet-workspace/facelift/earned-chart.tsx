@@ -37,6 +37,7 @@ const BAR_MIN_HEIGHT_PX = 4;
 export type EarnedChartBar = {
   apyBps: number | null;
   earnedUsd: number;
+  netEarnedUsd?: number;
   endAt: string;
   isCurrent: boolean;
   label: string;
@@ -156,6 +157,7 @@ export function EarnedBarsChart({
   isStale,
   isUnavailable,
   lifetimeEarnedUsd,
+  metric = "earnings",
   note,
   onRetry,
 }: {
@@ -164,6 +166,7 @@ export function EarnedBarsChart({
   isStale: boolean;
   isUnavailable: boolean;
   lifetimeEarnedUsd: number;
+  metric?: "earnings" | "performance";
   note?: string;
   onRetry?: () => void;
 }) {
@@ -198,9 +201,11 @@ export function EarnedBarsChart({
   const headerValue = splitEarningsHeaderValue(Math.abs(headerRawValue));
   const headerSign = headerRawValue < 0 ? "-" : "";
   const headerSubtitle = hoveredBarEntry
-    ? `Your reward for ${hoveredBarEntry.label}`
+    ? `${metric === "performance" ? "Performance on" : "Your reward for"} ${hoveredBarEntry.label}`
     : earningsStale
     ? "Updating earnings…"
+    : metric === "performance"
+    ? "Investment performance"
     : "Total earned";
 
   return (
@@ -338,12 +343,14 @@ export function EarnedBarsChart({
               : BAR_COLOR;
             return (
               <button
-                aria-label={`${bar.label} earned ${formatSignedEarningsAmount(
+                aria-label={`${bar.label} ${metric === "performance" ? "performance" : "earned"} ${formatSignedEarningsAmount(
                   clampedValue
                 )}`}
                 className="earned-bar"
                 key={`${bar.startAt}:${bar.endAt}`}
                 onMouseEnter={() => setHoveredBar(i)}
+                onFocus={() => setHoveredBar(i)}
+                onBlur={() => setHoveredBar(null)}
                 style={{
                   ["--bar-index" as never]: i,
                 }}
@@ -357,12 +364,14 @@ export function EarnedBarsChart({
                     bar.isCurrent
                       ? {
                           background: isActive
-                            ? TODAY_BAR_HOVER_FILL
+                            ? isLoss
+                              ? "color-mix(in srgb, var(--destructive) 20%, transparent)"
+                              : TODAY_BAR_HOVER_FILL
                             : "transparent",
-                          border: `1px dashed ${TODAY_BAR_BORDER_COLOR}`,
+                          border: `1px dashed ${isLoss ? "var(--destructive)" : TODAY_BAR_BORDER_COLOR}`,
                           height: `${fillPercent.toFixed(2)}%`,
                           minHeight:
-                            bar.earnedUsd > 0 ? `${BAR_MIN_HEIGHT_PX}px` : 0,
+                            bar.earnedUsd !== 0 ? `${BAR_MIN_HEIGHT_PX}px` : 0,
                           ...anchorStyle,
                         }
                       : {
@@ -382,7 +391,7 @@ export function EarnedBarsChart({
         !showEarningsLoader &&
         !earningsUnavailable ? (
           <div className="flex h-full flex-1 items-center justify-center text-[13px] leading-4 text-muted-foreground">
-            No earnings yet
+            {metric === "performance" ? "Daily performance unavailable" : "No earnings yet"}
           </div>
         ) : null}
       </div>

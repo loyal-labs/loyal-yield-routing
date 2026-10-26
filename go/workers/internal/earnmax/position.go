@@ -29,6 +29,8 @@ type PendingWithdrawal struct {
 
 type Position struct {
 	ObservedSlot uint64
+	PoolLP       uint64
+	PoolValue    USDCRaw
 	LP           LPRaw
 	Value        USDCRaw
 	Idle         *USDCRaw
@@ -91,7 +93,18 @@ func (r *Reader) Position(ctx context.Context, a Authority, now time.Time) (Posi
 		}
 		return signed[USDCRaw](assets)
 	}
-	position := Position{ObservedSlot: slot, Idle: idleAssets(idle)}
+	totalLP, err := vault.TotalLP(supply, now)
+	if err != nil {
+		return Position{}, err
+	}
+	if !totalLP.IsUint64() {
+		return Position{}, errors.New("Voltr LP supply overflows")
+	}
+	poolValue, err := toAssets(totalLP.Uint64())
+	if err != nil {
+		return Position{}, err
+	}
+	position := Position{ObservedSlot: slot, Idle: idleAssets(idle), PoolLP: totalLP.Uint64(), PoolValue: poolValue}
 	if lpAccount != nil {
 		token, err := spl.DecodeTokenAccount(lpAccount)
 		if err != nil {

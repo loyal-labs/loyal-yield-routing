@@ -29,6 +29,7 @@ type PerformancePoint struct {
 }
 
 type Activity struct {
+	Earnings    *Earnings          `json:"earnings"`
 	Operations  []ActivityItem     `json:"operations" nullable:"false"`
 	Performance []PerformancePoint `json:"performance" nullable:"false"`
 }
@@ -212,5 +213,7 @@ func (r *Reader) Activity(ctx context.Context, settings solana.PublicKey) (Activ
 	if err := group.Wait(); err != nil {
 		return Activity{}, err
 	}
-	return activity(history, position, apy.DayEnd, r.now()), nil
+	out := activity(history, position, apy.DayEnd, now)
+	out.Earnings = r.earnings(ctx, history, position, apy.DayEnd, now)
+	return out, nil
 }

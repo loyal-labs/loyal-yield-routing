@@ -3,6 +3,7 @@ package earnmax
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
 	"errors"
@@ -27,10 +28,14 @@ const (
 )
 
 type Flow struct {
-	Signature solana.Signature
-	Slot      uint64
-	At        time.Time
-	LPDelta   LPRaw
+	Signature       solana.Signature
+	Slot            uint64
+	At              time.Time
+	LPDelta         LPRaw
+	PoolLPBefore    uint64
+	PoolLPAfter     uint64
+	PoolValueBefore USDCRaw
+	PoolValueAfter  USDCRaw
 }
 
 type Entry interface{ flow() Flow }
@@ -244,6 +249,7 @@ func decodeEntries(execution chain.Execution, signature solana.Signature, at tim
 			if err != nil {
 				return nil, err
 			}
+			flow.PoolLPBefore, flow.PoolLPAfter, flow.PoolValueBefore, flow.PoolValueAfter = eventSupply(execution.Logs, "DepositVaultEvent", authority, uint64(amount), uint64(max(flow.LPDelta, 0)))
 			entries = append(entries, Deposit{Flow: flow, Amount: amount})
 		case voltr.RequestWithdrawVaultDiscriminator:
 			request := Request{Flow: flow, Escrow: escrowed(moves, lpATA)}
@@ -252,7 +258,11 @@ func decodeEntries(execution chain.Execution, signature solana.Signature, at tim
 			}
 			entries = append(entries, request)
 		case voltr.WithdrawVaultDiscriminator:
-			entries = append(entries, Claim{Flow: flow, Escrow: burned(moves), Paid: paid(moves)})
+			claim := Claim{Flow: flow, Escrow: burned(moves), Paid: paid(moves)}
+			if claim.Escrow != nil && claim.Paid != nil {
+				claim.PoolLPBefore, claim.PoolLPAfter, claim.PoolValueBefore, claim.PoolValueAfter = eventSupply(execution.Logs, "WithdrawVaultEvent", authority, uint64(*claim.Paid), uint64(claim.Escrow.LP))
+			}
+			entries = append(entries, claim)
 		case voltr.CancelRequestWithdrawVaultDiscriminator:
 			entries = append(entries, Cancel{flow})
 		}
@@ -421,4 +431,43 @@ func requestedFromLogs(logs []string, escrowedLP uint64) *USDCRaw {
 		return &requested
 	}
 	return nil
+}
+
+// Voltr's published events bind user, amount, LP and vault. Deposit uses the
+// pre/post supply and value to cash flows (supply already includes fees).
+func eventSupply(logs []string, event string, user solana.PublicKey, amount, lp uint64) (uint64, uint64, USDCRaw, USDCRaw) {
+	at, size := 136, 224
+	if event == "WithdrawVaultEvent" {
+		at, size = 144, 232
+	}
+	discriminator := sha256.Sum256([]byte("event:" + event))
+	var before, after uint64
+	var valueBefore, valueAfter USDCRaw
+	found := false
+	for _, line := range logs {
+		if !strings.HasPrefix(line, programData) {
+			continue
+		}
+		b, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(line, programData))
+		if err != nil || len(b) != size || !bytes.Equal(b[:8], discriminator[:8]) {
+			continue
+		}
+		if !bytes.Equal(b[8:40], user[:]) || !bytes.Equal(b[56:88], Vault[:]) || !bytes.Equal(b[88:120], AssetMint[:]) || binary.LittleEndian.Uint64(b[40:48]) != amount || binary.LittleEndian.Uint64(b[48:56]) != lp {
+			continue
+		}
+		if found {
+			return 0, 0, 0, 0
+		}
+		found = true
+		before, after = binary.LittleEndian.Uint64(b[at:at+8]), binary.LittleEndian.Uint64(b[at+8:at+16])
+		valueBefore, err = signed[USDCRaw](binary.LittleEndian.Uint64(b[at-16 : at-8]))
+		if err != nil {
+			return 0, 0, 0, 0
+		}
+		valueAfter, err = signed[USDCRaw](binary.LittleEndian.Uint64(b[at-8 : at]))
+		if err != nil {
+			return 0, 0, 0, 0
+		}
+	}
+	return before, after, valueBefore, valueAfter
 }

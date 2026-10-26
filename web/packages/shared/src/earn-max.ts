@@ -74,7 +74,19 @@ export type EarnMaxSummaryResponse = {
   summary: EarnMaxSummary | null;
 };
 
+export type EarnMaxEarningsDay = {
+  date: string;
+  performanceUsd: number;
+  sellingCostChangeUsd: number;
+  netEarnedUsd: number;
+};
+
+export type EarnMaxEarnings = Omit<EarnMaxEarningsDay, "date"> & {
+  days: EarnMaxEarningsDay[];
+};
+
 export type EarnMaxActivityResponse = {
+  earnings?: EarnMaxEarnings | null;
   operations: EarnMaxActivityItem[];
   performance: EarnMaxPerformancePoint[];
 };

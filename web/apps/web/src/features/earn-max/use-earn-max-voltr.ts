@@ -87,6 +87,7 @@ export function viewModel(input: {
     canWithdraw: controls.canWithdraw,
     coverage: summary?.coverage ?? "history_incomplete",
     earnedUsd: summary?.earnedUsd ?? null,
+    earnings: input.activity?.earnings ?? null,
     error: input.error,
     forecastApyBps: summary?.forecastApyBps ?? null,
     isBusy: controls.busy,

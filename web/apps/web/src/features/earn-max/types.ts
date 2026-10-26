@@ -1,6 +1,7 @@
 import type {
   EarnMaxActivityItem,
   EarnMaxCoverage,
+  EarnMaxEarnings,
   EarnMaxPerformancePoint,
   EarnMaxWithdrawalView,
 } from "@loyal-labs/shared";
@@ -24,6 +25,7 @@ export type EarnMaxViewModel = {
   canWithdraw: boolean;
   coverage: EarnMaxCoverage;
   earnedUsd: number | null;
+  earnings?: EarnMaxEarnings | null;
   error: string | null;
   forecastApyBps: number | null;
   isBusy: boolean;
