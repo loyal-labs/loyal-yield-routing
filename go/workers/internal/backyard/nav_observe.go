@@ -424,8 +424,10 @@ func computeRouteNAVForRoutes(slot int64, accounts []ConfirmedAccount, manifest 
 	}
 	var usedExits []ExitCost
 	exitLiability := held.exit
-	if held.exitCost != nil {
+	if held.hasExit() {
 		components = append(components, NAVComponent{Account: kaminoConfig.Obligation + ":exit", Owner: kamino.ProgramID.String(), Raw: int64(held.exit), Slot: slot, Known: true, Liability: true})
+	}
+	if held.exitCost != nil {
 		usedExits = append(usedExits, *held.exitCost)
 	}
 	counted := map[string]bool{v.cash: true, route.CollateralCustody: true}
@@ -442,8 +444,8 @@ func computeRouteNAVForRoutes(slot int64, accounts []ConfirmedAccount, manifest 
 		otherLanes = append(otherLanes, value.state)
 		if value.exitCost != nil {
 			usedExits = append(usedExits, *value.exitCost)
-			exitLiability += value.exit
 		}
+		exitLiability += value.exit
 	}
 	fingerprint, err := navInputFingerprintForRoutes(v, slot, accounts, custodies, routes, usedExits)
 	if err != nil {
@@ -502,6 +504,8 @@ type laneValues struct {
 	collateralIdle, collateral, debt, debtIdle, exit uint64
 	exitCost                                         *ExitCost
 }
+
+func (v laneValues) hasExit() bool { return v.exitCost != nil || v.exit > 0 }
 
 func decodeLaneReserves(accounts []ConfirmedAccount, config KaminoObservationConfig, slot int64, obligation decodedKaminoObligation, unhealthyAllowed bool) (laneReserves, error) {
 	collateral, err := decodeKaminoReserve(accountAt(accounts, config.CollateralReserve), config.CollateralMint, config)
@@ -570,14 +574,19 @@ func (r laneReserves) value(o decodedKaminoObligation, collateralIdleRaw, debtId
 		return laneValues{}, fmt.Errorf("held collateral overflows")
 	}
 	if held := redeemable + collateralIdleRaw; held > 0 {
-		cost, err := exits.at(lane, held, r.collateral.terms.MarketPriceSF)
-		if err != nil {
-			return laneValues{}, err
+		worth := v.collateral + v.collateralIdle
+		cost, priced := exits.at(lane, held, r.collateral.terms.MarketPriceSF)
+		switch {
+		case priced:
+			if v.exit, err = cost.liabilityRaw(worth); err != nil {
+				return laneValues{}, err
+			}
+			v.exitCost = &cost
+		case worth < unpricedExitDustFloorRaw:
+			v.exit = worth
+		default:
+			return laneValues{}, unpricedExitHold(lane)
 		}
-		if v.exit, err = cost.liabilityRaw(v.collateral + v.collateralIdle); err != nil {
-			return laneValues{}, err
-		}
-		v.exitCost = &cost
 	}
 	return v, nil
 }
@@ -640,7 +649,7 @@ func valueHeldLane(v *Vault, slot int64, accounts []ConfirmedAccount, route Runt
 	if countDebt {
 		out.components = append(out.components, NAVComponent{Account: route.DebtCustody, Owner: v.squads, Raw: int64(values.debtIdle), Slot: slot, Known: true})
 	}
-	if values.exitCost != nil {
+	if values.hasExit() {
 		out.components = append(out.components, NAVComponent{Account: config.Obligation + ":exit", Owner: kamino.ProgramID.String(), Raw: int64(values.exit), Slot: slot, Known: true, Liability: true})
 	}
 	return out, nil

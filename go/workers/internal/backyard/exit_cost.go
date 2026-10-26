@@ -3,6 +3,7 @@ package backyard
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"math/big"
@@ -28,6 +29,8 @@ const exitQuoteInterval = time.Hour
 const selectorDestinationExitUnpriced = "selector_destination_exit_unpriced"
 
 const exitUnpriced = "exit_unpriced"
+
+const unpricedExitDustFloorRaw = uint64(bridgeUSDCDollarRaw)
 
 type ExitCost struct {
 	Lane                string
@@ -88,17 +91,30 @@ type exitCosts map[string]laneExitCosts
 
 const exitQuoteOutlierRatio = 3
 
-func (e exitCosts) at(lane string, heldRaw uint64, mark kamino.ScaledFraction) (ExitCost, error) {
+func (e exitCosts) at(lane string, heldRaw uint64, mark kamino.ScaledFraction) (ExitCost, bool) {
 	costs := e[lane]
 	switch {
 	case costs.Quote != nil && costs.Quote.fresh(heldRaw, mark) && !costs.Quote.outlier(costs.Realized):
-		return *costs.Quote, nil
+		return *costs.Quote, true
 	case costs.Realized != nil:
-		return *costs.Realized, nil
+		return *costs.Realized, true
 	case costs.Quote != nil:
-		return *costs.Quote, nil
+		return *costs.Quote, true
 	}
-	return ExitCost{}, staleHoldFrom(fmt.Errorf("lane %s has no exit quote and no realized exit cost", lane), exitUnpriced)
+	return ExitCost{}, false
+}
+
+func unpricedExitHold(lane string) error {
+	return &PreSendHold{Reason: holdStale, Details: map[string]string{"cause": exitUnpriced, "lane": lane},
+		cause: fmt.Errorf("lane %s has no exit quote and no realized exit cost", lane)}
+}
+
+func unpricedExitLane(err error) (string, bool) {
+	var hold *PreSendHold
+	if !errors.As(err, &hold) || holdCause(hold) != exitUnpriced || hold.Details["lane"] == "" {
+		return "", false
+	}
+	return hold.Details["lane"], true
 }
 
 func (c ExitCost) outlier(realized *ExitCost) bool {
