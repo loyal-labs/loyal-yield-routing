@@ -330,7 +330,7 @@ export function EarnMaxDepositPane({
               />
             ) : null}
             {entryFeeNote ? (
-              <CaptionNote text={entryFeeNote} tone="info" />
+              <CaptionNote text={entryFeeNote} tone="warn" />
             ) : null}
           </div>
 
