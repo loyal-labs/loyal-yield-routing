@@ -81,10 +81,8 @@ function installPrivyNoiseFilter() {
     typeof message === "string" &&
     (message.startsWith("cannot dequeue privy:") ||
       (process.env.NODE_ENV !== "production" &&
-        ((message.includes('unique "key" prop') &&
-          message.includes("from xe")) ||
-          (message.includes("Updating a style property during rerender") &&
-            message.includes("backgroundSize")))));
+        message.includes('unique "key" prop') &&
+        message.includes("from xe")));
 
   window.addEventListener(
     "unhandledrejection",

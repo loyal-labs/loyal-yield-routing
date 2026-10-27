@@ -2018,7 +2018,7 @@
   z-index: 1;
   transition: color var(--tabs-dur) var(--tabs-ease);
 }
-.t-tab:not([aria-selected="true"]):hover,
+.t-tab:not(:disabled):not([aria-selected="true"]):hover,
 .t-tab[aria-selected="true"] {
   color: var(--tabs-text-active);
 }
@@ -2512,6 +2512,31 @@
     transform: translateY(var(--panel-translate-y));
     opacity: 0;
     filter: blur(var(--panel-blur));
+  }
+}
+
+.t-settings-panel {
+  --settings-slide-x: calc(100% + 8px);
+  --settings-slide-y: 0px;
+}
+.t-settings-panel[data-state="open"] {
+  animation-name: settings-slide-in;
+}
+.t-settings-panel[data-state="closed"] {
+  animation-name: settings-slide-out;
+}
+@keyframes settings-slide-in {
+  from { transform: translate(var(--settings-slide-x), var(--settings-slide-y)); }
+  to { transform: translate(0, 0); }
+}
+@keyframes settings-slide-out {
+  from { transform: translate(0, 0); }
+  to { transform: translate(var(--settings-slide-x), var(--settings-slide-y)); }
+}
+@media (max-width: 795px) {
+  .t-settings-panel {
+    --settings-slide-x: 0px;
+    --settings-slide-y: 100%;
   }
 }
 

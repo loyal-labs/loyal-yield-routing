@@ -4,27 +4,30 @@ import { ThemedIcon } from "@/components/wallet-workspace/facelift/themed-icon";
 
 const ASSET_BASE = "/wallet-workspace/facelift";
 
+// Mobile-only bottom tab bar: Quests · mascot pill (wallet home) · Activity. Earn and Earn MAX are
+// subscreens behind the home's product cards, not tabs. Input screens
+// (deposit/withdraw/autodeposit, send/swap) hide the bar under the keyboard.
 export function MobileTabBar({
   activeTab,
   onSelect,
   showActivityBadge = false,
 }: {
-  activeTab: "activity" | "wallet";
+  activeTab: "activity" | "wallet" | "quests";
   onSelect: (tab: "activity" | "wallet") => void;
   showActivityBadge?: boolean;
 }) {
   return (
     <div className="cherry-mobile-tab-bar w-full shrink-0 bg-card px-4 min-[796px]:hidden">
       <div className="flex w-full items-center gap-4">
-        <div
-          aria-hidden="true"
-          className="flex flex-1 flex-col items-center justify-center py-4 opacity-40"
+        <button
+          aria-label="Quests — Coming soon"
+          disabled
+          className="flex flex-1 flex-col items-center justify-center gap-1 py-2 text-tertiary"
+          type="button"
         >
-          <ThemedIcon
-            className="size-7 text-tertiary"
-            src={`${ASSET_BASE}/icon-bone.svg`}
-          />
-        </div>
+          <ThemedIcon className="size-7" src={`${ASSET_BASE}/icon-bone.svg`} />
+          <span className="text-[11px] leading-[13px]">Coming soon</span>
+        </button>
         <button
           aria-current={activeTab === "wallet" ? "page" : undefined}
           aria-label="Wallet"

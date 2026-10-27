@@ -10,6 +10,7 @@ import {
   BalanceVisibilityProvider,
   HiddenBalanceFilterDefs,
 } from "@/components/wallet-workspace/facelift/balance-visibility";
+import { ReceiveSheet } from "@/components/wallet-workspace/facelift/receive-sheet";
 import { CryptoPage } from "@/components/wallet-workspace/facelift/crypto-page";
 import { DepositPane } from "@/components/wallet-workspace/facelift/deposit-pane";
 import { EarnApprovalSheet } from "@/components/wallet-workspace/facelift/earn-approval-sheet";
@@ -34,6 +35,8 @@ import {
   EarnPositionPane,
 } from "@/components/wallet-workspace/facelift/earn-position-pane";
 import { EarnTransactionDetailPane } from "@/components/wallet-workspace/facelift/transaction-detail-pane";
+import { PolicyUpdateBanner } from "./policy-update-banner";
+import { usePolicyUpdates } from "@/components/wallet-workspace/facelift/use-policy-updates";
 import { SettingsSheet } from "@/components/wallet-workspace/facelift/settings-sheet";
 import {
   MiddlePaneSlide,
@@ -64,8 +67,7 @@ import { useAuthCapability } from "@/lib/auth/capability";
 import type { EarnTransactionItem } from "@/lib/yield-optimization/earn-transactions.client";
 
 export type WorkspacePage =
-  | "crypto"
-  | "stables"
+  | "assets"
   | "activity"
   | "earn"
   | "earnmax"
@@ -76,8 +78,7 @@ type MiddleView = "earn" | "deposit" | "withdraw" | "autodeposit" | "autoswap";
 const PAGE_STORAGE_KEY = "loyal:workspace-page";
 const EARN_MAX_VISIBLE = true;
 const WORKSPACE_PAGES: WorkspacePage[] = [
-  "crypto",
-  "stables",
+  "assets",
   "activity",
   "earn",
   "earnmax",
@@ -89,15 +90,15 @@ function readStoredPage(): WorkspacePage | null {
     return null;
   }
   const stored = localStorage.getItem(PAGE_STORAGE_KEY);
+  if (stored === "crypto" || stored === "stables") return "assets";
   return WORKSPACE_PAGES.find((page) => page === stored) ?? null;
 }
 
 const SHORTCUT_PAGES: Partial<Record<string, WorkspacePage>> = {
-  a: "activity",
-  c: "crypto",
+  a: "assets",
+  h: "activity",
   e: "earn",
   m: "earnmax",
-  s: "stables",
 };
 
 // Figma 4693:64818 — fixed 3-pane workspace: 360px sidebar on the gray shell,
@@ -111,7 +112,13 @@ const SHORTCUT_PAGES: Partial<Record<string, WorkspacePage>> = {
 export function WorkspaceFaceliftShell() {
   const publicEnv = usePublicEnv();
   const [isChartExpanded, setIsChartExpanded] = useState(false);
+  // Settings shares the desktop rail overlay and mobile sheet entrypoints.
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [settingsView, setSettingsView] = useState<"settings" | "policies">("settings");
+  const openSettings = () => { setSettingsView("settings"); setIsSettingsOpen(true); };
+  const openPolicies = () => { setSettingsView("policies"); setIsSettingsOpen(true); };
+  // One shared tab choice for every chart card (compact right pane, mobile
+  // inline card, enlarged overlay) — enlarging must not reset the tab.
   const [chartTab, setChartTab] = useState<ChartTab | null>(null);
   const [activePage, setActivePage] = useState<WorkspacePage>("earn");
   const { isHydrated, isSignedIn } = useAuthCapability();
@@ -160,6 +167,7 @@ export function WorkspaceFaceliftShell() {
   const [depositSourceKey, setDepositSourceKey] = useState<string | null>(null);
   const [hasUnseenActivity, setHasUnseenActivity] = useState(false);
   const earnData = useEarnPositionData();
+  const policyUpdates = usePolicyUpdates(earnData);
   const earnMaxAvailable = EARN_MAX_VISIBLE && isSignedIn;
   const { actions: earnMaxRawActions, view: earnMaxView } = useEarnMax({
     settingsPda: earnMaxAvailable ? earnData.settingsPda : undefined,
@@ -198,6 +206,9 @@ export function WorkspaceFaceliftShell() {
     [earnMax.view]
   );
   const [navigationNonce, setNavigationNonce] = useState(0);
+  const [assetAction, setAssetAction] = useState<{ type: "send" | "swap" } | null>(null);
+  const [isReceiveOpen, setIsReceiveOpen] = useState(false);
+  const [receiveTab, setReceiveTab] = useState<"Solana" | "Other chains">("Solana");
   useEffect(() => {
     const walletAddress = earnData.walletAddress;
     const settingsPda = earnData.settingsPda;
@@ -240,6 +251,7 @@ export function WorkspaceFaceliftShell() {
     setActivePage(
       page === "activity" && activePage === "activity" ? "earn" : page
     );
+    setAssetAction(null);
     setMiddleView("earn");
     setSelectedEarnTransaction(null);
     setNavigationNonce((nonce) => nonce + 1);
@@ -370,7 +382,16 @@ export function WorkspaceFaceliftShell() {
         />
         <EarnApprovalSheet approval={earnData.actions.pendingApproval} />
         <EarnToastHost />
+        <ReceiveSheet
+          initialTab={receiveTab}
+          isOpen={isReceiveOpen}
+          onClose={() => setIsReceiveOpen(false)}
+          walletAddress={earnData.walletAddress ?? null}
+        />
         <SettingsSheet
+          data={earnData}
+          updates={policyUpdates}
+          initialView={settingsView}
           isOpen={isSettingsOpen}
           onClose={() => setIsSettingsOpen(false)}
         />
@@ -395,6 +416,19 @@ export function WorkspaceFaceliftShell() {
           walletAddress={earnData.walletAddress ?? null}
         />
         <FaceliftSidebar
+          onAssetAction={(action) => {
+            if (action === "bridge") return;
+            if (action === "receive") {
+              setReceiveTab("Solana");
+              setIsReceiveOpen(true);
+            } else {
+              handleSelectPage("assets");
+              setAssetAction({ type: action });
+            }
+          }}
+          onOpenSettings={openSettings}
+          earnPolicyUpdates={policyUpdates.earnCount}
+          earnMaxPolicyUpdates={policyUpdates.earnMaxCount}
           activePage={activePage}
           earnBalanceUsd={earnData.earnBalanceUsd}
           earnMaxBalanceUsd={earnMax.view.balanceUsd}
@@ -438,7 +472,7 @@ export function WorkspaceFaceliftShell() {
                 setActivePage("earn");
                 setMiddleView("autodeposit");
               }}
-              onOpenSettings={() => setIsSettingsOpen(true)}
+              onOpenSettings={openSettings}
               showActivityBadge={hasUnseenActivity}
               showEarnMax={EARN_MAX_VISIBLE}
             />
@@ -452,10 +486,12 @@ export function WorkspaceFaceliftShell() {
             />
           ) : EARN_MAX_VISIBLE && activePage === "earnmax" ? (
             <EarnMaxWorkspace
+              policyUpdateCount={policyUpdates.earnMaxCount}
+              onReviewPolicies={openPolicies}
               earnData={earnData}
               earnMax={earnMax}
               onBack={() => handleSelectPage("wallet")}
-              onOpenSettings={() => setIsSettingsOpen(true)}
+              onOpenSettings={openSettings}
               onViewAllActivity={() => handleSelectPage("activity")}
             />
           ) : activePage !== "earn" && activePage !== "earnmax" ? (
@@ -467,7 +503,11 @@ export function WorkspaceFaceliftShell() {
                 setActivePage("earn");
                 setMiddleView("deposit");
               }}
-              page={activePage}
+              requestedAction={assetAction}
+              onReceive={() => {
+                setReceiveTab("Solana");
+                setIsReceiveOpen(true);
+              }}
             />
           ) : (
             <>
@@ -505,6 +545,8 @@ export function WorkspaceFaceliftShell() {
                   ) : earnData.hasPosition ? (
                     <PaneReveal>
                       <EarnPositionPane
+                        policyUpdateCount={policyUpdates.earnCount}
+                        onReviewPolicies={openPolicies}
                         data={earnData}
                         onBack={() => handleSelectPage("wallet")}
                         onDeposit={() => {
@@ -530,12 +572,13 @@ export function WorkspaceFaceliftShell() {
                   ) : (
                     <PaneReveal>
                       <EarnEmptyPane
+                        policyNotice={<PolicyUpdateBanner count={policyUpdates.earnCount} onReview={openPolicies} />}
                         onBack={() => handleSelectPage("wallet")}
                         onDeposit={() => {
                           setDepositSourceKey(null);
                           setMiddleView("deposit");
                         }}
-                        onOpenSettings={() => setIsSettingsOpen(true)}
+                        onOpenSettings={openSettings}
                         onManageAutoswap={
                           earnData.autoswapConfig && !AUTOSWAP_HIDDEN
                             ? () => setMiddleView("autoswap")

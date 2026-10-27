@@ -12,12 +12,14 @@ import { createPortal } from "react-dom";
 import { readCssDurationMs } from "@/components/wallet-workspace/facelift/css-duration";
 
 export function SheetReveal({
+  label,
   children,
   isOpen,
   onClose,
   scrimClassName,
   sheetClassName,
 }: {
+  label?: string;
   children: ReactNode;
   isOpen: boolean;
   onClose: () => void;
@@ -81,6 +83,7 @@ export function SheetReveal({
       ref={scrimRef}
     >
       <div
+        aria-label={label}
         aria-modal="true"
         className={`t-sheet-panel ${sheetClassName}`}
         data-state="open"

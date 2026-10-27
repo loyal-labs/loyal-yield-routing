@@ -1163,6 +1163,9 @@ export type SmartAccountSidebarData = {
   executeEarnDepositPolicyStage: (
     request: EarnDepositPolicyStageRequest
   ) => Promise<EarnDepositPolicyStageResult>;
+  fetchEarnPolicyCompatibility: () => ReturnType<
+    ReturnType<typeof createSmartAccountVaultsClient>["fetchEarnPolicyCompatibility"]
+  >;
   executeEarnPolicySetup: (options?: {
     force?: boolean;
   }) => Promise<EarnPolicySetupResult>;
@@ -8301,6 +8304,17 @@ export function useSmartAccountSidebarData(
     ]
   );
 
+  const fetchEarnPolicyCompatibility = useCallback(async () => {
+    if (!user?.settingsPda || !overview?.programId) return null;
+    return createSmartAccountVaultsClient({
+      connection,
+      programId: new PublicKey(overview.programId),
+    }).fetchEarnPolicyCompatibility({
+      cluster: resolveEarnLoyalCluster(solanaEnv),
+      settingsPda: new PublicKey(user.settingsPda),
+    });
+  }, [connection, overview?.programId, solanaEnv, user?.settingsPda]);
+
   const isLoading =
     isBaseLoading ||
     (loadVaultSnapshots && isVaultsLoading) ||
@@ -8356,6 +8370,7 @@ export function useSmartAccountSidebarData(
     executeEarnDepositBatch,
     executeEarnDepositPolicyStage,
     executeEarnPolicySetup,
+    fetchEarnPolicyCompatibility,
     executeEarnWithdraw,
     executeEarnCleanup,
     prepareEarnAutodepositSetup,

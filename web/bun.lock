@@ -568,6 +568,7 @@
     },
   },
   "patchedDependencies": {
+    "@privy-io/react-auth@3.35.2": "patches/@privy-io%2Freact-auth@3.35.2.patch",
     "@solana/wallet-standard-wallet-adapter-base@1.1.4": "patches/@solana%2Fwallet-standard-wallet-adapter-base@1.1.4.patch",
     "@cap.js/widget@0.1.56": "patches/@cap.js%2Fwidget@0.1.56.patch",
   },

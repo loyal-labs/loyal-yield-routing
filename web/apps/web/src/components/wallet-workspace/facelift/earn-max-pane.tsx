@@ -1,5 +1,7 @@
 "use client";
 
+import { PolicyUpdateBanner } from "./policy-update-banner";
+
 import {
   earnMaxPending,
   earnMaxPendingMessage,
@@ -505,6 +507,8 @@ function EarnMaxActivityCard({
 }
 
 function EarnMaxMainPane({
+  policyUpdateCount = 0,
+  onReviewPolicies,
   actions,
   chartCustom,
   earnData,
@@ -519,6 +523,8 @@ function EarnMaxMainPane({
   selectedTransactionId,
   view,
 }: {
+  policyUpdateCount?: number;
+  onReviewPolicies: () => void;
   actions: EarnMaxActions;
   chartCustom: ChartCardCustomContent;
   earnData: EarnPositionData;
@@ -657,6 +663,7 @@ function EarnMaxMainPane({
             </p>
           </div>
         </div>
+        <PolicyUpdateBanner count={policyUpdateCount} onReview={onReviewPolicies} />
         <div className="flex w-full flex-col p-2 pt-0">
           <div className="group flex w-full items-center rounded-2xl px-4 transition-colors duration-150 hover:bg-accent">
             <span className="flex items-center py-2">
@@ -804,12 +811,16 @@ function EarnMaxMainPane({
 }
 
 export function EarnMaxWorkspace({
+  policyUpdateCount = 0,
+  onReviewPolicies,
   earnData,
   earnMax,
   onBack,
   onOpenSettings,
   onViewAllActivity,
 }: {
+  policyUpdateCount?: number;
+  onReviewPolicies: () => void;
   earnData: EarnPositionData;
   earnMax: { actions: EarnMaxActions; view: EarnMaxViewModel };
   onBack: () => void;
@@ -918,6 +929,8 @@ export function EarnMaxWorkspace({
         ) : (
           <PaneReveal>
             <EarnMaxMainPane
+                    policyUpdateCount={policyUpdateCount}
+                    onReviewPolicies={onReviewPolicies}
               actions={actions}
               chartCustom={chartCustom}
               earnData={earnData}

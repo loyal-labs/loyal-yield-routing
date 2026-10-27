@@ -10,10 +10,11 @@ import {
 } from "@privy-io/react-auth";
 import { useExportWallet } from "@privy-io/react-auth/solana";
 import { useUpdateEmail } from "@privy-io/react-auth/ui";
-import { KeyRound, Mail, ShieldCheck, Wallet } from "lucide-react";
+import { ShieldCheck, Wallet } from "lucide-react";
 import { type ReactNode, useCallback, useEffect, useState } from "react";
 
 import { usePrivyAuth } from "@/components/auth/privy-session-sync";
+import { ThemedIcon } from "@/components/wallet-workspace/facelift/themed-icon";
 import { TextSwap } from "@/components/wallet-workspace/facelift/text-swap";
 import { useAuthSession } from "@/contexts/auth-session-context";
 import { usePublicEnv } from "@/contexts/public-env-context";
@@ -38,7 +39,12 @@ function usePrivyAppConfig(appId: string | undefined) {
   return config;
 }
 
-export function PrivyAccountPanel() {
+/**
+ * Account panel body when Privy is on: linked email / Google, embedded-wallet
+ * key export, MFA. Every Privy action runs in Privy's own modal; after a
+ * link/unlink the Loyal session is re-issued so `user.email` follows.
+ */
+export function PrivyAccountPanel({ policyRow }: { policyRow?: ReactNode }) {
   const { user: privyUser } = usePrivy();
   const privyAuth = usePrivyAuth();
   const { user, refreshSession } = useAuthSession();
@@ -76,11 +82,16 @@ export function PrivyAccountPanel() {
 
   if (!privyUser) {
     return (
-      <div className="flex flex-col gap-1">
+      <div className="flex flex-col">
         <Row
           action="Add"
           disabled={!privyAuth || privyAuth.step !== "idle"}
-          icon={<Mail className="size-6" />}
+          icon={
+            <ThemedIcon
+              className="size-6"
+              src="/wallet-workspace/facelift/settings/email.svg"
+            />
+          }
           onClick={() => privyAuth?.addEmail()}
           subtitle="For account updates and recovery."
           title="Email"
@@ -90,6 +101,7 @@ export function PrivyAccountPanel() {
             {privyAuth.error}
           </p>
         ) : null}
+        {policyRow}
       </div>
     );
   }
@@ -109,26 +121,17 @@ export function PrivyAccountPanel() {
   const mfaEnabled = (appConfig?.mfa_methods?.length ?? 0) > 0;
 
   return (
-    <div className="flex flex-col gap-1">
-      <Row
-        action={email ? (canUnlink ? "Remove" : "Change") : "Add"}
-        disabled={busy}
-        icon={<Mail className="size-6" />}
-        onClick={() =>
-          email
-            ? canUnlink
-              ? unlinkEmail({ address: email.address }).then(resync)
-              : updateEmail()
-            : linkEmail()
-        }
-        subtitle={email ? email.address : "For account updates and recovery."}
-        title="Email"
-      />
+    <div className="flex flex-col">
       {google || googleEnabled ? (
         <Row
-          action={google ? (canUnlink ? "Remove" : undefined) : "Link"}
+          action={google ? (canUnlink ? "Unlink" : undefined) : "Link"}
           disabled={busy}
-          icon={<GoogleMark />}
+          icon={
+            <ThemedIcon
+              className="size-6"
+              src="/wallet-workspace/facelift/settings/google.svg"
+            />
+          }
           onClick={() =>
             google
               ? canUnlink
@@ -143,14 +146,39 @@ export function PrivyAccountPanel() {
           title="Google"
         />
       ) : null}
+      <Row
+        action={email ? (canUnlink ? "Unlink" : "Change") : "Add"}
+        disabled={busy}
+        icon={
+          <ThemedIcon
+            className="size-6"
+            src="/wallet-workspace/facelift/settings/email.svg"
+          />
+        }
+        onClick={() =>
+          email
+            ? canUnlink
+              ? unlinkEmail({ address: email.address }).then(resync)
+              : updateEmail()
+            : linkEmail()
+        }
+        subtitle={email ? email.address : "For account updates and recovery."}
+        title="Email"
+      />
+      {policyRow}
       {embedded ? (
         <Row
-          action="Export"
+          action="chevron"
           disabled={busy}
-          icon={<KeyRound className="size-6" />}
+          icon={
+            <ThemedIcon
+              className="size-6"
+              src="/wallet-workspace/facelift/settings/key.svg"
+            />
+          }
           onClick={() => exportWallet({ address: embedded.address })}
-          subtitle="Copy the private key of your loyal wallet."
-          title="Wallet key"
+          subtitle=""
+          title="Export Keys"
         />
       ) : (
         <Row
@@ -198,50 +226,32 @@ function Row({
   // icon slot, tertiary icon. Static rows keep the layout but no hover.
   return (
     <button
-      className="t-hover flex w-full items-center rounded-2xl px-4 text-left enabled:hover:bg-accent disabled:cursor-default"
+      className="t-hover flex min-h-[60px] w-full items-center rounded-2xl px-4 text-left enabled:hover:bg-accent disabled:cursor-default"
       disabled={disabled || !interactive}
       onClick={() => void onClick?.()}
       type="button"
     >
-      <span className="mr-3 flex size-11 shrink-0 items-center justify-center text-tertiary">
+      <span className="mr-4 flex h-12 w-6 shrink-0 items-center justify-center text-tertiary">
         {icon}
       </span>
-      <span className="min-w-0 flex-1 py-2">
+      <span className="min-w-0 flex-1 py-[11px]">
         <span className="block font-medium text-[16px] text-foreground leading-5">
           {title}
         </span>
-        <span className="block truncate text-muted-foreground text-[13px] leading-4">
+        <span className="mt-0.5 block truncate text-muted-foreground text-[13px] leading-4">
           {subtitle}
         </span>
       </span>
-      {action ? (
+      {action === "chevron" ? (
+        <ThemedIcon
+          className="ml-1.5 size-6 text-tertiary"
+          src="/wallet-workspace/facelift/icon-chevron-right.svg"
+        />
+      ) : action ? (
         <span className="ml-3 shrink-0 rounded-full bg-accent px-4 py-2.5 text-center font-medium text-[13px] text-foreground leading-4">
           <TextSwap text={action} />
         </span>
       ) : null}
     </button>
-  );
-}
-
-function GoogleMark() {
-  return (
-    <svg aria-hidden="true" className="size-6" viewBox="0 0 24 24">
-      <path
-        d="M21.6 12.2c0-.7-.1-1.4-.2-2H12v3.9h5.4a4.6 4.6 0 0 1-2 3v2.5h3.2c1.9-1.7 3-4.3 3-7.4Z"
-        fill="#4285F4"
-      />
-      <path
-        d="M12 22c2.7 0 5-.9 6.6-2.4l-3.2-2.5c-.9.6-2 1-3.4 1-2.6 0-4.8-1.8-5.6-4.1H3.1v2.6A10 10 0 0 0 12 22Z"
-        fill="#34A853"
-      />
-      <path
-        d="M6.4 14a6 6 0 0 1 0-3.9V7.5H3.1a10 10 0 0 0 0 9l3.3-2.5Z"
-        fill="#FBBC05"
-      />
-      <path
-        d="M12 6c1.5 0 2.8.5 3.8 1.5l2.8-2.8A10 10 0 0 0 3.1 7.5L6.4 10c.8-2.3 3-4 5.6-4Z"
-        fill="#EA4335"
-      />
-    </svg>
   );
 }

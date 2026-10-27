@@ -748,3 +748,41 @@ The Vite entry HTML and router pending state render `WorkspaceSkeleton`; the
 workspace keeps it until auth hydration settles, then uses a pane skeleton for
 pending account data. There is no minimum display duration. Skeleton styles
 share the app surface tokens, responsive breakpoints and reduced-motion rules.
+
+### Settings and policy updates
+
+The workspace settings panel combines account controls, appearance, and onchain
+policy details. It enters from the right edge on desktop and the bottom edge on mobile,
+returning to that same edge on close and respecting reduced motion. Initial
+focus must prevent scrolling so it does not cancel the entry translation. Quests
+is unavailable and labeled Coming soon. Below 900px viewport height, sidebar
+resource links collapse into the original Help & resources popover; the center
+scrolls while wallet controls remain visible. Hide unsupported assets stays disabled
+until there is an authoritative supported-asset list.
+
+Policy alerts use the SDK's exact canonical-policy compatibility check. They
+appear only for the supported legacy Earn token-program migration; unknown or
+failed reads never imply an update. Updates reuse the existing Earn policy setup
+flow after rechecking compatibility. There is no supported Earn MAX migration
+alert yet. Smoke-test through `apps/loyal` (Vite), with transaction signing disabled.
+
+### Assets navigation
+
+The sidebar and wallet home combine stablecoins and crypto into Assets, with
+the complete wallet balance and token list. Existing saved Crypto/Stablecoins
+selections open Assets. The A shortcut opens Assets; H opens Activity (history).
+Stablecoin rows retain their Earn action
+and token details omit stablecoin charts. Sidebar Send and Swap open the existing
+asset forms. The desktop Assets header keeps situational Unshield but omits
+Send/Swap; mobile retains those controls because its sidebar is hidden. Receive opens a 400px right-edge pane on desktop and a bottom sheet
+on mobile, sharing the Settings animation. Empty wallets show the Receive CTA;
+zero-priced assets with a positive token balance must remain visible.
+
+Receive's Solana tab uses the authenticated wallet address and working copy/QR.
+Other chains and the sidebar Bridge button are disabled until launch. The
+Figma-only prototype remains in code: chain, receive-asset and supported-asset
+selectors use supplied design fixtures. No
+bridge API, address provisioning, fee quote, or transaction is invoked. The
+bridge QR encodes a preview marker; mock copy controls show Preview only and do
+not put the example deposit address on the clipboard. Keep this boundary until
+backend integration is explicitly requested.

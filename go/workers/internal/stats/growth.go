@@ -20,6 +20,7 @@ import (
 	solana "github.com/solana-foundation/solana-go/v2"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnmax"
 )
 
 // Growth metrics for the 01Resolved feed (repo loyal-growth-metrics-feed, ASK-2356):
@@ -32,15 +33,14 @@ import (
 // /api/earn/stats (active positions only).
 // Earn MAX: a pooled Voltr vault, so ownership is the LP token on-chain. Each
 // holder is valued at the vault share price and mapped to its smart account
-// through the index-0 vault PDA; other holders count as their own user.
+// through the Earn MAX authority PDA; other holders count as their own user.
 const (
-	growthFresh     = 5 * time.Minute
-	growthTimeout   = 30 * time.Second
-	growthMinRaw    = 1_000_000 // $1 in 6-decimal stablecoin units
-	earnMaxVault    = "HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA"
-	earnMaxLPMint   = "6tNheTBYSpQkfMLhcczKgmTLSGffK54npKMG1WQR2tvb"
-	smartAccountsID = "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
-	tokenProgramID  = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+	growthFresh    = 5 * time.Minute
+	growthTimeout  = 30 * time.Second
+	growthMinRaw   = 1_000_000 // $1 in 6-decimal stablecoin units
+	earnMaxVault   = "HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA"
+	earnMaxLPMint  = "6tNheTBYSpQkfMLhcczKgmTLSGffK54npKMG1WQR2tvb"
+	tokenProgramID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 	// Same mainnet node as loyal-app apps/web/src/lib/solana/rpc-endpoints.ts.
 	defaultGrowthRPC = "https://fredra-z7l52f-fast-mainnet.helius-rpc.com"
 )
@@ -153,15 +153,14 @@ func (g *growthMetrics) read(ctx context.Context) ([]byte, error) {
 // combineGrowth merges per-settings Earn and per-holder Earn MAX raw amounts.
 func combineGrowth(earn, holders map[string]*big.Int, now time.Time) growthBody {
 	settingsByVault := make(map[string]string, len(earn))
-	program := solana.MustPublicKeyFromBase58(smartAccountsID)
 	for settings := range earn {
 		key, err := solana.PublicKeyFromBase58(settings)
 		if err != nil {
 			continue
 		}
-		vault, _, err := solana.FindProgramAddress([][]byte{[]byte("smart_account"), key[:], []byte("smart_account"), {0}}, program)
+		vault, err := earnmax.AuthorityOf(key)
 		if err == nil {
-			settingsByVault[vault.String()] = settings
+			settingsByVault[vault.Key().String()] = settings
 		}
 	}
 	perUser := make(map[string]*big.Int, len(earn)+len(holders))

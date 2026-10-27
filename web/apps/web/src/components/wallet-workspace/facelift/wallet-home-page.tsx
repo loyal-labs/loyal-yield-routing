@@ -26,7 +26,6 @@ import { LedgerSignInLink } from "@/components/auth/ledger-sign-in-link";
 import { ThemedIcon } from "@/components/wallet-workspace/facelift/themed-icon";
 import { useEarnForecastApy } from "@/hooks/use-earn-forecast-apy";
 import { useSessionDisconnect } from "@/components/wallet-workspace/facelift/use-session-disconnect";
-import { useStablecoinsUsd } from "@/components/wallet-workspace/facelift/use-stablecoins-usd";
 import {
   FirstDepositBanner,
   MOBILE_BANNER_SLOT_CLASS,
@@ -50,23 +49,6 @@ const ASSET_BASE = "/wallet-workspace/facelift";
 
 // ponytail: rough fee/rent buffer — tune when a real preflight estimate exists
 const LOW_SOL_WARNING_THRESHOLD = 0.01;
-
-function CryptoStashIcon({ scale = 1 }: { scale?: number }) {
-  return (
-    <span
-      className="relative block size-10 shrink-0 origin-top-left overflow-clip rounded-[10px] bg-[#9946fc]"
-      style={
-        scale === 1
-          ? undefined
-          : { marginBottom: 40 * (scale - 1), marginRight: 40 * (scale - 1), transform: `scale(${scale})` }
-      }
-    >
-      <span className="absolute top-5 left-[6.67px] h-[13.33px] w-[5px] rounded-[1.667px] bg-white" />
-      <span className="absolute top-[6.67px] left-[17.5px] h-[26.67px] w-[5px] rounded-[1.667px] bg-white" />
-      <span className="absolute top-[13.33px] left-[28.33px] h-5 w-[5px] rounded-[1.667px] bg-white" />
-    </span>
-  );
-}
 
 function MobileSummaryRow({
   amount,
@@ -256,11 +238,7 @@ export function WalletHomePage({
   const { isBalanceHidden, toggleBalanceHidden } = useBalanceVisibility();
   const { open: openSignIn, openAccount } = useSignInModal();
 
-  const stablecoinsUsd = useStablecoinsUsd(data.positions);
-  const stablecoinsBalance = splitUsdBalance(stablecoinsUsd);
-  const cryptoBalance = splitUsdBalance(
-    Math.max(data.totalUsd - stablecoinsUsd, 0)
-  );
+  const assetsBalance = splitUsdBalance(data.totalUsd);
   const earnBalance = splitUsdBalance(earnBalanceUsd);
   const earnMaxBalance = splitUsdBalance(earnMaxBalanceUsd);
   const earnMaxApyLabel =
@@ -499,19 +477,20 @@ export function WalletHomePage({
                 <WalletHomeBanners onSetUpAutodeposit={onSetUpAutodeposit} />
                 <button
                   className="t-hover flex flex-col items-start justify-between overflow-clip rounded-3xl bg-accent p-4 text-left hover:bg-accent-selected"
-                  onClick={() => onSelectPage("crypto")}
+                  onClick={() => onSelectPage("assets")}
                   type="button"
                 >
-                  <CryptoStashIcon />
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img alt="" className="size-10" src={`${ASSET_BASE}/sidebar/assets.svg`} />
                   <span className="flex w-full flex-col gap-1">
                     <span className="text-[15px] leading-5 text-muted-foreground">
-                      Crypto
+                      Assets
                     </span>
                     <SplitAmount
-                      fraction={cryptoBalance.balanceFraction}
+                      fraction={assetsBalance.balanceFraction}
                       isHidden={isBalanceHidden}
                       isRevealed={isWalletDataRevealed}
-                      whole={cryptoBalance.balanceWhole}
+                      whole={assetsBalance.balanceWhole}
                     />
                   </span>
                 </button>
@@ -564,33 +543,9 @@ export function WalletHomePage({
                     />
                   </span>
                 </button>
-                <button
-                  className="t-hover flex flex-col items-start justify-between overflow-clip rounded-3xl bg-accent p-4 text-left hover:bg-accent-selected"
-                  onClick={() => onSelectPage("stables")}
-                  type="button"
-                >
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    alt=""
-                    aria-hidden="true"
-                    className="size-10 shrink-0"
-                    src={`${ASSET_BASE}/stash-stablecoins.svg`}
-                  />
-                  <span className="flex w-full flex-col gap-1">
-                    <span className="text-[15px] leading-5 text-muted-foreground">
-                      Stablecoins
-                    </span>
-                    <SplitAmount
-                      fraction={stablecoinsBalance.balanceFraction}
-                      isHidden={isBalanceHidden}
-                      isRevealed={isWalletDataRevealed}
-                      whole={stablecoinsBalance.balanceWhole}
-                    />
-                  </span>
-                </button>
                 {showEarnMax ? (
                   <button
-                    className="t-hover flex flex-col items-start justify-between overflow-clip rounded-3xl bg-accent p-4 text-left hover:bg-accent-selected"
+                    className="t-hover col-span-2 flex flex-col items-start justify-between overflow-clip rounded-3xl bg-accent p-4 text-left hover:bg-accent-selected"
                     onClick={() => onSelectPage("earnmax")}
                     type="button"
                   >
@@ -646,28 +601,15 @@ export function WalletHomePage({
                 </div>
                 <div className="flex w-full shrink-0 items-start gap-2 py-2 pt-7">
                   <MobileSummaryRow
-                    amount={stablecoinsBalance}
+                    amount={assetsBalance}
                     icon={
                       // eslint-disable-next-line @next/next/no-img-element
-                      <img
-                        alt=""
-                        aria-hidden="true"
-                        className="size-6 shrink-0"
-                        src={`${ASSET_BASE}/stash-stablecoins.svg`}
-                      />
+                      <img alt="" className="size-6" src={`${ASSET_BASE}/sidebar/assets.svg`} />
                     }
                     isHidden={isBalanceHidden}
                     isRevealed={isWalletDataRevealed}
-                    label="Stablecoins"
-                    onSelect={() => onSelectPage("stables")}
-                  />
-                  <MobileSummaryRow
-                    amount={cryptoBalance}
-                    icon={<CryptoStashIcon scale={0.6} />}
-                    isHidden={isBalanceHidden}
-                    isRevealed={isWalletDataRevealed}
-                    label="Crypto"
-                    onSelect={() => onSelectPage("crypto")}
+                    label="Assets"
+                    onSelect={() => onSelectPage("assets")}
                     warningLabel={
                       isWalletDataRevealed &&
                       (data.totalSol ?? 0) < LOW_SOL_WARNING_THRESHOLD

@@ -10,7 +10,7 @@ import (
 
 func TestCombineGrowthCountsEachUserOnceAcrossEarnAndEarnMax(t *testing.T) {
 	settings := solana.NewWallet().PublicKey()
-	vault, _, err := solana.FindProgramAddress([][]byte{[]byte("smart_account"), settings[:], []byte("smart_account"), {0}}, solana.MustPublicKeyFromBase58(smartAccountsID))
+	vault, _, err := solana.FindProgramAddress([][]byte{[]byte("smart_account"), settings[:], []byte("smart_account"), {2}}, solana.MustPublicKeyFromBase58("SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"))
 	if err != nil {
 		t.Fatal(err)
 	}
