@@ -4,6 +4,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useAuthSession } from "@/contexts/auth-session-context";
 import type { EarnPositionData } from "./use-earn-position-data";
 
+// Compatibility alone does not establish that a user must update a policy.
+const POLICY_UPDATE_NOTIFICATIONS_ENABLED = false;
+
 type Compatibility = {
   account: string;
   seed: string;
@@ -26,7 +29,7 @@ export function usePolicyUpdates(data: EarnPositionData) {
   const [isLoading, setIsLoading] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);
   const refresh = useCallback(async () => {
-    if (!scope) return;
+    if (!POLICY_UPDATE_NOTIFICATIONS_ENABLED || !scope) return;
     const request = ++requestRef.current;
     setIsLoading(true);
     setError(null);
@@ -62,7 +65,9 @@ export function usePolicyUpdates(data: EarnPositionData) {
   }, [refresh]);
   const policy = result?.scope === scope ? result.policy : null;
   const requiredAccount =
-    policy?.generation === "legacy_token_program" ? policy.account : null;
+    POLICY_UPDATE_NOTIFICATIONS_ENABLED && policy?.generation === "legacy_token_program"
+      ? policy.account
+      : null;
   const update = async () => {
     if (
       !scope ||
