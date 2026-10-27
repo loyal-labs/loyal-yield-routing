@@ -398,7 +398,7 @@ export function WalletHomePage({
                 {publicEnv.privyAppId && isAuthenticated ? (
                   <button
                     aria-label="Account settings"
-                    className="t-hover flex size-11 items-center justify-center rounded-3xl hover:bg-accent"
+                    className="t-hover flex size-11 items-center justify-center rounded-3xl hover:bg-accent max-[795px]:hidden"
                     onClick={openAccount}
                     type="button"
                   >
