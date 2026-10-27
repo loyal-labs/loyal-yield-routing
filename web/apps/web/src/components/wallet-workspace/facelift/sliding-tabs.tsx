@@ -1,15 +1,27 @@
 "use client";
 
-import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  type ReactNode,
+} from "react";
 
 export function SlidingTabs<T extends string>({
   activeTab,
   onSelect,
   tabs,
+  className = "",
+  renderLabel,
+  disabledTabs = [],
 }: {
   activeTab: T;
   onSelect: (tab: T) => void;
   tabs: readonly T[];
+  className?: string;
+  renderLabel?: (tab: T) => ReactNode;
+  disabledTabs?: readonly T[];
 }) {
   const barRef = useRef<HTMLDivElement>(null);
   const pillRef = useRef<HTMLSpanElement>(null);
@@ -49,18 +61,19 @@ export function SlidingTabs<T extends string>({
   }, [movePillToActiveTab]);
 
   return (
-    <div className="t-tabs" ref={barRef} role="tablist">
+    <div className={`t-tabs ${className}`} ref={barRef} role="tablist">
       <span aria-hidden="true" className="t-tabs-pill" ref={pillRef} />
       {tabs.map((tab) => (
         <button
           aria-selected={activeTab === tab}
-          className="t-tab whitespace-nowrap font-medium text-[14px] leading-5"
+          className="t-tab whitespace-nowrap font-medium text-[14px] leading-5 disabled:cursor-not-allowed disabled:opacity-40"
           key={tab}
+          disabled={disabledTabs.includes(tab)}
           onClick={() => onSelect(tab)}
           role="tab"
           type="button"
         >
-          {tab}
+          {renderLabel ? renderLabel(tab) : tab}
         </button>
       ))}
     </div>

@@ -13,9 +13,9 @@ import {
   ShieldedTokenIcon,
 } from "@/components/wallet-workspace/facelift/unshield-pane";
 
-const ASSET_BASE = "/wallet-workspace/facelift";
+import { isStablecoinMint } from "@/lib/wallet/stablecoin-classification";
 
-export type CryptoPaneVariant = "crypto" | "stables";
+const ASSET_BASE = "/wallet-workspace/facelift";
 
 export type CryptoRowActions = {
   onEarn?: (token: TokenRow) => void;
@@ -147,14 +147,14 @@ function TokenCell({
   actions,
   isBalanceHidden,
   row,
-  variant,
+  stablecoinMints,
 }: {
   actions: CryptoRowActions;
   isBalanceHidden: boolean;
   row: TokenRow;
-  variant: CryptoPaneVariant;
+  stablecoinMints: ReadonlySet<string>;
 }) {
-  const isStables = variant === "stables";
+  const isStables = isStablecoinMint(row.id, stablecoinMints);
   return (
     <div
       className="group relative flex w-full cursor-pointer items-center rounded-2xl px-4 transition-colors duration-150 hover:bg-accent"
@@ -289,31 +289,32 @@ export function CryptoPane({
   balanceFraction,
   balanceWhole,
   isBalanceRevealed,
+  isEmpty,
+  onReceive,
   onBack,
-  onEarn,
   onSend,
   onSwap,
   onUnshield,
   rowActions,
   shieldedRows = [],
   tokenRows,
-  variant,
+  stablecoinMints,
 }: {
   balanceFraction: string;
   balanceWhole: string;
   isBalanceRevealed: boolean;
+  isEmpty: boolean;
+  onReceive: () => void;
   onBack: () => void;
-  onEarn?: () => void;
   onSend: () => void;
   onSwap: () => void;
   onUnshield?: (mint?: string) => void;
   rowActions: CryptoRowActions;
   shieldedRows?: ShieldedRow[];
   tokenRows: TokenRow[];
-  variant: CryptoPaneVariant;
+  stablecoinMints: ReadonlySet<string>;
 }) {
   const { isBalanceHidden } = useBalanceVisibility();
-  const isStables = variant === "stables";
 
   return (
     <div className="flex h-full min-w-0 flex-1 flex-col">
@@ -334,10 +335,10 @@ export function CryptoPane({
           </div>
           <div className="flex min-w-0 flex-1 items-center py-2.5 pl-4 max-[795px]:pl-0">
             <h1 className="truncate whitespace-nowrap font-semibold text-[20px] text-foreground leading-6">
-              {isStables ? "Stablecoins" : "Crypto"}
+              Assets
             </h1>
           </div>
-          <div className="flex shrink-0 items-start gap-2 pl-3 max-[795px]:hidden">
+          <div className={`flex shrink-0 items-start gap-2 pl-3 max-[795px]:hidden ${isEmpty ? "hidden" : ""}`}>
             {onUnshield ? (
               <HeaderPill
                 hideLabel
@@ -347,54 +348,14 @@ export function CryptoPane({
                 onClick={() => onUnshield()}
               />
             ) : null}
-            <HeaderPill
-              hideLabel
-              icon="icon-arrow-up-circle.svg"
-              iconColorClass="text-tertiary"
-              label="Send"
-              onClick={onSend}
-            />
-            <HeaderPill
-              hideLabel={isStables}
-              icon={
-                isStables ? "icon-swap-repeat-gray.svg" : "icon-swap-repeat.svg"
-              }
-              iconColorClass={isStables ? "text-tertiary" : "text-background"}
-              isBlack={!isStables}
-              label="Swap"
-              onClick={onSwap}
-            />
-            {isStables && onEarn ? (
-              <HeaderPill
-                hideLabel
-                icon="icon-coins-add.svg"
-                iconColorClass="text-background"
-                isBlack
-                label="Earn"
-                onClick={onEarn}
-              />
-            ) : null}
           </div>
         </header>
 
         <div className="w-full shrink-0 p-2">
-          <div className="flex h-[86px] w-full items-center rounded-[20px] px-3 py-2">
+          <div className="flex h-[86px] w-full items-center rounded-[20px] px-4 py-2">
             <div className="flex shrink-0 items-center py-[3px] pr-3">
-              {isStables ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img
-                  alt=""
-                  aria-hidden="true"
-                  className="size-16"
-                  src={`${ASSET_BASE}/stash-stablecoins.svg`}
-                />
-              ) : (
-                <span className="relative block size-16 overflow-clip rounded-2xl bg-[#9946fc]">
-                  <span className="absolute top-8 left-[10.67px] h-[21.33px] w-2 rounded-[2.667px] bg-white" />
-                  <span className="absolute top-[10.67px] left-7 h-[42.67px] w-2 rounded-[2.667px] bg-white" />
-                  <span className="absolute top-[21.33px] left-[45.33px] h-8 w-2 rounded-[2.667px] bg-white" />
-                </span>
-              )}
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img alt="" aria-hidden="true" className="size-16" src={`${ASSET_BASE}/receive/assets.svg`} />
             </div>
             <div className="flex min-w-0 flex-1 flex-col gap-0.5">
               <p className="whitespace-nowrap text-[16px] leading-5 text-muted-foreground">
@@ -423,13 +384,24 @@ export function CryptoPane({
         </div>
 
         <div className="flex w-full flex-1 flex-col p-2">
-          {tokenRows.map((row) => (
+          {isEmpty ? (
+            <div className="flex min-h-[260px] flex-1 flex-col items-center justify-center gap-5 px-4">
+              <div className="flex w-full flex-col items-center gap-3">
+                <span aria-hidden="true" className="size-11 rounded-full border-2 border-dashed border-border" />
+                <div className="flex w-full max-w-[400px] flex-col gap-1 px-8 text-center">
+                  <p className="font-medium text-[16px] leading-5 tracking-[-0.176px]">You have no assets yet</p>
+                  <p className="text-balance text-[13px] leading-4 tracking-[-0.143px] text-muted-foreground">Receive crypto from an exchange or wallet, or bridge tokens from another chain</p>
+                </div>
+              </div>
+              <HeaderPill icon="sidebar/receive.svg" iconColorClass="text-background" isBlack label="Receive" onClick={onReceive} />
+            </div>
+          ) : tokenRows.map((row) => (
             <TokenCell
               actions={rowActions}
               isBalanceHidden={isBalanceHidden}
               key={row.id ?? row.symbol}
               row={row}
-              variant={variant}
+              stablecoinMints={stablecoinMints}
             />
           ))}
           {onUnshield && shieldedRows.length > 0 ? (
@@ -450,7 +422,7 @@ export function CryptoPane({
         </div>
       </section>
 
-      <div className="hidden w-full shrink-0 gap-2 bg-card px-4 pt-2 pb-4 max-[795px]:flex">
+      <div className={`hidden w-full shrink-0 gap-2 bg-card px-4 pt-2 pb-4 ${isEmpty ? "" : "max-[795px]:flex"}`}>
         <button
           className="flex min-w-0 flex-1 items-center justify-center gap-2 rounded-full bg-foreground p-2.5"
           onClick={onSwap}

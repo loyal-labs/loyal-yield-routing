@@ -1762,6 +1762,47 @@ describe("prepareEarnUsdcDeposit", () => {
     ).toBe(true);
   });
 
+  test("policy update discovery flags only legacy permissions and clears after a compatible replacement", async () => {
+    const policies: { pubkey: PublicKey; account: ReturnType<typeof createSerializedEarnPolicyAccount> }[] = [];
+    let failRead = false;
+    const client = createSmartAccountVaultsClient({
+      connection: {
+        getAccountInfo: mock(async () => createSerializedSettingsAccount(new BN(6))),
+        getProgramAccounts: mock(async () => {
+          if (failRead) throw new Error("RPC unavailable");
+          return policies;
+        }),
+      } as never,
+      programId,
+    });
+    const args = { settingsPda, cluster: LoyalCluster.MainnetBeta };
+    expect(await client.fetchEarnPolicyCompatibility(args)).toBeNull();
+    const prepared = await client.prepareEarnUsdcYieldRoutingPolicy({ settingsPda, walletAddress, signer: backendSigner, feePayer });
+    const create = decodeGeneratedPolicyCreate(prepared.prepared.instructions[0]);
+    const payload = create.policyCreationPayload;
+    if (payload.__kind !== "ProgramInteraction") throw new Error("Expected routing permissions");
+    const depositMintConstraint = payload.fields[0].instructionsConstraints[1].accountConstraints[2];
+    const serialize = (seed: number) => {
+      const [data] = Policy.fromArgs({
+        bump: 255, expiration: null, policyState: payload as never, rentCollector: feePayer,
+        seed: new BN(seed), settings: settingsPda, signers: create.signers,
+        staleTransactionIndex: new BN(0), start: new BN(0), threshold: 1, timeLock: 0,
+        transactionIndex: new BN(0),
+      }).serialize();
+      return { data, executable: false, lamports: 1, owner: programId, rentEpoch: 0 };
+    };
+    const compatible = serialize(7);
+    depositMintConstraint.owner = TOKEN_PROGRAM_ID;
+    policies.push({ pubkey: policyAccount, account: serialize(8) });
+    expect((await client.fetchEarnPolicyCompatibility(args))?.generation).toBe("legacy_token_program");
+    policies.push({ pubkey: setupPolicyAccount, account: compatible });
+    const result = await client.fetchEarnPolicyCompatibility(args);
+    expect(result?.generation).toBe("compatible");
+    expect(result?.account).toBe(setupPolicyAccount.toBase58());
+    failRead = true;
+    await expect(client.fetchEarnPolicyCompatibility(args)).rejects.toThrow("RPC unavailable");
+  });
+
   test("builds standalone earn routing policy setup metadata", async () => {
     const getAccountInfo = mock(async (_address: PublicKey) =>
       createSerializedSettingsAccount(new BN(6))

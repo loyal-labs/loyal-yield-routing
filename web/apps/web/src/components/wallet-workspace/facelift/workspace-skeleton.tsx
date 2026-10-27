@@ -31,7 +31,7 @@ export function WorkspaceSkeleton() {
         <div className="workspace-skeleton-bar workspace-skeleton-title" />
         <div className="workspace-skeleton-bar workspace-skeleton-balance" />
         <div className="workspace-skeleton-nav">
-          {["earn", "earnmax", "stables", "crypto"].map((page) => (
+          {["earn", "earnmax", "assets"].map((page) => (
             <div className="workspace-skeleton-row" key={page}>
               <div className="workspace-skeleton-bar workspace-skeleton-icon" />
               <div className="workspace-skeleton-bar workspace-skeleton-line" />

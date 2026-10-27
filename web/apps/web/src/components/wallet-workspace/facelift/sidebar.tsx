@@ -1,13 +1,11 @@
 "use client";
 
-import { useEscapeOverlay } from "@/components/wallet-workspace/facelift/escape-owner";
 import { formatEarnMaxApyLabel } from "@loyal-labs/shared";
 import { useWallet } from "@solana/wallet-adapter-react";
-import { Moon, Sun } from "lucide-react";
+import { Popover } from "radix-ui";
 import {
   type CSSProperties,
   useEffect,
-  useMemo,
   useRef,
   useState,
 } from "react";
@@ -17,10 +15,8 @@ import {
   useBalanceVisibility,
 } from "@/components/wallet-workspace/facelift/balance-visibility";
 import { copyTextToClipboard } from "@/components/wallet-workspace/facelift/copy-text";
-import { DropdownReveal } from "@/components/wallet-workspace/facelift/dropdown-reveal";
 import { InfoTooltip } from "@/components/wallet-workspace/facelift/info-tooltip";
 import { PopDigits } from "@/components/wallet-workspace/facelift/pop-digits";
-import { ReceiveSheet } from "@/components/wallet-workspace/facelift/receive-sheet";
 import type { WorkspacePage } from "@/components/wallet-workspace/facelift/shell";
 import { SkeletonReveal } from "@/components/wallet-workspace/facelift/skeleton-reveal";
 import { TextSwap } from "@/components/wallet-workspace/facelift/text-swap";
@@ -29,11 +25,9 @@ import { LedgerSignInLink } from "@/components/auth/ledger-sign-in-link";
 import { ThemedIcon } from "@/components/wallet-workspace/facelift/themed-icon";
 import { useEarnMaxApy } from "@/features/earn-max";
 import { useEarnForecastApy } from "@/hooks/use-earn-forecast-apy";
-import { useAuthSession } from "@/contexts/auth-session-context";
 import { useSignInModal } from "@/contexts/sign-in-modal-context";
 import { useCherryRuntime } from "@/features/cherry/client/runtime-context";
 import { useAuthCapability } from "@/lib/auth/capability";
-import { usePublicEnv } from "@/contexts/public-env-context";
 import { captureBrowserLoadingMetricAfterPaint } from "@/features/observability/client";
 import {
   splitUsdBalance,
@@ -41,10 +35,6 @@ import {
 } from "@/hooks/use-wallet-desktop-data";
 import { useTheme } from "@/hooks/use-theme";
 import { formatEarnApyLabel } from "@/lib/kamino/earn-forecast.shared";
-import {
-  getStablecoinMintSetForSolanaEnv,
-  isStablecoinMint,
-} from "@/lib/wallet/stablecoin-classification";
 
 const ASSET_BASE = "/wallet-workspace/facelift";
 const WALLET_ICONS: Readonly<Record<string, string>> = {
@@ -140,6 +130,10 @@ function ShortcutKey({
 
 export function FaceliftSidebar({
   activePage,
+  onOpenSettings,
+  onAssetAction,
+  earnPolicyUpdates = 0,
+  earnMaxPolicyUpdates = 0,
   earnBalanceUsd,
   earnMaxBalanceUsd,
   flashedShortcut,
@@ -150,6 +144,10 @@ export function FaceliftSidebar({
   showEarnMax,
 }: {
   activePage: WorkspacePage;
+  onOpenSettings: () => void;
+  onAssetAction: (action: "send" | "receive" | "swap" | "bridge") => void;
+  earnPolicyUpdates?: number;
+  earnMaxPolicyUpdates?: number;
   earnBalanceUsd: number;
   earnMaxBalanceUsd: number;
   flashedShortcut: WorkspacePage | null;
@@ -160,33 +158,17 @@ export function FaceliftSidebar({
   showEarnMax: boolean;
 }) {
   const data = useWalletDesktopData({});
-  const publicEnv = usePublicEnv();
   const { apy: earnApy, isLoaded: isApyLoaded } = useEarnForecastApy();
   const { isHydrated, isSignedIn } = useAuthCapability();
-  const { isAuthenticated, logout } = useAuthSession();
   const cherryRuntime = useCherryRuntime();
-  const { connected: isWalletConnected, disconnect, publicKey, wallet } = useWallet();
+  const { publicKey, wallet } = useWallet();
   const walletIcon =
     publicKey?.toBase58() === data.walletAddress
       ? WALLET_ICONS[wallet?.adapter.name.toLowerCase() ?? ""]
       : undefined;
-  // The adapter can auto-reconnect without an auth session (stale dev state);
-  // disconnect must stay clickable in that half-connected limbo to clear it.
-  const canDisconnect = isAuthenticated || isWalletConnected;
   const { isBalanceHidden, toggleBalanceHidden } = useBalanceVisibility();
-  const { open: openSignIn, openAccount } = useSignInModal();
+  const { open: openSignIn } = useSignInModal();
   const { isDark, toggleTheme } = useTheme();
-  const [isWalletMenuOpen, setIsWalletMenuOpen] = useState(false);
-  const [isReceiveOpen, setIsReceiveOpen] = useState(false);
-
-  useEscapeOverlay(isWalletMenuOpen, () => {
-    setIsWalletMenuOpen(false);
-  });
-
-  const handleDisconnect = () => {
-    void Promise.allSettled([logout(), disconnect()]);
-  };
-
   const loadActivity = data.loadActivity;
   useEffect(() => {
     if (data.walletAddress) {
@@ -218,24 +200,7 @@ export function FaceliftSidebar({
     onUnseenActivityChange?.(hasUnseenActivity);
   }, [hasUnseenActivity, onUnseenActivityChange]);
 
-  const stablecoinMints = useMemo(
-    () => getStablecoinMintSetForSolanaEnv(publicEnv.solanaEnv),
-    [publicEnv.solanaEnv]
-  );
-  const stablecoinsUsd = useMemo(
-    () =>
-      data.positions.reduce(
-        (sum, position) =>
-          isStablecoinMint(position.asset.mint, stablecoinMints)
-            ? sum + (position.totalValueUsd ?? 0)
-            : sum,
-        0
-      ),
-    [data.positions, stablecoinMints]
-  );
-  const cryptoUsd = Math.max(data.totalUsd - stablecoinsUsd, 0);
-  const stablecoinsBalance = splitUsdBalance(stablecoinsUsd);
-  const cryptoBalance = splitUsdBalance(cryptoUsd);
+  const assetsBalance = splitUsdBalance(data.totalUsd);
   const earnBalance = splitUsdBalance(earnBalanceUsd);
   const earnMaxBalance = splitUsdBalance(earnMaxBalanceUsd);
   const earnMaxApyBps =
@@ -326,7 +291,7 @@ export function FaceliftSidebar({
           <span className="group flex items-center gap-1.5">
             <ShortcutKey
               isFlashed={flashedShortcut === "activity"}
-              letter="A"
+              letter="H"
             />
             <button
               aria-label="Activity"
@@ -351,6 +316,7 @@ export function FaceliftSidebar({
         </div>
       </div>
 
+      <div className="min-h-0 w-full flex-1 overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
       {isSignedOutNav ? null : (
       <div className="w-full py-2">
         <div className="flex w-full flex-col gap-0.5 px-4 py-2">
@@ -395,6 +361,25 @@ export function FaceliftSidebar({
             </button>
           </div>
         </div>
+        <div aria-label="Asset actions" className="flex w-full">
+          {(["send", "receive", "swap", "bridge"] as const).map((action) => (
+            <button
+              className="t-hover flex min-w-0 flex-1 flex-col items-center gap-1 rounded-2xl py-2 enabled:hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40"
+              key={action}
+              disabled={action === "bridge"}
+              title={action === "bridge" ? "Coming soon" : undefined}
+              onClick={() => onAssetAction(action)}
+              type="button"
+            >
+              <span className="flex size-11 items-center justify-center rounded-full bg-accent">
+                <ThemedIcon className="size-6 text-foreground" src={`${ASSET_BASE}/sidebar/${action}.svg`} />
+              </span>
+              <span className="text-[13px] leading-4 text-muted-foreground">
+                {action[0].toUpperCase() + action.slice(1)}
+              </span>
+            </button>
+          ))}
+        </div>
       </div>
       )}
 
@@ -403,7 +388,7 @@ export function FaceliftSidebar({
       </div>
 
       {isSignedOutNav ? (
-        <nav className="flex w-full flex-col py-2">
+        <nav className="flex w-full flex-col gap-2 py-2">
           <button
             className={`t-hover flex w-full items-center rounded-2xl px-4 text-left ${
               activePage === "earn" ? "bg-accent" : "hover:bg-accent"
@@ -467,9 +452,9 @@ export function FaceliftSidebar({
           </button>
         </nav>
       ) : (
-      <nav className="flex w-full flex-col py-2">
+      <nav className="flex w-full flex-col gap-2 py-2">
         <button
-          className={`t-hover group flex w-full items-center rounded-2xl px-4 text-left ${
+          className={`t-hover group flex h-[60px] w-full items-center rounded-2xl px-4 text-left ${
             activePage === "earn" ? "bg-accent" : "hover:bg-accent"
           }`}
           onClick={() => onSelectPage("earn")}
@@ -510,7 +495,8 @@ export function FaceliftSidebar({
                   </span>
                 </span>
               </SkeletonReveal>
-              <ShortcutKey isFlashed={flashedShortcut === "earn"} letter="E" />
+              {earnPolicyUpdates > 0 && <ThemedIcon label="Earn policy update required" className="ml-auto size-4 text-destructive" src={`${ASSET_BASE}/settings/warning-small.svg`} />}
+                  <ShortcutKey isFlashed={flashedShortcut === "earn"} letter="E" />
             </span>
             <SplitAmount
               fraction={earnBalance.balanceFraction}
@@ -524,7 +510,7 @@ export function FaceliftSidebar({
 
         {showEarnMax ? (
           <button
-            className={`t-hover group flex w-full items-center rounded-2xl px-4 text-left ${
+            className={`t-hover group flex h-[60px] w-full items-center rounded-2xl px-4 text-left ${
               activePage === "earnmax" ? "bg-accent" : "hover:bg-accent"
             }`}
             onClick={() => onSelectPage("earnmax")}
@@ -556,7 +542,8 @@ export function FaceliftSidebar({
                     </span>
                   </span>
                 ) : null}
-                <ShortcutKey
+                {earnMaxPolicyUpdates > 0 && <ThemedIcon label="Earn MAX policy update required" className="ml-auto size-4 text-destructive" src={`${ASSET_BASE}/settings/warning-small.svg`} />}
+                  <ShortcutKey
                   isFlashed={flashedShortcut === "earnmax"}
                   letter="M"
                 />
@@ -572,10 +559,10 @@ export function FaceliftSidebar({
         ) : null}
 
         <button
-          className={`t-hover group flex w-full items-center rounded-2xl px-4 text-left ${
-            activePage === "stables" ? "bg-accent" : "hover:bg-accent"
+          className={`t-hover group flex h-[60px] w-full items-center rounded-2xl px-4 text-left ${
+            activePage === "assets" ? "bg-accent" : "hover:bg-accent"
           }`}
-          onClick={() => onSelectPage("stables")}
+          onClick={() => onSelectPage("assets")}
           type="button"
         >
           {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -583,85 +570,87 @@ export function FaceliftSidebar({
             alt=""
             aria-hidden="true"
             className="mr-3 size-11 shrink-0"
-            src={`${ASSET_BASE}/stablecoins-icon.svg`}
+            src={`${ASSET_BASE}/sidebar/assets.svg`}
           />
           <span className="flex min-w-0 flex-1 flex-col gap-1 py-2">
             <span className="flex items-center gap-1">
               <span className="whitespace-nowrap text-[13px] leading-4 text-muted-foreground">
-                Stablecoins
+                Assets
               </span>
               <ShortcutKey
-                isFlashed={flashedShortcut === "stables"}
-                letter="S"
+                isFlashed={flashedShortcut === "assets"}
+                letter="A"
               />
             </span>
             <SplitAmount
-              fraction={stablecoinsBalance.balanceFraction}
+              fraction={assetsBalance.balanceFraction}
               isHidden={isBalanceHidden}
               isRevealed={isWalletDataRevealed}
-              whole={stablecoinsBalance.balanceWhole}
-            />
-          </span>
-        </button>
-
-        <button
-          className={`t-hover group flex w-full items-center rounded-2xl px-4 text-left ${
-            activePage === "crypto" ? "bg-accent" : "hover:bg-accent"
-          }`}
-          onClick={() => onSelectPage("crypto")}
-          type="button"
-        >
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            alt=""
-            aria-hidden="true"
-            className="mr-3 size-11 shrink-0"
-            src={`${ASSET_BASE}/crypto-icon.svg`}
-          />
-          <span className="flex min-w-0 flex-1 flex-col gap-1 py-2">
-            <span className="flex items-center gap-1">
-              <span className="whitespace-nowrap text-[13px] leading-4 text-muted-foreground">
-                Crypto
-              </span>
-              <ShortcutKey
-                isFlashed={flashedShortcut === "crypto"}
-                letter="C"
-              />
-            </span>
-            <SplitAmount
-              fraction={cryptoBalance.balanceFraction}
-              isHidden={isBalanceHidden}
-              isRevealed={isWalletDataRevealed}
-              whole={cryptoBalance.balanceWhole}
+              whole={assetsBalance.balanceWhole}
             />
           </span>
         </button>
       </nav>
       )}
 
-      <div className="flex w-full flex-col py-2">
-        {SIDEBAR_LINKS.map((link) => (
-          <a
-            className="t-hover flex w-full items-center rounded-2xl px-4 hover:bg-accent"
-            href={link.href}
-            key={link.label}
-            rel="noreferrer"
-            target="_blank"
-          >
-            <span className="mr-3 flex size-11 shrink-0 items-center justify-center">
-              <ThemedIcon
-                className="size-6 text-tertiary"
-                src={`${ASSET_BASE}/${link.icon}`}
-              />
-            </span>
-            <span className="py-2 font-medium text-muted-foreground text-[16px] leading-5">
-              {link.label}
-            </span>
-          </a>
-        ))}
-      </div>
+        <button
+          className="flex min-h-[60px] w-full cursor-default items-center rounded-2xl px-4 text-left"
+          disabled
+          type="button"
+        >
+          <span className="mr-3 flex size-11 shrink-0 items-center justify-center rounded-[11px] bg-primary">
+            <ThemedIcon className="size-7 text-white" src={`${ASSET_BASE}/icon-bone.svg`} />
+          </span>
+          <span className="flex min-w-0 flex-1 items-center gap-2 py-2">
+            <span className="font-medium text-[16px] leading-5 text-foreground">Quests</span>
+            <span className="rounded-full bg-accent px-2 py-1 text-[11px] leading-[13px] text-muted-foreground">Coming soon</span>
+          </span>
+        </button>
 
-      <div aria-hidden="true" className="w-full min-h-0 flex-1" />
+        <div className="w-full py-2">
+          <div className="[@media(max-height:899px)]:hidden">
+            <SidebarResourceLinks />
+          </div>
+          <div className="hidden [@media(max-height:899px)]:block">
+            <Popover.Root>
+              <Popover.Trigger asChild>
+                <button
+                  className="t-hover flex min-h-11 w-full items-center rounded-2xl px-4 text-left text-muted-foreground hover:bg-accent"
+                  type="button"
+                >
+                  <span className="mr-3 flex size-11 shrink-0 items-center justify-center">
+                    <ThemedIcon
+                      className="size-6 text-tertiary"
+                      src={`${ASSET_BASE}/icon-question.svg`}
+                    />
+                  </span>
+                  <span className="flex-1 font-medium text-[16px] leading-5">
+                    Help &amp; Resources
+                  </span>
+                  <ThemedIcon
+                    className="size-6 text-tertiary"
+                    src={`${ASSET_BASE}/icon-chevron-grabber.svg`}
+                  />
+                </button>
+              </Popover.Trigger>
+              <Popover.Portal>
+                <Popover.Content
+                  aria-label="Help and resources"
+                  align="start"
+                  side="top"
+                  sideOffset={4}
+                  collisionPadding={8}
+                  onEscapeKeyDown={(event) => event.stopPropagation()}
+                  className="z-50 max-h-[var(--radix-popover-content-available-height)] w-[var(--radix-popover-trigger-width)] overflow-y-auto rounded-2xl bg-popover/70 p-2 shadow-[0px_0px_2px_0px_rgba(0,0,0,0.08),0px_4px_16px_0px_rgba(0,0,0,0.08)] backdrop-blur-[16px] data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0 data-[state=open]:zoom-in-95 data-[state=closed]:zoom-out-95 motion-reduce:animate-none"
+                >
+                  <SidebarResourceLinks />
+                </Popover.Content>
+              </Popover.Portal>
+            </Popover.Root>
+          </div>
+        </div>
+
+      </div>
 
       {isHydrated && !isSignedIn ? (
         <div className="flex w-full shrink-0 items-center gap-2">
@@ -670,6 +659,8 @@ export function FaceliftSidebar({
             onClick={openSignIn}
             type="button"
           >
+            {/* Figma 5429:36740 — plain wallet chip replaces the agent
+                avatar on the redesigned logged-out sidebar. */}
             <span className="mr-3 flex size-11 shrink-0 items-center justify-center rounded-[11px] bg-accent">
               <ThemedIcon
                 className="size-7 text-tertiary"
@@ -699,9 +690,9 @@ export function FaceliftSidebar({
               type="button"
             >
               {isDark ? (
-                <Sun className="size-6" />
+                <ThemedIcon className="size-6" src={`${ASSET_BASE}/settings/sun.svg`} />
               ) : (
-                <Moon className="size-6" />
+                <ThemedIcon className="size-6" src={`${ASSET_BASE}/settings/moon.svg`} />
               )}
             </button>
           </div>
@@ -709,12 +700,9 @@ export function FaceliftSidebar({
       ) : (
         <div className="relative flex w-full shrink-0 items-center">
           <button
-            className="t-hover flex h-[60px] items-center rounded-2xl px-4 text-left hover:bg-accent"
-            onClick={() => {
-              if (cherryRuntime.mode === "standalone") {
-                setIsWalletMenuOpen((open) => !open);
-              }
-            }}
+            aria-label={isCopied ? "Address copied" : "Copy wallet address"}
+            className="t-hover flex h-[60px] min-w-0 items-center rounded-2xl px-4 text-left hover:bg-accent"
+            onClick={handleCopyAddress}
             type="button"
           >
             {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -733,6 +721,7 @@ export function FaceliftSidebar({
                   <TextSwap text={addressLabel} />
                 </SkeletonReveal>
               </span>
+              {/* transitions.dev icon swap: copy ↔ check while isCopied. */}
               <span
                 className="t-icon-swap size-6 shrink-0 cursor-pointer"
                 data-state={isCopied ? "b" : "a"}
@@ -764,31 +753,16 @@ export function FaceliftSidebar({
                 />
               </span>
             </span>
-            {cherryRuntime.mode === "standalone" ? (
-              <ThemedIcon
-                className="ml-2 size-6 text-tertiary"
-                src={`${ASSET_BASE}/icon-chevron-down.svg`}
-              />
-            ) : null}
           </button>
           <div className="flex min-w-0 flex-1 items-center justify-end pl-3">
-            <button
-              aria-label="Receive"
-              className="t-hover flex size-11 items-center justify-center rounded-3xl hover:bg-accent"
-              onClick={() => setIsReceiveOpen(true)}
-              type="button"
-            >
-              <ThemedIcon
-                className="size-6 text-tertiary"
-                src={`${ASSET_BASE}/icon-qr.svg`}
-              />
-            </button>
             <button
               aria-label={
                 isDark ? "Switch to light theme" : "Switch to dark theme"
               }
               className="t-hover flex size-11 items-center justify-center rounded-3xl text-tertiary hover:bg-accent"
               onClick={(event) => {
+                // Wipe from the toggle itself (also right for keyboard
+                // activation, where click coords are unreliable).
                 const rect = event.currentTarget.getBoundingClientRect();
                 toggleTheme({
                   x: rect.left + rect.width / 2,
@@ -798,65 +772,44 @@ export function FaceliftSidebar({
               type="button"
             >
               {isDark ? (
-                <Sun className="size-6" />
+                <ThemedIcon className="size-6" src={`${ASSET_BASE}/settings/sun.svg`} />
               ) : (
-                <Moon className="size-6" />
+                <ThemedIcon className="size-6" src={`${ASSET_BASE}/settings/moon.svg`} />
               )}
             </button>
-          </div>
-
-          {cherryRuntime.mode === "standalone" && isWalletMenuOpen ? (
-            <button
-              aria-label="Close wallet menu"
-              className="fixed inset-0 z-20 cursor-default"
-              onClick={() => setIsWalletMenuOpen(false)}
-              type="button"
-            />
-          ) : null}
-          <DropdownReveal
-            className="absolute bottom-[calc(100%+4px)] left-0 z-30 flex w-60 flex-col rounded-2xl bg-popover/70 p-2 shadow-[0px_0px_2px_0px_rgba(0,0,0,0.08),0px_4px_16px_0px_rgba(0,0,0,0.08)] backdrop-blur-[16px]"
-            isOpen={cherryRuntime.mode === "standalone" && isWalletMenuOpen}
-            origin="bottom-left"
-          >
-            {publicEnv.privyAppId && isAuthenticated ? (
-              <button
-                className="t-hover flex w-full items-center gap-3 rounded-lg px-4 py-3 text-left font-medium text-[16px] text-foreground leading-5 hover:bg-accent"
-                onClick={() => {
-                  setIsWalletMenuOpen(false);
-                  openAccount();
-                }}
-                type="button"
-              >
-                <ThemedIcon
-                  className="size-5 text-tertiary"
-                  src={`${ASSET_BASE}/icon-gear.svg`}
-                />
-                Account
-              </button>
-            ) : null}
-            <button
-              className="t-hover flex w-full items-center gap-3 rounded-lg px-4 py-3 text-left font-medium text-[16px] text-foreground leading-5 enabled:hover:bg-accent disabled:text-tertiary"
-              disabled={!canDisconnect}
-              onClick={() => {
-                setIsWalletMenuOpen(false);
-                handleDisconnect();
-              }}
-              type="button"
-            >
-              <ThemedIcon
-                className="size-5 text-tertiary"
-                src={`${ASSET_BASE}/icon-logout.svg`}
-              />
-              Disconnect
+            <button aria-label="Settings" className="t-hover relative flex size-11 shrink-0 items-center justify-center rounded-full hover:bg-accent" onClick={onOpenSettings} type="button">
+              <ThemedIcon className="size-6 text-tertiary" src={`${ASSET_BASE}/icon-gear.svg`} />
+              {earnPolicyUpdates + earnMaxPolicyUpdates > 0 && <span aria-label="Policy updates required" className="absolute right-2 top-2 size-1.5 rounded-full bg-primary" />}
             </button>
-          </DropdownReveal>
-          <ReceiveSheet
-            isOpen={isReceiveOpen}
-            onClose={() => setIsReceiveOpen(false)}
-            walletAddress={data.walletAddress}
-          />
+          </div>
         </div>
       )}
     </aside>
+  );
+}
+
+function SidebarResourceLinks() {
+  return (
+    <nav aria-label="Help and resources" className="flex w-full flex-col">
+      {SIDEBAR_LINKS.map((link) => (
+        <a
+          className="t-hover flex w-full items-center rounded-2xl px-4 hover:bg-accent"
+          href={link.href}
+          key={link.label}
+          rel="noreferrer"
+          target="_blank"
+        >
+          <span className="mr-3 flex size-11 shrink-0 items-center justify-center">
+            <ThemedIcon
+              className="size-6 text-tertiary"
+              src={`${ASSET_BASE}/${link.icon}`}
+            />
+          </span>
+          <span className="py-2 font-medium text-muted-foreground text-[16px] leading-5">
+            {link.label}
+          </span>
+        </a>
+      ))}
+    </nav>
   );
 }

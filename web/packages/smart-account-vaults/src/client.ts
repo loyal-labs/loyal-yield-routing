@@ -6695,11 +6695,10 @@ export function createSmartAccountVaultsClient(
     };
   }
 
-  async function resolveEarnYieldRoutingPolicyForExecution(args: {
+  async function fetchEarnPolicyCompatibility(args: {
     cluster: LoyalCluster;
-    requiredDepositTokenProgram?: PublicKey;
     settingsPda: PublicKey;
-  }): Promise<ResolvedEarnYieldRoutingPolicy> {
+  }) {
     if (typeof config.connection.getProgramAccounts !== "function") {
       throw new Error(
         "Cannot discover an Earn policy without scanning smart-account policies."
@@ -6760,6 +6759,19 @@ export function createSmartAccountVaultsClient(
       );
     const earnPolicy = earnPolicies[0];
 
+    return earnPolicy ? {
+      account: earnPolicy.entry.address.toBase58(),
+      seed: toBigInt(earnPolicy.entry.policy.seed).toString(),
+      generation: earnPolicy.generation,
+    } : null;
+  }
+
+  async function resolveEarnYieldRoutingPolicyForExecution(args: {
+    cluster: LoyalCluster;
+    requiredDepositTokenProgram?: PublicKey;
+    settingsPda: PublicKey;
+  }): Promise<ResolvedEarnYieldRoutingPolicy> {
+    const earnPolicy = await fetchEarnPolicyCompatibility(args);
     if (!earnPolicy) {
       throw new Error("Earn yield-routing policy is not initialized.");
     }
@@ -6771,8 +6783,8 @@ export function createSmartAccountVaultsClient(
     }
 
     return {
-      account: earnPolicy.entry.address,
-      seed: toBigInt(earnPolicy.entry.policy.seed),
+      account: new PublicKey(earnPolicy.account),
+      seed: BigInt(earnPolicy.seed),
     };
   }
 
@@ -12378,6 +12390,7 @@ export function createSmartAccountVaultsClient(
     fetchOverviewBase,
     fetchVaultSnapshots,
     fetchPolicyOverview,
+    fetchEarnPolicyCompatibility,
     fetchProposalSnapshots,
     fetchOverview,
     prepareSolTransferProposal,

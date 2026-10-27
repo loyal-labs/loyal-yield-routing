@@ -1,5 +1,6 @@
 "use client";
 
+import { PolicyUpdateBanner } from "./policy-update-banner";
 import { useState } from "react";
 
 import {
@@ -34,6 +35,8 @@ const ASSET_BASE = "/wallet-workspace/facelift";
 export const AUTOSWAP_HIDDEN = true;
 
 export function EarnPositionPane({
+  policyUpdateCount = 0,
+  onReviewPolicies,
   data,
   onBack,
   onDeposit,
@@ -47,6 +50,8 @@ export function EarnPositionPane({
   selectedChartTab,
   selectedTransactionId,
 }: {
+  policyUpdateCount?: number;
+  onReviewPolicies: () => void;
   data: EarnPositionData;
   onBack: () => void;
   onDeposit: () => void;
@@ -171,6 +176,7 @@ export function EarnPositionPane({
             </div>
           </header>
 
+          <PolicyUpdateBanner count={policyUpdateCount} onReview={onReviewPolicies} />
           <div className="w-full p-2">
             <div className="flex h-[86px] w-full flex-col items-start gap-0.5 rounded-[20px] px-4 py-2">
               <div className="flex items-start gap-1">

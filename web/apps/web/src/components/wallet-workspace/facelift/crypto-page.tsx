@@ -18,7 +18,6 @@ import type {
 } from "@/components/wallet-sidebar/types";
 import {
   CryptoPane,
-  type CryptoPaneVariant,
   type CryptoRowActions,
 } from "@/components/wallet-workspace/facelift/crypto-pane";
 import { deriveSwapTokens, selectSwapToken } from "@/components/wallet-sidebar/swap-tokens";
@@ -44,7 +43,6 @@ import {
 } from "@/components/wallet-workspace/facelift/swap-pane";
 import { TokenDetailPane } from "@/components/wallet-workspace/facelift/token-detail-pane";
 import { useAbandonActionsOnNavigate } from "@/components/wallet-workspace/facelift/use-abandon-actions-on-navigate";
-import { useStablecoinsUsd } from "@/components/wallet-workspace/facelift/use-stablecoins-usd";
 import {
   type ShieldedRow,
   toShieldedRow,
@@ -83,12 +81,14 @@ export function CryptoPage({
   navigationNonce,
   onBack,
   onEarn,
-  page,
+  onReceive,
+  requestedAction,
 }: {
   navigationNonce: number;
   onBack: () => void;
+  onReceive: () => void;
   onEarn: (sourceMint?: string | null) => void;
-  page: CryptoPaneVariant;
+  requestedAction: { type: "send" | "swap" } | null;
 }) {
   const publicEnv = usePublicEnv();
   const { isHydrated, isSignedIn } = useAuthCapability();
@@ -135,21 +135,11 @@ export function CryptoPage({
     [publicEnv.solanaEnv]
   );
   const shieldedRows = useMemo<ShieldedRow[]>(
-    () =>
-      shieldedBalances
-        .map((balance) => toShieldedRow(balance, data.positions))
-        .filter(
-          (row) =>
-            isStablecoinMint(row.mint, stablecoinMints) === (page === "stables")
-        ),
-    [data.positions, page, shieldedBalances, stablecoinMints]
+    () => shieldedBalances.map((balance) => toShieldedRow(balance, data.positions)),
+    [data.positions, shieldedBalances]
   );
-  const stablecoinsUsd = useStablecoinsUsd(data.positions);
-  const pageBalance = splitUsdBalance(
-    page === "stables"
-      ? stablecoinsUsd
-      : Math.max(data.totalUsd - stablecoinsUsd, 0)
-  );
+  const pageBalance = splitUsdBalance(data.totalUsd);
+  const hasAssets = data.positions.some((position) => position.totalBalance > 0) || shieldedBalances.length > 0;
   const isWalletDataRevealed =
     isHydrated &&
     (!isSignedIn || (data.walletAddress !== null && !data.isLoading));
@@ -195,10 +185,6 @@ export function CryptoPage({
 
   const [detailToken, setDetailToken] = useState<SwapToken | null>(null);
   const [isDetailSheetOpen, setIsDetailSheetOpen] = useState(false);
-  useEffect(() => {
-    setDetailToken(null);
-    setIsDetailSheetOpen(false);
-  }, [page]);
 
   const derivedTokens = useMemo(
     () => deriveSwapTokens(data.positions),
@@ -310,6 +296,17 @@ export function CryptoPage({
     closeUnshield();
   });
 
+  useEffect(() => {
+    if (!requestedAction) return;
+    setIsDetailSheetOpen(false);
+    if (requestedAction.type === "send") {
+      closeSwap();
+      openSend();
+    } else {
+      openSwap();
+    }
+  }, [requestedAction, closeSwap, openSend, openSwap]);
+
   useEscapePage(
     viewStack.length > 0 || isSwapOpen || isUnshieldOpen,
     () => {
@@ -356,14 +353,9 @@ export function CryptoPage({
     [refreshWalletData]
   );
 
-  const pageTokenRows =
-    page === "stables" ? data.cashTokenRows : data.investmentTokenRows;
+  const pageTokenRows = [...data.cashTokenRows, ...data.investmentTokenRows];
   const firstPageRow = pageTokenRows[0];
-  const detailDefault =
-    (page === "stables"
-      ? derivedTokens.find((token) => token.symbol === "USDC")
-      : derivedTokens.find((token) => token.mint === LOYL_TOKEN.mint)) ??
-    (firstPageRow ? tokenRowToSwapToken(firstPageRow) : null);
+  const detailDefault = firstPageRow ? tokenRowToSwapToken(firstPageRow) : null;
   const detailBase = detailToken ?? detailDefault;
   const detailMint = detailBase?.mint ?? null;
   const detailPosition = detailMint
@@ -507,8 +499,9 @@ export function CryptoPage({
               balanceFraction={pageBalance.balanceFraction}
               balanceWhole={pageBalance.balanceWhole}
               isBalanceRevealed={isWalletDataRevealed}
+              isEmpty={isWalletDataRevealed && !hasAssets}
+              onReceive={onReceive}
               onBack={onBack}
-              onEarn={() => onEarn()}
               onSend={() => openSend()}
               onSwap={() => openSwap()}
               onUnshield={
@@ -516,12 +509,8 @@ export function CryptoPage({
               }
               rowActions={rowActions}
               shieldedRows={shieldedRows}
-              tokenRows={
-                page === "stables"
-                  ? data.cashTokenRows
-                  : data.investmentTokenRows
-              }
-              variant={page}
+              tokenRows={pageTokenRows}
+              stablecoinMints={stablecoinMints}
             />
           </PaneReveal>
         </MiddlePaneSlide>
@@ -568,7 +557,7 @@ export function CryptoPage({
             <PaneReveal key={detailMint}>
               <div className="flex h-full w-full min-w-0 flex-col overflow-clip rounded-3xl bg-card">
                 <TokenDetailPane
-                  hideChart={page === "stables"}
+                  hideChart={isStablecoinMint(detailMint, stablecoinMints)}
                   icon={detailBase.icon}
                   mint={detailMint}
                   name={detailPosition?.asset.name ?? detailBase.symbol}
@@ -625,7 +614,7 @@ export function CryptoPage({
           sheetClassName="ml-auto flex h-full w-[392px] min-w-0 max-w-full flex-col overflow-clip rounded-3xl bg-card max-[795px]:w-full max-[795px]:rounded-b-none max-[795px]:shadow-[0px_-10px_40px_-10px_rgba(0,0,0,0.2)]"
         >
           <TokenDetailPane
-            hideChart={page === "stables"}
+            hideChart={isStablecoinMint(detailMint, stablecoinMints)}
             icon={detailBase.icon}
             mint={detailMint}
             name={detailPosition?.asset.name ?? detailBase.symbol}

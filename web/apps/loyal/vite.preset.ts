@@ -99,7 +99,7 @@ export function nextSpa(options: NextSpaOptions): UserConfig {
       port: options.devPort,
       strictPort: true,
       proxy: Object.fromEntries(
-        options.devProxy.map((prefix) => [prefix, prefix === "/readyz" ? { target: apiOrigin } : { target: apiOrigin, changeOrigin: true }]),
+        options.devProxy.map((prefix) => [prefix, prefix === "/readyz" ? { target: apiOrigin } : { target: apiOrigin, changeOrigin: true, cookieDomainRewrite: "" }]),
       ),
     },
   };

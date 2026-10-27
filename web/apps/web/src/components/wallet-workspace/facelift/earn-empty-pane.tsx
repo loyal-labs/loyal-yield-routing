@@ -1,5 +1,7 @@
 "use client";
 
+import type { ReactNode } from "react";
+
 import { DogLottie } from "@/components/wallet-workspace/facelift/dog-lottie";
 import { InfoTooltip } from "@/components/wallet-workspace/facelift/info-tooltip";
 import { PANE_CLIP_MOBILE_ONLY } from "@/components/wallet-workspace/facelift/pane-clip";
@@ -12,6 +14,7 @@ import { formatEarnApyLabel } from "@/lib/kamino/earn-forecast.shared";
 
 const ASSET_BASE = "/wallet-workspace/facelift";
 export function EarnEmptyPane({
+  policyNotice,
   apyBadgeLabel,
   onBack,
   onDeposit,
@@ -22,6 +25,8 @@ export function EarnEmptyPane({
   title = "Earn",
   tooltipText = "Earn yield on your idle USDC",
 }: {
+  policyNotice?: ReactNode;
+  /** Mobile-only green badge under the title (Figma 5459:71363/71433). */
   apyBadgeLabel?: string;
   onBack?: () => void;
   onDeposit?: () => void;
@@ -143,6 +148,7 @@ export function EarnEmptyPane({
           </button>
         ) : null}
       </header>
+      {policyNotice && <div className="w-full shrink-0">{policyNotice}</div>}
 
       {showFirstDeposit ? (
         <div className="flex w-full flex-1 flex-col items-center justify-center gap-6 py-8">

@@ -42,6 +42,7 @@ export type EarnAutoswapConfigView = Omit<
 };
 
 export type EarnPositionData = {
+  smartAccountData: SmartAccountSidebarData;
   actions: EarnActions;
   autodepositConfig: EarnAutodepositConfigView | null;
   autodepositToggleError: string | null;
@@ -353,6 +354,7 @@ export function useEarnPositionData(): EarnPositionData {
   });
 
   return {
+    smartAccountData,
     actions,
     autodepositConfig,
     autodepositToggleError,
