@@ -47,6 +47,7 @@ func apiConfig() huma.Config {
 func New(cfg Config) http.Handler {
 	site := webserve.New(cfg.Dist)
 	vaults := newVaultList(cfg.Yield)
+	growth := newGrowthMetrics(cfg.Yield)
 	r := chi.NewRouter()
 	r.Use(headers(cfg.Release))
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
@@ -60,6 +61,7 @@ func New(cfg Config) http.Handler {
 	earnstats.Register(humachi.New(r, apiConfig()), cfg.App)
 	r.Get("/api/earn/vaults", vaults.ServeHTTP)
 	r.Head("/api/earn/vaults", vaults.ServeHTTP)
+	r.Get("/api/earn/growth-metrics", growth.ServeHTTP)
 	r.Handle("/api/*", http.NotFoundHandler())
 	r.Handle("/*", site)
 	return r
