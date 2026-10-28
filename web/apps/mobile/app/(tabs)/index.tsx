@@ -86,6 +86,7 @@ import EllipsisIcon from "../../assets/images/icons/ellipsis.svg";
 export default function WalletScreen() {
   const {
     summary: earnMaxSummary,
+    error: earnMaxError,
     hasLoaded: earnMaxLoaded,
   } = useEarnMax();
   const insets = useSafeAreaInsets();
@@ -102,6 +103,7 @@ export default function WalletScreen() {
     useTokenHoldings(walletAddress);
   const {
     position: earnPosition,
+    error: earnPositionError,
     policyMissing: earnPolicyMissing,
     isLoading: isEarnLoading,
     hasLoaded: earnLoaded,
@@ -177,6 +179,8 @@ export default function WalletScreen() {
 
   const totalSolLamports = solBalanceLamports ?? 0;
   const totalPortfolioUsd = useMemo(() => {
+    if (!earnLoaded || !earnMaxLoaded || earnPositionError || earnMaxError)
+      return null;
     let total = 0;
     let hasValuation = false;
 
@@ -205,7 +209,15 @@ export default function WalletScreen() {
       hasValuation = true;
     }
     return hasValuation ? total : null;
-  }, [tokenHoldings, earnPosition, earnMaxSummary]);
+  }, [
+    tokenHoldings,
+    earnPosition,
+    earnMaxSummary,
+    earnLoaded,
+    earnMaxLoaded,
+    earnPositionError,
+    earnMaxError,
+  ]);
 
   const stablecoinsUsd = useMemo(
     () =>
@@ -233,7 +245,8 @@ export default function WalletScreen() {
         accountLoaded: earnLoaded,
         hasFundedPosition: earnUsd > 0,
         routePolicyMissing: earnPolicyMissing,
-        solBalance: solBalanceLamports != null ? solBalanceLamports / 1e9 : null,
+        solBalance:
+          solBalanceLamports != null ? solBalanceLamports / 1e9 : null,
       }),
     [earnLoaded, earnUsd, earnPolicyMissing, solBalanceLamports]
   );
@@ -395,11 +408,13 @@ export default function WalletScreen() {
 
           <View style={{ flex: 1, marginTop: 16 }}>
             <WalletCategoryGrid
-              earnUsd={earnUsd}
-              earnMonthUsd={earnings?.rangeEarnedUsd ?? null}
+              earnUsd={earnPositionError ? null : earnUsd}
+              earnMonthUsd={
+                earnPositionError ? null : earnings?.rangeEarnedUsd ?? null
+              }
               earnLoading={earnLoading}
               earnApyBps={earnApyBps}
-              earnMaxUsd={earnMaxSummary?.balanceUsd ?? null}
+              earnMaxUsd={earnMaxError ? null : earnMaxSummary?.balanceUsd ?? 0}
               earnMaxLoading={walletAddress != null && !earnMaxLoaded}
               earnMaxApyBps={earnMaxSummary?.forecastApyBps ?? null}
               onPressEarnMax={() => router.navigate("/(tabs)/earn-max")}

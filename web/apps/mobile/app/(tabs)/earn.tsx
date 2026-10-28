@@ -51,9 +51,7 @@ import {
   executeEarnAutodepositSetup,
   updateEarnAutodepositThreshold,
 } from "@/lib/solana/earn/autodeposit";
-import {
-  type EarnWithdrawSourceInfo,
-} from "@/lib/solana/earn/earn-api";
+import { type EarnWithdrawSourceInfo } from "@/lib/solana/earn/earn-api";
 import {
   EARN_WITHDRAW_SOURCE_DUST_USD,
   earnAutodepositLabel,
@@ -70,7 +68,6 @@ import { useEarnAutodepositToggle } from "@/hooks/wallet/useEarnAutodepositToggl
 import { useEarnForecast } from "@/hooks/wallet/useEarnForecast";
 import {
   useWalletAutoRefresh,
-  type WalletRefreshReason,
 } from "@/hooks/wallet/useWalletAutoRefresh";
 import { isWalletUnlocked, useWallet } from "@/lib/wallet/wallet-provider";
 import {
@@ -145,10 +142,11 @@ export default function EarnScreen() {
     position,
     holdings,
     policyMissing: earnPolicyMissing,
+    error: earnPositionError,
     hasLoaded: earnPositionLoaded,
     refreshEarnPosition,
     markEarnMutation,
-  } = useEarnPosition(walletAddress, signer);
+  } = useEarnPosition(walletAddress);
   const balanceLoading = walletAddress != null && !earnPositionLoaded;
   const forecastSummary = useEarnForecast();
   const withdrawSources = useMemo(
@@ -158,8 +156,7 @@ export default function EarnScreen() {
   const livePositions = useMemo(
     () =>
       withdrawSources.filter(
-        (source) =>
-          source.balance >= EARN_WITHDRAW_SOURCE_DUST_USD
+        (source) => source.balance >= EARN_WITHDRAW_SOURCE_DUST_USD
       ),
     [withdrawSources]
   );
@@ -167,12 +164,8 @@ export default function EarnScreen() {
   const [withdrawOpen, setWithdrawOpen] = useState(false);
   const [positionsOpen, setPositionsOpen] = useState(false);
   const [hasDeposit, setHasDeposit] = useState(false);
-  const {
-    autodeposit,
-    autodepositLoaded,
-    earnRefunds,
-    refreshAutodeposit,
-  } = useActivity();
+  const { autodeposit, autodepositLoaded, earnRefunds, refreshAutodeposit } =
+    useActivity();
   const {
     active: autodepositEnabled,
     requestToggle: requestAutodepositToggle,
@@ -313,9 +306,9 @@ export default function EarnScreen() {
   const badge = useSharedValue(0);
 
   const refreshEarnData = useCallback(
-    async (reason: WalletRefreshReason) => {
+    async () => {
       await Promise.allSettled([
-        refreshEarnPosition({ signIn: reason === "manual" }),
+        refreshEarnPosition(),
         refreshAutodeposit(),
         ...(walletAddress ? [refreshEarnEarningsCache(walletAddress)] : []),
       ]);
@@ -968,13 +961,27 @@ export default function EarnScreen() {
         ) : null}
       </View>
 
+      {earnPositionError && (
+        <Pressable
+          onPress={() => void refreshEarnPosition()}
+          accessibilityRole="button"
+          accessibilityLabel="Retry loading Earn"
+          style={{ paddingHorizontal: 16, paddingVertical: 12 }}
+        >
+          <Text style={{ color: "#F9363C" }}>
+            Unable to load Earn. Tap to retry.
+          </Text>
+        </Pressable>
+      )}
       <EarnBalanceCard
         fullWidthActions
         style={bottomCardRadiusStyle}
         hasDeposit={hasDeposit}
         balanceLoading={balanceLoading}
-        whole={balanceParts.whole}
-        cents={balanceParts.cents}
+        whole={earnPositionError ? "—" : balanceParts.whole}
+        cents={earnPositionError ? "" : balanceParts.cents}
+        depositDisabled={balanceLoading || !!earnPositionError}
+        withdrawDisabled={balanceLoading || !!earnPositionError}
         onPositions={handleOpenPositions}
         onDeposit={handleOpenDeposit}
         onWithdraw={handleOpenWithdraw}

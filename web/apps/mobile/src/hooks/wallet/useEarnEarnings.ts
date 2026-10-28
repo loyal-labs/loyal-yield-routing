@@ -58,7 +58,7 @@ function fetchIntoCache(walletAddress: string): Promise<void> {
 // when the earn balance explicitly changed.
 export async function refreshEarnEarningsCache(
   walletAddress: string,
-  { notify = false }: { notify?: boolean } = {},
+  { notify = false }: { notify?: boolean } = {}
 ): Promise<void> {
   const fresh =
     cacheAddress === walletAddress &&
@@ -76,12 +76,14 @@ export async function refreshEarnEarningsCache(
 }
 
 type EarnEarningsSnapshot = {
+  walletAddress: string | null;
   earnings: EarnEarningsResponse | null;
   fetchedAtMs: number | null;
   status: EarnEarningsStatus;
 };
 
 const LOADING: EarnEarningsSnapshot = {
+  walletAddress: null,
   earnings: null,
   fetchedAtMs: null,
   status: "loading",
@@ -90,8 +92,8 @@ const LOADING: EarnEarningsSnapshot = {
 export function useEarnEarnings(walletAddress: string | null) {
   const [snapshot, setSnapshot] = useState<EarnEarningsSnapshot>(() =>
     walletAddress && cacheAddress === walletAddress && cached
-      ? { ...cached }
-      : LOADING,
+      ? { walletAddress, ...cached }
+      : LOADING
   );
 
   useEffect(() => {
@@ -110,7 +112,7 @@ export function useEarnEarnings(walletAddress: string | null) {
         prev.fetchedAtMs === fetchedAtMs &&
         prev.status === status
           ? prev
-          : { earnings, fetchedAtMs, status },
+          : { walletAddress, earnings, fetchedAtMs, status }
       );
     };
     if (cacheAddress === walletAddress && cached) {
@@ -125,5 +127,10 @@ export function useEarnEarnings(walletAddress: string | null) {
     };
   }, [walletAddress]);
 
-  return snapshot;
+  const visible = snapshot.walletAddress === walletAddress ? snapshot : LOADING;
+  return {
+    earnings: visible.earnings,
+    fetchedAtMs: visible.fetchedAtMs,
+    status: visible.status,
+  };
 }

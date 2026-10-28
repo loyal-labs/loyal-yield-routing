@@ -1,20 +1,7 @@
-import type { EarnStatePolicy, EarnStatePosition } from "@loyal-labs/api";
-import { resolveLoyalClusterForSolanaEnv } from "@loyal-labs/actions";
-import {
-  type EarnRpcHolding,
-  type EarnRpcPolicyMetadata,
-  fetchEarnRpcHoldingsSnapshot,
-} from "@loyal-labs/smart-account-vaults";
-import { PublicKey } from "@solana/web3.js";
+import type { EarnStatePosition } from "@loyal-labs/api";
+import type { EarnRpcHolding } from "@loyal-labs/smart-account-vaults";
 import { useCallback, useEffect, useRef, useState } from "react";
-
-import {
-  fetchEarnState,
-  type EarnStateResponse,
-} from "@/lib/solana/earn/earn-api";
-import { deliberateSession } from "@/lib/solana/earn/earn-session";
-import { getConnection, getSolanaEnv } from "@/lib/solana/rpc/connection";
-import type { Signer } from "@/lib/wallet/signer";
+import { fetchMobileEarnState, fetchMobileEarnHoldings } from "@/lib/solana/earn/earn-api";
 
 type EarnPosition = Pick<
   EarnStatePosition,
@@ -23,12 +10,10 @@ type EarnPosition = Pick<
 
 const MUTATION_TRUST_MS = 20_000;
 
-type LiveHoldings = { currentTotalAmountRaw: string; holdings: EarnRpcHolding[] };
-
 function reconcileBalance(
   position: EarnPosition | null,
   liveTotalRaw: string | null,
-  preferReadModel: boolean,
+  preferReadModel: boolean
 ): EarnPosition | null {
   if (liveTotalRaw === null || preferReadModel) {
     return position;
@@ -45,136 +30,93 @@ function reconcileBalance(
   return { ...position, currentTotalAmountRaw: liveTotalRaw };
 }
 
-function toRpcPolicy(policy: EarnStatePolicy): EarnRpcPolicyMetadata {
-  return {
-    account: policy.account,
-    delegatedSigners: policy.delegatedSigners ?? undefined,
-    id: policy.id,
-    kaminoLiquidityMints: policy.kaminoLiquidityMints ?? undefined,
-    kaminoMarkets: policy.kaminoMarkets ?? undefined,
-    riskProfile: policy.riskProfile,
-    routeModes: policy.routeModes ?? undefined,
-    seed: policy.seed,
-    setupPolicy: policy.setupPolicy
-      ? {
-          account: policy.setupPolicy.account,
-          delegatedSigners: policy.setupPolicy.delegatedSigners ?? undefined,
-          id: policy.setupPolicy.id,
-          seed: policy.setupPolicy.seed,
-        }
-      : null,
-    stableMints: policy.stableMints ?? undefined,
-    universePreset: policy.universePreset,
-    vaultIndex: policy.vaultIndex,
-    vaultPubkey: policy.vaultPubkey,
-  };
-}
-
-async function readLiveHoldings(
-  state: EarnStateResponse,
-): Promise<LiveHoldings | null> {
-  if (!state.policy || !state.programId || !state.settingsPda) {
-    return null;
-  }
-  return fetchEarnRpcHoldingsSnapshot({
-    cluster: resolveLoyalClusterForSolanaEnv(getSolanaEnv()),
-    connection: getConnection(),
-    policy: toRpcPolicy(state.policy),
-    programId: new PublicKey(state.programId),
-    settingsPda: new PublicKey(state.settingsPda),
-  });
-}
+const EMPTY_POSITION = {
+  position: null as EarnPosition | null,
+  holdings: [] as EarnRpcHolding[],
+  policyMissing: false,
+  isLoading: false,
+  hasLoaded: false,
+  error: null as string | null,
+};
 
 export function useEarnPosition(
-  walletAddress: string | null,
-  signer?: Signer | null,
+  walletAddress: string | null
 ) {
-  const [position, setPosition] = useState<EarnPosition | null>(null);
-  const [holdings, setHoldings] = useState<EarnRpcHolding[]>([]);
-  const [policyMissing, setPolicyMissing] = useState(false);
-  const [isLoading, setIsLoading] = useState(false);
-  const [hasLoaded, setHasLoaded] = useState(false);
+  const [snapshot, setSnapshot] = useState({
+    walletAddress,
+    ...EMPTY_POSITION,
+  });
+  const currentWallet = useRef(walletAddress);
+  currentWallet.current = walletAddress;
   const fetchIdRef = useRef(0);
   const mutatedAtRef = useRef(0);
-  const signerRef = useRef(signer);
-  signerRef.current = signer;
 
   const markEarnMutation = useCallback(() => {
     mutatedAtRef.current = Date.now();
   }, []);
 
   const refreshEarnPosition = useCallback(
-    async (options?: { signIn?: boolean; throwOnError?: boolean }) => {
-      if (!walletAddress) {
-        return;
-      }
-      if (options?.signIn && signerRef.current) {
-        await deliberateSession(signerRef.current);
-      }
+    async (options?: { throwOnError?: boolean }) => {
+      if (!walletAddress || currentWallet.current !== walletAddress) return;
       const fetchId = ++fetchIdRef.current;
-      setIsLoading(true);
+      const isCurrent = () =>
+        currentWallet.current === walletAddress &&
+        fetchId === fetchIdRef.current;
+      setSnapshot((prev) => ({
+        ...(prev.walletAddress === walletAddress ? prev : EMPTY_POSITION),
+        walletAddress,
+        isLoading: true,
+      }));
       try {
-        let state: EarnStateResponse;
-        try {
-          state = await fetchEarnState(walletAddress);
-        } catch (error) {
-          console.error("Failed to fetch Earn position", error);
-          if (options?.throwOnError) {
-            throw error;
-          }
-          return;
-        }
-        let live: LiveHoldings | null = null;
-        try {
-          live = await readLiveHoldings(state);
-        } catch (error) {
-          console.error("Failed to read Earn holdings", error);
-        }
-        if (fetchId !== fetchIdRef.current) {
-          if (options?.throwOnError) {
+        const [state, live] = await Promise.all([
+          fetchMobileEarnState(walletAddress),
+          fetchMobileEarnHoldings(walletAddress),
+        ]);
+        if (!isCurrent()) {
+          if (options?.throwOnError)
             throw new Error("Earn position refresh was superseded.");
-          }
           return;
         }
-        setPolicyMissing(state.policy === null);
-        if (live) {
-          setHoldings(live.holdings);
-        }
-        setPosition(
-          reconcileBalance(
-            state.position,
-            live?.currentTotalAmountRaw ?? null,
-            Date.now() - mutatedAtRef.current < MUTATION_TRUST_MS,
+        setSnapshot({
+          walletAddress,
+          position: reconcileBalance(
+            state.position ? { ...state.position, currentTotalAmountRaw: state.position.currentAmountRaw } : null,
+            live.observedAt ? live.currentTotalAmountRaw : null,
+            Date.now() - mutatedAtRef.current < MUTATION_TRUST_MS
           ),
-        );
-      } finally {
-        if (fetchId === fetchIdRef.current) {
-          setIsLoading(false);
-          setHasLoaded(true);
+          holdings: live.holdings,
+          policyMissing: live.observedAt === null,
+          isLoading: false,
+          hasLoaded: true,
+          error: null,
+        });
+      } catch (error) {
+        if (isCurrent()) {
+          setSnapshot({
+            ...EMPTY_POSITION,
+            walletAddress,
+            hasLoaded: true,
+            error: error instanceof Error
+              ? error.message
+              : "Unable to load Earn holdings.",
+          });
         }
+        if (options?.throwOnError) throw error;
       }
     },
-    [walletAddress],
+    [walletAddress]
   );
 
   useEffect(() => {
-    if (walletAddress) {
-      refreshEarnPosition();
-    } else {
-      setPosition(null);
-      setHoldings([]);
-      setPolicyMissing(false);
-      setHasLoaded(false);
-    }
+    mutatedAtRef.current = 0;
+    setSnapshot({ walletAddress, ...EMPTY_POSITION });
+    void refreshEarnPosition();
+    return () => {
+      fetchIdRef.current += 1;
+    };
   }, [walletAddress, refreshEarnPosition]);
 
-  return {
-    position,
-    holdings,
-    policyMissing,
-    isLoading,
-    hasLoaded,
-    refreshEarnPosition,
-    markEarnMutation,
-  };
+  const visible =
+    snapshot.walletAddress === walletAddress ? snapshot : EMPTY_POSITION;
+  return { ...visible, refreshEarnPosition, markEarnMutation };
 }

@@ -1,5 +1,5 @@
-import type { EarnMaxActivity, EarnMaxSummary } from "@loyal-labs/api";
-import { earnMaxControls } from "@loyal-labs/shared";
+import type { EarnMaxSummary } from "@loyal-labs/api";
+import { earnMaxControls, type EarnMaxActivityResponse } from "@loyal-labs/shared";
 import {
   createContext,
   useCallback,
@@ -15,12 +15,11 @@ import {
   executeMobileEarnMax,
   type MobileEarnMaxOperation,
 } from "@/lib/solana/earn/mobile-earn-max";
-import { deliberateSession } from "@/lib/solana/earn/earn-session";
 import { getSolanaEnv } from "@/lib/solana/rpc/connection";
 import { isWalletUnlocked, useWallet } from "@/lib/wallet/wallet-provider";
-import { fetchEarnMax } from "@/services/api";
+import { fetchMobileEarnMax } from "@/services/api";
 
-const NO_ACTIVITY: EarnMaxActivity = {
+const NO_ACTIVITY: EarnMaxActivityResponse = {
   earnings: null,
   operations: [],
   performance: [],
@@ -32,48 +31,47 @@ function useModel() {
     isWalletUnlocked(state) && getSolanaEnv() === "mainnet" ? publicKey : null;
   const current = useRef(key);
   current.current = key;
-  const signerRef = useRef(signer);
-  signerRef.current = signer;
   const [data, setData] = useState<{
     key: string;
     summary: EarnMaxSummary | null;
-    activity: EarnMaxActivity;
+    activity: EarnMaxActivityResponse;
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const locked = useRef(false);
   const readVersion = useRef(0);
   const [loadedKey, setLoadedKey] = useState<string | null>(null);
-  const refresh = useCallback(async (options?: { signIn?: boolean }) => {
-    if (!key || getSolanaEnv() !== "mainnet") return false;
-    if (options?.signIn && signerRef.current)
-      await deliberateSession(signerRef.current);
-    const version = ++readVersion.current;
-    const isCurrent = () =>
-      current.current === key && readVersion.current === version;
-    try {
-      const [summary, activity] = await Promise.all([
-        fetchEarnMax(key, "/api/smart-accounts/earn-max/summary"),
-        fetchEarnMax(key, "/api/smart-accounts/earn-max/activity"),
-      ]);
-      if (isCurrent()) {
-        setData({
-          key,
-          summary: summary?.summary ?? null,
-          activity: activity ?? NO_ACTIVITY,
-        });
-        setError(null);
-        return true;
+  const refresh = useCallback(
+    async () => {
+      if (!key || getSolanaEnv() !== "mainnet") return false;
+      const version = ++readVersion.current;
+      const isCurrent = () =>
+        current.current === key && readVersion.current === version;
+      try {
+        const { summary, activity } = await fetchMobileEarnMax(key);
+        if (isCurrent()) {
+          setData({
+            key,
+            summary,
+            activity: activity ?? NO_ACTIVITY,
+          });
+          setError(null);
+          return true;
+        }
+      } catch (e) {
+        if (isCurrent()) {
+          setData(null);
+          setError(
+            e instanceof Error ? e.message : "Unable to update Earn MAX."
+          );
+        }
+      } finally {
+        if (isCurrent()) setLoadedKey(key);
       }
-    } catch (e) {
-      if (isCurrent()) {
-        setError(e instanceof Error ? e.message : "Unable to update Earn MAX.");
-      }
-    } finally {
-      if (isCurrent()) setLoadedKey(key);
-    }
-    return false;
-  }, [key]);
+      return false;
+    },
+    [key]
+  );
   useEffect(() => {
     readVersion.current += 1;
     setData(null);

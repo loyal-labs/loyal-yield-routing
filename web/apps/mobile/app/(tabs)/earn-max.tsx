@@ -17,7 +17,7 @@ import { WithdrawSheet } from "@/components/earn/WithdrawSheet";
 import { useEarnMax } from "@/features/earn-max/EarnMaxProvider";
 import { useEarnMaxFundingUsdc } from "@/features/earn-max/useEarnMaxFundingUsdc";
 import { useWallet } from "@/lib/wallet/wallet-provider";
-import type { EarnEarningsResponse } from "@/lib/solana/earn/earn-api";
+import { earnMaxChartEarnings } from "@/features/earn-max/chart-earnings";
 import { SOLANA_USDC_MINT_MAINNET as USDC } from "@/lib/solana/constants";
 export default function EarnMaxScreen() {
   const insets = useSafeAreaInsets();
@@ -50,37 +50,7 @@ export default function EarnMaxScreen() {
   const apy = summary?.forecastApyBps ?? null;
   const balance = summary?.balanceUsd ?? (hasLoaded && !error ? 0 : undefined);
   const split = (balance ?? 0).toFixed(2).split(".");
-  const earnings = useMemo<EarnEarningsResponse | null>(() => {
-    if (
-      !summary ||
-      !activity?.earnings ||
-      summary.coverage !== "complete"
-    )
-      return null;
-    const { performanceUsd, days } = activity.earnings;
-    const today = new Date().toISOString().slice(0, 10);
-    return {
-      bars: days.map((day) => ({
-        apyBps: null,
-        avgPrincipalUsd: 0,
-        earnedUsd: day.performanceUsd,
-        endAt: `${day.date}T23:59:59.000Z`,
-        isCurrent: day.date === today,
-        label: String(Number(day.date.slice(-2))),
-        principalAmountRaw: "0",
-        principalUsd: 0,
-        startAt: `${day.date}T00:00:00.000Z`,
-      })),
-      currentApyBps: null,
-      lastDepositAt: null,
-      lifetimeEarnedUsd: performanceUsd,
-      principalAmountRaw: "0",
-      principalUsd: 0,
-      rangeEarnedUsd: days.reduce((sum, day) => sum + day.performanceUsd, 0),
-      sinceLastDepositEarnedUsd: performanceUsd,
-      todayEarnedUsd: days.find((day) => day.date === today)?.performanceUsd ?? 0,
-    };
-  }, [summary, activity]);
+  const earnings = useMemo(() => earnMaxChartEarnings(summary, activity), [summary, activity]);
   const activityLink = () =>
     router.navigate({
       pathname: "/(tabs)/activity",
@@ -97,7 +67,7 @@ export default function EarnMaxScreen() {
         />
         {error && (
           <Pressable
-            onPress={() => void refresh({ signIn: true })}
+            onPress={() => void refresh()}
             accessibilityRole="button"
             accessibilityLabel="Retry loading Earn MAX"
             style={{ paddingHorizontal: 16, paddingVertical: 8 }}
@@ -130,11 +100,11 @@ export default function EarnMaxScreen() {
       </View>
       <EarnBalanceCard
         label="Earn MAX Balance"
-        whole={`$${Number(split[0]).toLocaleString("en-US")}`}
-        cents={`.${split[1]}`}
+        whole={error ? "—" : `$${Number(split[0]).toLocaleString("en-US")}`}
+        cents={error ? "" : `.${split[1]}`}
         hasDeposit
         fullWidthActions
-        balanceLoading={balance == null}
+        balanceLoading={balance == null && !error}
         depositDisabled={!controls.canDeposit || !hasLoaded || !!error}
         withdrawDisabled={!controls.canWithdraw || !hasLoaded || !!error}
         onPositions={() => {

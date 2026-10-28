@@ -18,7 +18,7 @@ jest.mock(
       store.delete(key);
     },
   }),
-  { virtual: true },
+  { virtual: true }
 );
 
 import type { Signer } from "@/lib/wallet/signer";
@@ -53,6 +53,62 @@ describe("earn session", () => {
     earn = require("../earn-session");
   });
 
+  it("never falls back to an old web cookie when the active wallet has no token", async () => {
+    mockGetWalletSigner.mockResolvedValue({
+      ...privySigner(),
+      kind: "seed-vault",
+    });
+    global.fetch = jest.fn(
+      async () => new Response(JSON.stringify({ balanceUsd: 49.74 }))
+    ) as unknown as typeof fetch;
+
+    await expect(
+      earn.earnWalletRead(WALLET, "https://example.test/read")
+    ).rejects.toThrow("Approve wallet access");
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it("omits web cookies when sending a wallet bearer", async () => {
+    store.set(SESSIONS_KEY, JSON.stringify({ [WALLET]: session("current") }));
+    global.fetch = jest.fn(
+      async () => new Response("{}")
+    ) as unknown as typeof fetch;
+
+    await earn.earnWalletRead(WALLET, "https://example.test/read");
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      "https://example.test/read",
+      expect.objectContaining({
+        credentials: "omit",
+        headers: expect.objectContaining({ Authorization: "Bearer current" }),
+      })
+    );
+  });
+
+  it("discards a response that finishes after wallet reset", async () => {
+    store.set(
+      SESSIONS_KEY,
+      JSON.stringify({ [WALLET]: session("old-wallet") })
+    );
+    let release: (response: Response) => void = () => {};
+    let started: () => void = () => {};
+    const fetching = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    global.fetch = jest.fn(() => {
+      started();
+      return new Promise<Response>((resolve) => {
+        release = resolve;
+      });
+    }) as unknown as typeof fetch;
+    const reading = earn.earnWalletRead(WALLET, "https://example.test/read");
+    await fetching;
+    await earn.clearEarnSession();
+    release(new Response(JSON.stringify({ balanceUsd: 49.74 })));
+
+    await expect(reading).rejects.toThrow("Wallet changed");
+  });
+
   it("mints once across reads when the server keeps rejecting the fresh token", async () => {
     store.set(SESSIONS_KEY, JSON.stringify({ [WALLET]: session("stale") }));
     global.fetch = jest.fn(async (_url: string, init?: RequestInit) => {
@@ -64,7 +120,7 @@ describe("earn session", () => {
       }
       return new Response(
         JSON.stringify({ error: { code: "invalid_mobile_session" } }),
-        { status: 401 },
+        { status: 401 }
       );
     }) as unknown as typeof fetch;
 
@@ -77,7 +133,7 @@ describe("earn session", () => {
   it("keeps storage empty when a logout lands while a rejected token is dropped", async () => {
     store.set(
       SESSIONS_KEY,
-      JSON.stringify({ [WALLET]: session("stale"), other: session("kept") }),
+      JSON.stringify({ [WALLET]: session("stale"), other: session("kept") })
     );
 
     await earn.getEarnSessionToken(WALLET);
@@ -110,7 +166,7 @@ describe("earn session", () => {
       }
       return new Response(
         JSON.stringify({ error: { code: "invalid_mobile_session" } }),
-        { status: 401 },
+        { status: 401 }
       );
     }) as unknown as typeof fetch;
 
@@ -118,7 +174,7 @@ describe("earn session", () => {
     await started;
     await earn.clearEarnSession();
     releaseRetry();
-    await reading;
+    await expect(reading).rejects.toThrow("Wallet changed");
     await earn.silentSession(privySigner());
 
     expect(mints).toBe(2);

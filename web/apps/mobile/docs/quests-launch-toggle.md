@@ -1,5 +1,11 @@
 # Quests launch toggle (Seeker Season / Solana Week)
 
+**Historical launch notes.** The development branch's Android tab is the Bones
+presentation preview with sample rewards and no reward writes. It is under an
+explicit production hold; see [the development handoff](quests-development-preview.md).
+`QUESTS_ENABLED` currently excludes iOS. The Solana Week launch instructions
+below do not control the new preview; do not use them to enable Bones rewards.
+
 **Status: REVEALED (2026-07-08 Solana Mobile launch).** Mobile
 `QUESTS_ENABLED` is now unconditionally `true` (shipped via OTA to the
 dApp Store build); backend `SOLANA_WEEK_QUESTS_ENABLED=true` is set in Vercel

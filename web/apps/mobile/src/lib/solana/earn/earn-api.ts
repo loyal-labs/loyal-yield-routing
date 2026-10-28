@@ -18,14 +18,13 @@ import type {
   EarnWithdrawPrepareResponse,
   EarnPolicyRefundScanResponse,
   EarnStateAutodeposit,
-  EarnStateResponse,
   EarningsBar,
   EarningsRange,
   EarningsRangeSet,
   SolanaWeekQuestProgressResponse,
 } from "@loyal-labs/api";
 import { env } from "@/config/env";
-import { FetchTimeoutError } from "@/lib/network/fetch-with-timeout";
+import { fetchWithTimeout, FetchTimeoutError } from "@/lib/network/fetch-with-timeout";
 import {
   EARN_AUTODEPOSIT_PROGRESS_STATES,
   type EarnAutodepositProgressState,
@@ -36,6 +35,7 @@ import {
   type SerializedEarnTransaction,
 } from "@loyal-labs/shared";
 import type {
+  EarnRpcHolding,
   SmartAccountEarnUsdcReserveWithdrawalMetadata,
   SmartAccountPreparedEarnUsdcAutodepositClose,
   SmartAccountPreparedEarnUsdcAutodepositSetup,
@@ -252,25 +252,26 @@ export type EarnAutodepositState = EarnStateAutodeposit & {
   vaultIndex: number;
 };
 
-export type EarnAutodepositStateResponse = {
+export async function fetchEarnAutodepositState(
+  walletAddress: string,
+): Promise<{
   autodeposit: EarnAutodepositState | null;
   policySigner: string;
   programId: string;
-  settingsPda: string;
-};
-
-export async function fetchEarnAutodepositState(
-  walletAddress: string,
-): Promise<EarnAutodepositStateResponse> {
-  const state = await fetchEarnState(walletAddress);
-  const autodeposit = state.autodeposit as EarnStateAutodeposit | null;
+  settingsPda: string | null;
+}> {
+  const res = await readMobileEarn(walletAddress, "autodeposit/state");
+  if (!res.ok) return throwEarnError(res, "Failed to load Autodeposit state.");
+  const state = await res.json() as {
+    autodeposit: EarnAutodepositState | null;
+    prepareContext: { policySigner: string; programId: string } | null;
+    settingsPda: string | null;
+  };
   return {
-    autodeposit: autodeposit
-      ? { ...autodeposit, vaultIndex: state.vault.accountIndex }
-      : null,
-    policySigner: state.policySignerPublicKey,
-    programId: state.programId,
+    autodeposit: state.autodeposit,
     settingsPda: state.settingsPda,
+    policySigner: state.prepareContext?.policySigner ?? "",
+    programId: state.prepareContext?.programId ?? "",
   };
 }
 
@@ -453,19 +454,31 @@ export async function fetchEarnAutodepositSweepProgress(
   }
 }
 
-export type { EarnStateResponse };
-
-export async function fetchEarnState(
-  walletAddress: string,
-): Promise<EarnStateResponse> {
-  const res = await earnWalletRead(
-    walletAddress,
-    `${env.apiBaseUrl}/api/smart-accounts/yield-optimization/earn-state`,
+// Passive reads are keyed by the connected public key and never need a signature.
+function readMobileEarn(walletAddress: string, path: string, query = new URLSearchParams()) {
+  query.set("walletAddress", walletAddress);
+  return fetchWithTimeout(
+    `${env.apiBaseUrl}/api/smart-accounts/mobile/earn/${path}?${query}`,
+    { credentials: "omit" },
   );
-  if (!res.ok) {
-    return throwEarnError(res, "Failed to load Earn state.");
-  }
-  return (await res.json()) as EarnStateResponse;
+}
+
+export async function fetchMobileEarnState(walletAddress: string): Promise<{
+  position: { currentAmountRaw: string; principalAmountRaw: string; status: string } | null;
+}> {
+  const res = await readMobileEarn(walletAddress, "state");
+  if (!res.ok) return throwEarnError(res, "Failed to load Earn state.");
+  return res.json();
+}
+
+export async function fetchMobileEarnHoldings(walletAddress: string): Promise<{
+  currentTotalAmountRaw: string;
+  holdings: EarnRpcHolding[];
+  observedAt: string | null;
+}> {
+  const res = await readMobileEarn(walletAddress, "holdings");
+  if (!res.ok) return throwEarnError(res, "Failed to load Earn holdings.");
+  return res.json();
 }
 
 export type EarnEarningsResponse = EarningsRange;
@@ -488,10 +501,7 @@ export async function fetchEarnEarnings(
 ): Promise<EarnEarningsResponse> {
   const timezone = deviceTimezone();
   const query = new URLSearchParams(timezone ? { timezone } : {});
-  const res = await earnWalletRead(
-    walletAddress,
-    `${env.apiBaseUrl}/api/smart-accounts/yield-optimization/earnings?${query}`,
-  );
+  const res = await readMobileEarn(walletAddress, "earnings", query);
   if (!res.ok) {
     return throwEarnError(res, "Failed to load Earn earnings.");
   }
@@ -508,10 +518,7 @@ export type { EarnTransactionsResponse };
 export async function fetchEarnTransactions(
   walletAddress: string,
 ): Promise<EarnTransactionsResponse> {
-  const res = await earnWalletRead(
-    walletAddress,
-    `${env.apiBaseUrl}/api/smart-accounts/earn-transactions`,
-  );
+  const res = await readMobileEarn(walletAddress, "transactions");
   if (!res.ok) {
     return throwEarnError(res, "Failed to load Earn transactions.");
   }

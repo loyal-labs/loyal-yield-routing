@@ -64,7 +64,7 @@ export function BalanceCard({
   const usdBalance =
     typeof totalPortfolioUsd === "number" && Number.isFinite(totalPortfolioUsd)
       ? totalPortfolioUsd
-      : 0;
+      : null;
 
   const handleCopyAddress = async () => {
     if (!walletAddress) return;
@@ -89,12 +89,12 @@ export function BalanceCard({
 
   const showSkeleton = isLoading || solBalanceLamports === null;
 
-  const formattedBalance = usdBalance.toLocaleString("en-US", {
+  const formattedBalance = usdBalance?.toLocaleString("en-US", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
-  });
+  }) ?? "—";
   const balanceDotIndex = formattedBalance.lastIndexOf(".");
-  const balanceWhole = `$${
+  const balanceWhole = usdBalance === null ? "—" : `$${
     balanceDotIndex >= 0
       ? formattedBalance.slice(0, balanceDotIndex)
       : formattedBalance

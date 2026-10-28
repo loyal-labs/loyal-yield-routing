@@ -42,7 +42,7 @@ const config: ExpoConfig = {
   icon: "./assets/images/icon.png",
   userInterfaceStyle: "light",
   newArchEnabled: true,
-  runtimeVersion: IS_DEV ? "0.5.0-hardware-wallet-v1" : { policy: "appVersion" },
+  runtimeVersion: { policy: "appVersion" },
   updates: {
     url: "https://u.expo.dev/7ecfef22-fa74-4fc9-b2f1-bf80acb81401",
   },

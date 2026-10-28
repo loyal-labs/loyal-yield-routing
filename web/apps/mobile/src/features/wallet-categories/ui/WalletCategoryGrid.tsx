@@ -71,7 +71,7 @@ export function WalletCategoryGrid({
   onPressStablecoins,
   onPressCrypto,
 }: {
-  earnUsd: number;
+  earnUsd: number | null;
   earnMonthUsd: number | null;
   earnLoading?: boolean;
   earnApyBps: number | null;
@@ -193,7 +193,9 @@ export function WalletCategoryGrid({
                 }}
               >
                 <View style={{ height: 36, alignItems: "center" }}>
-                  <Plus size={36} color="#AFADB3" strokeWidth={2} />
+                  {value !== null && (
+                    <Plus size={36} color="#AFADB3" strokeWidth={2} />
+                  )}
                   <Text
                     style={{
                       position: "absolute",
@@ -206,7 +208,7 @@ export function WalletCategoryGrid({
                       lineHeight: 20,
                     }}
                   >
-                    Start earning
+                    {value === null ? "Tap to load balance" : "Start earning"}
                   </Text>
                 </View>
               </View>

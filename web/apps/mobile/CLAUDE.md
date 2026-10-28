@@ -48,9 +48,15 @@ lockfile so shared packages resolve in the monorepo before the mobile install.
 The mirror generator removes this monorepo-only hook from the standalone mobile
 mirror, where EAS installs the app's dependencies directly. The source hook also
 skips the parent install when no parent workspace lockfile exists.
-Production uses the app-version runtime, now 0.6.0. Development retains the
-`0.5.0-hardware-wallet-v1` runtime used by dev build 11 and its biometric OTA;
-change it when the development native module set changes.
+Production and new development builds use the app-version runtime, now 0.6.0.
+Dev build 11 retains its installed `0.5.0-hardware-wallet-v1` runtime and cannot
+receive 0.6.0 updates. Publish development OTAs to `dapp-store-development` with
+the development variant and runtime matching the new APK.
+EAS preview must also set `EXPO_PUBLIC_API_BASE_URL=https://next.askloyal.com`: OTA
+exports load the EAS environment and can override shell/build-profile values.
+When the environment changes, export with `--clear` to invalidate Metro’s inlined
+environment cache. Verify the exported Hermes bundle uses that host, then publish
+the verified export with `eas update --skip-bundler`.
 
 ## Architecture
 
@@ -180,6 +186,27 @@ EXPO_PUBLIC_SOLANA_ENV=mainnet
 - **Typed Routes**: Enabled (`experiments.typedRoutes: true`)
 - Generated `/ios` and `/android` folders are gitignored — managed by EAS/Prebuild
 
+## Quests preview
+
+**Development only — production hold (Vlad, 2026-10-28).** Preserve this work on
+`dev/mobile-quests-preview`; do not merge or publish it to production while
+Quests uses fixtures. See [the handoff](docs/quests-development-preview.md) for
+scope, build/OTA references, verification limits and resumption requirements.
+
+The Android Quests tab renders the Bones preview in
+`src/features/quests/QuestsScreen.tsx`, matching the web preview and mobile Figma.
+The default is the in-progress fixture; `/quests?state=default` shows the empty
+fixture. Balances, referral code, multipliers, cooldown and completion states
+are examples, not wallet data. Claim and invite actions show a coming-soon
+notice; copying the example referral code uses the clipboard. No reward,
+eligibility, referral or transaction API is called. Locked and completed quests
+stay disabled. The existing iOS visibility gate remains in place.
+
+This replaces the retired Seeker Summer completion screen. The old Solana Week
+watcher is not mounted by the tab layout and does not power Bones quests.
+The preview ships in a fresh `dapp-store-development` 0.6.0 APK, matching the
+current production app version. Subsequent preview OTAs target runtime 0.6.0.
+
 ## Rules
 
 - Lint after completing work: `npx expo lint`
@@ -193,10 +220,11 @@ EXPO_PUBLIC_SOLANA_ENV=mainnet
 
 ### Earn MAX
 
-`src/features/earn-max/EarnMaxProvider.tsx` reads the Go routes
-`/api/smart-accounts/earn-max/summary` and `/activity` (types from `@loyal-labs/api`)
-through `fetchEarnMax` in `src/services/api.ts`, with the mobile Earn bearer from
-`earn-session.ts`. A `smart_account_required` answer reads as no position.
+`src/features/earn-max/EarnMaxProvider.tsx` reads the public mobile route
+`/api/smart-accounts/mobile/earn-max?walletAddress=...&action=summary|activity`
+through `fetchMobileEarnMax` in `src/services/api.ts`. Passive reads omit cookies
+and never require an Earn session or a Seed Vault signature. Transaction
+preparation keeps `fetchEarnMax` on the authenticated Go summary route.
 `src/lib/solana/earn/mobile-earn-max.ts` exposes `executeMobileEarnMax`
 for deposit, withdrawal request and claim. Amounts are bigint raw USDC units
 (6 decimals); withdrawal also accepts `"max"`. It takes the account from the Go
@@ -227,10 +255,12 @@ is available. Withdraw is disabled while a withdrawal is pending.
 Activity's Check status action disables itself and shows a spinner while it
 refreshes, then acknowledges a successful read with a last-checked time. Failed
 or superseded reads do not show a success timestamp.
-Earn MAX summary and activity are GET reads with the cached Earn bearer, as
-ordinary Earn reads are. Privy and local signers mint it without a prompt;
-opening the screen and foreground polling never prompt other signers, whose
-retry tap signs in once. Both screens
+Ordinary Earn uses the public `/api/smart-accounts/mobile/earn/` state,
+holdings, earnings, transactions and autodeposit/state reads, keyed by the
+connected wallet. The holdings endpoint reads live on-chain balances. Screen
+entry, foreground polling and retry never request an additional signature.
+Wallet-keyed snapshots and request generations discard old-wallet responses.
+Both screens
 render `EarnScreenControls` and `EarnChartTabs`, with back navigation and
 full-width balance actions. MAX shows only APY without a funded position or
 nonzero lifetime earnings; funded positions always expose Earned/APY. Until
@@ -240,8 +270,15 @@ labels. Ordinary Earn keeps Forecast and Autodeposit.
 MAX's funding balance follows the wallet USDC account at confirmed commitment
 (`useEarnMaxFundingUsdc`), ordered by slot and re-read on foreground. Its amount and positions sheets use the supplied Figma assets and
 layout; the expanded positions card leaves the header and tab bar accessible.
-Earn MAX charts use the activity API’s `earnings.performanceUsd` headline and
+Earn MAX charts prefer the activity API’s `earnings.performanceUsd` headline and
 `earnings.days[].performanceUsd` bars, labeled Investment performance. Actual
 trading losses remain included; changes in estimated exit costs are excluded.
 Missing attribution shows unavailable, and missing daily marks are omitted.
 Balances, withdrawal amounts, and the positions sheet retain their net values.
+
+Public mobile Earn MAX responses use an older contract: `forecastApyBps` is
+realized share-price growth and `activity.earnings` may be absent. The mobile
+read adapter uses `/api/earn-max/apy` for the current APY and rate history
+(falling back to `currentApyBps` for the badge if that public read fails).
+`chart-earnings.ts` preserves the production daily-series conversion for legacy
+history; explicit null earnings or incomplete history stay unavailable.

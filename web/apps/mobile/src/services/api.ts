@@ -1,5 +1,7 @@
+import type { EarnMaxActivityResponse } from "@loyal-labs/shared";
 import type {
   EarnMaxContextResponse,
+  EarnMaxSummary,
   Get,
   MobileTokenDetailResponse,
   MobileTrustedDapp,
@@ -7,6 +9,8 @@ import type {
 } from "@loyal-labs/api";
 
 import { earnWalletRead } from "@/lib/solana/earn/earn-session";
+
+import { fetchWithTimeout } from "@/lib/network/fetch-with-timeout";
 
 import { env } from "@/config/env";
 import { EarnApiError } from "@/lib/solana/earn/earn-api";
@@ -36,6 +40,37 @@ export async function fetchEarnMax<P extends EarnMaxReadPath>(
   );
   if (failure.code === "smart_account_required") return null;
   throw failure;
+}
+
+export async function fetchMobileEarnMax(walletAddress: string): Promise<{
+  summary: EarnMaxSummary | null;
+  activity: EarnMaxActivityResponse;
+}> {
+  const read = async (action: "summary" | "activity") => {
+    const query = new URLSearchParams({ walletAddress, action });
+    const response = await fetchWithTimeout(
+      `${env.apiBaseUrl}/api/smart-accounts/mobile/earn-max?${query}`,
+      { credentials: "omit" },
+    );
+    if (!response.ok) throw await earnMaxFailure(response, "Unable to update Earn MAX. Please try again.");
+    return response.json();
+  };
+  const [summary, activity, apy] = await Promise.all([
+    read("summary"),
+    read("activity"),
+    fetchWithTimeout(`${env.apiBaseUrl}/api/earn-max/apy`, { credentials: "omit" })
+      .then(async response => response.ok ? await response.json() as Get["/api/earn-max/apy"] : null)
+      .catch(() => null),
+  ]);
+  return {
+    summary: summary.summary ? {
+      ...summary.summary,
+      // The legacy endpoint puts realized share-price growth in forecastApyBps.
+      forecastApyBps: apy?.apyBps ?? summary.summary.currentApyBps ?? null,
+      apyHistory: apy?.history.map(point => ({ date: point.observedAt.slice(0, 10), apyBps: point.apyBps })) ?? [],
+    } : null,
+    activity,
+  };
 }
 
 export async function provisionEarnMaxAccount(
