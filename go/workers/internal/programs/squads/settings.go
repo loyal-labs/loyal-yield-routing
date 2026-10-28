@@ -95,10 +95,6 @@ func DecodeSettings(account *chain.Account) (Settings, error) {
 	if s.Reserved, err = c.u8(); err != nil {
 		return fail(err)
 	}
-	for _, b := range c.data[c.offset:] {
-		if b != 0 {
-			return fail(errors.New("settings account has unsupported trailing state"))
-		}
-	}
+	// Like the Squads SDK, ignore allocation bytes beyond the serialized settings.
 	return s, nil
 }
