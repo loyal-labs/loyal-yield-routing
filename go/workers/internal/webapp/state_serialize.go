@@ -248,7 +248,7 @@ func stateMetadataStringValue(metadata map[string]any, keys ...string) (string, 
 
 func stateUserFacingReserveMetadata(metadata map[string]any) bool {
 	semantics, ok := stateMetadataStringValue(metadata, "amountSemantics", "amount_semantics")
-	return ok && semantics == "kamino_redeemable_liquidity"
+	return ok && (semantics == "kamino_redeemable_liquidity" || semantics == "redeemable_liquidity_amount")
 }
 
 func stateCollateralUnitMetadata(metadata map[string]any) bool {
