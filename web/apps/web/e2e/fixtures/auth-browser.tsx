@@ -1,6 +1,7 @@
 import React from "react";
 import { useWallet } from "@solana/wallet-adapter-react";
 import { usePrivyAuth } from "../../src/components/auth/privy-session-sync";
+import { PrivySignIn } from "../../src/components/auth/privy-sign-in";
 import { useSignInModal } from "../../src/contexts/sign-in-modal-context";
 import { walletCreationCount } from "./privy";
 import { completeFixtureConnection } from "./swap-wallet";
@@ -12,6 +13,7 @@ export function AuthProbe() {
   return (
     <>
       <button onClick={modal.open}>Connect wallet</button>
+      {modal.isOpen && <PrivySignIn />}
       <button onClick={completeFixtureConnection}>
         Finish wallet connection
       </button>

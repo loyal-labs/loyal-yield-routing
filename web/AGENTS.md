@@ -737,6 +737,8 @@ App startup must tolerate blocked marketing modules. Load the X pixel only via
 caught dynamic imports. The Vite app uses hashed UI chunk names to avoid blocker
 false positives on component filenames; optional X pixel, Mixpanel and Datadog
 chunks retain recognizable names and their network requests remain blockable.
+The startup module-error handler must ignore failed third-party scripts, including
+Cloudflare's injected analytics beacon; only same-origin app scripts trigger recovery.
 
 Web deploys retain hashed assets for 30 days after their last deployment under
 `/opt/loyal/assets/web`; the current embedded build takes precedence. The entry

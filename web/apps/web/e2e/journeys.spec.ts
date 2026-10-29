@@ -257,6 +257,74 @@ for (const scenario of [
   });
 }
 
+test.describe("mobile Google redirect", () => {
+  test.use({
+    viewport: { width: 393, height: 851 },
+    isMobile: true,
+    userAgent:
+      "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36",
+  });
+
+  test("restores the session before browser wallets are ready and survives refresh", async ({
+    page,
+  }) => {
+    let exchanges = 0;
+    const session = {
+      user: {
+        authMethod: "wallet",
+        subjectAddress: "11111111111111111111111111111111",
+        walletAddress: "11111111111111111111111111111111",
+        displayAddress: "11111111111111111111111111111111",
+      },
+      session: {
+        expiresAt: new Date(Date.now() + 3600000).toISOString(),
+        refreshAfter: new Date(Date.now() + 600000).toISOString(),
+      },
+    };
+    await page.route("**/api/auth/session", (route) =>
+      route.fulfill(
+        exchanges
+          ? { json: session }
+          : { status: 401, json: { error: { code: "unauthenticated" } } }
+      )
+    );
+    await page.route("**/api/auth/privy/complete", (route) => {
+      exchanges++;
+      return route.fulfill({ json: { ok: true } });
+    });
+    await page.route("**/api/auth/session/refresh", (route) =>
+      route.fulfill({ json: session })
+    );
+    await page.goto("/auth?scenario=oauth_return");
+    await expect(page.getByLabel("Session state")).toHaveText("Anonymous");
+    await page
+      .getByRole("button", { name: "Connect wallet", exact: true })
+      .click();
+    await expect(page.getByLabel("Account modal")).toHaveText("Open");
+    await page.getByRole("button", { name: "Continue", exact: true }).click();
+    await expect(page.getByLabel("Session state")).toHaveText("Authenticated");
+    await expect(page.getByLabel("Sign-in step")).toHaveText("idle");
+    expect(exchanges).toBe(1);
+    await expect(page.getByLabel("Created wallets")).toHaveText("0");
+    expect(
+      await page.evaluate(() =>
+        sessionStorage.getItem("loyal:privy-wants-session")
+      )
+    ).toBeNull();
+
+    await page.reload();
+    await expect(page.getByLabel("Session state")).toHaveText("Authenticated");
+    await page
+      .getByRole("button", { name: "Connect wallet", exact: true })
+      .click();
+    await expect(page.getByLabel("Account modal")).toHaveText("Open");
+    await expect(
+      page.getByRole("button", { name: "Signing in…", exact: true })
+    ).toHaveCount(0);
+    expect(exchanges).toBe(1);
+  });
+});
+
 test("real swap hook waits for both rendered balance changes after confirmation", async ({
   page,
 }) => {

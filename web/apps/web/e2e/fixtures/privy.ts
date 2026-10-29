@@ -13,6 +13,9 @@ const linkedUser = {
   ],
 };
 const scenario = new URLSearchParams(location.search).get("scenario");
+const oauthReturn = scenario === "oauth_return";
+const returnedFromOAuth =
+  oauthReturn && sessionStorage.getItem("fixture:google-authenticated") === "1";
 let user = scenario?.startsWith("fresh_")
   ? {
       ...linkedUser,
@@ -25,8 +28,8 @@ let creations = 0;
 export const walletCreationCount = () => creations;
 let state = {
   ready: true,
-  authenticated: false,
-  user: null as typeof user | null,
+  authenticated: returnedFromOAuth,
+  user: (returnedFromOAuth ? user : null) as typeof user | null,
 };
 const listeners = new Set<() => void>();
 const subscribe = (listener: () => void) => {
@@ -55,6 +58,11 @@ let callbacks: {
 let loginAttempts = 0;
 const login = () => {
   loginAttempts++;
+  if (oauthReturn) {
+    sessionStorage.setItem("fixture:google-authenticated", "1");
+    location.reload();
+    return;
+  }
   if (scenario === "privy_error" && loginAttempts === 1) {
     callbacks.onError("unknown_connect_wallet_error");
     return;
@@ -84,7 +92,10 @@ export const getIdentityToken = async () => "controlled-identity-fixture";
 const wallets = [
   { address: fixtureOwner.toBase58(), standardWallet: { name: "Phantom" } },
 ];
-export const useWallets = () => ({ ready: true, wallets });
+export const useWallets = () => ({
+  ready: !oauthReturn,
+  wallets: oauthReturn ? [] : wallets,
+});
 const createWallet = async () => {
   if (!scenario?.startsWith("fresh_"))
     throw new Error("Unexpected wallet creation in linked-wallet fixture");

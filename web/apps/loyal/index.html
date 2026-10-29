@@ -40,7 +40,10 @@
         (event) => {
           if (
             !(event.target instanceof HTMLScriptElement) ||
-            event.target.type !== "module"
+            event.target.type !== "module" ||
+            !event.target.src ||
+            // Third-party modules (such as Cloudflare analytics) are optional.
+            new URL(event.target.src).origin !== location.origin
           )
             return;
           onStartupError();
@@ -60,7 +63,11 @@
     </script>
     <noscript>Enable JavaScript to open Loyal.</noscript>
     <div id="app-load-error" hidden role="alert">
-      <p>Loyal could not load. Check your connection and try again.</p>
+      <p>Loyal could not load.</p>
+      <p>
+        Check your connection. If you use Brave Shields or an ad blocker,
+        try turning it off for this site, then reload.
+      </p>
       <a href="">Reload app</a>
     </div>
     <script type="module" src="/src/main.tsx"></script>
