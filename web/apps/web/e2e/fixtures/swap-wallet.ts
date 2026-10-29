@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from "react";
+import { type ReactNode, useSyncExternalStore } from "react";
 import { PublicKey } from "@solana/web3.js";
 
 export const fixtureOwner = new PublicKey("11111111111111111111111111111111");
@@ -69,13 +69,18 @@ let wallet = {
     listeners.forEach((listener) => listener());
   },
   wallets:
-    scenario === "registration_delayed" || scenario === "missing_wallet"
+    scenario === "registration_delayed" ||
+    scenario === "missing_wallet" ||
+    scenario === "oauth_return"
       ? []
       : [{ adapter, readyState: "Installed" }],
   sendTransaction: async () => "fixture-signature-never-broadcast",
   wallet: { adapter } as { adapter: typeof adapter } | null,
 };
 export const useConnection = () => ({ connection });
+export const ConnectionProvider = ({ children }: { children: ReactNode }) =>
+  children;
+export const WalletProvider = ConnectionProvider;
 const listeners = new Set<() => void>();
 const subscribe = (listener: () => void) => {
   listeners.add(listener);

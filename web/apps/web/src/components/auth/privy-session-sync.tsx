@@ -352,7 +352,9 @@ function Inner({ children }: { children: ReactNode }) {
   );
 
   useEffect(() => {
-    if (!wantsSession || !authenticated || !walletsReady || !privyUser) return;
+    // Session exchange uses linked accounts, not connected browser wallets.
+    if (!wantsSession || !isHydrated || !ready || !authenticated || !privyUser)
+      return;
     if (runningRef.current) return;
     runningRef.current = true;
     const lifecycle = startLifecycle();
@@ -380,10 +382,11 @@ function Inner({ children }: { children: ReactNode }) {
     authenticated,
     clearLifecycleDeadline,
     completeSignIn,
+    isHydrated,
     privyUser,
+    ready,
     setWantsSession,
     startLifecycle,
-    walletsReady,
     wantsSession,
   ]);
 
