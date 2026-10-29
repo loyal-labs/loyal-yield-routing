@@ -57,11 +57,15 @@ export function useSignerRestoration({
       return;
     }
     const owner = wallets.find((wallet) => wallet.address === address);
+    const installed = adapter.wallets.filter(
+      (wallet) => wallet.readyState === "Installed"
+    );
     const entry = owner
       ? adapter.wallets.find(
           (wallet) => wallet.adapter.name === owner.standardWallet.name
         )
-      : undefined;
+      // A mobile wallet can be installed but absent from Privy's connected list.
+      : adapter.wallet ?? (installed.length === 1 ? installed[0] : undefined);
     const stateKey = JSON.stringify([
       adapter.wallet?.adapter.name,
       adapter.connected,
