@@ -5,6 +5,8 @@ import type { WalletAccount } from "@wallet-standard/base";
 export const owner = "11111111111111111111111111111111";
 export const other = "So11111111111111111111111111111111111111112";
 const scenario = new URLSearchParams(location.search).get("scenario");
+const disconnectedReturn = scenario?.startsWith("disconnected_return");
+if (disconnectedReturn) localStorage.setItem("walletName", JSON.stringify("Privy"));
 const listeners = new Set<() => void>();
 const changes = new Set<
   (event: { accounts: readonly WalletAccount[] }) => void
@@ -48,7 +50,9 @@ const wallet = {
     },
     "standard:connect": {
       version: "1.0.0",
-      connect: async () => {
+      connect: async (options?: { silent?: boolean }) => {
+        if (disconnectedReturn && options?.silent) return { accounts: [] };
+        if (scenario === "disconnected_return_wrong") nextAddress = other;
         if (scenario === "rejected")
           throw new Error("User rejected the request");
         if (scenario === "delayed")
@@ -122,5 +126,5 @@ export const useStandardWallets = () => ({
 });
 export const useWallets = () => ({
   ready: true,
-  wallets: [{ address: owner, standardWallet: wallet }],
+  wallets: disconnectedReturn ? [] : [{ address: owner, standardWallet: wallet }],
 });

@@ -941,6 +941,36 @@ for (const scenario of [
   });
 }
 
+for (const scenario of ["disconnected_return", "disconnected_return_wrong"]) {
+  test(`real wallet adapter: ${scenario}`, async ({ page }) => {
+    const events: BrowserLifecycleEnvelope[] = [];
+    await page.route("**/api/observability/events", async (route) => {
+      events.push(route.request().postDataJSON());
+      await route.fulfill({ status: 202, json: { accepted: true } });
+    });
+    await page.goto(`/standard?scenario=${scenario}`);
+    await expect(page.getByLabel("Adapters")).toHaveText("Privy");
+    await expect(page.getByLabel("Signer")).toHaveText("Disconnected");
+    await page.getByRole("button", { name: "Restore session signer" }).click();
+    const wrongAccount = scenario === "disconnected_return_wrong";
+    await expect.poll(() => events.some((event) =>
+      event.outcome === (wrongAccount ? "failed" : "completed")
+    )).toBe(true);
+    if (wrongAccount) {
+      expect(events.find((event) => event.outcome === "failed")?.errorCode)
+        .toBe("wallet_account_mismatch");
+      expect(events.some((event) => event.outcome === "completed")).toBe(false);
+      await page.getByRole("button", { name: "Sign offline message" }).click();
+      await expect(page.getByLabel("Error")).toHaveText("Wrong signer blocked");
+      await expect(page.getByLabel("Signatures")).toHaveText("0");
+    } else {
+      await expect(page.getByLabel("Signer")).toHaveText("11111111111111111111111111111111");
+      await page.getByRole("button", { name: "Sign offline message" }).click();
+      await expect(page.getByLabel("Signatures")).toHaveText("1");
+    }
+  });
+}
+
 test("real wallet adapter: withdrawal reconnect stays usable after repeated Privy updates", async ({
   page,
 }) => {
