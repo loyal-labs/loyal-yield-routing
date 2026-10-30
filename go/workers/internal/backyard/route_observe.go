@@ -381,6 +381,7 @@ func observeLaneView(ctx context.Context, manifest RouteManifest, runtime routeO
 	stateHash := sha256.Sum256([]byte(fmt.Sprintf("%s|voltr-idle:%d|strategy-idle:%d|squads-idle:%d", fingerprint, idle.Raw, strategy.Raw, squads.Raw)))
 	base := Observation{ObservedAt: runtime.now(), Snapshot: Snapshot{ObservationID: fmt.Sprintf("%x", stateHash[:]), Slot: slot, RouteKind: RouteKind, Fresh: true, WithdrawalDemandRaw: demand, VoltrIdleRaw: int64(idle.Raw), VoltrStrategyIdleRaw: int64(strategy.Raw), SquadsIdleRaw: int64(squads.Raw), Trustful: v.trustful(), ApprovedAdminPerformanceFeeBPS: v.AdminPerformanceFeeBPS, ApprovedIssuanceFeeBPS: v.IssuanceFeeBPS}}
 	base.Snapshot.CollateralIdleRaw = int64(prime.Raw)
+	base.Snapshot.AcknowledgedForeignIdleRaw = v.AcknowledgedForeignIdleRaw
 	if (route.Kamino.DebtMint != fleet.USDCMint || basicLane(route.Lane)) && prime.Raw > 0 && withdrawalShortfallRaw(base.Snapshot) == 0 {
 		minimum, err := kaminoDepositMinimum(accounts, route, slot, math.MaxInt64)
 		if err != nil && !basicLane(route.Lane) {

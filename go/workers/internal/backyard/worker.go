@@ -259,7 +259,7 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 		return err
 	}
 	healthObservation = observation
-	w.events.noteSnapshot(observation.Snapshot)
+	w.events.noteSnapshot(observation.Snapshot, observation.ObservedAt)
 	if r, ok := observedNAVReport(observation.Snapshot); ok {
 		w.events.navReported(w.routeKey, r)
 		w.navReportKnown = true

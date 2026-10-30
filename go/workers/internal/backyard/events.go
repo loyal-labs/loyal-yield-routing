@@ -33,6 +33,7 @@ type events struct {
 	cause         string
 	causeAt       time.Time
 	snapshot      Snapshot
+	snapshotAt    time.Time
 	withdrawSince time.Time
 	heartbeatAt   time.Time
 
@@ -159,12 +160,13 @@ func (e *events) noteAction(action Action) {
 	e.mu.Unlock()
 }
 
-func (e *events) noteSnapshot(s Snapshot) {
-	if e == nil || !s.Fresh || s.ManualReason != "" {
+func (e *events) noteSnapshot(s Snapshot, observedAt time.Time) {
+	if e == nil || !s.Fresh || s.ManualReason != "" || observedAt.IsZero() {
 		return
 	}
 	e.mu.Lock()
 	e.snapshot = s
+	e.snapshotAt = observedAt
 	if s.WithdrawalDemandRaw > s.VoltrIdleRaw {
 		if e.withdrawSince.IsZero() {
 			e.withdrawSince = e.now()
@@ -186,6 +188,10 @@ func (e *events) tickResult(err error, fatal bool) {
 		e.heartbeatAt = now
 	}
 	s, manual, action, waiting := e.snapshot, e.manual, e.action, int64(0)
+	snapshotAge := int64(-1)
+	if !e.snapshotAt.IsZero() {
+		snapshotAge = max(int64(now.Sub(e.snapshotAt).Seconds()), 0)
+	}
 	if !e.withdrawSince.IsZero() {
 		waiting = int64(now.Sub(e.withdrawSince).Seconds())
 	}
@@ -196,7 +202,12 @@ func (e *events) tickResult(err error, fatal bool) {
 		e.facts.LaneSucceeded(engine.FamilyBackyard, e.vault)
 	}
 	if heartbeat {
-		e.log.Info("backyard_heartbeat", "lane", s.RouteLane, "ltv_bps", s.LTVBPS, "nav_raw", s.StrategyNAVRaw, "manual", manual,
+		level := slog.LevelInfo
+		if manual {
+			level = slog.LevelWarn
+		}
+		e.log.Log(context.Background(), level, "backyard_heartbeat", "lane", s.RouteLane, "ltv_bps", s.LTVBPS, "nav_raw", s.StrategyNAVRaw, "manual", manual,
+			"snapshot_slot", s.Slot, "snapshot_age_seconds", snapshotAge, "automatic_protection_disabled", manual,
 			"has_position", s.HasPosition, "target_rule", s.Target.Rule,
 			"withdrawal_demand_raw", s.WithdrawalDemandRaw, "voltr_idle_raw", s.VoltrIdleRaw, "withdrawal_waiting_seconds", waiting,
 			"fee_accumulator_raw", s.FeeAccumulatorRaw, "lp_supply_incl_fees_raw", s.LPSupplyInclFeesRaw,

@@ -25,7 +25,7 @@ func TestEventsRedactCredentialsAndExposeHeartbeatFields(t *testing.T) {
 	e.now = func() time.Time { return now }
 	s := feePolicySnapshot(t, 0, 0)
 	s.FeeAccumulatorRaw, s.LPSupplyInclFeesRaw = 21, 2000
-	e.noteSnapshot(s)
+	e.noteSnapshot(s, now)
 	e.tickResult(errors.New("dial https://rpc.example/?api-key=secret-value failed password=hunter2"), true)
 	var records []map[string]any
 	for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
@@ -45,7 +45,7 @@ func TestEventsRedactCredentialsAndExposeHeartbeatFields(t *testing.T) {
 		t.Fatalf("exit event leaked credentials or lost its code: %v", records[1])
 	}
 	s.FeeAccumulatorRaw = 20
-	e.noteSnapshot(s)
+	e.noteSnapshot(s, now)
 	out.Reset()
 	now = now.Add(heartbeatInterval)
 	e.tickResult(nil, false)
