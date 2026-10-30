@@ -62,7 +62,7 @@ func TestMonitorBookIdentityHoldsOnVaultMismatch(t *testing.T) {
 func TestAcknowledgedForeignIdleKeepsAccountingExactAndRecoveryReachable(t *testing.T) {
 	t.Parallel()
 	s := monitorSnapshot(t, nil)
-	s.AcknowledgedForeignIdleRaw = currentRWAForeignIdleRaw
+	s.AcknowledgedForeignIdleRaw = 1_000_000
 	s.VoltrIdleRaw += 1_000_000
 	s.LastReportAgeSeconds = int64(routineNAVReportInterval.Seconds())
 	if got := Decide(s); got.Action != ReportNAV {

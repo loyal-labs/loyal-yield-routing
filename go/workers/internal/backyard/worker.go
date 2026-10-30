@@ -59,11 +59,12 @@ type productionJournal interface {
 }
 
 type productionObserveState struct {
-	manifest RouteManifest
-	routeKey string
-	journal  productionJournal
-	batch    func(context.Context) (Observation, error)
-	identity func(context.Context) (programIdentityObservation, error)
+	manifest       RouteManifest
+	routeKey       string
+	journal        productionJournal
+	batch          func(context.Context) (Observation, error)
+	identity       func(context.Context) (programIdentityObservation, error)
+	foreignInflows func(context.Context, *Snapshot) error
 }
 
 func (p productionObserveState) observe(ctx context.Context) (Observation, error) {
@@ -73,6 +74,11 @@ func (p productionObserveState) observe(ctx context.Context) (Observation, error
 	}
 	if err := enrichObservation(ctx, p.journal, p.routeKey, p.identity, &observation); err != nil {
 		return Observation{}, err
+	}
+	if p.foreignInflows != nil {
+		if err := p.foreignInflows(ctx, &observation.Snapshot); err != nil {
+			return Observation{}, err
+		}
 	}
 	if !observation.Snapshot.valued() {
 		return observation, nil
@@ -155,7 +161,8 @@ func productionTickRuntime(database *Database, rpc *chain.Client, view *View, ju
 			observation.planning = planning
 			return observation, nil
 		},
-		identity: newProgramIdentityWatcher(viewProgramIdentity(view)).observe,
+		identity:       newProgramIdentityWatcher(viewProgramIdentity(view)).observe,
+		foreignInflows: func(ctx context.Context, s *Snapshot) error { return observeForeignInflows(ctx, database, rpc, v, s) },
 	}
 	return tickRuntime{
 		withdrawalHealth:   database.RecordWithdrawalHealth,

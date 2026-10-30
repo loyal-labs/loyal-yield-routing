@@ -18,7 +18,6 @@ type Vault struct {
 	AdminPerformanceFeeBPS        int64
 	IssuanceFeeBPS                int64
 	IdleBufferRaw                 int64
-	AcknowledgedForeignIdleRaw    int64
 
 	squads, cash                               string
 	protocol, idleAuth, idleATA, lpMint        string
@@ -31,10 +30,7 @@ type Vault struct {
 
 var rwa = newVault(Vault{Name: "rwa", VoltrVault: "HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA",
 	Strategy: "DCpR24Eb6xCWxDyaZvCBTkadkxCB2vkqJN1EfYNWtLxY", Adaptor: fsj27Program, SquadsIndex: 0,
-	RouteKey: "rwa-multiply:ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh", AdminPerformanceFeeBPS: 0, IssuanceFeeBPS: 40, IdleBufferRaw: 5_000_000_000,
-	// shortcut: exact 2026-10-30 foreign transfer, replace with reconciled foreign-inflow accounting.
-	// 3b3ZcUupT1oP2NDumy4jzHbimUuYW49q8kkt6tK3JLx3SyPHeVcNRMamdJvSZ3vaVqD1TEKgnLr4ZSQkovpMVLcg
-	AcknowledgedForeignIdleRaw: 1_000_000})
+	RouteKey: "rwa-multiply:ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh", AdminPerformanceFeeBPS: 0, IssuanceFeeBPS: 40, IdleBufferRaw: 5_000_000_000})
 
 var looping = newVault(Vault{Name: "looping", VoltrVault: "GrHZD15bMiUwrVPsmBwz8GRoQeDZN6wNEQVdW8k8SxV1",
 	Strategy: "GUCvzfn1hqThWp5uQNF7CqoxC1XckCPTjsRGKVXHPxu1", Adaptor: voltr.TrustfulProgramID.String(), SquadsIndex: 2,

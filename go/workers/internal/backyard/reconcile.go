@@ -31,16 +31,17 @@ type ExpectedAccountEffect struct {
 }
 
 type ExpectedEffects struct {
-	Schema           string                       `json:"schema"`
-	Kind             effectsKind                  `json:"kind,omitempty"`
-	Conserved        bool                         `json:"conserved"`
-	Accounts         []ExpectedAccountEffect      `json:"accounts"`
-	ReturnData       *ExpectedReturnData          `json:"returnData,omitempty"`
-	ExitLiabilityRaw *uint64                      `json:"exitLiabilityRaw,omitempty"`
-	Sale             *ExpectedSale                `json:"sale,omitempty"`
-	Repayment        *ExpectedRepayment           `json:"repayment,omitempty"`
-	Deposit          *ExpectedDeposit             `json:"deposit,omitempty"`
-	Initialization   *KaminoInitializationRequest `json:"initialization,omitempty"`
+	Schema            string                       `json:"schema"`
+	Kind              effectsKind                  `json:"kind,omitempty"`
+	Conserved         bool                         `json:"conserved"`
+	Accounts          []ExpectedAccountEffect      `json:"accounts"`
+	ReturnData        *ExpectedReturnData          `json:"returnData,omitempty"`
+	ExitLiabilityRaw  *uint64                      `json:"exitLiabilityRaw,omitempty"`
+	Sale              *ExpectedSale                `json:"sale,omitempty"`
+	Repayment         *ExpectedRepayment           `json:"repayment,omitempty"`
+	Deposit           *ExpectedDeposit             `json:"deposit,omitempty"`
+	Initialization    *KaminoInitializationRequest `json:"initialization,omitempty"`
+	ForeignCustodyRaw *uint64                      `json:"foreignCustodyRaw,omitempty"`
 }
 
 type effectsKind string
@@ -157,6 +158,9 @@ func DecodeExpectedEffects(v *Vault, data []byte) (ExpectedEffects, error) {
 			return ExpectedEffects{}, fmt.Errorf("invalid expected adaptor return data")
 		}
 	}
+	if err := validateForeignSweep(v, expected); err != nil {
+		return ExpectedEffects{}, err
+	}
 	return expected, nil
 }
 
@@ -191,6 +195,9 @@ func validateRepaymentEffects(expected ExpectedEffects) error {
 }
 
 func ReconcileConfirmedTransaction(v *Vault, expected ExpectedEffects, receipt ConfirmedTransactionEvidence) (Reconciliation, []byte, error) {
+	if err := validateForeignSweep(v, expected); err != nil {
+		return Reconciliation{}, nil, err
+	}
 	if expected.Kind == effectsKaminoInitialize || expected.Initialization != nil {
 		return v.manifest.reconcileKaminoInitialization(expected, receipt)
 	}
@@ -224,6 +231,17 @@ func ReconcileConfirmedTransaction(v *Vault, expected ExpectedEffects, receipt C
 			return Reconciliation{}, nil, fmt.Errorf("transaction-scoped custody identity or precondition mismatch: %s", effect.Address)
 		}
 		moved, planned := int64(post.Raw)-int64(pre.Raw), int64(effect.AfterRaw)-int64(effect.BeforeRaw)
+		if receipt.foreignSweepExtraRaw != 0 {
+			if expected.ForeignCustodyRaw == nil || !receipt.Finalized {
+				return Reconciliation{}, nil, fmt.Errorf("foreign sweep proof without planned sweep")
+			}
+			switch effect.Address {
+			case v.strategyATA:
+				planned -= int64(receipt.foreignSweepExtraRaw)
+			case v.idleATA:
+				planned += int64(receipt.foreignSweepExtraRaw)
+			}
+		}
 		if bounds != nil {
 			if i == 0 {
 				moved = -moved
@@ -274,6 +292,10 @@ func ReconcileConfirmedTransaction(v *Vault, expected ExpectedEffects, receipt C
 	evidenceBody := map[string]any{
 		"schema": "loyal-backyard-rwa-reconciled-effects/v1", "source": "confirmed-transaction-meta",
 		"signature": receipt.Signature, "slot": receipt.Slot, "accounts": canonical,
+	}
+	if receipt.foreignSweepExtraRaw != 0 {
+		evidenceBody["foreignSweepExtraRaw"] = receipt.foreignSweepExtraRaw
+		evidenceBody["foreignSweepCheckpoint"] = receipt.foreignSweepCheckpoint
 	}
 	if expected.ReturnData != nil {
 		evidenceBody["returnData"] = expected.ReturnData

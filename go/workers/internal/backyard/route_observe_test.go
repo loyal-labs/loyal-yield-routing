@@ -46,23 +46,6 @@ func TestPilotUSDCObservationBoundsDepositRemainderWithoutLosingNAV(t *testing.T
 	}
 }
 
-func TestForeignIdleAcknowledgmentComesFromObservedVault(t *testing.T) {
-	t.Parallel()
-	for _, amount := range []int64{currentRWAForeignIdleRaw, looping.AcknowledgedForeignIdleRaw} {
-		m := readyWorkerManifest(t)
-		v := *m.vault
-		v.AcknowledgedForeignIdleRaw = amount
-		m.vault = &v
-		o, err := productionConfirmedBatchForManifest(t, m, 77, nil)(context.Background())
-		if err != nil {
-			t.Fatal(err)
-		}
-		if o.Snapshot.AcknowledgedForeignIdleRaw != amount {
-			t.Fatalf("observer lost vault-specific acknowledgment: got %d want %d", o.Snapshot.AcknowledgedForeignIdleRaw, amount)
-		}
-	}
-}
-
 func cadenceNAV(slot, current, reported uint64, lastUpdated time.Time) RouteNAVSnapshot {
 	digest := navDigest(strings.Repeat("a", 64))
 	return RouteNAVSnapshot{

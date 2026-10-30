@@ -145,6 +145,15 @@ func (d *Database) reconcile(ctx context.Context, manifest RouteManifest, rpc *c
 	if receipt.Slot != operation.ConfirmedSlot {
 		return d.MarkManualRecovery(ctx, operation.ID, operation.Status, "confirmed_transaction_slot_mismatch")
 	}
+	if expected.ForeignCustodyRaw != nil {
+		if err := proveForeignSweep(ctx, d, rpc, manifest.vault, expected, &receipt); err != nil {
+			var fault foreignAccountingFault
+			if errors.As(err, &fault) {
+				return d.MarkManualRecovery(ctx, operation.ID, operation.Status, "foreign_inflow_unexplained")
+			}
+			return err
+		}
+	}
 	reconciliation, effects, err := ReconcileConfirmedTransaction(manifest.vault, expected, receipt)
 	if err != nil {
 		return d.MarkManualRecovery(ctx, operation.ID, operation.Status, "exact_effect_reconciliation_failed")
