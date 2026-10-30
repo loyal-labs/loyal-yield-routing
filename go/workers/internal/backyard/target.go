@@ -698,12 +698,17 @@ func withLevel(s Snapshot, level float64) Snapshot {
 }
 
 // custodyDiscipline: Voltr's restore sweeps the entire strategy custody and
-// books it into its own total value, so custody must equal the staged amount.
+// books it into its own total value. Only staged funds and proven gifts may be swept.
 func custodyDiscipline(s Snapshot) (Decision, bool) {
 	if s.Nonterminal != "" || s.VoltrStrategyIdleRaw <= 0 {
 		return Decision{}, false
 	}
-	if !s.StagedAmountKnown || s.StagedAmountRaw != s.VoltrStrategyIdleRaw {
+	staged := s.StagedAmountRaw
+	known := s.StagedAmountKnown
+	if s.ForeignCustodyRaw > 0 && !s.StageTransient {
+		staged, known = 0, true
+	}
+	if !known || s.ForeignCustodyRaw < 0 || s.VoltrStrategyIdleRaw < s.ForeignCustodyRaw || staged != s.VoltrStrategyIdleRaw-s.ForeignCustodyRaw {
 		return Decision{Action: HoldManualRecovery, Reason: "custody_mismatch", AmountRaw: 0,
 			IdempotencyKey: fmt.Sprintf("%s:%s:%d", s.ObservationID, "custody_mismatch", s.VoltrStrategyIdleRaw),
 			StrategyKey:    s.RouteLane}, true

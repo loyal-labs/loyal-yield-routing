@@ -209,14 +209,16 @@ type ProgramReturnData struct {
 }
 
 type ConfirmedTransactionEvidence struct {
-	Finalized         bool
-	Signature         string
-	Slot              int64
-	PreTokenBalances  []TransactionTokenBalance
-	PostTokenBalances []TransactionTokenBalance
-	ReturnData        *ProgramReturnData
-	Logs              []string
-	Initialization    *KaminoInitializationReceipt
+	Finalized              bool
+	Signature              string
+	Slot                   int64
+	PreTokenBalances       []TransactionTokenBalance
+	PostTokenBalances      []TransactionTokenBalance
+	ReturnData             *ProgramReturnData
+	Logs                   []string
+	Initialization         *KaminoInitializationReceipt
+	foreignSweepExtraRaw   uint64
+	foreignSweepCheckpoint foreignCheckpoint
 }
 
 func finalizedTransaction(ctx context.Context, c *chain.Client, signature string) (ConfirmedTransactionEvidence, error) {

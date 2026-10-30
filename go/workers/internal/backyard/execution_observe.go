@@ -134,6 +134,17 @@ func prepareBridgeFromObservedAccounts(ctx context.Context, rpc *chain.Client, m
 		return Observation{}, BridgeExecutionEvidence{}, fmt.Errorf("report ticket sequence is not fresh")
 	}
 	effects.Kind = "bridge"
+	if decision.Action == VoltrRestoreIdle && !v.trustful() {
+		foreign := observation.Snapshot.ForeignCustodyRaw
+		if foreign < 0 {
+			return Observation{}, BridgeExecutionEvidence{}, fmt.Errorf("negative foreign custody")
+		}
+		raw := uint64(foreign)
+		effects.ForeignCustodyRaw = &raw
+		if err := validateForeignSweep(v, effects); err != nil {
+			return Observation{}, BridgeExecutionEvidence{}, err
+		}
+	}
 	exitAtReport := nav.ExitLiabilityRaw
 	effects.ExitLiabilityRaw = &exitAtReport
 	// FSj27 returns the NAV each report-bearing leg arms; Trustful's
@@ -146,9 +157,13 @@ func prepareBridgeFromObservedAccounts(ctx context.Context, rpc *chain.Client, m
 	if err != nil {
 		return Observation{}, BridgeExecutionEvidence{}, err
 	}
+	wireAmount := uint64(decision.AmountRaw)
+	if effects.ForeignCustodyRaw != nil {
+		wireAmount = min(wireAmount, strategyTwoBridgeLegCapRaw)
+	}
 	return observation, BridgeExecutionEvidence{
 		Request: BridgeBuildRequest{
-			Action: action, AmountRaw: uint64(decision.AmountRaw),
+			Action: action, AmountRaw: wireAmount,
 			Report: nav.Report, Policy: policy,
 			AdaptorConfig: v.Strategy, Settings: backyardSettings,
 			RecentBlockhash: blockhash.Blockhash, LastValidBlockHeight: blockhash.LastValidBlockHeight,

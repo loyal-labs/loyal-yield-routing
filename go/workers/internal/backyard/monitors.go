@@ -12,6 +12,9 @@ func bridgeMonitorHold(s Snapshot) (Decision, bool) {
 	if s.StrategyReceiptIntegrityFault {
 		return monitorHold(s, "strategy_receipt_integrity"), true
 	}
+	if s.ForeignInflowFault {
+		return monitorHold(s, "foreign_inflow_unexplained"), true
+	}
 	// A stage in flight moves Squads cash into the strategy custody ATA without
 	// invoking Voltr, so Voltr's total value, receipt and tracked custody do
 	// not move: the ATA balance must stay out of this identity.
@@ -23,10 +26,10 @@ func bridgeMonitorHold(s Snapshot) (Decision, bool) {
 		return monitorHold(s, "book_identity_mismatch"), true
 	}
 	if s.StageTransient {
-		if !s.StagedAmountKnown || s.VoltrReceiptCustodyTrackedRaw != 0 || s.VoltrStrategyIdleRaw != s.StagedAmountRaw {
+		if !s.StagedAmountKnown || s.VoltrReceiptCustodyTrackedRaw != 0 || s.ForeignCustodyRaw < 0 || s.VoltrStrategyIdleRaw < s.ForeignCustodyRaw || s.VoltrStrategyIdleRaw-s.ForeignCustodyRaw != s.StagedAmountRaw {
 			return monitorHold(s, "custody_transient_mismatch"), true
 		}
-	} else if s.VoltrStrategyIdleRaw != 0 || s.VoltrReceiptCustodyTrackedRaw != 0 {
+	} else if s.ForeignCustodyRaw < 0 || s.VoltrStrategyIdleRaw != s.ForeignCustodyRaw || (s.VoltrReceiptCustodyTrackedRaw != 0 && s.VoltrReceiptCustodyTrackedRaw != s.ForeignCustodyRaw) {
 		return monitorHold(s, "custody_residue"), true
 	}
 	if s.JournalArmedNAVMalformed {

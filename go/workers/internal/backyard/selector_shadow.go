@@ -33,6 +33,9 @@ func observeSelectorShadow(ctx context.Context, database *Database, rpc *chain.C
 	if err = enrichObservation(ctx, shadowJournal{database}, v.RouteKey, identity, &observation); err != nil {
 		return Observation{}, fmt.Errorf("shadow journal or identity unavailable: %w", err)
 	}
+	if err = observeForeignInflows(ctx, readOnlyForeignStore{database}, rpc, v, &observation.Snapshot); err != nil {
+		return Observation{}, fmt.Errorf("shadow foreign-inflow evidence unavailable: %w", err)
+	}
 	var pending string
 	err = database.pool.QueryRow(ctx, `SELECT COALESCE((SELECT status FROM loyal_yield.multiply_operations WHERE route_key=$1 AND status IN (`+nonterminalStatusSQL+`) ORDER BY created_at,operation_id LIMIT 1),'')`, v.RouteKey).Scan(&pending)
 	if err != nil {
