@@ -2,6 +2,7 @@ package backyard
 
 import (
 	"encoding/binary"
+	"math"
 	"testing"
 	"time"
 )
@@ -55,6 +56,58 @@ func TestMonitorBookIdentityHoldsOnVaultMismatch(t *testing.T) {
 	got := Decide(s)
 	if got.Action != HoldManualRecovery || got.Reason != "book_identity_mismatch" {
 		t.Fatalf("vault book mismatch did not hold: %+v", got)
+	}
+}
+
+func TestAcknowledgedForeignIdleKeepsAccountingExactAndRecoveryReachable(t *testing.T) {
+	t.Parallel()
+	s := monitorSnapshot(t, nil)
+	s.AcknowledgedForeignIdleRaw = currentRWAForeignIdleRaw
+	s.VoltrIdleRaw += 1_000_000
+	s.LastReportAgeSeconds = int64(routineNAVReportInterval.Seconds())
+	if got := Decide(s); got.Action != ReportNAV {
+		t.Fatalf("acknowledged transfer blocked NAV: %+v", got)
+	}
+	for _, delta := range []int64{-1_000_001, -1, 1} {
+		changed := s
+		changed.VoltrIdleRaw += delta
+		if got := Decide(changed); got.Action != HoldManualRecovery || got.Reason != "book_identity_mismatch" {
+			t.Fatalf("unacknowledged delta %d passed: %+v", delta, got)
+		}
+	}
+	residue := s
+	residue.VoltrStrategyIdleRaw = 1
+	if hold, blocked := bridgeMonitorHold(residue); !blocked || hold.Reason != "custody_residue" {
+		t.Fatalf("idle acknowledgment excused strategy custody: %+v", hold)
+	}
+	risk := s
+	risk.HasPosition = true
+	risk.PositionCollateralRaw, risk.PositionDebtRaw = 100, 70
+	risk.LiquidationThresholdBPS, risk.MaxLTVBPS, risk.LTVBPS = 7500, 7000, 6500
+	if got := Decide(risk); got.Action != DeleverRouteStep || got.Reason != hardLTVDeleverReason {
+		t.Fatalf("acknowledged transfer blocked hard-LTV protection: %+v", got)
+	}
+	staged := s
+	staged.VoltrStrategyIdleRaw, staged.StagedAmountRaw = 7, 7
+	staged.StageTransient, staged.StagedAmountKnown = true, true
+	staged.WithdrawalDemandRaw = staged.VoltrIdleRaw + 7
+	if got := Decide(staged); got.Action != VoltrRestoreIdle || got.AmountRaw != 7 {
+		t.Fatalf("acknowledged transfer blocked staged withdrawal: %+v", got)
+	}
+}
+
+func TestBookIdentityRejectsNegativeAndWrappedAmounts(t *testing.T) {
+	t.Parallel()
+	s := monitorSnapshot(t, nil)
+	s.VoltrTotalValueRaw, s.VoltrIdleRaw, s.PriorReportedNAVRaw, s.VoltrReceiptCustodyTrackedRaw = math.MaxInt64-2, math.MaxInt64, math.MaxInt64, math.MaxInt64
+	if hold, blocked := bridgeMonitorHold(s); !blocked || hold.Reason != "book_identity_mismatch" {
+		t.Fatalf("uint64-wrapped assets matched the book: %+v", hold)
+	}
+	s = monitorSnapshot(t, nil)
+	s.VoltrIdleRaw--
+	s.AcknowledgedForeignIdleRaw = -1
+	if hold, blocked := bridgeMonitorHold(s); !blocked || hold.Reason != "book_identity_mismatch" {
+		t.Fatalf("negative acknowledgment excused a deficit: %+v", hold)
 	}
 }
 

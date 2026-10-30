@@ -1,9 +1,11 @@
 package backyard
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -120,5 +122,63 @@ func TestWithdrawalHealthDoesNotObserveDuringRecoveryOrReadFailure(t *testing.T)
 	w.publishWithdrawalHealth(context.Background(), Observation{}, Decision{Action: HoldManualRecovery}, nil)
 	if reads != 1 || writes != 1 {
 		t.Fatal("paused manual stop lost display observation")
+	}
+}
+
+func TestLatchedTickRefreshesRiskWithoutExecutingAndExposesFailedRefreshAge(t *testing.T) {
+	t.Parallel()
+	var out bytes.Buffer
+	e := newEvents(slog.New(slog.NewJSONHandler(&out, nil)), nil, "rwa")
+	now := time.Unix(1700000000, 0)
+	e.now = func() time.Time { return now }
+	o := Observation{ObservedAt: now, Snapshot: livePartialSnapshot()}
+	readErr := error(nil)
+	reads := 0
+	w := Worker{routeKey: productionRouteKey, manifest: readyWorkerManifest(t), events: e, runtime: tickRuntime{
+		loadLatch: func(context.Context, string) (ManualRecoveryLatch, bool, error) {
+			return ManualRecoveryLatch{Reason: "book_identity_mismatch"}, true, nil
+		},
+		loadNonterminal: func(context.Context, string) (*PersistedOperation, error) {
+			t.Fatal("latched risk observation reached execution")
+			return nil, nil
+		},
+		observeWithdrawalHealth: func(context.Context) (Observation, error) { reads++; return o, readErr },
+		withdrawalHealth:        func(context.Context, withdrawalAssessment) error { return nil },
+	}}
+	for _, age := range []int64{0, 60, 0} {
+		if age == 60 {
+			now = now.Add(time.Minute)
+			readErr = errors.New("RPC unavailable")
+		} else if reads > 0 {
+			now = now.Add(time.Minute)
+			o.ObservedAt, o.Snapshot.LTVBPS = now, 6500
+			o.Snapshot.Slot++
+			readErr = nil
+		}
+		out.Reset()
+		if err := w.Tick(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		e.tickResult(nil, false)
+		var record map[string]any
+		if err := json.Unmarshal(bytes.TrimSpace(out.Bytes()), &record); err != nil {
+			t.Fatalf("invalid heartbeat: %v: %s", err, out.String())
+		}
+		if record["level"] != "WARN" || record["automatic_protection_disabled"] != true ||
+			record["snapshot_age_seconds"] != float64(age) || record["ltv_bps"] != float64(o.Snapshot.LTVBPS) ||
+			record["snapshot_slot"] != float64(o.Snapshot.Slot) {
+			t.Fatalf("held route hid its risk or observation age: %s", out.String())
+		}
+	}
+	if reads != 3 {
+		t.Fatalf("held route stopped observing: %d", reads)
+	}
+	// Withdrawal-only fallback evidence has no valuation; its zero LTV is unknown.
+	unpriced := &unpricedExitHealth{error: errors.New("no exit quote"), health: Observation{
+		ObservedAt: now.Add(time.Minute), Snapshot: Snapshot{ObservationID: "unpriced", Slot: o.Snapshot.Slot + 1,
+			RouteKind: RouteKind, Fresh: true, WithdrawalDemandRaw: 10, VoltrIdleRaw: 0}}}
+	w.publishWithdrawalHealth(context.Background(), Observation{}, Decision{Action: Hold}, unpriced)
+	if e.snapshot.LTVBPS != 6500 || !e.snapshotAt.Equal(o.ObservedAt) {
+		t.Fatal("unpriced withdrawal evidence replaced valued risk observation")
 	}
 }

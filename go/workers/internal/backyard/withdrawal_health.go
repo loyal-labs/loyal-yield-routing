@@ -127,6 +127,7 @@ func (w *Worker) publishWithdrawalHealth(ctx context.Context, o Observation, dec
 		if err != nil {
 			return
 		}
+		w.events.noteSnapshot(o.Snapshot, o.ObservedAt)
 	}
 	if h, ok := assessWithdrawalHealth(w.manifest.vault, o, decision, tickErr); ok {
 		_ = w.runtime.withdrawalHealth(ctx, h)

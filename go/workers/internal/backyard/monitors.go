@@ -15,7 +15,11 @@ func bridgeMonitorHold(s Snapshot) (Decision, bool) {
 	// A stage in flight moves Squads cash into the strategy custody ATA without
 	// invoking Voltr, so Voltr's total value, receipt and tracked custody do
 	// not move: the ATA balance must stay out of this identity.
-	if uint64(s.VoltrTotalValueRaw) != uint64(s.VoltrIdleRaw)+uint64(s.PriorReportedNAVRaw)+uint64(s.VoltrReceiptCustodyTrackedRaw) {
+	book := new(big.Int).Add(big.NewInt(s.VoltrTotalValueRaw), big.NewInt(s.AcknowledgedForeignIdleRaw))
+	assets := new(big.Int).Add(big.NewInt(s.VoltrIdleRaw), big.NewInt(s.PriorReportedNAVRaw))
+	assets.Add(assets, big.NewInt(s.VoltrReceiptCustodyTrackedRaw))
+	if s.VoltrTotalValueRaw < 0 || s.AcknowledgedForeignIdleRaw < 0 || s.VoltrIdleRaw < 0 ||
+		s.PriorReportedNAVRaw < 0 || s.VoltrReceiptCustodyTrackedRaw < 0 || book.Cmp(assets) != 0 {
 		return monitorHold(s, "book_identity_mismatch"), true
 	}
 	if s.StageTransient {
