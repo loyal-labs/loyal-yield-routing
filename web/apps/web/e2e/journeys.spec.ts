@@ -23,6 +23,7 @@ declare global {
       quote: () => Promise<unknown>;
       execute: () => Promise<{ success: boolean }>;
       ready: boolean;
+      reset: () => void;
       transaction: string;
       update: (input: number, output: number, owner?: string) => void;
     };
@@ -323,6 +324,78 @@ test.describe("mobile Google redirect", () => {
     ).toHaveCount(0);
     expect(exchanges).toBe(1);
   });
+});
+
+test("real swap hook cannot execute an old quote after a failed refresh", async ({
+  page,
+}) => {
+  let failQuote = false;
+  let builds = 0;
+  await page.route("https://api.jup.ag/**", async (route) => {
+    if (route.request().method() === "POST") builds++;
+    if (failQuote) return route.abort("failed");
+    await route.fulfill({
+      json: {
+        inputMint: "input",
+        outputMint: "output",
+        inAmount: "1000000",
+        outAmount: "1000000",
+        priceImpactPct: "0",
+      },
+    });
+  });
+  await page.goto("/swap");
+  await page.evaluate(() => window.swapFixture.quote());
+  await expect
+    .poll(() => page.evaluate(() => window.swapFixture.ready))
+    .toBe(true);
+  failQuote = true;
+  await page.evaluate(() => window.swapFixture.quote());
+  await expect
+    .poll(() => page.evaluate(() => window.swapFixture.ready))
+    .toBe(false);
+  expect(await page.evaluate(() => window.swapFixture.execute())).toMatchObject(
+    { success: false }
+  );
+  expect(builds).toBe(0);
+  failQuote = false;
+  await page.evaluate(() => window.swapFixture.quote());
+  await expect
+    .poll(() => page.evaluate(() => window.swapFixture.ready))
+    .toBe(true);
+});
+
+test("real swap hook ignores a quote that completes after reset", async ({
+  page,
+}) => {
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let requested = false;
+  await page.route("https://api.jup.ag/**", async (route) => {
+    requested = true;
+    await pending;
+    await route.fulfill({
+      json: {
+        inputMint: "input",
+        outputMint: "output",
+        inAmount: "1000000",
+        outAmount: "1000000",
+        priceImpactPct: "0",
+      },
+    });
+  });
+  await page.goto("/swap");
+  const quote = page.evaluate(() => window.swapFixture.quote());
+  await expect.poll(() => requested).toBe(true);
+  await page.evaluate(() => window.swapFixture.reset());
+  release();
+  expect(await quote).toBeNull();
+  expect(await page.evaluate(() => window.swapFixture.ready)).toBe(false);
+  expect(await page.evaluate(() => window.swapFixture.execute())).toMatchObject(
+    { success: false }
+  );
 });
 
 test("real swap hook waits for both rendered balance changes after confirmation", async ({

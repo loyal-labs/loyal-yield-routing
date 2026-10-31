@@ -195,6 +195,7 @@ export function useSwap(visibleBalances: SwapBalanceSnapshot) {
   const [quote, setQuote] = useState<SwapQuote | null>(null);
   const [quoteResponse, setQuoteResponse] =
     useState<JupiterQuoteResponse | null>(null);
+  const quoteRequestId = useRef(0);
   const getTokenDecimals = useCallback(
     async (mintAddress: string): Promise<number> => {
       const mintPublicKey = new PublicKey(mintAddress);
@@ -226,6 +227,9 @@ export function useSwap(visibleBalances: SwapBalanceSnapshot) {
       toTokenDecimals?: number,
       toTokenMint?: string
     ): Promise<SwapQuote | null> => {
+      const requestId = ++quoteRequestId.current;
+      setQuote(null);
+      setQuoteResponse(null);
       try {
         setError(null);
 
@@ -245,13 +249,10 @@ export function useSwap(visibleBalances: SwapBalanceSnapshot) {
           throw new Error(`Unknown token: ${toToken}`);
         }
 
-        const inputDecimalsPromise = fromTokenDecimals
-          ? Promise.resolve(fromTokenDecimals)
-          : getTokenDecimals(inputMint);
-        const outputDecimalsPromise = toTokenDecimals
-          ? Promise.resolve(toTokenDecimals)
-          : getTokenDecimals(outputMint);
-        const inputDecimals = await inputDecimalsPromise;
+        const [inputDecimals, outputDecimals] = await Promise.all([
+          fromTokenDecimals ?? getTokenDecimals(inputMint),
+          toTokenDecimals ?? getTokenDecimals(outputMint),
+        ]);
         const amountInSmallestUnit = Math.floor(
           Number.parseFloat(amount) * 10 ** inputDecimals
         ).toString();
@@ -270,6 +271,7 @@ export function useSwap(visibleBalances: SwapBalanceSnapshot) {
         logger.debug("Fetching quote from Jupiter API:", url);
 
         const response = await fetch(url, {
+          signal: AbortSignal.timeout(15_000),
           headers: {
             "x-api-key": swapConfig.apiKey,
           },
@@ -284,9 +286,6 @@ export function useSwap(visibleBalances: SwapBalanceSnapshot) {
         const data: JupiterQuoteResponse = await response.json();
         logger.debug("Jupiter Quote response:", data);
 
-        setQuoteResponse(data);
-
-        const outputDecimals = await outputDecimalsPromise;
         const outputAmount = (
           Number.parseInt(data.outAmount, 10) /
           10 ** outputDecimals
@@ -306,11 +305,19 @@ export function useSwap(visibleBalances: SwapBalanceSnapshot) {
         };
 
         logger.debug("Parsed quote data:", quoteData);
+        if (requestId !== quoteRequestId.current) return null;
+        setQuoteResponse(data);
         setQuote(quoteData);
         return quoteData;
       } catch (err) {
+        if (requestId !== quoteRequestId.current) return null;
         const errorMessage =
-          err instanceof Error ? err.message : "Failed to get quote";
+          err instanceof TypeError ||
+          (err instanceof Error && err.name === "TimeoutError")
+            ? "Unable to get a quote. Check your connection and try again."
+            : err instanceof Error
+            ? err.message
+            : "Failed to get quote";
         setError(errorMessage);
         logger.debug("Quote error:", err);
         return null;
@@ -585,6 +592,7 @@ export function useSwap(visibleBalances: SwapBalanceSnapshot) {
   );
 
   const resetQuote = useCallback(() => {
+    quoteRequestId.current++;
     setQuote(null);
     setQuoteResponse(null);
     setError(null);
