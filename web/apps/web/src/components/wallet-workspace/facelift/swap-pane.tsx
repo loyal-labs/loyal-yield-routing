@@ -161,6 +161,7 @@ export function SwapPane({
   const [amountInput, setAmountInput] = useState("");
   const [isUsdInput, setIsUsdInput] = useState(false);
   const [isQuoting, setIsQuoting] = useState(false);
+  const [quoteAttempt, setQuoteAttempt] = useState(0);
   const [isSwapping, setIsSwapping] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [step, setStep] = useState<"form" | "processing" | "success" | "error">(
@@ -189,6 +190,7 @@ export function SwapPane({
       return;
     }
     setIsQuoting(true);
+    let cancelled = false;
     quoteTimerRef.current = window.setTimeout(() => {
       void getQuote(
         fromToken.symbol,
@@ -198,9 +200,12 @@ export function SwapPane({
         undefined,
         undefined,
         toToken.mint
-      ).finally(() => setIsQuoting(false));
+      ).finally(() => {
+        if (!cancelled) setIsQuoting(false);
+      });
     }, SWAP_QUOTE_DEBOUNCE_MS);
     return () => {
+      cancelled = true;
       if (quoteTimerRef.current !== null) {
         window.clearTimeout(quoteTimerRef.current);
       }
@@ -212,6 +217,7 @@ export function SwapPane({
     hasAmount,
     insufficientFunds,
     isSwapping,
+    quoteAttempt,
     resetQuote,
     toToken.mint,
     toToken.symbol,
@@ -339,15 +345,16 @@ export function SwapPane({
     ? "Insufficient balance"
     : isSwapping
     ? "Swapping…"
-    : isQuoting || !quote
+    : isQuoting
     ? "Getting quote…"
+    : !quote
+    ? "Retry quote"
     : "Swap now";
   const ctaDisabled =
     !isAvailable ||
     !hasAmount ||
     insufficientFunds ||
     isQuoting ||
-    !quote ||
     isSwapping;
   const isCtaInvalid = isAvailable && (!hasAmount || insufficientFunds);
   const visibleError =
@@ -547,7 +554,10 @@ export function SwapPane({
 
             <div className="w-full shrink-0 bg-card px-4 pt-2 pb-4">
               {visibleError ? (
-                <p className="pb-2 text-[13px] text-destructive leading-4">
+                <p
+                  className="pb-2 text-[13px] text-destructive leading-4"
+                  role="alert"
+                >
                   {visibleError}
                 </p>
               ) : null}
@@ -560,7 +570,14 @@ export function SwapPane({
                     : "t-hover bg-foreground text-background hover:-translate-y-0.5 hover:bg-foreground/90 active:translate-y-0"
                 }`}
                 disabled={ctaDisabled}
-                onClick={() => void handleConfirm()}
+                onClick={() => {
+                  if (!quote) {
+                    setIsQuoting(true);
+                    setQuoteAttempt((attempt) => attempt + 1);
+                    return;
+                  }
+                  void handleConfirm();
+                }}
                 type="button"
               >
                 <TextSwap text={ctaLabel} />

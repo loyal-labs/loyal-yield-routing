@@ -20,6 +20,7 @@ export function SwapProbe() {
         swap.getQuote("input", "output", "1", "input", 6, 6, "output"),
       execute: () => swap.executeSwap(),
       ready: Boolean(swap.quote),
+      reset: swap.resetQuote,
       update: (
         input: number,
         output: number,
