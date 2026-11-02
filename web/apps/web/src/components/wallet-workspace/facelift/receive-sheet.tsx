@@ -90,12 +90,14 @@ function AddressCard({
   address,
   bridge,
   preview = false,
+  emptyLabel = "No wallet connected",
   chainIcon,
   onCopy,
 }: {
   address: string | null;
   bridge: boolean;
   preview?: boolean;
+  emptyLabel?: string;
   chainIcon: string;
   onCopy: () => void;
 }) {
@@ -139,7 +141,7 @@ function AddressCard({
             <span className="text-foreground">{address.slice(-4)}</span>
           </>
         ) : (
-          "No wallet connected"
+          emptyLabel
         )}
       </p>
       {bridge && (
@@ -185,6 +187,10 @@ export function ReceiveSheet({
   useEffect(() => {
     if (isOpen && bridge && live) void evm.load();
   }, [bridge, evm, isOpen, live]);
+  // A failed load retries on the next open, not on every render.
+  useEffect(() => {
+    if (!isOpen) evm.retryOnNextLoad();
+  }, [evm, isOpen]);
   const title =
     view === "chains"
       ? "Select chain"
@@ -262,12 +268,15 @@ export function ReceiveSheet({
     ? "TEFgdDE6vrxWNJfhEa3SJeWfVpwGdEC9Sh"
     : "0xadC45bc2270491091e9C454B9e68FbFE91aA7BCb";
   const chainKey = chain.id === "bnb" ? "bsc" : chain.id;
+  const offered = evm.info?.chains;
   const chains = live
     ? CHAINS.filter((item) =>
-        (evm.info?.chains ?? []).includes(item.id === "bnb" ? "bsc" : item.id)
+        offered
+          ? offered.includes(item.id === "bnb" ? "bsc" : item.id)
+          : item.id !== "tron" && item.id !== "bitcoin"
       )
     : CHAINS;
-  const minimum = live ? evm.info?.minimums[chainKey] ?? 1 : isTron ? 2 : 1;
+  const minimum = live ? evm.info?.minimums[chainKey] : isTron ? 2 : 1;
 
   return (
     <SheetReveal
@@ -410,15 +419,18 @@ export function ReceiveSheet({
                 <div className="flex flex-col gap-2 p-2">
                   <Warning>
                     Send funds only via the {chain.name} network and not from an
-                    exchange. The minimum amount is ${minimum} in the
-                    selected asset. Sending an unsupported token will result in
-                    permanent loss of funds.
+                    exchange.
+                    {minimum !== undefined &&
+                      ` The minimum amount is $${minimum} in the selected asset.`}{" "}
+                    Sending an unsupported token will result in permanent loss
+                    of funds.
                   </Warning>
                   {live && evm.error && <Warning>{evm.error}</Warning>}
                   <AddressCard
                     address={live ? evm.info?.address ?? null : exampleAddress}
                     bridge
                     preview={!live}
+                    emptyLabel={evm.error ? "No deposit address yet" : "Loading address…"}
                     chainIcon={`${chain.id}.png`}
                     onCopy={handleCopy}
                   />
@@ -462,7 +474,7 @@ export function ReceiveSheet({
                 <TextSwap
                   text={
                     copied
-                      ? bridge
+                      ? bridge && !live
                         ? "Preview only"
                         : "Copied!"
                       : "Copy address"
