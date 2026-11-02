@@ -213,7 +213,11 @@ func (h earnRoutes) evmDepositAddress(ctx context.Context, in *sessionRequest) (
 		return nil, evmDepositUnavailable("privy deposit routes", err)
 	}
 	if address, ok := evmDepositAddressOf(existing); ok {
-		return h.storeEvmDepositRoute(ctx, wallet, evmDepositRoute{Kind: PrivyAutobridge, Address: address})
+		userID, err := h.evmDepositAppUser(ctx, wallet)
+		if err != nil {
+			return nil, err
+		}
+		return h.storeEvmDepositRoute(ctx, wallet, userID, evmDepositRoute{Kind: PrivyAutobridge, Address: address})
 	}
 	expiry := time.Now().Add(evmDepositSignWindow).UnixMilli()
 	toSign := h.privyDepositRequest(walletID, expiry)
@@ -240,10 +244,27 @@ func (h earnRoutes) createEvmDepositAddress(ctx context.Context, in *evmDepositI
 	if route != nil {
 		return evmDepositFound(*route), nil
 	}
-	if claim.PrivyIdentityToken != "" {
-		return h.createRelaySignedRoute(ctx, wallet, claim.PrivyIdentityToken)
+	userID, err := h.evmDepositAppUser(ctx, wallet)
+	if err != nil {
+		return nil, err
 	}
-	return h.createAutobridgeRoute(ctx, wallet, claim.Signature, claim.RequestExpiry)
+	if claim.PrivyIdentityToken != "" {
+		return h.createRelaySignedRoute(ctx, wallet, userID, claim.PrivyIdentityToken)
+	}
+	return h.createAutobridgeRoute(ctx, wallet, userID, claim.Signature, claim.RequestExpiry)
+}
+
+// evmDepositAppUser runs before any Privy call, so a wallet with no app user
+// is refused before Privy creates an account the insert could not record.
+func (h earnRoutes) evmDepositAppUser(ctx context.Context, wallet solana.PublicKey) (string, error) {
+	userID, err := h.appUserID(ctx, wallet)
+	if refusal, ok := authRefusal(err); ok {
+		return "", refusal
+	}
+	if err != nil {
+		return "", evmDepositUnavailable("evm deposit app user", err)
+	}
+	return userID, nil
 }
 
 func parseEvmDepositClaim(raw []byte) (EvmDepositAddressRequest, error) {
@@ -267,7 +288,7 @@ func parseEvmDepositClaim(raw []byte) (EvmDepositAddressRequest, error) {
 	return EvmDepositAddressRequest{}, invalid
 }
 
-func (h earnRoutes) createAutobridgeRoute(ctx context.Context, wallet solana.PublicKey, signature string, requestExpiryMs int64) (*evmDepositOutput, error) {
+func (h earnRoutes) createAutobridgeRoute(ctx context.Context, wallet solana.PublicKey, userID, signature string, requestExpiryMs int64) (*evmDepositOutput, error) {
 	if requestExpiryMs <= time.Now().UnixMilli() {
 		return nil, earnError(http.StatusBadRequest, "evm_deposit_signature_expired", "Signature expired, try again.")
 	}
@@ -291,10 +312,10 @@ func (h earnRoutes) createAutobridgeRoute(ctx context.Context, wallet solana.Pub
 	if !ok {
 		return nil, earnError(http.StatusBadGateway, "evm_deposit_unavailable", "Privy returned no EVM deposit address.")
 	}
-	return h.storeEvmDepositRoute(ctx, wallet, evmDepositRoute{Kind: PrivyAutobridge, Address: address})
+	return h.storeEvmDepositRoute(ctx, wallet, userID, evmDepositRoute{Kind: PrivyAutobridge, Address: address})
 }
 
-func (h earnRoutes) createRelaySignedRoute(ctx context.Context, wallet solana.PublicKey, identityToken string) (*evmDepositOutput, error) {
+func (h earnRoutes) createRelaySignedRoute(ctx context.Context, wallet solana.PublicKey, userID, identityToken string) (*evmDepositOutput, error) {
 	identity, err := h.verifyPrivyIdentityToken(ctx, identityToken)
 	if err != nil {
 		return nil, err
@@ -311,7 +332,7 @@ func (h earnRoutes) createRelaySignedRoute(ctx context.Context, wallet solana.Pu
 	}
 	for _, address := range identity.EmbeddedEVMWallets {
 		if address = strings.ToLower(address); evmAddress.MatchString(address) {
-			return h.storeEvmDepositRoute(ctx, wallet, evmDepositRoute{Kind: RelaySigned, Address: address})
+			return h.storeEvmDepositRoute(ctx, wallet, userID, evmDepositRoute{Kind: RelaySigned, Address: address})
 		}
 	}
 	return nil, earnError(http.StatusConflict, "evm_wallet_missing", "Your Privy account has no embedded EVM wallet yet.")
@@ -339,11 +360,7 @@ func (h earnRoutes) storedEvmDepositRoute(ctx context.Context, wallet solana.Pub
 	return &route, nil
 }
 
-func (h earnRoutes) storeEvmDepositRoute(ctx context.Context, wallet solana.PublicKey, route evmDepositRoute) (*evmDepositOutput, error) {
-	userID, err := h.appUserID(ctx, wallet)
-	if err != nil {
-		return nil, evmDepositUnavailable("evm deposit app user", err)
-	}
+func (h earnRoutes) storeEvmDepositRoute(ctx context.Context, wallet solana.PublicKey, userID string, route evmDepositRoute) (*evmDepositOutput, error) {
 	if _, err := h.YieldDB.Exec(ctx, `INSERT INTO loyal_yield.evm_deposit_routes (solana_wallet, app_user_id, kind, evm_address)
 VALUES ($1, $2::text::uuid, $3, $4)
 ON CONFLICT DO NOTHING`, wallet.String(), userID, string(route.Kind), route.Address); err != nil {
