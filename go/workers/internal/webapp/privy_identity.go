@@ -33,9 +33,10 @@ type PrivyLinkedWallet struct {
 }
 
 type PrivyIdentity struct {
-	PrivyUserID string
-	Email       string
-	Wallets     []PrivyLinkedWallet
+	PrivyUserID        string
+	Email              string
+	Wallets            []PrivyLinkedWallet
+	EmbeddedEVMWallets []string
 }
 
 type privyKey struct {
@@ -221,7 +222,9 @@ func privyAudienceMatches(raw json.RawMessage, appID string) bool {
 // parsePrivyIdentity folds the token's JSON-string linked_accounts claim into
 // the shape privy-auth.ts derives from the SDK's user: Solana wallets with an
 // embedded marker, plus the first email claim (email account, then Google
-// OAuth) — node/lib/identity-token.js parseUserFromIdentityTokenPayload.
+// OAuth) — node/lib/identity-token.js parseUserFromIdentityTokenPayload. It
+// also keeps Privy-embedded EVM wallets, which an external Solana wallet's
+// EVM deposits land in.
 func parsePrivyIdentity(claims privyIdentityTokenClaims) (PrivyIdentity, error) {
 	if claims.Sub == "" {
 		return PrivyIdentity{}, fmt.Errorf("privy: token payload has no subject")
@@ -242,6 +245,8 @@ func parsePrivyIdentity(claims privyIdentityTokenClaims) (PrivyIdentity, error) 
 				Address:  account.Address,
 				Embedded: account.WalletClientType == "privy",
 			})
+		case account.Type == "wallet" && account.ChainType == "ethereum" && account.WalletClientType == "privy" && account.Address != "":
+			identity.EmbeddedEVMWallets = append(identity.EmbeddedEVMWallets, account.Address)
 		case account.Type == "email" && account.Address != "":
 			identity.Email = account.Address
 		case account.Type == "google_oauth" && identity.Email == "" && account.Email != "":

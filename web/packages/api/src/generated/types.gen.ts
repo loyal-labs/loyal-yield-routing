@@ -1441,6 +1441,24 @@ export type ErrorModel = {
     type?: string;
 };
 
+export type EvmDepositAddressRequest = {
+    privyIdentityToken?: string;
+    requestExpiry?: number;
+    signature?: string;
+};
+
+export type EvmDepositAddressResponse = {
+    address: string | null;
+    assets: Array<string> | null;
+    chains: Array<string> | null;
+    kind: 'privy_autobridge' | 'relay_signed';
+    minimums: {
+        [key: string]: number;
+    };
+    requestExpiry?: number;
+    toSign?: PrivyDepositRequest;
+};
+
 export type ForecastUnavailableError = {
     error: string;
 };
@@ -1615,6 +1633,35 @@ export type PrivyCompleteRequest = {
 
 export type PrivyCompleteResponse = {
     user: PrivyAuthUser;
+};
+
+export type PrivyDepositAsset = {
+    asset: string;
+    chain: string;
+};
+
+export type PrivyDepositBody = {
+    destination: PrivyDepositAsset;
+    source: PrivyDepositSource;
+    type: string;
+};
+
+export type PrivyDepositHeaders = {
+    'privy-app-id': string;
+    'privy-request-expiry': string;
+};
+
+export type PrivyDepositRequest = {
+    body: PrivyDepositBody;
+    headers: PrivyDepositHeaders;
+    method: string;
+    url: string;
+    version: number;
+};
+
+export type PrivyDepositSource = {
+    mode: string;
+    values: Array<PrivyDepositAsset> | null;
 };
 
 export type PushError = {
@@ -1898,6 +1945,98 @@ export type HeadEarnStatsResponses = {
 };
 
 export type HeadEarnStatsResponse = HeadEarnStatsResponses[keyof HeadEarnStatsResponses];
+
+export type GetFundingEvmDepositAddressData = {
+    body?: never;
+    headers?: {
+        Authorization?: string;
+        Cookie?: string;
+        'X-Forwarded-Host'?: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/funding/evm-deposit-address';
+};
+
+export type GetFundingEvmDepositAddressErrors = {
+    /**
+     * Unauthorized
+     */
+    401: RouteError;
+    /**
+     * Forbidden
+     */
+    403: RouteError;
+    /**
+     * Conflict
+     */
+    409: RouteError;
+    /**
+     * Service Unavailable
+     */
+    503: RouteError;
+};
+
+export type GetFundingEvmDepositAddressError = GetFundingEvmDepositAddressErrors[keyof GetFundingEvmDepositAddressErrors];
+
+export type GetFundingEvmDepositAddressResponses = {
+    /**
+     * OK
+     */
+    200: EvmDepositAddressResponse;
+};
+
+export type GetFundingEvmDepositAddressResponse = GetFundingEvmDepositAddressResponses[keyof GetFundingEvmDepositAddressResponses];
+
+export type PostFundingEvmDepositAddressData = {
+    body?: EvmDepositAddressRequest;
+    headers?: {
+        Authorization?: string;
+        Cookie?: string;
+        'X-Forwarded-Host'?: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/funding/evm-deposit-address';
+};
+
+export type PostFundingEvmDepositAddressErrors = {
+    /**
+     * Bad Request
+     */
+    400: RouteError;
+    /**
+     * Unauthorized
+     */
+    401: RouteError;
+    /**
+     * Forbidden
+     */
+    403: RouteError;
+    /**
+     * Conflict
+     */
+    409: RouteError;
+    /**
+     * Bad Gateway
+     */
+    502: RouteError;
+    /**
+     * Service Unavailable
+     */
+    503: RouteError;
+};
+
+export type PostFundingEvmDepositAddressError = PostFundingEvmDepositAddressErrors[keyof PostFundingEvmDepositAddressErrors];
+
+export type PostFundingEvmDepositAddressResponses = {
+    /**
+     * OK
+     */
+    200: EvmDepositAddressResponse;
+};
+
+export type PostFundingEvmDepositAddressResponse = PostFundingEvmDepositAddressResponses[keyof PostFundingEvmDepositAddressResponses];
 
 export type GetMobileDappsData = {
     body?: never;
