@@ -44,13 +44,20 @@ export function useEvmDepositAddress(walletAddress: string | null) {
   }, [walletAddress]);
 
   const attemptedRef = useRef(false);
+  const walletRef = useRef(walletAddress);
   useEffect(() => {
     attemptedRef.current = false;
+    walletRef.current = walletAddress;
   }, [walletAddress]);
+  const retryOnNextLoad = useCallback(() => {
+    if (!info) attemptedRef.current = false;
+  }, [info]);
 
   const load = useCallback(async () => {
     if (!eligible || info || loading || attemptedRef.current) return;
     attemptedRef.current = true;
+    const forWallet = walletAddress;
+    const current = () => walletRef.current === forWallet;
     setLoading(true);
     setError(null);
     try {
@@ -68,6 +75,7 @@ export function useEvmDepositAddress(walletAddress: string | null) {
         error?: { message?: string };
       };
       if (read.error) throw new Error(read.error.message ?? "Request failed.");
+      if (!current()) return;
       if (read.address) {
         setInfo({
           address: read.address,
@@ -101,13 +109,13 @@ export function useEvmDepositAddress(walletAddress: string | null) {
             `Could not get a deposit address (${res.status}).`
         );
       }
-      setInfo(body);
+      if (current()) setInfo(body);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      if (current()) setError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
     }
-  }, [eligible, generateAuthorizationSignature, info, loading]);
+  }, [eligible, generateAuthorizationSignature, info, loading, walletAddress]);
 
-  return { eligible, info, error, loading, load };
+  return { eligible, info, error, loading, load, retryOnNextLoad };
 }

@@ -11,13 +11,25 @@ import { SheetReveal } from "./sheet-reveal";
 import { SlidingTabs } from "./sliding-tabs";
 import { TextSwap } from "./text-swap";
 import { ThemedIcon } from "./themed-icon";
+import { useEvmDepositAddress } from "./use-evm-deposit-address";
 
 const BASE = "/wallet-workspace/facelift";
 const TABS = ["Solana", "Other chains"] as const;
 type Tab = (typeof TABS)[number];
 type View = "receive" | "chains" | "assets" | "supported";
 
-// Figma fixtures only. Bridge has no backend, deposit address, or transaction flow yet.
+// Bridge stays off (#641) unless this browser opts in with
+// localStorage["loyal.bridge"] = "1".
+function bridgeOptedIn() {
+  try {
+    return localStorage.getItem("loyal.bridge") === "1";
+  } catch {
+    return false;
+  }
+}
+
+// The design's chain list; only those the server names are offered. Privy
+// spells BNB Chain "bsc".
 const CHAINS = [
   { id: "ethereum", name: "Ethereum" },
   { id: "tron", name: "Tron" },
@@ -77,11 +89,15 @@ function Warning({ children }: { children: ReactNode }) {
 function AddressCard({
   address,
   bridge,
+  preview = false,
+  emptyLabel = "No wallet connected",
   chainIcon,
   onCopy,
 }: {
   address: string | null;
   bridge: boolean;
+  preview?: boolean;
+  emptyLabel?: string;
   chainIcon: string;
   onCopy: () => void;
 }) {
@@ -90,13 +106,13 @@ function AddressCard({
       className={`relative flex shrink-0 flex-col items-center bg-accent ${
         bridge ? "w-full rounded-2xl" : "w-64 rounded-3xl"
       }`}
-      title={bridge ? "Bridge design preview — example address" : undefined}
+      title={preview ? "Bridge design preview — example address" : undefined}
     >
       <div className="px-8 pt-8 pb-5">
         {address ? (
           <QRCodeSVG
             // Mock bridge QR intentionally contains no usable deposit address.
-            value={bridge ? "loyal:bridge-design-preview" : address}
+            value={preview ? "loyal:bridge-design-preview" : address}
             size={192}
             minVersion={5}
             level="M"
@@ -125,7 +141,7 @@ function AddressCard({
             <span className="text-foreground">{address.slice(-4)}</span>
           </>
         ) : (
-          "No wallet connected"
+          emptyLabel
         )}
       </p>
       {bridge && (
@@ -166,6 +182,15 @@ export function ReceiveSheet({
   const panelRef = useRef<HTMLDivElement>(null);
   const { isBalanceHidden } = useBalanceVisibility();
   const bridge = tab === "Other chains";
+  const evm = useEvmDepositAddress(walletAddress);
+  const live = bridgeOptedIn() && evm.eligible;
+  useEffect(() => {
+    if (isOpen && bridge && live) void evm.load();
+  }, [bridge, evm, isOpen, live]);
+  // A failed load retries on the next open, not on every render.
+  useEffect(() => {
+    if (!isOpen) evm.retryOnNextLoad();
+  }, [evm, isOpen]);
   const title =
     view === "chains"
       ? "Select chain"
@@ -231,16 +256,27 @@ export function ReceiveSheet({
   }, [copied]);
 
   const handleCopy = () => {
-    if (bridge) {
+    if (bridge && !live) {
       setCopied(true);
       return;
     }
-    if (walletAddress) void copyTextToClipboard(walletAddress).then(setCopied);
+    const address = bridge ? evm.info?.address : walletAddress;
+    if (address) void copyTextToClipboard(address).then(setCopied);
   };
   const isTron = chain.id === "tron";
   const exampleAddress = isTron
     ? "TEFgdDE6vrxWNJfhEa3SJeWfVpwGdEC9Sh"
     : "0xadC45bc2270491091e9C454B9e68FbFE91aA7BCb";
+  const chainKey = chain.id === "bnb" ? "bsc" : chain.id;
+  const offered = evm.info?.chains;
+  const chains = live
+    ? CHAINS.filter((item) =>
+        offered
+          ? offered.includes(item.id === "bnb" ? "bsc" : item.id)
+          : item.id !== "tron" && item.id !== "bitcoin"
+      )
+    : CHAINS;
+  const minimum = live ? evm.info?.minimums[chainKey] : isTron ? 2 : 1;
 
   return (
     <SheetReveal
@@ -294,7 +330,7 @@ export function ReceiveSheet({
                   setCopied(false);
                 }}
                 tabs={TABS}
-                disabledTabs={["Other chains"]}
+                disabledTabs={live ? [] : ["Other chains"]}
                 className="w-full [&_.t-tab]:min-w-0 [&_.t-tab]:flex-1 [&_.t-tab]:px-2"
                 renderLabel={(label) => (
                   <span className="flex items-center justify-center gap-1.5">
@@ -383,13 +419,18 @@ export function ReceiveSheet({
                 <div className="flex flex-col gap-2 p-2">
                   <Warning>
                     Send funds only via the {chain.name} network and not from an
-                    exchange. The minimum amount is ${isTron ? "2" : "1"} in the
-                    selected asset. Sending an unsupported token will result in
-                    permanent loss of funds.
+                    exchange.
+                    {minimum !== undefined &&
+                      ` The minimum amount is $${minimum} in the selected asset.`}{" "}
+                    Sending an unsupported token will result in permanent loss
+                    of funds.
                   </Warning>
+                  {live && evm.error && <Warning>{evm.error}</Warning>}
                   <AddressCard
-                    address={exampleAddress}
+                    address={live ? evm.info?.address ?? null : exampleAddress}
                     bridge
+                    preview={!live}
+                    emptyLabel={evm.error ? "No deposit address yet" : "Loading address…"}
                     chainIcon={`${chain.id}.png`}
                     onCopy={handleCopy}
                   />
@@ -433,7 +474,7 @@ export function ReceiveSheet({
                 <TextSwap
                   text={
                     copied
-                      ? bridge
+                      ? bridge && !live
                         ? "Preview only"
                         : "Copied!"
                       : "Copy address"
@@ -445,7 +486,7 @@ export function ReceiveSheet({
         ) : (
           <div className="min-h-0 flex-1 overflow-y-auto p-2">
             {view === "chains" ? (
-              CHAINS.map((item) => (
+              chains.map((item) => (
                 <button
                   className="t-hover flex h-[60px] w-full items-center rounded-2xl px-4 text-left hover:bg-accent"
                   key={item.id}
