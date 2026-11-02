@@ -51,6 +51,7 @@ The inventory behind it was taken from main @4d3fbf97 plus loyal-app main @2ac3d
 | Cross-mint opt-in | `cross_mint_vault_opt_ins` | the observer's write is deleted |
 | Cross-mint kill switch | `cross_mint_movement_controls` | an operator config row; kept |
 | Backyard manual-recovery latch | `backyard_manual_recovery_latches` | an operator halt; kept |
+| EVM deposit address of a Solana wallet, and how it bridges | `evm_deposit_routes` | new (0126); written only by loyal-web `/api/funding/evm-deposit-address`. Replaces the app's `app_user_wallets.evm_deposit_address`, whose 6 rows are copied over before that column's writer is deleted |
 
 ### Projections (one writer each; already true unless noted)
 
