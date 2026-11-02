@@ -217,13 +217,20 @@ func CheckQuote(req QuoteRequest, raw []byte) (Quote, error) {
 		if value.Sign() != 0 {
 			return Quote{}, fmt.Errorf("quote: deposit value %s must be 0 for a token", deposit.tx.value)
 		}
-		if approve != nil {
-			if !strings.EqualFold(approve.tx.to, tok.Address) {
-				return Quote{}, fmt.Errorf("quote: approve target is not the %s contract", req.Asset)
-			}
-			if err := checkApprove(approve.tx.data, deposit.tx.to, req.AmountRaw); err != nil {
-				return Quote{}, fmt.Errorf("quote: approve data: %w", err)
-			}
+		// The deposit calldata is opaque, so the approve is what bounds a token
+		// deposit to the requested amount; without it a standing allowance
+		// could be spent.
+		if approve == nil {
+			return Quote{}, fmt.Errorf("quote: a %s deposit needs an approve step", req.Asset)
+		}
+		if v, _ := parseAmount(approve.tx.value); v.Sign() != 0 {
+			return Quote{}, fmt.Errorf("quote: approve value %s must be 0", approve.tx.value)
+		}
+		if !strings.EqualFold(approve.tx.to, tok.Address) {
+			return Quote{}, fmt.Errorf("quote: approve target is not the %s contract", req.Asset)
+		}
+		if err := checkApprove(approve.tx.data, deposit.tx.to, req.AmountRaw); err != nil {
+			return Quote{}, fmt.Errorf("quote: approve data: %w", err)
 		}
 	}
 
