@@ -100,116 +100,126 @@ func (r rewriteTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 func TestEvmDepositRelaySignedRefusesEmbeddedWalletWhenPrivyLookupIsEmpty(t *testing.T) {
-	pool := evmDepositTestDB(t)
-	ctx := context.Background()
-	wallet := solana.NewWallet().PublicKey().String()
-	if _, err := pool.Exec(ctx, `INSERT INTO app_users (provider, subject_address) VALUES ('solana', $1)`, wallet); err != nil {
-		t.Fatal(err)
-	}
+	for name, clientTypes := range map[string][]string{
+		"privy":               {"privy"},
+		"privy-v2":            {"privy-v2"},
+		"external then privy": {"phantom", "privy-v2"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			pool := evmDepositTestDB(t)
+			ctx := context.Background()
+			wallet := solana.NewWallet().PublicKey().String()
+			if _, err := pool.Exec(ctx, `INSERT INTO app_users (provider, subject_address) VALUES ('solana', $1)`, wallet); err != nil {
+				t.Fatal(err)
+			}
 
-	signing, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	const appID, kid = "b3-test-app", "b3-test-kid"
-	b64 := base64.RawURLEncoding.EncodeToString
-	pad := func(b []byte) []byte { return append(make([]byte, 32-len(b)), b...) }
-	jwks, err := json.Marshal(map[string]any{"keys": []map[string]string{{
-		"kty": "EC", "crv": "P-256", "kid": kid,
-		"x": b64(pad(signing.X.Bytes())), "y": b64(pad(signing.Y.Bytes())),
-	}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	privy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		if strings.HasSuffix(r.URL.Path, "/jwks.json") {
-			w.Write(jwks)
-			return
-		}
-		w.Write([]byte(`{"data":[]}`))
-	}))
-	defer privy.Close()
-	target, err := url.Parse(privy.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	prevAPI, prevJWKS := privyAPIBase, privyJWKSBase
-	privyAPIBase, privyJWKSBase = "https://privy.test/v1", "https://privy.test/v1/apps/"
-	t.Cleanup(func() { privyAPIBase, privyJWKSBase = prevAPI, prevJWKS })
+			signing, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+			if err != nil {
+				t.Fatal(err)
+			}
+			const appID = "b3-test-app"
+			kid := "b3-test-kid-" + name
+			b64 := base64.RawURLEncoding.EncodeToString
+			pad := func(b []byte) []byte { return append(make([]byte, 32-len(b)), b...) }
+			jwks, err := json.Marshal(map[string]any{"keys": []map[string]string{{
+				"kty": "EC", "crv": "P-256", "kid": kid,
+				"x": b64(pad(signing.X.Bytes())), "y": b64(pad(signing.Y.Bytes())),
+			}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			privy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if strings.HasSuffix(r.URL.Path, "/jwks.json") {
+					w.Write(jwks)
+					return
+				}
+				w.Write([]byte(`{"data":[]}`))
+			}))
+			defer privy.Close()
+			target, err := url.Parse(privy.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			prevAPI, prevJWKS := privyAPIBase, privyJWKSBase
+			privyAPIBase, privyJWKSBase = "https://privy.test/v1", "https://privy.test/v1/apps/"
+			t.Cleanup(func() { privyAPIBase, privyJWKSBase = prevAPI, prevJWKS })
 
-	linked, err := json.Marshal([]map[string]string{
-		{"type": "wallet", "chain_type": "solana", "address": wallet, "wallet_client_type": "privy"},
-		{"type": "wallet", "chain_type": "ethereum", "address": "0x" + strings.Repeat("ab", 20), "wallet_client_type": "privy"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	claims, err := json.Marshal(map[string]any{
-		"sub": "did:privy:b3", "iss": privyJWTIssuer, "aud": appID,
-		"exp": time.Now().Add(time.Hour).Unix(), "linked_accounts": string(linked),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	header, err := json.Marshal(map[string]string{"alg": privyJWTAlg, "typ": privyJWTTyp, "kid": kid})
-	if err != nil {
-		t.Fatal(err)
-	}
-	unsigned := b64(header) + "." + b64(claims)
-	digest := sha256.Sum256([]byte(unsigned))
-	r, s, err := ecdsa.Sign(rand.Reader, signing, digest[:])
-	if err != nil {
-		t.Fatal(err)
-	}
-	identityToken := unsigned + "." + b64(append(pad(r.Bytes()), pad(s.Bytes())...))
+			accounts := []map[string]string{{"type": "wallet", "chain_type": "ethereum", "address": "0x" + strings.Repeat("ab", 20), "wallet_client_type": "privy"}}
+			for _, clientType := range clientTypes {
+				accounts = append(accounts, map[string]string{"type": "wallet", "chain_type": "solana", "address": wallet, "wallet_client_type": clientType})
+			}
+			linked, err := json.Marshal(accounts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			claims, err := json.Marshal(map[string]any{
+				"sub": "did:privy:b3", "iss": privyJWTIssuer, "aud": appID,
+				"exp": time.Now().Add(time.Hour).Unix(), "linked_accounts": string(linked),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			header, err := json.Marshal(map[string]string{"alg": privyJWTAlg, "typ": privyJWTTyp, "kid": kid})
+			if err != nil {
+				t.Fatal(err)
+			}
+			unsigned := b64(header) + "." + b64(claims)
+			digest := sha256.Sum256([]byte(unsigned))
+			r, s, err := ecdsa.Sign(rand.Reader, signing, digest[:])
+			if err != nil {
+				t.Fatal(err)
+			}
+			identityToken := unsigned + "." + b64(append(pad(r.Bytes()), pad(s.Bytes())...))
 
-	keys, err := jwt.NewKeys("isolated-session-test-secret", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	signer, err := jwt.NewSigner("isolated-session-test-secret", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	session, err := signer.Mint(map[string]any{"sub": wallet}, mobileEarnAudience, time.Hour, time.Now())
-	if err != nil {
-		t.Fatal(err)
-	}
+			keys, err := jwt.NewKeys("isolated-session-test-secret", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			signer, err := jwt.NewSigner("isolated-session-test-secret", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			session, err := signer.Mint(map[string]any{"sub": wallet}, mobileEarnAudience, time.Hour, time.Now())
+			if err != nil {
+				t.Fatal(err)
+			}
 
-	router := chi.NewRouter()
-	api := humachi.New(router, apiConfig())
-	earnRoutes{auth: &Auth{keys: keys}, Earn: Earn{
-		YieldDB: pool,
-		HTTP:    &http.Client{Transport: rewriteTransport{target}},
-		Privy:   &Privy{AppID: appID, AppSecret: "secret"},
-	}, appDB: pool}.registerEvmDeposit(api)
-	body, err := json.Marshal(map[string]string{"privyIdentityToken": identityToken})
-	if err != nil {
-		t.Fatal(err)
-	}
-	req := httptest.NewRequest(http.MethodPost, evmDepositPath, strings.NewReader(string(body)))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+session)
-	res := httptest.NewRecorder()
-	router.ServeHTTP(res, req)
+			router := chi.NewRouter()
+			api := humachi.New(router, apiConfig())
+			earnRoutes{auth: &Auth{keys: keys}, Earn: Earn{
+				YieldDB: pool,
+				HTTP:    &http.Client{Transport: rewriteTransport{target}},
+				Privy:   &Privy{AppID: appID, AppSecret: "secret"},
+			}, appDB: pool}.registerEvmDeposit(api)
+			body, err := json.Marshal(map[string]string{"privyIdentityToken": identityToken})
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := httptest.NewRequest(http.MethodPost, evmDepositPath, strings.NewReader(string(body)))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Authorization", "Bearer "+session)
+			res := httptest.NewRecorder()
+			router.ServeHTTP(res, req)
 
-	var got struct {
-		Error struct {
-			Code string `json:"code"`
-		} `json:"error"`
-	}
-	if err := json.Unmarshal(res.Body.Bytes(), &got); err != nil {
-		t.Fatal(err)
-	}
-	if res.Code != http.StatusConflict || got.Error.Code != "evm_deposit_privy_wallet" {
-		t.Fatalf("POST for an embedded wallet = %d %s; want 409 evm_deposit_privy_wallet", res.Code, res.Body.String())
-	}
-	var rows int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM loyal_yield.evm_deposit_routes`).Scan(&rows); err != nil {
-		t.Fatal(err)
-	}
-	if rows != 0 {
-		t.Fatalf("evm_deposit_routes has %d rows; an embedded wallet must write none", rows)
+			var got struct {
+				Error struct {
+					Code string `json:"code"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(res.Body.Bytes(), &got); err != nil {
+				t.Fatal(err)
+			}
+			if res.Code != http.StatusConflict || got.Error.Code != "evm_deposit_privy_wallet" {
+				t.Fatalf("POST for an embedded wallet = %d %s; want 409 evm_deposit_privy_wallet", res.Code, res.Body.String())
+			}
+			var rows int
+			if err := pool.QueryRow(ctx, `SELECT count(*) FROM loyal_yield.evm_deposit_routes`).Scan(&rows); err != nil {
+				t.Fatal(err)
+			}
+			if rows != 0 {
+				t.Fatalf("evm_deposit_routes has %d rows; an embedded wallet must write none", rows)
+			}
+		})
 	}
 }
