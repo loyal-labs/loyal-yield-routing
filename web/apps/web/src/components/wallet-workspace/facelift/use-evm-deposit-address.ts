@@ -51,7 +51,7 @@ const hasPrivyEvmWallet = (user: ReturnType<typeof useUser>["user"]) =>
     (a) =>
       a.type === "wallet" &&
       a.chainType === "ethereum" &&
-      a.walletClientType === "privy"
+      (a.walletClientType === "privy" || a.walletClientType === "privy-v2")
   ) ?? false;
 
 /**
@@ -171,5 +171,10 @@ export function useEvmDepositAddress(walletAddress: string | null) {
     walletAddress,
   ]);
 
-  return { ready, info, networks, error, loading, load, retryOnNextLoad };
+  const retry = useCallback(() => {
+    attemptedRef.current = false;
+    return load();
+  }, [load]);
+
+  return { ready, info, networks, error, loading, load, retry, retryOnNextLoad };
 }
