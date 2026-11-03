@@ -32,6 +32,8 @@ type Facts struct {
 	hold                *prometheus.GaugeVec
 	privyGasSpend       *prometheus.GaugeVec
 	privyGasRead        *prometheus.GaugeVec
+	bridgePolled        *prometheus.GaugeVec
+	bridgeAdvanced      *prometheus.CounterVec
 }
 
 func NewFacts(registerer prometheus.Registerer) *Facts {
@@ -106,9 +108,16 @@ func NewFacts(registerer prometheus.Registerer) *Facts {
 		privyGasRead: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "loyal_privy_gas_spend_last_success_timestamp_seconds", Help: "Last time Privy's gas spend was read successfully; 0 until the first read.",
 		}, nil),
+		bridgePolled: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "loyal_bridge_transfers_polled", Help: "Open bridge transfers the last tracker tick read from Relay, by their state before the read.",
+		}, []string{"state"}),
+		bridgeAdvanced: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "loyal_bridge_transfers_advanced_total", Help: "Bridge transfers the tracker moved to a new state, by that state.",
+		}, []string{"state"}),
 	}
 	registerer.MustRegister(f.withdrawalAttention, f.withdrawalObserved, f.navReported, f.landed, f.failed, f.inflight, f.progress, f.lane, f.payer, f.oldestDue, f.fleetReplans, f.fleetSimulations, f.fleetMovable,
-		f.leverageRoom, f.leverageGap, f.leverageLanded, f.leverageReaction, f.leverageOutages, f.termDebtDays, f.stepNoRoom, f.hold, f.privyGasSpend, f.privyGasRead)
+		f.leverageRoom, f.leverageGap, f.leverageLanded, f.leverageReaction, f.leverageOutages, f.termDebtDays, f.stepNoRoom, f.hold, f.privyGasSpend, f.privyGasRead,
+		f.bridgePolled, f.bridgeAdvanced)
 	return f
 }
 
@@ -221,6 +230,14 @@ func (f *Facts) PrivyGasSpendUnread() { f.privyGasRead.WithLabelValues().Set(0) 
 func (f *Facts) PrivyGasSpendRead(usd float64) {
 	f.privyGasSpend.WithLabelValues().Set(usd)
 	f.privyGasRead.WithLabelValues().Set(float64(time.Now().Unix()))
+}
+
+func (f *Facts) BridgeTransfersPolled(state string, n int) {
+	f.bridgePolled.WithLabelValues(state).Set(float64(n))
+}
+
+func (f *Facts) BridgeTransfersAdvanced(state string, n int) {
+	f.bridgeAdvanced.WithLabelValues(state).Add(float64(n))
 }
 
 func (f *Facts) AutodepositOldestDueAge(seconds float64) { f.oldestDue.Set(seconds) }

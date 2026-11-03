@@ -90,6 +90,7 @@ type BridgeTransfer struct {
 	State         bridge.TransferState `json:"state" enum:"quoted,submitted,filled,refunded,failed"`
 	OriginTx      *string              `json:"originTx"`
 	DestinationTx *string              `json:"destinationTx"`
+	RefundTx      *string              `json:"refundTx"`
 	QuotedAt      time.Time            `json:"quotedAt"`
 	SubmittedAt   *time.Time           `json:"submittedAt"`
 	SettledAt     *time.Time           `json:"settledAt"`
@@ -301,12 +302,12 @@ func (h earnRoutes) bridgeTransfers(ctx context.Context, in *sessionRequest) (*b
 	return &bridgeTransfersOutput{Body: BridgeTransfersResponse{Transfers: transfers}}, nil
 }
 
-const bridgeTransferSelect = `SELECT request_id, chain, asset, amount_in_raw::text, amount_out_raw::text, state, origin_tx, destination_tx, quoted_at, submitted_at, settled_at
+const bridgeTransferSelect = `SELECT request_id, chain, asset, amount_in_raw::text, amount_out_raw::text, state, origin_tx, destination_tx, refund_tx, quoted_at, submitted_at, settled_at
 FROM loyal_yield.bridge_transfers`
 
 func scanBridgeTransfer(row pgx.CollectableRow) (BridgeTransfer, error) {
 	var t BridgeTransfer
-	err := row.Scan(&t.RequestID, &t.Chain, &t.Asset, &t.AmountInRaw, &t.AmountOutRaw, &t.State, &t.OriginTx, &t.DestinationTx, &t.QuotedAt, &t.SubmittedAt, &t.SettledAt)
+	err := row.Scan(&t.RequestID, &t.Chain, &t.Asset, &t.AmountInRaw, &t.AmountOutRaw, &t.State, &t.OriginTx, &t.DestinationTx, &t.RefundTx, &t.QuotedAt, &t.SubmittedAt, &t.SettledAt)
 	return t, err
 }
 
