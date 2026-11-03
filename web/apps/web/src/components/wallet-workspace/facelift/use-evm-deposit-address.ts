@@ -5,10 +5,13 @@ import type {
   EvmDepositNetwork,
   RouteError,
 } from "@loyal-labs/api";
-import { useAuthorizationSignature, usePrivy } from "@privy-io/react-auth";
+import {
+  getIdentityToken,
+  useAuthorizationSignature,
+  useCreateWallet,
+  useUser,
+} from "@privy-io/react-auth";
 import { useCallback, useEffect, useRef, useState } from "react";
-
-import { usePublicEnv } from "@/contexts/public-env-context";
 
 type EvmDepositInfo = EvmDepositAddressResponse & { address: string };
 
@@ -42,31 +45,26 @@ async function readDepositResponse(
   );
 }
 
+const hasPrivyEvmWallet = (user: ReturnType<typeof useUser>["user"]) =>
+  user?.linkedAccounts.some(
+    (a) =>
+      a.type === "wallet" &&
+      a.chainType === "ethereum" &&
+      a.walletClientType === "privy"
+  ) ?? false;
+
 /**
- * Cross-chain deposit address for the signed-in user's Privy-embedded wallet.
- * `eligible` is false for external wallets (Loyal extension, Phantom…); the
- * address is fetched lazily on `load()` because Privy provisions it on first
- * call and we only want that when the user opens the tab.
+ * Cross-chain deposit address for the signed-in wallet. Loaded lazily on
+ * `load()` because the first load may create the user's Privy EVM wallet, and
+ * that should only happen once they open the tab.
  */
 export function useEvmDepositAddress(walletAddress: string | null) {
-  const { privyAppId } = usePublicEnv();
-  const { user } = usePrivy();
+  const { user, refreshUser } = useUser();
+  const { createWallet } = useCreateWallet();
   const { generateAuthorizationSignature } = useAuthorizationSignature();
   const [state, setState] = useState<DepositState>(emptyState(walletAddress));
   const { info, networks, error, loading } =
     state.wallet === walletAddress ? state : emptyState(walletAddress);
-
-  const eligible =
-    Boolean(privyAppId) &&
-    Boolean(walletAddress) &&
-    (user?.linkedAccounts.some(
-      (a) =>
-        a.type === "wallet" &&
-        a.chainType === "solana" &&
-        a.walletClientType === "privy" &&
-        a.address === walletAddress
-    ) ??
-      false);
 
   const attemptedRef = useRef(false);
   const walletRef = useRef(walletAddress);
@@ -79,7 +77,7 @@ export function useEvmDepositAddress(walletAddress: string | null) {
   }, [info]);
 
   const load = useCallback(async () => {
-    if (!eligible || info || loading || attemptedRef.current) return;
+    if (!walletAddress || info || loading || attemptedRef.current) return;
     attemptedRef.current = true;
     const forWallet = walletAddress;
     const current = () => walletRef.current === forWallet;
@@ -103,22 +101,44 @@ export function useEvmDepositAddress(walletAddress: string | null) {
         return;
       }
       if (read.networks) patch({ networks: read.networks });
-      if (!read.toSign) {
-        throw new Error(`Could not get a deposit address (${res.status}).`);
+      let claim: object;
+      if (read.kind === "relay_signed") {
+        if (!user) {
+          throw new Error("Sign in with Privy to get a deposit address.");
+        }
+        if (!hasPrivyEvmWallet(user)) {
+          if (!current()) return;
+          try {
+            await createWallet();
+          } catch (e) {
+            if (!hasPrivyEvmWallet(await refreshUser())) throw e;
+          }
+          if (!current()) return;
+        }
+        // Re-issue the identity token so it lists the new wallet.
+        await refreshUser();
+        const privyIdentityToken = await getIdentityToken();
+        if (!privyIdentityToken) {
+          throw new Error("Privy identity token unavailable.");
+        }
+        claim = { privyIdentityToken };
+      } else {
+        if (!read.toSign) {
+          throw new Error(`Could not get a deposit address (${res.status}).`);
+        }
+        // First time: the wallet is user-owned, so the user signs the exact
+        // Privy request with their key and the server forwards the signature.
+        const { signature } = await generateAuthorizationSignature(
+          read.toSign as Parameters<typeof generateAuthorizationSignature>[0]
+        );
+        claim = { signature, requestExpiry: read.requestExpiry };
       }
-      // First time: the wallet is user-owned, so the user signs the exact
-      // Privy request with their key and the server forwards the signature.
-      const { signature } = await generateAuthorizationSignature(
-        read.toSign as Parameters<typeof generateAuthorizationSignature>[0]
-      );
+      if (!current()) return;
       const posted = await fetch("/api/funding/evm-deposit-address", {
         method: "POST",
         credentials: "include",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          signature,
-          requestExpiry: read.requestExpiry,
-        }),
+        body: JSON.stringify(claim),
       });
       const created = await readDepositResponse(posted);
       if (!created.address) {
@@ -136,7 +156,15 @@ export function useEvmDepositAddress(walletAddress: string | null) {
         prev.wallet === forWallet ? { ...prev, loading: false } : prev
       );
     }
-  }, [eligible, generateAuthorizationSignature, info, loading, walletAddress]);
+  }, [
+    createWallet,
+    generateAuthorizationSignature,
+    info,
+    loading,
+    refreshUser,
+    user,
+    walletAddress,
+  ]);
 
-  return { eligible, info, networks, error, loading, load, retryOnNextLoad };
+  return { info, networks, error, loading, load, retryOnNextLoad };
 }

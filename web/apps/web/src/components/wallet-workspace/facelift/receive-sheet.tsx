@@ -304,7 +304,7 @@ export function ReceiveSheet({
   const panelRef = useRef<HTMLDivElement>(null);
   const bridge = tab === "Other chains";
   const evm = useEvmDepositAddress(walletAddress);
-  const live = bridgeOptedIn() && evm.eligible;
+  const live = bridgeOptedIn() && Boolean(walletAddress);
   useEffect(() => {
     if (isOpen && bridge && live) void evm.load();
   }, [bridge, evm, isOpen, live]);

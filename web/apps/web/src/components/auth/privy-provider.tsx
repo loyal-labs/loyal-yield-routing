@@ -129,7 +129,10 @@ export function PrivyAuthProvider({ children }: { children: ReactNode }) {
           // Privy render it twice (duplicate React keys) when it is installed.
           walletList: ["detected_solana_wallets"],
         },
-        embeddedWallets: { solana: { createOnLogin: "off" } },
+        embeddedWallets: {
+          solana: { createOnLogin: "off" },
+          ethereum: { createOnLogin: "off" },
+        },
         externalWallets: {
           solana: { connectors: toSolanaWalletConnectors() },
         },
