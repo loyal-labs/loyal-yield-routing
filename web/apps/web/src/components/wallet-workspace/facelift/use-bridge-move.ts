@@ -59,6 +59,8 @@ const RECEIVE_DECIMALS = 6;
 const QUOTE_DEBOUNCE_MS = 500;
 const POLL_MS = 3000;
 const RECEIPT_TIMEOUT_MS = 120_000;
+const SEND_TIMEOUT_MS = 120_000;
+const SEND_TIMEOUT = "move_send_timeout";
 const QUOTE_MAX_AGE_MS = 30_000;
 const SETTLED_ROW_MS = 86_400_000;
 const TRANSFER_ROWS = 3;
@@ -116,7 +118,7 @@ const post = (path: string, body: unknown) =>
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-type SendFailure = "rejected" | "refused" | "other";
+type SendFailure = "rejected" | "refused" | "timeout" | "other";
 
 export function classifySendError(e: unknown): SendFailure {
   const { code, privyErrorCode } = (e ?? {}) as {
@@ -124,6 +126,7 @@ export function classifySendError(e: unknown): SendFailure {
     privyErrorCode?: unknown;
   };
   if (code === 4001) return "rejected";
+  if (code === SEND_TIMEOUT) return "timeout";
   return [code, privyErrorCode].some(
     (c) => typeof c === "string" && SPONSOR_REFUSAL_CODES.has(c)
   )
@@ -131,7 +134,20 @@ export function classifySendError(e: unknown): SendFailure {
     : "other";
 }
 
+export function settleWithin<T>(pending: Promise<T>, ms = SEND_TIMEOUT_MS) {
+  let timer: ReturnType<typeof setTimeout>;
+  const expired = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(Object.assign(new Error("Timed out"), { code: SEND_TIMEOUT })),
+      ms
+    );
+  });
+  return Promise.race([pending, expired]).finally(() => clearTimeout(timer));
+}
+
 function sendFailureCopy(failure: SendFailure, symbol: string, sent: boolean) {
+  if (failure === "timeout")
+    return "This is taking too long. Check your wallet before trying again.";
   if (failure === "refused")
     return sent
       ? "Not sponsored. Please try again."
@@ -257,10 +273,12 @@ async function waitForReceipt(
 ) {
   const deadline = Date.now() + RECEIPT_TIMEOUT_MS;
   while (Date.now() < deadline) {
-    const receipt = (await provider.request({
-      method: "eth_getTransactionReceipt",
-      params: [hash],
-    })) as { status?: string } | null;
+    const receipt = (await settleWithin(
+      provider.request({
+        method: "eth_getTransactionReceipt",
+        params: [hash],
+      })
+    )) as { status?: string } | null;
     if (receipt?.status === "0x1") return;
     if (receipt?.status === "0x0") throw new Error("The approval transaction reverted.");
     await new Promise((resolve) => setTimeout(resolve, 1500));
@@ -385,21 +403,29 @@ export function useBridgeMove(balance: MoveBalance, sender: string) {
         if (!wallet || calls.length === 0) {
           throw new Error("Your EVM wallet is not ready. Please try again.");
         }
-        await wallet.switchChain(quoted.chainId);
-        const provider = await wallet.getEthereumProvider();
+        await settleWithin(wallet.switchChain(quoted.chainId));
+        const provider = await settleWithin(wallet.getEthereumProvider());
+        await settleWithin(
+          post(
+            `/api/funding/bridge/transfers/${encodeURIComponent(quoted.requestId)}/confirm`,
+            {}
+          ).then((res) => readJSON<BridgeTransfer>(res, "Could not start the move"))
+        );
         for (const [index, call] of calls.entries()) {
-          const { hash } = await sendTransaction(
-            {
-              to: call.to,
-              data: call.data,
-              value: BigInt(call.value),
-              chainId: quoted.chainId,
-            },
-            {
-              sponsor: true,
-              address: wallet.address,
-              uiOptions: { showWalletUIs: index === 0 },
-            }
+          const { hash } = await settleWithin(
+            sendTransaction(
+              {
+                to: call.to,
+                data: call.data,
+                value: BigInt(call.value),
+                chainId: quoted.chainId,
+              },
+              {
+                sponsor: true,
+                address: wallet.address,
+                uiOptions: { showWalletUIs: index === 0 },
+              }
+            )
           );
           sent = true;
           if (index < calls.length - 1) await waitForReceipt(provider, hash);

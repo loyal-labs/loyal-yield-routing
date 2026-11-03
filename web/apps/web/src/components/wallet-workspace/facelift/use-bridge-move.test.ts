@@ -30,7 +30,9 @@ mock.module("@privy-io/react-auth", () => ({
 const React = await import("react");
 const { createRoot } = await import("react-dom/client");
 const { useEvmDepositAddress } = await import("./use-evm-deposit-address");
-const { useBridgeMove, useBridgeMoveBalances } = await import("./use-bridge-move");
+const { classifySendError, settleWithin, useBridgeMove, useBridgeMoveBalances } = await import(
+  "./use-bridge-move"
+);
 
 const NETWORKS = [
   {
@@ -104,12 +106,14 @@ test("one open reads the balances once, however often the sheet renders", async 
   }
 });
 
-async function failSend(failure: unknown, calls = [CALL]) {
+async function failSend(failure: unknown, calls = [CALL], confirmStatus = 200) {
   const posts: string[] = [];
   const realFetch = globalThis.fetch;
   globalThis.fetch = (async (url: string) => {
     posts.push(url);
-    return new Response(JSON.stringify({ ...QUOTE, calls }));
+    return new Response(JSON.stringify({ ...QUOTE, calls }), {
+      status: url.endsWith("/confirm") ? confirmStatus : 200,
+    });
   }) as typeof fetch;
   sendTransaction.mockReset();
   for (let i = 1; i < calls.length; i++) {
@@ -132,6 +136,7 @@ async function failSend(failure: unknown, calls = [CALL]) {
       step: step.kind,
       message: step.kind === "failed" ? step.message : null,
       refusalPosts: posts.filter((p) => p.endsWith("/sponsor-refusal")).length,
+      sends: sendTransaction.mock.calls.length,
     };
   } finally {
     await React.act(async () => root.unmount());
@@ -141,7 +146,7 @@ async function failSend(failure: unknown, calls = [CALL]) {
 
 test("a rejection is read from the code, not the wording", async () => {
   const result = await failSend(Object.assign(new Error("nope"), { code: 4001 }));
-  expect(result).toEqual({ step: "form", message: null, refusalPosts: 0 });
+  expect(result).toEqual({ step: "form", message: null, refusalPosts: 0, sends: 1 });
 });
 
 test("a failure that names rejection in its text is not a rejection", async () => {
@@ -169,4 +174,15 @@ test("only a sponsorship code reaches the refusal route and its copy", async () 
 test("once a transaction went out the copy never says the funds stayed", async () => {
   const { message } = await failSend(new Error("rpc down"), [CALL, CALL]);
   expect(message).toBe("The move did not finish. Check your wallet before trying again.");
+});
+
+test("a confirm the server refused sends nothing and shows the failure", async () => {
+  const result = await failSend(new Error("unreached"), [CALL], 503);
+  expect(result.sends).toBe(0);
+  expect(result.step).toBe("failed");
+});
+
+test("a wallet call that never settles times out as its own failure", async () => {
+  const error = await settleWithin(new Promise(() => undefined), 5).catch((e) => e);
+  expect(classifySendError(error)).toBe("timeout");
 });
