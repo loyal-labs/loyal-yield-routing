@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/autodeposit"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/bridge"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
@@ -397,7 +398,7 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 	for _, family := range families {
 		switch family {
 		case engine.FamilyAutodeposit:
-			lanes = append(lanes, control, aWorker)
+			lanes = append(lanes, control, aWorker, &bridge.Tracker{DB: yieldPool, Relay: bridge.NewRelay(), Facts: facts})
 		case engine.FamilyFleet:
 			facts.LaneSucceeded(family, "planner")
 			facts.LaneSucceeded(family, "executor")
