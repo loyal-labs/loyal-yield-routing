@@ -2,6 +2,8 @@ import React, { useSyncExternalStore } from "react";
 import { PublicKey } from "@solana/web3.js";
 import type { WalletAccount } from "@wallet-standard/base";
 
+export const SUPPORTED_CHAINS: { id: number }[] = [];
+
 export const owner = "11111111111111111111111111111111";
 export const other = "So11111111111111111111111111111111111111112";
 const scenario = new URLSearchParams(location.search).get("scenario");
