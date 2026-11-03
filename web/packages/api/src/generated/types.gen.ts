@@ -201,6 +201,7 @@ export type BridgeTransfer = {
     destinationTx: string | null;
     originTx: string | null;
     quotedAt: string;
+    refundTx: string | null;
     requestId: string;
     settledAt: string | null;
     state: 'quoted' | 'submitted' | 'filled' | 'refunded' | 'failed';

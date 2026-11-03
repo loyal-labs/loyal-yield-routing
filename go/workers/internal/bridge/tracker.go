@@ -20,16 +20,19 @@ const (
 )
 
 const (
+	openState = `(state IN ('submitted', 'failed') OR (state = 'refunded' AND refund_tx IS NULL))`
+
 	openTransfers = `SELECT request_id, state FROM loyal_yield.bridge_transfers
-WHERE state IN ('submitted', 'failed') AND submitted_at > now() - ` + trackWindow
+WHERE ` + openState + ` AND submitted_at > now() - ` + trackWindow + `
+ORDER BY submitted_at`
 
 	advanceTransfer = `UPDATE loyal_yield.bridge_transfers
-SET state = $3, destination_tx = coalesce($4, destination_tx),
-    settled_at = CASE WHEN $5 THEN now() ELSE settled_at END, updated_at = now()
-WHERE request_id = $1 AND state = $2 AND submitted_at > now() - ` + trackWindow
+SET state = $3, destination_tx = nullif($4, ''), refund_tx = nullif($5, ''),
+    settled_at = CASE WHEN $6 THEN coalesce(settled_at, now()) ELSE settled_at END, updated_at = now()
+WHERE request_id = $1 AND state = $2 AND refund_tx IS NULL AND submitted_at > now() - ` + trackWindow
 
 	markUnsettled = `UPDATE loyal_yield.bridge_transfers SET updated_at = now()
-WHERE state IN ('submitted', 'failed') AND submitted_at <= now() - ` + trackWindow + `
+WHERE ` + openState + ` AND submitted_at <= now() - ` + trackWindow + `
   AND updated_at < submitted_at + ` + trackWindow + `
 RETURNING request_id, state, submitted_at`
 )
@@ -78,7 +81,7 @@ func (t *Tracker) Tick(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	polled := map[TransferState]int{TransferSubmitted: 0, TransferFailed: 0}
+	polled := map[TransferState]int{TransferSubmitted: 0, TransferFailed: 0, TransferRefunded: 0}
 	for _, o := range open {
 		polled[o.state]++
 	}
@@ -89,11 +92,11 @@ func (t *Tracker) Tick(ctx context.Context) error {
 	var mu sync.Mutex
 	var relayErrs int
 	var firstRelayErr error
-	group, gctx := errgroup.WithContext(ctx)
+	var group errgroup.Group
 	group.SetLimit(trackParallel)
 	for _, o := range open {
 		group.Go(func() error {
-			status, err := t.Relay.Status(gctx, o.requestID)
+			status, err := t.Relay.Status(ctx, o.requestID)
 			if err != nil {
 				mu.Lock()
 				relayErrs++
@@ -103,7 +106,7 @@ func (t *Tracker) Tick(ctx context.Context) error {
 				mu.Unlock()
 				return nil
 			}
-			return t.advance(gctx, o, status)
+			return t.advance(ctx, o, status)
 		})
 	}
 	if err := group.Wait(); err != nil {
@@ -127,21 +130,30 @@ func (t *Tracker) advance(ctx context.Context, o openTransfer, status Status) er
 		slog.Debug("bridge relay status unknown", "request_id", o.requestID, "relay_status", status.State)
 		return nil
 	}
-	if next == o.state {
+	var hash, destinationTx, refundTx string
+	if n := len(status.TxHashes); n > 0 {
+		hash = status.TxHashes[n-1]
+	}
+	switch next {
+	case TransferFilled:
+		destinationTx = hash
+	case TransferRefunded:
+		refundTx = hash
+	}
+	if next == o.state && refundTx == "" {
 		return nil
 	}
-	var destinationTx *string
-	if n := len(status.TxHashes); n > 0 {
-		destinationTx = &status.TxHashes[n-1]
-	}
-	tag, err := t.DB.Exec(ctx, advanceTransfer, o.requestID, string(o.state), string(next), destinationTx, next.Settled())
+	tag, err := t.DB.Exec(ctx, advanceTransfer, o.requestID, string(o.state), string(next), destinationTx, refundTx, next.Settled())
 	if err != nil {
 		return err
 	}
-	if tag.RowsAffected() == 1 {
-		t.Facts.BridgeTransfersAdvanced(string(next), 1)
-		slog.Info("bridge transfer advanced", "request_id", o.requestID, "from", o.state, "to", next, "destination_tx", destinationTx)
+	if tag.RowsAffected() == 0 {
+		return nil
 	}
+	if next != o.state {
+		t.Facts.BridgeTransfersAdvanced(string(next), 1)
+	}
+	slog.Info("bridge transfer advanced", "request_id", o.requestID, "from", o.state, "to", next, "destination_tx", destinationTx, "refund_tx", refundTx)
 	return nil
 }
 

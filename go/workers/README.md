@@ -36,7 +36,9 @@ and the credentials
 `RETAIL_JUPITER_API_KEY`, `RETAIL_DELEGATE_KEYPAIR` and `RETAIL_FEE_PAYER_KEYPAIR`. The current Autodeposit
 and same-mint packet contracts require the latter two keys to be identical.
 `RETAIL_FAMILIES` names the families this process writes (`autodeposit`,
-`fleet`, `multiply`, `lookup`). The
+`fleet`, `multiply`, `lookup`). The `autodeposit` family also runs the
+Relay bridge transfer tracker, so a process without `autodeposit` does not
+advance `bridge_transfers`. The
 process holds each family's session advisory lock on `RETAIL_DATABASE_URL`,
 which must therefore be the direct Neon DSN, and exits when a lock is lost.
 Every family lands signed rows through one function, `solana.Land`: the
