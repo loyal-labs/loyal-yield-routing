@@ -70,7 +70,8 @@ func (c *privyJWKSCache) key(ctx context.Context, client *http.Client, kid strin
 		}
 		return privyKey{}, fmt.Errorf("privy: JWKS has no key %q and is cooling down", kid)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url, nil)
+	// A dropped client request must not fail the shared fetch and arm the cooldown; the client timeout bounds it.
+	req, err := http.NewRequestWithContext(context.WithoutCancel(ctx), http.MethodGet, c.url, nil)
 	if err != nil {
 		return privyKey{}, err
 	}
