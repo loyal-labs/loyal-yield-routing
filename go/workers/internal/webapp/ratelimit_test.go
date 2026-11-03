@@ -7,7 +7,21 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestLimiterOutlivesTheIdleTTLUntilItsBudgetRefills(t *testing.T) {
+	start := time.Now()
+	buckets := newLimiters()
+	key := limiterKey{"sponsor-refusal", "wallet", "w"}
+	if !buckets.get(key, refusalBudget, start).AllowN(start, 1) {
+		t.Fatal("first report refused")
+	}
+	later := start.Add(limiterIdleTTL + time.Minute)
+	if buckets.get(key, refusalBudget, later).AllowN(later, 1) {
+		t.Fatal("the sweep forgot a spent budget before it refilled")
+	}
+}
 
 func TestMobileEarnSigningRouteRefusesOneWalletPastItsBudget(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

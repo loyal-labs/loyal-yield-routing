@@ -15,7 +15,7 @@ import (
 
 const bridgeRefusalPath = "/api/funding/bridge/transfers/{requestId}/sponsor-refusal"
 
-var refusalBudget = budget{every: time.Minute, burst: 5}
+var refusalBudget = budget{every: 15 * time.Minute, burst: 1}
 
 type SponsorRefusals struct {
 	counter *prometheus.CounterVec
@@ -68,7 +68,7 @@ func (h earnRoutes) bridgeSponsorRefusal(ctx context.Context, in *bridgeRefusalI
 	}
 	limit := h.Refusals.limits.get(limiterKey{"sponsor-refusal", "wallet", wallet.String()}, refusalBudget, time.Now())
 	if !limit.Allow() {
-		return nil, earnError(http.StatusTooManyRequests, "rate_limited", "Too many reports. Please wait a minute.")
+		return nil, earnError(http.StatusTooManyRequests, "rate_limited", "Too many reports. Please try again later.")
 	}
 	t, err := h.bridgeTransfer(ctx, wallet, in.RequestID)
 	if err != nil {
