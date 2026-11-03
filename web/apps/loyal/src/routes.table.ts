@@ -35,7 +35,6 @@ export const routes: RouteRow[] = [
   { next: "app/layout.tsx", path: "/app", kind: "layout", host: "app", owner: "G2" },
   { next: "app/page.tsx", path: "/app", kind: "page", host: "app", owner: "G2" },
   { next: "app/policies/page.tsx", path: "/app/policies", kind: "page", host: "app", owner: "G2" },
-  { next: "app/invite/page.tsx", path: "/app/invite", kind: "page", host: "app", owner: "G2" },
   { next: "app/settings/page.tsx", path: "/app/settings", kind: "page", host: "app", owner: "G2" },
   { next: "app/cherry/layout.tsx", path: "/app/cherry", kind: "layout", host: "app", owner: "G2" },
   { next: "app/cherry/page.tsx", path: "/app/cherry", kind: "page", host: "app", owner: "G2" },

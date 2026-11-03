@@ -1,7 +1,10 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, redirect } from "@tanstack/react-router";
 
-import Source from "@/app/app/invite/page";
+import { storeWorkspacePage } from "@/components/wallet-workspace/facelift/shell";
 
 export const Route = createFileRoute("/app/invite/")({
-  component: Source,
+  beforeLoad: () => {
+    storeWorkspacePage("invite");
+    throw redirect({ to: "/app", replace: true });
+  },
 });
