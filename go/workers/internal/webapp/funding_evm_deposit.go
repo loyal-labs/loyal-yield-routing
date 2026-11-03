@@ -191,12 +191,30 @@ func (h earnRoutes) privyDepositRequest(walletID string, requestExpiryMs int64) 
 	}
 }
 
+type EvmDepositToken struct {
+	Asset      bridge.Asset `json:"asset"`
+	Symbol     string       `json:"symbol"`
+	Name       string       `json:"name"`
+	Decimals   uint8        `json:"decimals"`
+	Stable     bool         `json:"stable"`
+	Icon       *string      `json:"icon" doc:"Image file in the receive sheet's assets; null while there is none"`
+	FeePercent *string      `json:"feePercent" doc:"Privy auto-bridge cost as a percent of a 100-token deposit, from Privy's deposit quote; null for relay_signed or when the quote failed"`
+}
+
 type EvmDepositNetwork struct {
-	Chain      bridge.Chain             `json:"chain"`
-	Name       string                   `json:"name"`
-	Assets     []bridge.Asset           `json:"assets"`
-	MinUSD     int                      `json:"minUsd" doc:"Smallest deposit worth bridging in USD; 0 means none"`
-	FeePercent map[bridge.Asset]*string `json:"feePercent" nullable:"true" doc:"Privy auto-bridge cost per asset as a percent of a 100-token deposit, from Privy's deposit quote; null for relay_signed, and per asset when the quote failed"`
+	Chain  bridge.Chain      `json:"chain"`
+	Name   string            `json:"name"`
+	Icon   *string           `json:"icon" doc:"Image file in the receive sheet's assets; null while there is none"`
+	Assets []bridge.Asset    `json:"assets"`
+	Tokens []EvmDepositToken `json:"tokens"`
+	MinUSD int               `json:"minUsd" doc:"Smallest deposit worth bridging in USD; 0 means none"`
+}
+
+func iconFile(name string) *string {
+	if name == "" {
+		return nil
+	}
+	return &name
 }
 
 type EvmDepositAddressResponse struct {
@@ -219,19 +237,23 @@ func (h earnRoutes) evmDepositResponse(ctx context.Context, kind EvmDepositKind,
 	out := EvmDepositAddressResponse{Address: address, Kind: kind, Networks: []EvmDepositNetwork{}, Minimums: map[string]int{}}
 	seen := map[bridge.Asset]bool{}
 	for _, network := range networks {
-		item := EvmDepositNetwork{Chain: network.Chain, Name: network.Name, MinUSD: network.MinUSD}
-		if fees != nil {
-			item.FeePercent = map[bridge.Asset]*string{}
-		}
+		item := EvmDepositNetwork{Chain: network.Chain, Name: network.Name, Icon: iconFile(network.Icon), MinUSD: network.MinUSD}
 		out.Chains = append(out.Chains, network.Chain)
 		if network.MinUSD > 0 {
 			out.Minimums[string(network.Chain)] = network.MinUSD
 		}
 		for _, token := range network.Tokens {
+			info := bridge.Assets[token.Asset]
 			item.Assets = append(item.Assets, token.Asset)
-			if fees != nil {
-				item.FeePercent[token.Asset] = fees[depositCell{network.Chain, token.Asset}]
-			}
+			item.Tokens = append(item.Tokens, EvmDepositToken{
+				Asset:      token.Asset,
+				Symbol:     info.Symbol,
+				Name:       info.Name,
+				Decimals:   token.Decimals,
+				Stable:     info.Stable,
+				Icon:       iconFile(info.Icon),
+				FeePercent: fees[depositCell{network.Chain, token.Asset}],
+			})
 			if !seen[token.Asset] {
 				seen[token.Asset] = true
 				out.Assets = append(out.Assets, token.Asset)

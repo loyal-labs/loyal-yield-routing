@@ -34,6 +34,34 @@ const (
 	USDe  Asset = "usde"
 )
 
+// AssetInfo is how the deposit sheet shows an asset. Icon is the sheet's
+// image file, empty while the sheet has none.
+type AssetInfo struct {
+	Symbol string
+	Name   string
+	Stable bool
+	Icon   string
+}
+
+var Assets = map[Asset]AssetInfo{
+	USDC:  {"USDC", "USD Coin", true, "usdc.png"},
+	USDT:  {"USDT", "Tether USD", true, "usdt.png"},
+	PYUSD: {"PYUSD", "PayPal USD", true, "pyusd.svg"},
+	USDG:  {"USDG", "Global Dollar", true, "usdg.svg"},
+	DAI:   {"DAI", "Dai", true, ""},
+	USDe:  {"USDe", "Ethena USDe", true, ""},
+}
+
+func init() {
+	for _, n := range Networks {
+		for _, t := range n.Tokens {
+			if _, ok := Assets[t.Asset]; !ok {
+				panic(fmt.Sprintf("bridge: %s on %s has no entry in Assets", t.Asset, n.Chain))
+			}
+		}
+	}
+}
+
 // NativeToken is the address Privy and Relay use for a chain's own coin.
 const NativeToken = "0x0000000000000000000000000000000000000000"
 
@@ -91,6 +119,7 @@ type Token struct {
 type Network struct {
 	Chain   Chain
 	Name    string
+	Icon    string
 	ChainID int64
 	// MinUSD is the smallest deposit worth bridging; Ethereum gas makes
 	// small transfers cost more than they move.
@@ -135,7 +164,7 @@ func (n Network) Token(a Asset) (Token, bool) {
 // Optimism usdt is the bridged legacy USDT. BNB Chain's USDC and USDT and
 // every DAI and USDe use 18 decimals.
 var Networks = []Network{
-	{Chain: Ethereum, Name: "Ethereum", ChainID: 1, MinUSD: 20, Tokens: []Token{
+	{Chain: Ethereum, Name: "Ethereum", Icon: "ethereum.png", ChainID: 1, MinUSD: 20, Tokens: []Token{
 		{USDC, "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", 6, Legacy13},
 		{USDT, "0xdac17f958d2ee523a2206206994597c13d831ec7", 6, Legacy13},
 		{PYUSD, "0x6c3ea9036406852006290770bedfcaba0e23a0e8", 6, StablesV1},
@@ -143,16 +172,16 @@ var Networks = []Network{
 		{DAI, "0x6b175474e89094c44da98b954eedeac495271d0f", 18, StablesV1},
 		{USDe, "0x4c9edd5852cd905f086c759e8383e09bff1e68b3", 18, StablesV1},
 	}},
-	{Chain: BNB, Name: "BNB Smart Chain", ChainID: 56, Tokens: []Token{
+	{Chain: BNB, Name: "BNB Smart Chain", Icon: "bnb.png", ChainID: 56, Tokens: []Token{
 		{USDC, "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d", 18, Legacy13},
 		{USDT, "0x55d398326f99059ff775485246999027b3197955", 18, Legacy13},
 		{USDe, "0x5d3a1ff2b6bab83b63cd9ad0787074081a52ef34", 18, StablesV1},
 	}},
-	{Chain: Base, Name: "Base", ChainID: 8453, Tokens: []Token{
+	{Chain: Base, Name: "Base", Icon: "base.png", ChainID: 8453, Tokens: []Token{
 		{USDC, "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913", 6, Legacy13},
 		{USDT, "0xfde4c96c8593536e31f229ea8f37b2ada2699bb2", 6, Legacy13},
 	}},
-	{Chain: Arbitrum, Name: "Arbitrum", ChainID: 42161, Tokens: []Token{
+	{Chain: Arbitrum, Name: "Arbitrum", Icon: "arbitrum.png", ChainID: 42161, Tokens: []Token{
 		{USDC, "0xaf88d065e77c8cc2239327c5edb3a432268e5831", 6, Legacy13},
 		{USDT, "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9", 6, Legacy13},
 		{USDe, "0x5d3a1ff2b6bab83b63cd9ad0787074081a52ef34", 18, StablesV1},
@@ -161,7 +190,7 @@ var Networks = []Network{
 		{USDC, "0x0b2c639c533813f4aa9d7837caf62653d097ff85", 6, StablesV1},
 		{USDT, "0x94b008aa00579c1307b0ef2c499ad98a8ce58e58", 6, StablesV1},
 	}},
-	{Chain: Polygon, Name: "Polygon", ChainID: 137, Tokens: []Token{
+	{Chain: Polygon, Name: "Polygon", Icon: "polygon.png", ChainID: 137, Tokens: []Token{
 		{USDC, "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359", 6, Legacy13},
 		{USDT, "0xc2132d05d31c914a87c6611c10748aeb04b58e8f", 6, Legacy13},
 	}},

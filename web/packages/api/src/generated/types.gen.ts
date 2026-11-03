@@ -1519,16 +1519,31 @@ export type EvmDepositNetwork = {
     assets: Array<string> | null;
     chain: string;
     /**
-     * Privy auto-bridge cost per asset as a percent of a 100-token deposit, from Privy's deposit quote; null for relay_signed, and per asset when the quote failed
+     * Image file in the receive sheet's assets; null while there is none
      */
-    feePercent: {
-        [key: string]: string | null;
-    } | null;
+    icon: string | null;
     /**
      * Smallest deposit worth bridging in USD; 0 means none
      */
     minUsd: number;
     name: string;
+    tokens: Array<EvmDepositToken> | null;
+};
+
+export type EvmDepositToken = {
+    asset: string;
+    decimals: number;
+    /**
+     * Privy auto-bridge cost as a percent of a 100-token deposit, from Privy's deposit quote; null for relay_signed or when the quote failed
+     */
+    feePercent: string | null;
+    /**
+     * Image file in the receive sheet's assets; null while there is none
+     */
+    icon: string | null;
+    name: string;
+    stable: boolean;
+    symbol: string;
 };
 
 export type ForecastUnavailableError = {
