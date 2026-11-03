@@ -98,9 +98,14 @@ func (s *Store) emails(ctx context.Context, ids []string) (map[string]string, er
 	return emails, rows.Err()
 }
 
+const minLocalForInitial = 3
+
 func maskedLabel(email, wallet string) string {
 	local, domain, ok := strings.Cut(email, "@")
 	if ok && local != "" && domain != "" {
+		if utf8.RuneCountInString(local) < minLocalForInitial {
+			return "…@" + domain
+		}
 		initial, _ := utf8.DecodeRuneInString(local)
 		return string(initial) + "…@" + domain
 	}
