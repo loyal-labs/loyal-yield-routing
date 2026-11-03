@@ -367,8 +367,8 @@ export function FaceliftSidebar({
             <button
               className="t-hover flex min-w-0 flex-1 flex-col items-center gap-1 rounded-2xl py-2 enabled:hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40"
               key={action}
-              disabled={action === "bridge"}
-              title={action === "bridge" ? "Coming soon" : undefined}
+              disabled={action === "bridge" && process.env.NODE_ENV !== "development"}
+              title={action === "bridge" && process.env.NODE_ENV !== "development" ? "Coming soon" : undefined}
               onClick={() => onAssetAction(action)}
               type="button"
             >

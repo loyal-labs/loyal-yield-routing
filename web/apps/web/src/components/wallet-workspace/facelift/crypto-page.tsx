@@ -21,6 +21,7 @@ import {
   type CryptoRowActions,
 } from "@/components/wallet-workspace/facelift/crypto-pane";
 import { deriveSwapTokens, selectSwapToken } from "@/components/wallet-sidebar/swap-tokens";
+import { BridgeWorkspace } from "./bridge-workspace";
 import { useEscapePage } from "@/components/wallet-workspace/facelift/escape-owner";
 import {
   MiddlePaneSlide,
@@ -88,7 +89,7 @@ export function CryptoPage({
   onBack: () => void;
   onReceive: () => void;
   onEarn: (sourceMint?: string | null) => void;
-  requestedAction: { type: "send" | "swap" } | null;
+  requestedAction: { type: "send" | "swap" | "bridge" } | null;
 }) {
   const publicEnv = usePublicEnv();
   const { isHydrated, isSignedIn } = useAuthCapability();
@@ -173,6 +174,7 @@ export function CryptoPage({
   const { recents: sendRecents, recordSend: recordSendRecent } =
     useSendRecentRecipients(data.walletAddress);
 
+  const [isBridgeOpen, setIsBridgeOpen] = useState(false);
   const [isSwapOpen, setIsSwapOpen] = useState(false);
   const [swapSelectSide, setSwapSelectSide] = useState<"from" | "to" | null>(
     null
@@ -290,6 +292,7 @@ export function CryptoPage({
   const closeUnshield = useCallback(() => setIsUnshieldOpen(false), []);
 
   useAbandonActionsOnNavigate(navigationNonce, () => {
+    setIsBridgeOpen(false);
     setViewStack([]);
     setSendSelect(null);
     closeSwap();
@@ -299,13 +302,19 @@ export function CryptoPage({
   useEffect(() => {
     if (!requestedAction) return;
     setIsDetailSheetOpen(false);
-    if (requestedAction.type === "send") {
+    setIsBridgeOpen(requestedAction.type === "bridge");
+    if (requestedAction.type === "bridge") {
+      setViewStack([]);
+      setSendSelect(null);
+      closeSwap();
+      closeUnshield();
+    } else if (requestedAction.type === "send") {
       closeSwap();
       openSend();
     } else {
       openSwap();
     }
-  }, [requestedAction, closeSwap, openSend, openSwap]);
+  }, [requestedAction, closeSwap, closeUnshield, openSend, openSwap]);
 
   useEscapePage(
     viewStack.length > 0 || isSwapOpen || isUnshieldOpen,
@@ -441,7 +450,12 @@ export function CryptoPage({
       <div className="flex h-full min-h-0 min-w-0 flex-1 gap-2 p-2 max-[795px]:gap-0 max-[795px]:p-0">
         <MiddlePaneSlide
           actionPane={
-            isSendOpen ? (
+            isBridgeOpen ? (
+              <BridgeWorkspace
+                key={navigationNonce}
+                onBack={() => setIsBridgeOpen(false)}
+              />
+            ) : isSendOpen ? (
               <SendPane
                 onBack={closeAction}
                 onDone={closeAction}
@@ -514,7 +528,7 @@ export function CryptoPage({
             />
           </PaneReveal>
         </MiddlePaneSlide>
-        {isSendOpen ? (
+        {isBridgeOpen ? null : isSendOpen ? (
           <div className="hidden h-full w-[400px] shrink-0 min-[1204px]:block">
             <InlineSheetReveal
               className="flex h-full w-full min-w-0 flex-col overflow-clip rounded-3xl bg-card"

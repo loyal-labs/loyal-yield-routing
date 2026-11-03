@@ -11,7 +11,8 @@ import {
   BalanceVisibilityProvider,
   HiddenBalanceFilterDefs,
 } from "@/components/wallet-workspace/facelift/balance-visibility";
-import { ReceiveSheet } from "@/components/wallet-workspace/facelift/receive-sheet";
+import { ReceiveSheet as LiveReceiveSheet } from "@/components/wallet-workspace/facelift/receive-sheet";
+import { BridgePreviewReceiveSheet } from "./bridge-preview-receive-sheet";
 import { CryptoPage } from "@/components/wallet-workspace/facelift/crypto-page";
 import { DepositPane } from "@/components/wallet-workspace/facelift/deposit-pane";
 import { EarnApprovalSheet } from "@/components/wallet-workspace/facelift/earn-approval-sheet";
@@ -85,6 +86,11 @@ const InvitePage = dynamic(
     ),
   { loading: () => <WorkspacePaneSkeleton /> }
 );
+
+// Keep the backend-connected Receive flow intact until the bridge design is integrated.
+const ReceiveSheet = process.env.NODE_ENV === "development"
+  ? BridgePreviewReceiveSheet
+  : LiveReceiveSheet;
 
 const PAGE_STORAGE_KEY = "loyal:workspace-page";
 const EARN_MAX_VISIBLE = true;
@@ -225,9 +231,8 @@ export function WorkspaceFaceliftShell() {
     [earnMax.view]
   );
   const [navigationNonce, setNavigationNonce] = useState(0);
-  const [assetAction, setAssetAction] = useState<{ type: "send" | "swap" } | null>(null);
+  const [assetAction, setAssetAction] = useState<{ type: "send" | "swap" | "bridge" } | null>(null);
   const [isReceiveOpen, setIsReceiveOpen] = useState(false);
-  const [receiveTab, setReceiveTab] = useState<"Solana" | "Other chains">("Solana");
   useEffect(() => {
     const walletAddress = earnData.walletAddress;
     const settingsPda = earnData.settingsPda;
@@ -402,7 +407,6 @@ export function WorkspaceFaceliftShell() {
         <EarnApprovalSheet approval={earnData.actions.pendingApproval} />
         <EarnToastHost />
         <ReceiveSheet
-          initialTab={receiveTab}
           isOpen={isReceiveOpen}
           onClose={() => setIsReceiveOpen(false)}
           walletAddress={earnData.walletAddress ?? null}
@@ -436,9 +440,7 @@ export function WorkspaceFaceliftShell() {
         />
         <FaceliftSidebar
           onAssetAction={(action) => {
-            if (action === "bridge") return;
             if (action === "receive") {
-              setReceiveTab("Solana");
               setIsReceiveOpen(true);
             } else {
               handleSelectPage("assets");
@@ -526,7 +528,6 @@ export function WorkspaceFaceliftShell() {
               }}
               requestedAction={assetAction}
               onReceive={() => {
-                setReceiveTab("Solana");
                 setIsReceiveOpen(true);
               }}
             />
