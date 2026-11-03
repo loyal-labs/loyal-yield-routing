@@ -16,6 +16,7 @@ type Props = {
   editable: boolean;
   message: string | null;
   detail?: string;
+  autoFocus?: boolean;
 };
 
 export function ReferralCodeField({
@@ -24,6 +25,7 @@ export function ReferralCodeField({
   editable,
   message,
   detail,
+  autoFocus,
 }: Props) {
   return (
     <View style={styles.wrap}>
@@ -36,6 +38,7 @@ export function ReferralCodeField({
         autoCapitalize="characters"
         autoCorrect={false}
         editable={editable}
+        autoFocus={autoFocus}
         maxLength={CODE_LENGTH}
         accessibilityLabel={REFERRAL_COPY.fieldLabel}
       />

@@ -143,11 +143,6 @@ export function PrivySignInScreen({
                   onSubmitEditing={() => void submitEmail()}
                 />
                 {error ? <Text style={styles.errorText}>{error}</Text> : null}
-                {intent === "create" && referralsEnabled() ? (
-                  <View className="mt-4">
-                    <SignUpReferralField editable={!disabled} />
-                  </View>
-                ) : null}
               </View>
               <View className="flex-1" />
               <View className="gap-3 pb-4">
@@ -194,6 +189,9 @@ export function PrivySignInScreen({
                       </Text>
                     )}
                   </Pressable>
+                ) : null}
+                {intent === "create" && referralsEnabled() ? (
+                  <SignUpReferralField editable={!disabled} />
                 ) : null}
               </View>
             </View>

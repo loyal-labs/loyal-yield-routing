@@ -5,6 +5,7 @@ export const REFERRAL_COPY = {
   fieldPlaceholder: "Invite code",
   depositVisibility:
     "The person who invited you will see how much you deposit.",
+  haveCode: "Have an invite code?",
   settingsTitle: "Have an invite code?",
   settingsApply: "Apply",
   inviteCell: "Invite friends",
