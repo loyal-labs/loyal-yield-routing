@@ -1,5 +1,6 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { WalletReconnectPrompt } from "@/components/auth/wallet-reconnect-prompt";
@@ -71,9 +72,18 @@ export type WorkspacePage =
   | "activity"
   | "earn"
   | "earnmax"
+  | "invite"
   | "wallet";
 
 type MiddleView = "earn" | "deposit" | "withdraw" | "autodeposit" | "autoswap";
+
+const InvitePage = dynamic(
+  () =>
+    import("@/features/referrals/invite-page").then(
+      (module) => module.InvitePage
+    ),
+  { loading: () => <WorkspacePaneSkeleton /> }
+);
 
 const PAGE_STORAGE_KEY = "loyal:workspace-page";
 const EARN_MAX_VISIBLE = true;
@@ -82,8 +92,15 @@ const WORKSPACE_PAGES: WorkspacePage[] = [
   "activity",
   "earn",
   "earnmax",
+  "invite",
   "wallet",
 ];
+
+export function storeWorkspacePage(page: WorkspacePage) {
+  try {
+    localStorage.setItem(PAGE_STORAGE_KEY, page);
+  } catch {}
+}
 
 function readStoredPage(): WorkspacePage | null {
   if (typeof window === "undefined") {
@@ -484,6 +501,8 @@ export function WorkspaceFaceliftShell() {
               settingsPda={earnData.settingsPda}
               walletAddress={earnData.walletAddress}
             />
+          ) : activePage === "invite" ? (
+            <InvitePage onBack={() => handleSelectPage("wallet")} />
           ) : EARN_MAX_VISIBLE && activePage === "earnmax" ? (
             <EarnMaxWorkspace
               policyUpdateCount={policyUpdates.earnMaxCount}
