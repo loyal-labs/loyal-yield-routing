@@ -45,6 +45,8 @@ const update = (authenticated: boolean) => {
 const logout = async () => {
   update(false);
 };
+export const SUPPORTED_CHAINS: { id: number }[] = [];
+
 export const usePrivy = () => ({
   ...useSyncExternalStore(subscribe, () => state),
   logout,

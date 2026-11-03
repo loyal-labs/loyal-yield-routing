@@ -59,6 +59,7 @@ type limiterKey struct {
 
 type limiterEntry struct {
 	limiter  *rate.Limiter
+	refill   time.Duration
 	lastSeen time.Time
 }
 
@@ -77,7 +78,7 @@ func (l *limiters) get(key limiterKey, b budget, now time.Time) *rate.Limiter {
 	defer l.mu.Unlock()
 	if now.Sub(l.lastSweep) >= limiterSweepEvery {
 		for k, e := range l.entries {
-			if now.Sub(e.lastSeen) >= limiterIdleTTL {
+			if now.Sub(e.lastSeen) >= max(limiterIdleTTL, e.refill) {
 				delete(l.entries, k)
 			}
 		}
@@ -85,7 +86,7 @@ func (l *limiters) get(key limiterKey, b budget, now time.Time) *rate.Limiter {
 	}
 	e, ok := l.entries[key]
 	if !ok {
-		e = &limiterEntry{limiter: rate.NewLimiter(rate.Every(b.every), b.burst)}
+		e = &limiterEntry{limiter: rate.NewLimiter(rate.Every(b.every), b.burst), refill: time.Duration(b.burst) * b.every}
 		l.entries[key] = e
 	}
 	e.lastSeen = now

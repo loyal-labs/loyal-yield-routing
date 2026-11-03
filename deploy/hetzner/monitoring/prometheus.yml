@@ -25,6 +25,8 @@ scrape_configs:
         labels: {unit: loyal-retail.service}
       - targets: ["127.0.0.1:9103"]
         labels: {unit: loyal-backyard.service}
+      - targets: ["127.0.0.1:9104"]
+        labels: {unit: loyal-web.service}
 
   # xstock-bot (its own repo, same host): the bot and its pools recorder.
   - job_name: xstock

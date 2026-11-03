@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -18,7 +19,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-func TestTrackerStoresEachHashFromTheStatusThatCarriedIt(t *testing.T) {
+func trackerDB(t *testing.T) (context.Context, *pgxpool.Pool) {
+	t.Helper()
 	dsn := os.Getenv("BRIDGE_TEST_DATABASE_URL")
 	if dsn == "" {
 		t.Skip("requires a disposable local bridge_test database")
@@ -35,15 +37,15 @@ func TestTrackerStoresEachHashFromTheStatusThatCarriedIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer pool.Close()
+	t.Cleanup(pool.Close)
 	if _, err := pool.Exec(ctx, `CREATE SCHEMA loyal_yield`); err != nil {
 		t.Fatal(err)
 	}
-	defer func() {
+	t.Cleanup(func() {
 		if _, err := pool.Exec(ctx, `DROP SCHEMA loyal_yield CASCADE`); err != nil {
 			t.Error(err)
 		}
-	}()
+	})
 	var migrations []string
 	for _, pattern := range []string{"*_bridge_transfers*.sql", "*_relay_deposit_addresses.sql"} {
 		found, err := filepath.Glob("../../../../migrations/yield/" + pattern)
@@ -62,6 +64,11 @@ func TestTrackerStoresEachHashFromTheStatusThatCarriedIt(t *testing.T) {
 			t.Fatal(path, err)
 		}
 	}
+	return ctx, pool
+}
+
+func TestTrackerStoresEachHashFromTheStatusThatCarriedIt(t *testing.T) {
+	ctx, pool := trackerDB(t)
 	const (
 		refundHash  = "0x1111111111111111111111111111111111111111111111111111111111111111"
 		successHash = "0x2222222222222222222222222222222222222222222222222222222222222222"
@@ -192,6 +199,179 @@ FROM loyal_yield.bridge_transfers b WHERE request_id = $1`, c.requestID).Scan(&s
 	}
 	if want := filledID + "=" + settledOut + " " + pendingID + "=" + quotedOut; tronAmounts != want {
 		t.Errorf("got tron amount_out_raw %s; want only the USDC requests, the settled one at Relay's actual amount and the unsettled one unchanged: %s", tronAmounts, want)
+	}
+}
+
+func TestTrackerAdoptsQuotedTransfersRelaySaw(t *testing.T) {
+	ctx, pool := trackerDB(t)
+	originHash := "0x" + strings.Repeat("a", 64)
+	clientHash := "0x" + strings.Repeat("b", 64)
+	const fillHash = "4TgCELNYYxzv2uLxk7wKjaP77SB3fDCyq31EPsLHMQWTSiBmZ5QmSEYzCgdVSgYumZk45CCUMHmvVziAR1bTBmFx"
+	const clientSubmit = `UPDATE loyal_yield.bridge_transfers SET state = 'submitted', origin_tx = $2, submitted_at = now() WHERE request_id = $1 AND state = 'quoted'`
+	quote := func(requestID, age string) {
+		if _, err := pool.Exec(ctx, `INSERT INTO loyal_yield.bridge_transfers
+(request_id, solana_wallet, evm_address, chain, asset, amount_in_raw, amount_out_raw, quoted_at, confirmed_at)
+VALUES ($1, 'wallet', '0x0000000000000000000000000000000000000001', 'base', 'usdc', 1000000, 990000, now() - $2::interval, now() - $2::interval)`, requestID, age); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, id := range []string{"0xseen", "0xfilled", "0xunseen", "0xwaiting", "0xraced", "0xabandoned"} {
+		quote(id, "1 minute")
+	}
+	quote("0xexpired", "3 hours")
+	if _, err := pool.Exec(ctx, `UPDATE loyal_yield.bridge_transfers SET confirmed_at = NULL WHERE request_id = '0xabandoned'`); err != nil {
+		t.Fatal(err)
+	}
+
+	var mu sync.Mutex
+	polls := map[string]int{}
+	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id := r.URL.Query().Get("requestId")
+		mu.Lock()
+		polls[id]++
+		mu.Unlock()
+		switch id {
+		case "0xseen", "0xexpired", "0xabandoned":
+			fmt.Fprintf(w, `{"status":"pending","inTxHashes":[%q],"txHashes":[]}`, "0x"+strings.ToUpper(originHash[2:]))
+		case "0xfilled":
+			fmt.Fprintf(w, `{"status":"success","inTxHashes":[%q],"txHashes":[%q]}`, originHash, fillHash)
+		case "0xwaiting":
+			fmt.Fprint(w, `{"status":"waiting"}`)
+		case "0xraced":
+			if _, err := pool.Exec(r.Context(), clientSubmit, id, clientHash); err != nil {
+				t.Error(err)
+			}
+			fmt.Fprintf(w, `{"status":"pending","inTxHashes":[%q],"txHashes":[]}`, originHash)
+		default:
+			fmt.Fprint(w, `{"status":"unknown"}`)
+		}
+	}))
+	defer relay.Close()
+
+	tracker := &Tracker{DB: pool, Relay: &Relay{BaseURL: relay.URL, HTTP: relay.Client()}, Facts: engine.NewFacts(prometheus.NewRegistry())}
+	for range 2 {
+		if err := tracker.Tick(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if tag, err := pool.Exec(ctx, clientSubmit, "0xseen", clientHash); err != nil || tag.RowsAffected() != 0 {
+		t.Fatalf("a late client submit changed an adopted row: %d rows, err = %v", tag.RowsAffected(), err)
+	}
+
+	for id, want := range map[string]struct{ state, originTx string }{
+		"0xseen":    {"submitted", originHash},
+		"0xfilled":  {"filled", originHash},
+		"0xunseen":  {"quoted", ""},
+		"0xwaiting": {"quoted", ""},
+		"0xexpired": {"quoted", ""},
+		"0xraced":   {"submitted", clientHash},
+
+		"0xabandoned": {"quoted", ""},
+	} {
+		var state, originTx string
+		var rows int
+		if err := pool.QueryRow(ctx, `SELECT min(state), coalesce(min(origin_tx), ''), count(*) FROM loyal_yield.bridge_transfers WHERE request_id = $1`, id).Scan(&state, &originTx, &rows); err != nil {
+			t.Fatal(err)
+		}
+		if state != want.state || originTx != want.originTx || rows != 1 {
+			t.Errorf("%s: %d rows, state %q, origin_tx %q; want one row, %q, %q", id, rows, state, originTx, want.state, want.originTx)
+		}
+	}
+	if polls["0xexpired"] != 0 {
+		t.Errorf("a quote past the window was polled %d times", polls["0xexpired"])
+	}
+	if polls["0xabandoned"] != 0 {
+		t.Errorf("a quote nobody confirmed was polled %d times", polls["0xabandoned"])
+	}
+
+	for i := range 2 * lostSubmitBatch {
+		quote(fmt.Sprintf("0xconfirmed-%d", i), "1 minute")
+	}
+	clear(polls)
+	if err := tracker.adoptLostSubmits(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(polls); n != lostSubmitBatch {
+		t.Errorf("one tick polled %d quoted rows, want the batch of %d", n, lostSubmitBatch)
+	}
+}
+
+func TestTrackerAdvancesOpenRowsWhileRelaySitsOnAConfirmedQuote(t *testing.T) {
+	ctx, pool := trackerDB(t)
+	const fillHash = "4TgCELNYYxzv2uLxk7wKjaP77SB3fDCyq31EPsLHMQWTSiBmZ5QmSEYzCgdVSgYumZk45CCUMHmvVziAR1bTBmFx"
+	if _, err := pool.Exec(ctx, `INSERT INTO loyal_yield.bridge_transfers
+(request_id, solana_wallet, evm_address, chain, asset, amount_in_raw, amount_out_raw, state, submitted_at, confirmed_at)
+VALUES ('0xopen', 'wallet', '0x0000000000000000000000000000000000000001', 'base', 'usdc', 1000000, 990000, 'submitted', now(), NULL),
+       ('0xslow', 'wallet', '0x0000000000000000000000000000000000000001', 'base', 'usdc', 1000000, 990000, 'quoted', NULL, now())`); err != nil {
+		t.Fatal(err)
+	}
+	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("requestId") == "0xslow" {
+			<-r.Context().Done()
+			return
+		}
+		fmt.Fprintf(w, `{"status":"success","inTxHashes":[],"txHashes":[%q]}`, fillHash)
+	}))
+	defer relay.Close()
+
+	tracker := &Tracker{DB: pool, Relay: &Relay{BaseURL: relay.URL, HTTP: relay.Client()}, Facts: engine.NewFacts(prometheus.NewRegistry())}
+	tick, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer cancel()
+	_ = tracker.Tick(tick)
+
+	var state string
+	if err := pool.QueryRow(ctx, `SELECT state FROM loyal_yield.bridge_transfers WHERE request_id = '0xopen'`).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	if state != string(TransferFilled) {
+		t.Errorf("open row is %q after a tick Relay stalled on a quote; want filled", state)
+	}
+}
+
+func TestTrackerPrunesOnlyQuotesNobodyConfirmedPastADay(t *testing.T) {
+	ctx, pool := trackerDB(t)
+	row := func(requestID, state, age string, confirmed bool) {
+		if _, err := pool.Exec(ctx, `INSERT INTO loyal_yield.bridge_transfers
+(request_id, solana_wallet, evm_address, chain, asset, amount_in_raw, amount_out_raw, state, quoted_at, confirmed_at, submitted_at)
+VALUES ($1, 'wallet', '0x0000000000000000000000000000000000000001', 'base', 'usdc', 1000000, 990000, $2, now() - $3::interval,
+        CASE WHEN $4 THEN now() - $3::interval END, CASE WHEN $2 <> 'quoted' THEN now() - $3::interval END)`, requestID, state, age, confirmed); err != nil {
+			t.Fatal(err)
+		}
+	}
+	row("0xpruned", "quoted", "25 hours", false)
+	row("0xyoung", "quoted", "23 hours", false)
+	row("0xconfirmed", "quoted", "25 hours", true)
+	for _, state := range []string{"submitted", "filled", "refunded", "failed"} {
+		row("0x"+state, state, "25 hours", false)
+	}
+	for i := range abandonedQuoteBatch {
+		row(fmt.Sprintf("0xold-%d", i), "quoted", "26 hours", false)
+	}
+	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `{"status":"pending","inTxHashes":[],"txHashes":[]}`)
+	}))
+	defer relay.Close()
+
+	tracker := &Tracker{DB: pool, Relay: &Relay{BaseURL: relay.URL, HTTP: relay.Client()}, Facts: engine.NewFacts(prometheus.NewRegistry())}
+	if err := tracker.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var old, next int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FILTER (WHERE request_id LIKE '0xold-%'), count(*) FILTER (WHERE request_id = '0xpruned') FROM loyal_yield.bridge_transfers`).Scan(&old, &next); err != nil {
+		t.Fatal(err)
+	}
+	if old != 0 || next != 1 {
+		t.Errorf("one batch left %d of the oldest quotes and %d of the next; want 0 and 1", old, next)
+	}
+	if err := tracker.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var kept string
+	if err := pool.QueryRow(ctx, `SELECT string_agg(request_id, ' ' ORDER BY request_id) FROM loyal_yield.bridge_transfers`).Scan(&kept); err != nil {
+		t.Fatal(err)
+	}
+	if want := "0xconfirmed 0xfailed 0xfilled 0xrefunded 0xsubmitted 0xyoung"; kept != want {
+		t.Errorf("rows left after pruning: %s; want %s", kept, want)
 	}
 }
 

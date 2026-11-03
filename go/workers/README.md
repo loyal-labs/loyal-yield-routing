@@ -54,8 +54,10 @@ same process: every 10 seconds it lists Relay requests on Loyal's Tron deposit
 addresses and records each deposit in `bridge_transfers`. Absent, detection is
 off and logs `relay requests disabled: no api key` once at start. Detection and
 the tracker need SELECT on `loyal_yield.relay_deposit_addresses` and SELECT,
-INSERT and UPDATE on `loyal_yield.bridge_transfers`, including the
-`deposit_address` column 0134 adds, on `RETAIL_DATABASE_URL`. Detection exports
+INSERT, UPDATE and DELETE on `loyal_yield.bridge_transfers`, including the
+`deposit_address` column 0134 adds and `confirmed_at` from 0135, on
+`RETAIL_DATABASE_URL`. DELETE is for the tracker's pruning of quotes nobody
+confirmed within 24 hours. Detection exports
 `loyal_bridge_deposit_requests_seen`,
 `loyal_bridge_deposits_recorded_total` (by the state a row is born in, so a
 row born `filled` counts here and not in `loyal_bridge_transfers_advanced_total`),

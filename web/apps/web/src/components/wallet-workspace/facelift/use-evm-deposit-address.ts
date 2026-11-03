@@ -13,7 +13,7 @@ import {
   usePrivy,
   useUser,
 } from "@privy-io/react-auth";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 type EvmDepositInfo = EvmDepositAddressResponse & { address: string };
 
@@ -28,10 +28,12 @@ type DepositState = {
   tronLoading: boolean;
 };
 
+const noNetworks: EvmDepositNetwork[] = [];
+
 const emptyState = (wallet: string | null): DepositState => ({
   wallet,
   info: null,
-  networks: [],
+  networks: noNetworks,
   error: null,
   loading: false,
   tron: null,
@@ -92,7 +94,11 @@ export function useEvmDepositAddress(walletAddress: string | null) {
   const current =
     state.wallet === walletAddress ? state : emptyState(walletAddress);
   const { info, error, loading, tron, tronError, tronLoading } = current;
-  const networks = current.networks.map((network) => withTron(network, tron));
+  const serverNetworks = current.networks;
+  const networks = useMemo(
+    () => serverNetworks.map((network) => withTron(network, tron)),
+    [serverNetworks, tron]
+  );
 
   const ready = privyReady && authenticated && Boolean(walletAddress);
 

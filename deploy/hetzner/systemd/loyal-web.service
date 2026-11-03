@@ -24,6 +24,7 @@ RestartSec=5s
 TimeoutStopSec=60s
 
 Environment=LOYAL_WEB_ADDRESS=127.0.0.1:10080
+Environment=LOYAL_METRICS_ADDRESS=127.0.0.1:9104
 # The Next deployment the proxy forwards unowned /api paths to.
 Environment=LOYAL_WEB_UPSTREAM=https://app.askloyal.com
 # The session cookie's parent domain, the Next deployment's value (prod sets

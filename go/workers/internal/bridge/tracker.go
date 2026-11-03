@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -21,6 +22,13 @@ const (
 	trackParallel = 8
 	trackWindow   = "interval '7 days'"
 	trackLookback = 7 * 24 * time.Hour
+
+	adoptDeadline    = 10 * time.Second
+	lostSubmitWindow = "interval '2 hours'"
+	lostSubmitBatch  = 32
+
+	abandonedQuoteAge   = "interval '24 hours'"
+	abandonedQuoteBatch = 500
 )
 
 const (
@@ -41,6 +49,20 @@ WHERE ` + openState + ` AND submitted_at <= now() - ` + trackWindow + `
   AND updated_at < submitted_at + ` + trackWindow + `
 RETURNING request_id, state, submitted_at`
 
+	confirmedQuotes = `SELECT request_id FROM loyal_yield.bridge_transfers
+WHERE state = 'quoted' AND confirmed_at > now() - ` + lostSubmitWindow + `
+ORDER BY confirmed_at DESC LIMIT $1`
+
+	adoptSubmit = `UPDATE loyal_yield.bridge_transfers
+SET state = 'submitted', origin_tx = $2, submitted_at = clock_timestamp(), updated_at = clock_timestamp()
+WHERE request_id = $1 AND state = 'quoted'`
+
+	abandonedQuote = `state = 'quoted' AND confirmed_at IS NULL AND quoted_at <= now() - ` + abandonedQuoteAge
+
+	pruneAbandonedQuotes = `DELETE FROM loyal_yield.bridge_transfers
+WHERE ` + abandonedQuote + ` AND request_id IN (
+  SELECT request_id FROM loyal_yield.bridge_transfers WHERE ` + abandonedQuote + ` ORDER BY quoted_at LIMIT $1)`
+
 	trackedDepositAddresses = `SELECT address, solana_wallet, chain, asset FROM loyal_yield.relay_deposit_addresses
 WHERE chain = $1 AND expires_at > now() - ` + trackWindow + `
 ORDER BY address`
@@ -58,7 +80,7 @@ type Tracker struct {
 }
 
 func (t *Tracker) Run(ctx context.Context) error {
-	for _, s := range []TransferState{TransferFilled, TransferRefunded, TransferFailed} {
+	for _, s := range []TransferState{TransferSubmitted, TransferFilled, TransferRefunded, TransferFailed} {
 		t.Facts.BridgeTransfersAdvanced(string(s), 0)
 	}
 	var detection sync.WaitGroup
@@ -90,10 +112,22 @@ func (t *Tracker) Run(ctx context.Context) error {
 }
 
 func (t *Tracker) Tick(ctx context.Context) error {
-	start := time.Now()
 	if err := t.dropUnsettled(ctx); err != nil {
 		return err
 	}
+	if err := t.pollOpen(ctx); err != nil {
+		return err
+	}
+	adopt, cancel := context.WithTimeout(ctx, adoptDeadline)
+	defer cancel()
+	if err := t.adoptLostSubmits(adopt); err != nil {
+		return err
+	}
+	return t.pruneAbandoned(ctx)
+}
+
+func (t *Tracker) pollOpen(ctx context.Context) error {
+	start := time.Now()
 	rows, err := t.DB.Query(ctx, openTransfers)
 	if err != nil {
 		return err
@@ -147,6 +181,60 @@ func (t *Tracker) Tick(ctx context.Context) error {
 		return err
 	}
 	slog.Debug("bridge tracker tick", "polled", len(open), "relay_errors", relayErrs, "duration_ms", time.Since(start).Milliseconds())
+	return nil
+}
+
+func (t *Tracker) adoptLostSubmits(ctx context.Context) error {
+	rows, err := t.DB.Query(ctx, confirmedQuotes, lostSubmitBatch)
+	if err != nil {
+		return err
+	}
+	quoted, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return err
+	}
+	t.Facts.BridgeTransfersPolled(string(TransferQuoted), len(quoted))
+
+	var relayErrs atomic.Int32
+	var group errgroup.Group
+	group.SetLimit(trackParallel)
+	for _, requestID := range quoted {
+		group.Go(func() error {
+			status, err := t.Relay.Status(ctx, requestID)
+			if err != nil {
+				relayErrs.Add(1)
+				return nil
+			}
+			originTx := status.originTx()
+			if originTx == "" {
+				return nil
+			}
+			tag, err := t.DB.Exec(ctx, adoptSubmit, requestID, originTx)
+			if err != nil {
+				return err
+			}
+			if tag.RowsAffected() == 1 {
+				t.Facts.BridgeTransfersAdvanced(string(TransferSubmitted), 1)
+				slog.Info("bridge transfer adopted", "request_id", requestID, "origin_tx", originTx, "relay_status", status.State)
+			}
+			return nil
+		})
+	}
+	err = group.Wait()
+	if n := relayErrs.Load(); n > 0 {
+		slog.Warn("bridge relay status failed for quoted transfers", "rows", n)
+	}
+	return err
+}
+
+func (t *Tracker) pruneAbandoned(ctx context.Context) error {
+	tag, err := t.DB.Exec(ctx, pruneAbandonedQuotes, abandonedQuoteBatch)
+	if err != nil {
+		return err
+	}
+	if n := tag.RowsAffected(); n > 0 {
+		slog.Info("bridge abandoned quotes pruned", "rows", n)
+	}
 	return nil
 }
 

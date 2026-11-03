@@ -27,6 +27,8 @@ export type Get = {
 export type Post = {
   "/api/auth/privy/complete": Types.PrivyCompleteResponse;
   "/api/funding/bridge/quote": Types.BridgeQuoteResponse;
+  "/api/funding/bridge/transfers/{requestId}/confirm": Types.BridgeTransfer;
+  "/api/funding/bridge/transfers/{requestId}/sponsor-refusal": Types.BridgeTransfer;
   "/api/funding/bridge/transfers/{requestId}/submit": Types.BridgeTransfer;
   "/api/funding/evm-deposit-address": Types.EvmDepositAddressResponse;
   "/api/funding/tron-deposit-address": Types.TronDepositAddressResponse;

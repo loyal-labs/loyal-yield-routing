@@ -304,6 +304,20 @@
   },
   {
     "labels": {
+      "alertname": "LoyalBridgeSponsorRefused",
+      "chain": "base",
+      "severity": "page"
+    },
+    "annotations": {
+      "action": "Read loyal-web's 'bridge sponsored send refused' log lines for Privy's message. Check the Privy dashboard under Billing > Fee sponsorship for the credit balance and that the chain is enabled in the sponsorship policy.",
+      "impact": "Users cannot move funds from that chain to Solana; the funds stay in their EVM wallet until sponsorship works again.",
+      "recovery": "Confirm a fresh Move on that chain sends without a refusal and the counter stops increasing; the window expiring is not a fix.",
+      "summary": "Privy refused to sponsor Move sends on base",
+      "trigger": "Signed-in users' Moves from their EVM wallets to Solana reported at least 3 gas sponsorship refusals from Privy in the last 15 minutes."
+    }
+  },
+  {
+    "labels": {
       "alertname": "LoyalMonitoringDown",
       "job": "alertmanager",
       "severity": "page"

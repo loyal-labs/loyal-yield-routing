@@ -13,7 +13,10 @@ import {
 } from "@/components/wallet-workspace/facelift/balance-visibility";
 import { ReceiveSheet as LiveReceiveSheet } from "@/components/wallet-workspace/facelift/receive-sheet";
 import { BridgePreviewReceiveSheet } from "./bridge-preview-receive-sheet";
-import { CryptoPage } from "@/components/wallet-workspace/facelift/crypto-page";
+import {
+  type AssetAction,
+  CryptoPage,
+} from "@/components/wallet-workspace/facelift/crypto-page";
 import { DepositPane } from "@/components/wallet-workspace/facelift/deposit-pane";
 import { EarnApprovalSheet } from "@/components/wallet-workspace/facelift/earn-approval-sheet";
 import { EarnBanners } from "@/components/wallet-workspace/facelift/earn-banner";
@@ -231,7 +234,7 @@ export function WorkspaceFaceliftShell() {
     [earnMax.view]
   );
   const [navigationNonce, setNavigationNonce] = useState(0);
-  const [assetAction, setAssetAction] = useState<{ type: "send" | "swap" | "bridge" } | null>(null);
+  const [assetAction, setAssetAction] = useState<AssetAction | null>(null);
   const [isReceiveOpen, setIsReceiveOpen] = useState(false);
   useEffect(() => {
     const walletAddress = earnData.walletAddress;
@@ -409,6 +412,11 @@ export function WorkspaceFaceliftShell() {
         <ReceiveSheet
           isOpen={isReceiveOpen}
           onClose={() => setIsReceiveOpen(false)}
+          onMove={(source) => {
+            setIsReceiveOpen(false);
+            handleSelectPage("assets");
+            setAssetAction({ type: "move", source });
+          }}
           walletAddress={earnData.walletAddress ?? null}
         />
         <SettingsSheet

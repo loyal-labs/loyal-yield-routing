@@ -140,8 +140,10 @@ func resolve(req QuoteRequest) (Network, Token, error) {
 
 // CheckQuote parses Relay's response, which is untrusted, and checks its
 // structure only. The transactions must be the user's own, on the right chain,
-// and approve and spend exactly the quoted amount of the requested token, and
-// the quote's recipient and output must be the ones requested. That fully
+// and spend exactly the quoted amount of the requested token, and any approve
+// must be for exactly that amount; Relay omits it when the user's allowance
+// already covers the amount. The quote's recipient and output must be the ones
+// requested. That fully
 // binds a direct deposit, whose depositErc20 names the user, the token and the
 // amount. A swap through Relay's approval proxy is bound only around the swap.
 // The proxy hands the amount to Relay's router, the router approves and calls
@@ -265,18 +267,17 @@ func CheckQuote(req QuoteRequest, raw []byte) (Quote, error) {
 	if value.Sign() != 0 {
 		return Quote{}, fmt.Errorf("quote: deposit value %s must be 0 for a token", deposit.tx.value)
 	}
-	if approve == nil {
-		return Quote{}, fmt.Errorf("quote: a %s deposit needs an approve step", req.Asset)
-	}
-	if v, _ := parseAmount(approve.tx.value); v.Sign() != 0 {
-		return Quote{}, fmt.Errorf("quote: approve value %s must be 0", approve.tx.value)
-	}
-	if !strings.EqualFold(approve.tx.to, tok.Address) {
-		return Quote{}, fmt.Errorf("quote: approve target is not the %s contract", req.Asset)
-	}
-	approveData, _ := decodeHex(approve.tx.data)
-	if err := checkApprove(approveData, deposit.tx.to, req.AmountRaw); err != nil {
-		return Quote{}, fmt.Errorf("quote: approve data: %w", err)
+	if approve != nil {
+		if v, _ := parseAmount(approve.tx.value); v.Sign() != 0 {
+			return Quote{}, fmt.Errorf("quote: approve value %s must be 0", approve.tx.value)
+		}
+		if !strings.EqualFold(approve.tx.to, tok.Address) {
+			return Quote{}, fmt.Errorf("quote: approve target is not the %s contract", req.Asset)
+		}
+		approveData, _ := decodeHex(approve.tx.data)
+		if err := checkApprove(approveData, deposit.tx.to, req.AmountRaw); err != nil {
+			return Quote{}, fmt.Errorf("quote: approve data: %w", err)
+		}
 	}
 
 	q := Quote{
