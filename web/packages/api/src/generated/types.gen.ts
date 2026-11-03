@@ -1533,9 +1533,9 @@ export type EvmDepositNetwork = {
     minUsd: number;
     name: string;
     /**
-     * How address is obtained: evm entries share the wallet's 0x deposit address; a tron_deposit entry's address is minted by POST /api/funding/tron-deposit-address
+     * How address is obtained: evm entries share the wallet's 0x deposit address; a relay_deposit_address entry's address is minted by POST /api/funding/tron-deposit-address
      */
-    route: 'evm' | 'tron_deposit';
+    route: 'evm' | 'relay_deposit_address';
     tokens: Array<EvmDepositToken> | null;
 };
 
@@ -1547,7 +1547,7 @@ export type EvmDepositToken = {
      */
     feePercent: string | null;
     /**
-     * Relay's fee in USD on a minimum deposit, for tron_deposit entries; null otherwise or until a quote has answered
+     * Relay's fee in USD on a minimum deposit, for relay_deposit_address entries; null otherwise or until a quote has answered
      */
     feeUsd: string | null;
     /**

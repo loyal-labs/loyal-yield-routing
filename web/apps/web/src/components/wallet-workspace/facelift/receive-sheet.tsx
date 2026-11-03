@@ -426,7 +426,7 @@ export function ReceiveSheet({
   const deposit =
     network && selection ? tokenOn(network, selection.asset) : undefined;
   const resolved = network && deposit;
-  const tronRoute = network?.route === "tron_deposit";
+  const tronRoute = network?.route === "relay_deposit_address";
   const bridgeAddress = network?.address ?? null;
   const routeError = tronRoute ? evm.tronError : evm.error;
   const retryRoute = () => void (tronRoute ? evm.retryTron() : evm.retry());

@@ -409,3 +409,53 @@ func TestEvmDepositConcurrentPostsMakeOnePrivyCreate(t *testing.T) {
 		}
 	})
 }
+
+func TestEvmDepositGetServesEvmWhenTronRowReadFails(t *testing.T) {
+	pool := evmDepositTestDB(t)
+	ctx := context.Background()
+	wallet := solana.NewWallet().PublicKey()
+	if _, err := pool.Exec(ctx, `INSERT INTO loyal_yield.evm_deposit_routes (solana_wallet, app_user_id, kind, evm_address) VALUES ($1, gen_random_uuid(), 'relay_signed', $2)`,
+		wallet.String(), "0x"+hex.EncodeToString(wallet[:20])); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `DROP TABLE loyal_yield.relay_deposit_addresses`); err != nil {
+		t.Fatal(err)
+	}
+	keys, err := jwt.NewKeys("isolated-session-test-secret", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer, err := jwt.NewSigner("isolated-session-test-secret", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := signer.Mint(map[string]any{"sub": wallet.String()}, mobileEarnAudience, time.Hour, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := chi.NewRouter()
+	earnRoutes{
+		auth: &Auth{keys: keys},
+		Earn: Earn{YieldDB: pool, Relay: &bridge.Relay{BaseURL: "http://127.0.0.1:9", HTTP: &http.Client{}}},
+	}.registerEvmDeposit(humachi.New(router, apiConfig()))
+	req := httptest.NewRequest(http.MethodGet, evmDepositPath, nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	res := httptest.NewRecorder()
+	router.ServeHTTP(res, req)
+	var got EvmDepositAddressResponse
+	if err := json.Unmarshal(res.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	var evm, tron *EvmDepositNetwork
+	for i, n := range got.Networks {
+		if n.Route == EVMRoute && evm == nil {
+			evm = &got.Networks[i]
+		}
+		if n.Route == RelayDepositAddressRoute {
+			tron = &got.Networks[i]
+		}
+	}
+	if res.Code != http.StatusOK || evm == nil || evm.Address == nil || tron == nil || tron.Address != nil {
+		t.Fatalf("GET with an unreadable Tron table = %d %s; want 200 with EVM entries and a Tron entry without an address", res.Code, res.Body.String())
+	}
+}

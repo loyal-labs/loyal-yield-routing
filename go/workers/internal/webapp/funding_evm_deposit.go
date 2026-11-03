@@ -59,8 +59,8 @@ const (
 type DepositRouteKind string
 
 const (
-	EVMRoute         DepositRouteKind = "evm"
-	TronDepositRoute DepositRouteKind = "tron_deposit"
+	EVMRoute                 DepositRouteKind = "evm"
+	RelayDepositAddressRoute DepositRouteKind = "relay_deposit_address"
 )
 
 type evmDepositRoute struct {
@@ -209,12 +209,12 @@ type EvmDepositToken struct {
 	Stable      bool         `json:"stable"`
 	Icon        *string      `json:"icon" doc:"Image file in the receive sheet's assets; null while there is none"`
 	FeePercent  *string      `json:"feePercent" doc:"Privy auto-bridge cost as a percent of a 100-token deposit, from Privy's deposit quote; null for relay_signed or when the quote failed"`
-	FeeUSD      *string      `json:"feeUsd" doc:"Relay's fee in USD on a minimum deposit, for tron_deposit entries; null otherwise or until a quote has answered"`
+	FeeUSD      *string      `json:"feeUsd" doc:"Relay's fee in USD on a minimum deposit, for relay_deposit_address entries; null otherwise or until a quote has answered"`
 	ReceiveUSDC *string      `json:"receiveUsdc" doc:"USDC on Solana a minimum deposit pays, from the same quote as feeUsd; null otherwise or until a quote has answered"`
 }
 
 type EvmDepositNetwork struct {
-	Route   DepositRouteKind  `json:"route" enum:"evm,tron_deposit" doc:"How address is obtained: evm entries share the wallet's 0x deposit address; a tron_deposit entry's address is minted by POST /api/funding/tron-deposit-address"`
+	Route   DepositRouteKind  `json:"route" enum:"evm,relay_deposit_address" doc:"How address is obtained: evm entries share the wallet's 0x deposit address; a relay_deposit_address entry's address is minted by POST /api/funding/tron-deposit-address"`
 	Address *string           `json:"address" doc:"This entry's deposit address; null until it exists"`
 	Chain   bridge.Chain      `json:"chain"`
 	Name    string            `json:"name"`
@@ -292,23 +292,20 @@ func (h earnRoutes) evmDepositResponse(ctx context.Context, wallet solana.Public
 		}
 		out.Networks = append(out.Networks, item)
 	}
-	tron, err := h.tronDepositNetwork(ctx, wallet)
-	if err != nil {
-		return nil, evmDepositUnavailable("tron deposit read", err)
-	}
+	tron := h.tronDepositNetwork(ctx, wallet)
 	at := slices.IndexFunc(out.Networks, func(n EvmDepositNetwork) bool { return n.Chain == bridge.Ethereum }) + 1
 	out.Networks = slices.Insert(out.Networks, at, tron)
 	return &evmDepositOutput{Body: out}, nil
 }
 
-// The Tron entry stays out of chains, assets and minimums, which older
-// clients pair with the 0x address.
-func (h earnRoutes) tronDepositNetwork(ctx context.Context, wallet solana.PublicKey) (EvmDepositNetwork, error) {
+// chains, assets and minimums exclude Tron because the prod client reads them
+// with the shared 0x address; W1 and T1c ship in one deploy.
+func (h earnRoutes) tronDepositNetwork(ctx context.Context, wallet solana.PublicKey) EvmDepositNetwork {
 	route := bridge.Tron
-	item := EvmDepositNetwork{Route: TronDepositRoute, Chain: route.Chain, Name: route.Name, Icon: iconFile(route.Icon), MinUSD: route.MinUSD, Assets: []bridge.Asset{route.Asset}}
+	item := EvmDepositNetwork{Route: RelayDepositAddressRoute, Chain: route.Chain, Name: route.Name, Icon: iconFile(route.Icon), MinUSD: route.MinUSD, Assets: []bridge.Asset{route.Asset}}
 	row, err := h.storedTronDepositAddress(ctx, wallet)
 	if err != nil {
-		return EvmDepositNetwork{}, err
+		slog.Warn("tron deposit address read failed", "wallet", wallet.String(), "err", err)
 	}
 	if row != nil {
 		item.Address = &row.Address
@@ -325,7 +322,7 @@ func (h earnRoutes) tronDepositNetwork(ctx context.Context, wallet solana.Public
 		FeeUSD:      price.FeeUSD,
 		ReceiveUSDC: price.ReceiveUSDC,
 	}}
-	return item, nil
+	return item
 }
 
 func (h earnRoutes) evmDepositFound(ctx context.Context, wallet solana.PublicKey, route evmDepositRoute) (*evmDepositOutput, error) {

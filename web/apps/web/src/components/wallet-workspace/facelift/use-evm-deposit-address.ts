@@ -57,7 +57,7 @@ function withTron(
   network: EvmDepositNetwork,
   tron: TronDepositAddressResponse | null
 ): EvmDepositNetwork {
-  if (network.route !== "tron_deposit" || !tron) return network;
+  if (network.route !== "relay_deposit_address" || !tron) return network;
   return {
     ...network,
     address: tron.address,
