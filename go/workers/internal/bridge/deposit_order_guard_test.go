@@ -1,8 +1,11 @@
 package bridge
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 )
@@ -46,6 +49,26 @@ func TestRefusesDepositOrderThatCannotRefundOrNeverExpires(t *testing.T) {
 	if _, err := CheckDepositOrder(Tron, depositOrderWallet, b, depositOrderNow); err != nil {
 		t.Fatalf("order paying and refunding the wallet refused: %v", err)
 	}
+	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			SlippageTolerance string `json:"slippageTolerance"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		q := depositOrder(t)
+		deadline := time.Now().Add(180 * 24 * time.Hour).Unix()
+		output(q)["deadline"], refund(q)["deadline"] = deadline, deadline
+		if body.SlippageTolerance != "50" {
+			payment(q)["minimumAmount"] = "95953460"
+		}
+		_ = json.NewEncoder(w).Encode(q)
+	}))
+	defer relay.Close()
+	if _, err := (&Relay{BaseURL: relay.URL, HTTP: relay.Client()}).DepositAddress(context.Background(), Tron, depositOrderWallet); err != nil {
+		t.Errorf("minting against Relay's quote for 100 USDT refused: %v", err)
+	}
 	for name, tamper := range map[string]func(q map[string]any){
 		"no refund leg":   func(q map[string]any) { input(q)["refunds"] = []any{} },
 		"refunds missing": func(q map[string]any) { delete(input(q), "refunds") },
@@ -58,6 +81,7 @@ func TestRefusesDepositOrderThatCannotRefundOrNeverExpires(t *testing.T) {
 		"output with calldata":                  func(q map[string]any) { output(q)["extraData"] = "0xdeadbeef" },
 		"output calldata missing":               func(q map[string]any) { delete(output(q), "extraData") },
 		"output minimum zero":                   func(q map[string]any) { payment(q)["minimumAmount"] = "0" },
+		"output minimum of one unit":            func(q map[string]any) { payment(q)["minimumAmount"] = "1" },
 		"output minimum at relay's 2% slippage": func(q map[string]any) { payment(q)["minimumAmount"] = "95953460" },
 		"refund leg without deadline":           func(q map[string]any) { delete(refund(q), "deadline") },
 		"refund leg ending before the order": func(q map[string]any) {
