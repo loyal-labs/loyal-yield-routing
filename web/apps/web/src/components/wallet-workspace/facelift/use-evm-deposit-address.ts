@@ -9,6 +9,7 @@ import {
   getIdentityToken,
   useAuthorizationSignature,
   useCreateWallet,
+  usePrivy,
   useUser,
 } from "@privy-io/react-auth";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -59,12 +60,15 @@ const hasPrivyEvmWallet = (user: ReturnType<typeof useUser>["user"]) =>
  * that should only happen once they open the tab.
  */
 export function useEvmDepositAddress(walletAddress: string | null) {
-  const { user, refreshUser } = useUser();
+  const { ready: privyReady, authenticated } = usePrivy();
+  const { refreshUser } = useUser();
   const { createWallet } = useCreateWallet();
   const { generateAuthorizationSignature } = useAuthorizationSignature();
   const [state, setState] = useState<DepositState>(emptyState(walletAddress));
   const { info, networks, error, loading } =
     state.wallet === walletAddress ? state : emptyState(walletAddress);
+
+  const ready = privyReady && authenticated && Boolean(walletAddress);
 
   const attemptedRef = useRef(false);
   const walletRef = useRef(walletAddress);
@@ -77,7 +81,9 @@ export function useEvmDepositAddress(walletAddress: string | null) {
   }, [info]);
 
   const load = useCallback(async () => {
-    if (!walletAddress || info || loading || attemptedRef.current) return;
+    if (!ready || !walletAddress || info || loading || attemptedRef.current) {
+      return;
+    }
     attemptedRef.current = true;
     const forWallet = walletAddress;
     const current = () => walletRef.current === forWallet;
@@ -103,20 +109,19 @@ export function useEvmDepositAddress(walletAddress: string | null) {
       if (read.networks) patch({ networks: read.networks });
       let claim: object;
       if (read.kind === "relay_signed") {
-        if (!user) {
-          throw new Error("Sign in with Privy to get a deposit address.");
-        }
-        if (!hasPrivyEvmWallet(user)) {
+        if (!hasPrivyEvmWallet(await refreshUser())) {
           if (!current()) return;
           try {
             await createWallet();
-          } catch (e) {
-            if (!hasPrivyEvmWallet(await refreshUser())) throw e;
+          } catch {
+            if (!hasPrivyEvmWallet(await refreshUser())) {
+              throw new Error("Could not get a deposit address.");
+            }
           }
           if (!current()) return;
+          // Re-issue the identity token so it lists the new wallet.
+          await refreshUser();
         }
-        // Re-issue the identity token so it lists the new wallet.
-        await refreshUser();
         const privyIdentityToken = await getIdentityToken();
         if (!privyIdentityToken) {
           throw new Error("Privy identity token unavailable.");
@@ -161,10 +166,10 @@ export function useEvmDepositAddress(walletAddress: string | null) {
     generateAuthorizationSignature,
     info,
     loading,
+    ready,
     refreshUser,
-    user,
     walletAddress,
   ]);
 
-  return { info, networks, error, loading, load, retryOnNextLoad };
+  return { ready, info, networks, error, loading, load, retryOnNextLoad };
 }

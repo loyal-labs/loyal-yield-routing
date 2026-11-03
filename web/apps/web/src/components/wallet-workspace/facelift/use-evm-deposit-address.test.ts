@@ -10,6 +10,7 @@ const EVM = `0x${"b".repeat(40)}`;
 const signer = mock(async () => ({ signature: "sig" }));
 
 mock.module("@privy-io/react-auth", () => ({
+  usePrivy: () => ({ ready: true, authenticated: true }),
   useUser: () => ({ user: { linkedAccounts: [] }, refreshUser: async () => ({}) }),
   useCreateWallet: () => ({ createWallet: async () => ({}) }),
   getIdentityToken: async () => "token",
