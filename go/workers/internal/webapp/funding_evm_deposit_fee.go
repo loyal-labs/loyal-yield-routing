@@ -24,59 +24,62 @@ type depositCell struct {
 }
 
 type depositFee struct {
-	percent    *string
+	value      *string
 	until      time.Time
 	refreshing bool
 }
 
 type depositFees struct {
-	mu   sync.Mutex
-	held map[depositCell]depositFee
+	mu      sync.Mutex
+	held    map[depositCell]depositFee
+	timeout time.Duration
 }
 
-var privyDepositFeeCache = depositFees{held: map[depositCell]depositFee{}}
+var privyDepositFeeCache = depositFees{held: map[depositCell]depositFee{}, timeout: depositFeeTimeout}
 
-// privyDepositFees returns what the cache holds for every cell of the
-// networks, nil where it holds nothing, and never waits on Privy. A cell with
-// no fresh answer and no refresh running starts one in the background.
+func (c *depositFees) read(cell depositCell, quote func(context.Context) (string, error)) *string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	fee := c.held[cell]
+	if time.Now().Before(fee.until) || fee.refreshing {
+		return fee.value
+	}
+	fee.refreshing = true
+	c.held[cell] = fee
+	go c.refresh(cell, quote)
+	return fee.value
+}
+
+func (c *depositFees) refresh(cell depositCell, quote func(context.Context) (string, error)) {
+	ctx, cancel := context.WithTimeout(context.Background(), c.timeout)
+	defer cancel()
+	value, err := quote(ctx)
+	if err != nil {
+		slog.Warn("deposit fee quote failed", "chain", cell.chain, "asset", cell.asset, "err", err)
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		c.held[cell] = depositFee{value: c.held[cell].value, until: time.Now().Add(depositFeeRetry)}
+		return
+	}
+	c.store(cell, value)
+}
+
+func (c *depositFees) store(cell depositCell, value string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.held[cell] = depositFee{value: &value, until: time.Now().Add(depositFeeTTL)}
+}
+
 func (h earnRoutes) privyDepositFees(networks []bridge.Network) map[depositCell]*string {
-	now := time.Now()
 	out := map[depositCell]*string{}
-	privyDepositFeeCache.mu.Lock()
-	defer privyDepositFeeCache.mu.Unlock()
 	for _, network := range networks {
 		for _, token := range network.Tokens {
+			source := PrivyDepositAsset{Asset: token.Address, Chain: string(network.Chain)}
 			cell := depositCell{network.Chain, token.Asset}
-			fee := privyDepositFeeCache.held[cell]
-			out[cell] = fee.percent
-			if now.Before(fee.until) || fee.refreshing {
-				continue
-			}
-			fee.refreshing = true
-			privyDepositFeeCache.held[cell] = fee
-			go h.refreshDepositFee(cell, token.Address)
+			out[cell] = privyDepositFeeCache.read(cell, func(ctx context.Context) (string, error) { return h.privyDepositFee(ctx, source) })
 		}
 	}
 	return out
-}
-
-// refreshDepositFee quotes one cell. It keeps the last answer when the quote
-// fails and tries again after depositFeeRetry.
-func (h earnRoutes) refreshDepositFee(cell depositCell, address string) {
-	ctx, cancel := context.WithTimeout(context.Background(), depositFeeTimeout)
-	defer cancel()
-	percent, err := h.privyDepositFee(ctx, PrivyDepositAsset{Asset: address, Chain: string(cell.chain)})
-	cache := &privyDepositFeeCache
-	cache.mu.Lock()
-	defer cache.mu.Unlock()
-	fee := cache.held[cell]
-	if err != nil {
-		slog.Warn("privy deposit quote failed", "chain", cell.chain, "asset", cell.asset, "err", err)
-		fee = depositFee{percent: fee.percent, until: time.Now().Add(depositFeeRetry)}
-	} else {
-		fee = depositFee{percent: &percent, until: time.Now().Add(depositFeeTTL)}
-	}
-	cache.held[cell] = fee
 }
 
 func (h earnRoutes) privyDepositFee(ctx context.Context, source PrivyDepositAsset) (string, error) {

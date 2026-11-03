@@ -5,13 +5,11 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
-	"sync"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/jackc/pgx/v5"
 	"github.com/solana-foundation/solana-go/v2"
-	"golang.org/x/sync/singleflight"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/bridge"
 )
@@ -27,15 +25,12 @@ var earnTronDepositFamily = earnFamily{
 	register: earnRoutes.registerTronDeposit,
 }
 
-const (
-	tronDepositPath   = "/api/funding/tron-deposit-address"
-	tronDepositFeeTTL = 10 * time.Minute
-)
+const tronDepositPath = "/api/funding/tron-deposit-address"
 
 type TronDepositAddressResponse struct {
 	Address   string    `json:"address"`
 	MinUSD    int       `json:"minUsd"`
-	FeeUSD    *string   `json:"feeUsd" doc:"Relay's fee in USD for a minimum deposit, from a live deposit-address quote; null when the quote failed"`
+	FeeUSD    *string   `json:"feeUsd" doc:"Relay's fee in USD for a minimum deposit, from a deposit-address quote cached up to ten minutes; null until one has answered"`
 	ExpiresAt time.Time `json:"expiresAt"`
 }
 
@@ -48,24 +43,10 @@ type tronDepositRow struct {
 
 var tronDepositCreates = walletLocks{held: map[solana.PublicKey]*walletLock{}}
 
-type tronDepositFees struct {
-	mu     sync.Mutex
-	usd    *string
-	until  time.Time
-	flight singleflight.Group
-}
-
-var tronDepositFeeCache tronDepositFees
-
-func (c *tronDepositFees) hold(usd string) *string {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.usd, c.until = nil, time.Now().Add(tronDepositFeeTTL)
-	if usd != "" {
-		c.usd = &usd
-	}
-	return c.usd
-}
+var (
+	tronDepositCell     = depositCell{bridge.Tron.Chain, bridge.Tron.Asset}
+	tronDepositFeeCache = depositFees{held: map[depositCell]depositFee{}, timeout: 15 * time.Second}
+)
 
 func (h earnRoutes) registerTronDeposit(api huma.API) {
 	huma.Register(api, huma.Operation{
@@ -99,6 +80,21 @@ func (h earnRoutes) tronDepositAddress(ctx context.Context, in *sessionRequest) 
 	if err != nil {
 		return nil, tronDepositUnavailable("tron deposit app user", err)
 	}
+	row, err := h.ensureTronDepositAddress(ctx, wallet, userID)
+	if err != nil {
+		return nil, err
+	}
+	fee := tronDepositFeeCache.read(tronDepositCell, func(ctx context.Context) (string, error) {
+		quote, err := h.Relay.DepositAddress(ctx, bridge.Tron, wallet.String())
+		if err == nil && quote.FeeUSD == "" {
+			err = errors.New("relay deposit quote carries no relayer fee")
+		}
+		return quote.FeeUSD, err
+	})
+	return &tronDepositOutput{Body: TronDepositAddressResponse{Address: row.Address, MinUSD: bridge.Tron.MinUSD, FeeUSD: fee, ExpiresAt: row.ExpiresAt.UTC()}}, nil
+}
+
+func (h earnRoutes) ensureTronDepositAddress(ctx context.Context, wallet solana.PublicKey, userID string) (*tronDepositRow, error) {
 	unlock, err := tronDepositCreates.lock(ctx, wallet)
 	if err != nil {
 		return nil, tronDepositUnavailable("tron deposit lock", err)
@@ -108,18 +104,17 @@ func (h earnRoutes) tronDepositAddress(ctx context.Context, in *sessionRequest) 
 	if err != nil {
 		return nil, tronDepositUnavailable("tron deposit read", err)
 	}
-	var fee *string
-	if row == nil {
-		minted, err := h.mintTronDepositAddress(ctx, wallet, userID)
-		if err != nil {
-			return nil, err
-		}
-		row = &tronDepositRow{Address: minted.Address, ExpiresAt: minted.ExpiresAt}
-		fee = tronDepositFeeCache.hold(minted.FeeUSD)
-	} else {
-		fee = h.tronDepositFee(ctx, wallet)
+	if row != nil {
+		return row, nil
 	}
-	return &tronDepositOutput{Body: TronDepositAddressResponse{Address: row.Address, MinUSD: bridge.Tron.MinUSD, FeeUSD: fee, ExpiresAt: row.ExpiresAt.UTC()}}, nil
+	minted, err := h.mintTronDepositAddress(ctx, wallet, userID)
+	if err != nil {
+		return nil, err
+	}
+	if minted.FeeUSD != "" {
+		tronDepositFeeCache.store(tronDepositCell, minted.FeeUSD)
+	}
+	return &tronDepositRow{Address: minted.Address, ExpiresAt: minted.ExpiresAt}, nil
 }
 
 func (h earnRoutes) storedTronDepositAddress(ctx context.Context, wallet solana.PublicKey) (*tronDepositRow, error) {
@@ -157,32 +152,4 @@ ON CONFLICT (address) DO NOTHING`, minted.Address, wallet.String(), userID, stri
 		return bridge.DepositAddress{}, earnError(http.StatusBadGateway, "tron_deposit_unavailable", "Relay returned a deposit address Loyal cannot use. Please try again.")
 	}
 	return minted, nil
-}
-
-// tronDepositFee answers from the cache, or waits on one quote shared by every
-// caller. A failed quote answers null and is retried by the next request.
-func (h earnRoutes) tronDepositFee(ctx context.Context, wallet solana.PublicKey) *string {
-	c := &tronDepositFeeCache
-	c.mu.Lock()
-	usd, fresh := c.usd, time.Now().Before(c.until)
-	c.mu.Unlock()
-	if fresh {
-		return usd
-	}
-	done := c.flight.DoChan("fee", func() (any, error) {
-		quoteCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		quote, err := h.Relay.DepositAddress(quoteCtx, bridge.Tron, wallet.String())
-		if err != nil {
-			slog.Warn("relay tron fee quote failed", "err", err)
-			return (*string)(nil), nil
-		}
-		return c.hold(quote.FeeUSD), nil
-	})
-	select {
-	case res := <-done:
-		return res.Val.(*string)
-	case <-ctx.Done():
-		return nil
-	}
 }

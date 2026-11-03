@@ -42,6 +42,9 @@ var Tron = DepositRoute{
 // being handed out, so nobody is shown an address about to expire.
 const DepositAddressLead = 30 * 24 * time.Hour
 
+// Relay sets the order deadline 180 days out; the slack absorbs clock skew.
+const depositOrderMaxLife = 200 * 24 * time.Hour
+
 const tronZeroAddress = "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb"
 
 type DepositAddress struct {
@@ -121,6 +124,7 @@ type relayDepositQuote struct {
 						ChainID   string `json:"chainId"`
 						Recipient string `json:"recipient"`
 						Currency  string `json:"currency"`
+						ExtraData string `json:"extraData"`
 					} `json:"refunds"`
 				} `json:"inputs"`
 				Output struct {
@@ -129,8 +133,9 @@ type relayDepositQuote struct {
 						Recipient string `json:"recipient"`
 						Currency  string `json:"currency"`
 					} `json:"payments"`
-					Calls    []json.RawMessage `json:"calls"`
-					Deadline int64             `json:"deadline"`
+					Calls     []json.RawMessage `json:"calls"`
+					Deadline  int64             `json:"deadline"`
+					ExtraData string            `json:"extraData"`
 				} `json:"output"`
 				Fees []json.RawMessage `json:"fees"`
 			} `json:"orderData"`
@@ -139,8 +144,8 @@ type relayDepositQuote struct {
 }
 
 // CheckDepositOrder parses Relay's deposit-address quote, which is untrusted,
-// and refuses any order that could pay a deposit anywhere but recipient's USDC
-// on Solana, or refund it anywhere but there or the route's recovery address.
+// and refuses any order that could pay or refund a deposit anywhere but
+// recipient's USDC on Solana.
 func CheckDepositOrder(route DepositRoute, recipient string, raw []byte, now time.Time) (DepositAddress, error) {
 	var q relayDepositQuote
 	if err := json.Unmarshal(raw, &q); err != nil {
@@ -170,12 +175,11 @@ func CheckDepositOrder(route DepositRoute, recipient string, raw []byte, now tim
 	if amount, ok := parseAmount(in.Payment.Amount); !ok || amount.Cmp(route.minimumRaw()) != 0 {
 		return DepositAddress{}, refuseOrder("input amount %q is not the requested amount", in.Payment.Amount)
 	}
-	for i, refund := range in.Refunds {
-		toWallet := refund.ChainID == "solana" && refund.Recipient == recipient
-		toRecovery := refund.ChainID == string(route.Chain) && refund.Recipient == route.Recovery
-		if !toWallet && !toRecovery {
-			return DepositAddress{}, refuseOrder("refunds[%d] pays %s on %s", i, refund.Recipient, refund.ChainID)
-		}
+	if len(in.Refunds) != 1 {
+		return DepositAddress{}, refuseOrder("%d refund legs, want 1", len(in.Refunds))
+	}
+	if r := in.Refunds[0]; r.ChainID != "solana" || r.Recipient != recipient || r.Currency != SolanaUSDCMint || r.ExtraData != "0x" {
+		return DepositAddress{}, refuseOrder("refund pays %s %s on %s with extraData %q, not USDC to the requested recipient on solana", r.Currency, r.Recipient, r.ChainID, r.ExtraData)
 	}
 	out := order.Output
 	if out.ChainID != "solana" || len(out.Payments) != 1 {
@@ -184,12 +188,12 @@ func CheckDepositOrder(route DepositRoute, recipient string, raw []byte, now tim
 	if p := out.Payments[0]; p.Recipient != recipient || p.Currency != SolanaUSDCMint {
 		return DepositAddress{}, refuseOrder("output pays %s %s, not USDC to the requested recipient", p.Currency, p.Recipient)
 	}
-	if len(out.Calls) != 0 || len(order.Fees) != 0 {
-		return DepositAddress{}, refuseOrder("order carries %d output calls and %d fees", len(out.Calls), len(order.Fees))
+	if len(out.Calls) != 0 || len(order.Fees) != 0 || out.ExtraData != "0x" {
+		return DepositAddress{}, refuseOrder("order carries %d output calls, %d fees and extraData %q", len(out.Calls), len(order.Fees), out.ExtraData)
 	}
 	deadline := time.Unix(out.Deadline, 0).UTC()
-	if !deadline.After(now.Add(DepositAddressLead)) {
-		return DepositAddress{}, refuseOrder("deadline %s is within %s", deadline.Format(time.RFC3339), DepositAddressLead)
+	if !deadline.After(now.Add(DepositAddressLead)) || deadline.After(now.Add(depositOrderMaxLife)) {
+		return DepositAddress{}, refuseOrder("deadline %s is not between %s and %s from now", deadline.Format(time.RFC3339), DepositAddressLead, depositOrderMaxLife)
 	}
 	return DepositAddress{Address: step.DepositAddress, RequestID: step.RequestID, ExpiresAt: deadline, FeeUSD: q.Fees.Relayer.AmountUSD}, nil
 }

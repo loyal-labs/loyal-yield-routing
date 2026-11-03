@@ -1884,7 +1884,7 @@ export type TronDepositAddressResponse = {
     address: string;
     expiresAt: string;
     /**
-     * Relay's fee in USD for a minimum deposit, from a live deposit-address quote; null when the quote failed
+     * Relay's fee in USD for a minimum deposit, from a deposit-address quote cached up to ten minutes; null until one has answered
      */
     feeUsd: string | null;
     minUsd: number;
