@@ -1,0 +1,205 @@
+package bridge
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/json"
+	"fmt"
+	"math/big"
+	"net/http"
+	"time"
+
+	"github.com/mr-tron/base58"
+)
+
+// DepositRoute is a chain served by a Relay open deposit address instead of a
+// transaction the user signs. It stays out of Networks, because every entry
+// there becomes a Privy deposit source and Privy refuses these chains.
+type DepositRoute struct {
+	Chain        Chain
+	RelayChainID int64
+	Asset        Asset
+	Token        string
+	Decimals     uint8
+	MinUSD       int
+	// Recovery is Loyal's ops address on the origin chain, which Relay pays
+	// only when it can neither fill nor refund.
+	Recovery string
+}
+
+var Tron = DepositRoute{
+	Chain:        "tron",
+	RelayChainID: 728126428,
+	Asset:        USDT,
+	Token:        "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+	Decimals:     6,
+	MinUSD:       100,
+	Recovery:     "THaGhMBWGmnSfDYRkWdqNZmxACYVVV9ytv",
+}
+
+// DepositAddressLead is how long before its order deadline an address stops
+// being handed out, so nobody is shown an address about to expire.
+const DepositAddressLead = 30 * 24 * time.Hour
+
+const tronZeroAddress = "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb"
+
+type DepositAddress struct {
+	Address   string
+	RequestID string
+	ExpiresAt time.Time
+	FeeUSD    string
+}
+
+type RefusedOrder struct{ reason string }
+
+func (e *RefusedOrder) Error() string { return "relay deposit order: " + e.reason }
+
+func refuseOrder(format string, args ...any) error {
+	return &RefusedOrder{fmt.Sprintf(format, args...)}
+}
+
+func (r DepositRoute) minimumRaw() *big.Int {
+	scale := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(r.Decimals)), nil)
+	return scale.Mul(scale, big.NewInt(int64(r.MinUSD)))
+}
+
+// DepositAddress mints an open deposit address on the route that pays USDC on
+// Solana to recipient. The quote is for the route's minimum; the address takes
+// any amount, and Relay requotes each deposit.
+func (r *Relay) DepositAddress(ctx context.Context, route DepositRoute, recipient string) (DepositAddress, error) {
+	body, err := json.Marshal(map[string]any{
+		"user":                tronZeroAddress,
+		"recipient":           recipient,
+		"recoveryAddress":     route.Recovery,
+		"originChainId":       route.RelayChainID,
+		"destinationChainId":  SolanaRelayChainID,
+		"originCurrency":      route.Token,
+		"destinationCurrency": SolanaUSDCMint,
+		"amount":              route.minimumRaw().String(),
+		"tradeType":           "EXACT_INPUT",
+		"useDepositAddress":   true,
+	})
+	if err != nil {
+		return DepositAddress{}, err
+	}
+	hreq, err := http.NewRequestWithContext(ctx, http.MethodPost, r.BaseURL+"/quote/v2", bytes.NewReader(body))
+	if err != nil {
+		return DepositAddress{}, err
+	}
+	hreq.Header.Set("Content-Type", "application/json")
+	raw, err := r.do(hreq)
+	if err != nil {
+		return DepositAddress{}, fmt.Errorf("relay deposit address: %w", err)
+	}
+	return CheckDepositOrder(route, recipient, raw, time.Now())
+}
+
+type relayDepositQuote struct {
+	Steps []struct {
+		ID             string `json:"id"`
+		Kind           string `json:"kind"`
+		RequestID      string `json:"requestId"`
+		DepositAddress string `json:"depositAddress"`
+	} `json:"steps"`
+	Fees struct {
+		Relayer relayCurrencyAmount `json:"relayer"`
+	} `json:"fees"`
+	Details struct {
+		Recipient string `json:"recipient"`
+	} `json:"details"`
+	Protocol struct {
+		V2 struct {
+			OrderData struct {
+				Inputs []struct {
+					Payment struct {
+						ChainID  string `json:"chainId"`
+						Currency string `json:"currency"`
+						Amount   string `json:"amount"`
+					} `json:"payment"`
+					Refunds []struct {
+						ChainID   string `json:"chainId"`
+						Recipient string `json:"recipient"`
+						Currency  string `json:"currency"`
+					} `json:"refunds"`
+				} `json:"inputs"`
+				Output struct {
+					ChainID  string `json:"chainId"`
+					Payments []struct {
+						Recipient string `json:"recipient"`
+						Currency  string `json:"currency"`
+					} `json:"payments"`
+					Calls    []json.RawMessage `json:"calls"`
+					Deadline int64             `json:"deadline"`
+				} `json:"output"`
+				Fees []json.RawMessage `json:"fees"`
+			} `json:"orderData"`
+		} `json:"v2"`
+	} `json:"protocol"`
+}
+
+// CheckDepositOrder parses Relay's deposit-address quote, which is untrusted,
+// and refuses any order that could pay a deposit anywhere but recipient's USDC
+// on Solana, or refund it anywhere but there or the route's recovery address.
+func CheckDepositOrder(route DepositRoute, recipient string, raw []byte, now time.Time) (DepositAddress, error) {
+	var q relayDepositQuote
+	if err := json.Unmarshal(raw, &q); err != nil {
+		return DepositAddress{}, fmt.Errorf("relay deposit order: %w", err)
+	}
+	if len(q.Steps) != 1 || q.Steps[0].ID != "deposit" || q.Steps[0].Kind != "transaction" {
+		return DepositAddress{}, refuseOrder("steps are not one deposit transaction")
+	}
+	step := q.Steps[0]
+	if step.RequestID == "" {
+		return DepositAddress{}, refuseOrder("empty requestId")
+	}
+	if !isTronAddress(step.DepositAddress) || step.DepositAddress == tronZeroAddress {
+		return DepositAddress{}, refuseOrder("depositAddress %q is not a Tron address", step.DepositAddress)
+	}
+	if q.Details.Recipient != recipient {
+		return DepositAddress{}, refuseOrder("details.recipient %q is not the requested recipient", q.Details.Recipient)
+	}
+	order := q.Protocol.V2.OrderData
+	if len(order.Inputs) != 1 {
+		return DepositAddress{}, refuseOrder("%d inputs, want 1", len(order.Inputs))
+	}
+	in := order.Inputs[0]
+	if in.Payment.ChainID != string(route.Chain) || in.Payment.Currency != route.Token {
+		return DepositAddress{}, refuseOrder("input is not %s on %s", route.Asset, route.Chain)
+	}
+	if amount, ok := parseAmount(in.Payment.Amount); !ok || amount.Cmp(route.minimumRaw()) != 0 {
+		return DepositAddress{}, refuseOrder("input amount %q is not the requested amount", in.Payment.Amount)
+	}
+	for i, refund := range in.Refunds {
+		toWallet := refund.ChainID == "solana" && refund.Recipient == recipient
+		toRecovery := refund.ChainID == string(route.Chain) && refund.Recipient == route.Recovery
+		if !toWallet && !toRecovery {
+			return DepositAddress{}, refuseOrder("refunds[%d] pays %s on %s", i, refund.Recipient, refund.ChainID)
+		}
+	}
+	out := order.Output
+	if out.ChainID != "solana" || len(out.Payments) != 1 {
+		return DepositAddress{}, refuseOrder("output is not one payment on solana")
+	}
+	if p := out.Payments[0]; p.Recipient != recipient || p.Currency != SolanaUSDCMint {
+		return DepositAddress{}, refuseOrder("output pays %s %s, not USDC to the requested recipient", p.Currency, p.Recipient)
+	}
+	if len(out.Calls) != 0 || len(order.Fees) != 0 {
+		return DepositAddress{}, refuseOrder("order carries %d output calls and %d fees", len(out.Calls), len(order.Fees))
+	}
+	deadline := time.Unix(out.Deadline, 0).UTC()
+	if !deadline.After(now.Add(DepositAddressLead)) {
+		return DepositAddress{}, refuseOrder("deadline %s is within %s", deadline.Format(time.RFC3339), DepositAddressLead)
+	}
+	return DepositAddress{Address: step.DepositAddress, RequestID: step.RequestID, ExpiresAt: deadline, FeeUSD: q.Fees.Relayer.AmountUSD}, nil
+}
+
+func isTronAddress(s string) bool {
+	b, err := base58.Decode(s)
+	if err != nil || len(b) != 25 || b[0] != 0x41 {
+		return false
+	}
+	first := sha256.Sum256(b[:21])
+	second := sha256.Sum256(first[:])
+	return bytes.Equal(second[:4], b[21:])
+}

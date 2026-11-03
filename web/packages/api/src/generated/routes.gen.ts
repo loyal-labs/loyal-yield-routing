@@ -29,6 +29,7 @@ export type Post = {
   "/api/funding/bridge/quote": Types.BridgeQuoteResponse;
   "/api/funding/bridge/transfers/{requestId}/submit": Types.BridgeTransfer;
   "/api/funding/evm-deposit-address": Types.EvmDepositAddressResponse;
+  "/api/funding/tron-deposit-address": Types.TronDepositAddressResponse;
   "/api/observability/errors": Types.ObsIngestAccepted;
   "/api/observability/events": Types.ObsJourneyAccepted;
   "/api/observability/metrics": Types.ObsIngestAccepted;

@@ -31,6 +31,7 @@ var earnFamilies = []earnFamily{
 	earnWprepFamily,
 	earnDprepFamily,
 	earnEvmDepositFamily,
+	earnTronDepositFamily,
 	earnBridgeFamily,
 	earnReferralsFamily,
 }
