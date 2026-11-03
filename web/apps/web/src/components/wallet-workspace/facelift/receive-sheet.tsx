@@ -339,7 +339,7 @@ export function ReceiveSheet({
         ? document.activeElement
         : null;
     return () => previous?.focus({ preventScroll: true });
-  }, [isOpen, initialTab]);
+  }, [isOpen, initialTab, walletAddress]);
   useEffect(() => {
     if (!isOpen) return;
     // Prevent focus scrolling from cancelling the panel's entry translation.
@@ -401,6 +401,7 @@ export function ReceiveSheet({
     : undefined;
   const deposit =
     network && selection ? tokenOn(network, selection.asset) : undefined;
+  const resolved = network && deposit;
 
   return (
     <SheetReveal
@@ -472,7 +473,7 @@ export function ReceiveSheet({
               <div className="min-h-0 flex-1 overflow-y-auto">
                 <div className="flex flex-col gap-2 p-2 max-[795px]:px-4">
                   {live && evm.error && <Warning>{evm.error}</Warning>}
-                  {network && deposit && (
+                  {resolved && (
                     <>
                       <AddressCard
                         address={evm.info?.address ?? null}
@@ -569,7 +570,7 @@ export function ReceiveSheet({
                       </span>
                     </div>
                   </div>
-                  {network && deposit && network.minUsd > 0 && (
+                  {resolved && network.minUsd > 0 && (
                     <dl className="rounded-2xl bg-accent py-1 text-[13px] leading-4">
                       <div className="flex h-9 items-center justify-between px-4">
                         <dt className="text-muted-foreground">
@@ -597,7 +598,7 @@ export function ReceiveSheet({
                 </p>
               </div>
             )}
-            {(!bridge || network) && (
+            {(!bridge || resolved) && (
               <div className="shrink-0 px-4 pt-2 pb-4">
                 <button
                   className="t-hover flex h-12 w-full items-center justify-center rounded-full bg-accent text-[16px] font-medium leading-5 enabled:hover:bg-accent-selected disabled:opacity-40"

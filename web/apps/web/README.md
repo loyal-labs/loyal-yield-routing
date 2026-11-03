@@ -90,7 +90,8 @@ sign, the browser signs it with the user's Privy key
 get 409. UI: Receive sheet → "Other chains".
 
 Adding a chain: enable app-pays sponsorship for it in the Privy dashboard,
-add it to `EVM_DEPOSIT_CHAINS` (and `CHAIN_LABELS` in the receive sheet).
+add it to `EVM_DEPOSIT_CHAINS`. The receive sheet's chains and tokens come from
+`bridge.Networks` on the server (`go/workers/internal/bridge/networks.go`).
 Existing addresses do not pick up new chains by themselves: all deposit
 addresses share one app-level Privy wallet automation
 (`GET /v1/wallet_automations`), so `PATCH` its `config.trigger.assets.values`
