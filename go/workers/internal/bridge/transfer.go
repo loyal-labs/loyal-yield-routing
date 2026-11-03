@@ -10,8 +10,8 @@ const (
 	TransferFailed    TransferState = "failed"
 )
 
-func (s TransferState) Terminal() bool {
-	return s == TransferFilled || s == TransferRefunded || s == TransferFailed
+func (s TransferState) Settled() bool {
+	return s == TransferFilled || s == TransferRefunded
 }
 
 // Submit records that the client posted its transaction. Only a quoted
@@ -24,9 +24,8 @@ func (s TransferState) Submit() TransferState {
 }
 
 // Advance applies one Relay status read. The bool reports whether Relay's
-// status is one we know; an unknown status leaves the state alone. A terminal
-// state never changes, and a quoted transfer stays quoted until the client
-// submits or Relay reports an outcome.
+// status is one we know; an unknown status leaves the state alone. The state
+// only moves to a higher rank, so a failed transfer can still refund or fill.
 func (s TransferState) Advance(relayStatus string) (TransferState, bool) {
 	var seen TransferState
 	switch relayStatus {
@@ -43,7 +42,7 @@ func (s TransferState) Advance(relayStatus string) (TransferState, bool) {
 	default:
 		return s, false
 	}
-	if s.Terminal() || rank(seen) <= rank(s) {
+	if rank(seen) <= rank(s) {
 		return s, true
 	}
 	return seen, true
@@ -55,6 +54,8 @@ func rank(s TransferState) int {
 		return 0
 	case TransferSubmitted:
 		return 1
+	case TransferFailed:
+		return 2
 	}
-	return 2
+	return 3
 }
