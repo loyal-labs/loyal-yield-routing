@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 )
 
 var privyAPIBase = "https://api.privy.io/v1"
@@ -61,7 +62,7 @@ func (h earnRoutes) privyCall(ctx context.Context, method, target string, body [
 	return nil
 }
 
-func (h earnRoutes) privySolanaWalletID(ctx context.Context, address string) (string, error) {
+func (h earnRoutes) privyWalletID(ctx context.Context, chainType, address string) (string, error) {
 	var page struct {
 		Data []struct {
 			ID        string `json:"id"`
@@ -69,12 +70,12 @@ func (h earnRoutes) privySolanaWalletID(ctx context.Context, address string) (st
 			ChainType string `json:"chain_type"`
 		} `json:"data"`
 	}
-	query := url.Values{"address": {address}, "chain_type": {"solana"}}
+	query := url.Values{"address": {address}, "chain_type": {chainType}}
 	if err := h.privyCall(ctx, http.MethodGet, privyAPIBase+"/wallets?"+query.Encode(), nil, nil, &page); err != nil {
 		return "", err
 	}
 	for _, wallet := range page.Data {
-		if wallet.ChainType == "solana" && wallet.Address == address && wallet.ID != "" {
+		if wallet.ChainType == chainType && wallet.ID != "" && (wallet.Address == address || chainType == "ethereum" && strings.EqualFold(wallet.Address, address)) {
 			return wallet.ID, nil
 		}
 	}

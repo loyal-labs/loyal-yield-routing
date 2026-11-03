@@ -41,8 +41,6 @@ const (
 	bridgeTransferLimit = 20
 )
 
-var bridgeRelay = bridge.NewRelay()
-
 var evmTxHash = regexp.MustCompile(`^0x[0-9a-f]{64}$`)
 
 type BridgeBalance struct {
@@ -175,7 +173,7 @@ func (h earnRoutes) bridgeBalances(ctx context.Context, in *sessionRequest) (*br
 	if err != nil {
 		return nil, err
 	}
-	walletID, err := h.privyEVMWalletID(ctx, address)
+	walletID, err := h.privyWalletID(ctx, "ethereum", address)
 	if err != nil {
 		return nil, bridgeUnavailable("privy evm wallet lookup", err)
 	}
@@ -198,25 +196,6 @@ func (h earnRoutes) bridgeBalances(ctx context.Context, in *sessionRequest) (*br
 	return out, nil
 }
 
-func (h earnRoutes) privyEVMWalletID(ctx context.Context, address string) (string, error) {
-	var page struct {
-		Data []struct {
-			ID      string `json:"id"`
-			Address string `json:"address"`
-		} `json:"data"`
-	}
-	query := url.Values{"address": {address}, "chain_type": {"ethereum"}}
-	if err := h.privyCall(ctx, http.MethodGet, privyAPIBase+"/wallets?"+query.Encode(), nil, nil, &page); err != nil {
-		return "", err
-	}
-	for _, wallet := range page.Data {
-		if strings.EqualFold(wallet.Address, address) && wallet.ID != "" {
-			return wallet.ID, nil
-		}
-	}
-	return "", nil
-}
-
 func (h earnRoutes) bridgeQuote(ctx context.Context, in *bridgeQuoteInput) (*bridgeQuoteOutput, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -232,7 +211,7 @@ func (h earnRoutes) bridgeQuote(ctx context.Context, in *bridgeQuoteInput) (*bri
 	if !ok {
 		return nil, earnError(http.StatusBadRequest, "invalid_body", "amountRaw must be a decimal integer.")
 	}
-	q, err := bridgeRelay.Quote(ctx, bridge.QuoteRequest{Chain: body.Chain, Asset: body.Asset, AmountRaw: amount, From: from, Recipient: wallet.String()})
+	q, err := h.Relay.Quote(ctx, bridge.QuoteRequest{Chain: body.Chain, Asset: body.Asset, AmountRaw: amount, From: from, Recipient: wallet.String()})
 	var refused *bridge.RequestError
 	var low *bridge.BelowMinimum
 	switch {
@@ -301,7 +280,7 @@ func (h earnRoutes) bridgeTransfers(ctx context.Context, in *sessionRequest) (*b
 	if err != nil {
 		return nil, err
 	}
-	rows, err := h.YieldDB.Query(ctx, bridgeTransferSelect+` WHERE solana_wallet = $1 ORDER BY quoted_at DESC LIMIT $2`, wallet.String(), bridgeTransferLimit)
+	rows, err := h.YieldDB.Query(ctx, bridgeTransferSelect+` WHERE solana_wallet = $1 AND state <> 'quoted' ORDER BY submitted_at DESC NULLS LAST LIMIT $2`, wallet.String(), bridgeTransferLimit)
 	if err != nil {
 		return nil, bridgeUnavailable("bridge transfers read", err)
 	}

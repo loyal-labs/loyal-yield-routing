@@ -1,5 +1,3 @@
--- One Relay bridge from a relay_signed EVM wallet to its Solana wallet, keyed by
--- Relay's request id.
 CREATE TABLE loyal_yield.bridge_transfers (
     request_id text PRIMARY KEY,
     solana_wallet text NOT NULL,
@@ -18,3 +16,4 @@ CREATE TABLE loyal_yield.bridge_transfers (
 );
 
 CREATE INDEX bridge_transfers_wallet_quoted_at ON loyal_yield.bridge_transfers (solana_wallet, quoted_at DESC);
+CREATE INDEX bridge_transfers_open_updated_at ON loyal_yield.bridge_transfers (updated_at) WHERE state IN ('submitted', 'failed');

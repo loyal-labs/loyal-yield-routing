@@ -94,7 +94,6 @@ const (
 // same address on all five networks (checked 2026-11-02).
 const relayDepository = "0x4cd00e387622c35bddb9b4c962c136462338bc31"
 
-// RequestError is a quote request Loyal refuses before asking Relay.
 type RequestError struct{ reason string }
 
 func (e *RequestError) Error() string { return "quote request: " + e.reason }

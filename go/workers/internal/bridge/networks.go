@@ -46,7 +46,6 @@ type Network struct {
 
 func (n Network) CAIP2() string { return fmt.Sprintf("eip155:%d", n.ChainID) }
 
-// BelowMinimum refuses a bridge worth less than its network's MinUSD.
 type BelowMinimum struct {
 	Chain  Chain
 	MinUSD int
