@@ -112,6 +112,7 @@
     "@types/react-dom": "^19",
     "commitizen": "^4.3.1",
     "eslint-config-next": "^15.5.21",
+    "linkedom": "0.18.12",
     "shadcn": "^3.5.0",
     "tailwindcss": "^4",
     "tw-animate-css": "^1.3.6",
