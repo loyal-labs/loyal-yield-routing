@@ -8,11 +8,14 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 )
 
 const maxRelayBody = 1 << 20
+
+var EVMTxHash = regexp.MustCompile(`^0x[0-9a-f]{64}$`)
 
 // EVMRPC holds one RPC URL per origin chain, used to simulate swap deposits;
 // a chain without one gets no swap quotes.
@@ -75,6 +78,15 @@ type Status struct {
 	InTxHashes []string
 	TxHashes   []string
 	FailReason string
+}
+
+func (s Status) originTx() string {
+	for _, hash := range s.InTxHashes {
+		if hash = strings.ToLower(hash); EVMTxHash.MatchString(hash) {
+			return hash
+		}
+	}
+	return ""
 }
 
 func (r *Relay) Status(ctx context.Context, requestID string) (Status, error) {

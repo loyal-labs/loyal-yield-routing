@@ -8,7 +8,6 @@ import (
 	"math/big"
 	"net/http"
 	"net/url"
-	"regexp"
 	"strings"
 	"time"
 
@@ -41,8 +40,6 @@ const (
 	bridgeSubmitPath    = "/api/funding/bridge/transfers/{requestId}/submit"
 	bridgeTransferLimit = 20
 )
-
-var evmTxHash = regexp.MustCompile(`^0x[0-9a-f]{64}$`)
 
 type BridgeBalance struct {
 	Chain     bridge.Chain `json:"chain"`
@@ -262,7 +259,7 @@ func (h earnRoutes) bridgeSubmit(ctx context.Context, in *bridgeSubmitInput) (*b
 		return nil, err
 	}
 	var body BridgeSubmitRequest
-	if json.Unmarshal(in.Raw.data, &body) != nil || !evmTxHash.MatchString(strings.ToLower(body.OriginTx)) {
+	if json.Unmarshal(in.Raw.data, &body) != nil || !bridge.EVMTxHash.MatchString(strings.ToLower(body.OriginTx)) {
 		return nil, earnError(http.StatusBadRequest, "invalid_body", "originTx must be a 0x transaction hash.")
 	}
 	t, err := h.bridgeTransfer(ctx, wallet, in.RequestID)

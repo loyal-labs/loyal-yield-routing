@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -18,7 +19,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-func TestTrackerStoresEachHashFromTheStatusThatCarriedIt(t *testing.T) {
+func trackerDB(t *testing.T) (context.Context, *pgxpool.Pool) {
+	t.Helper()
 	dsn := os.Getenv("BRIDGE_TEST_DATABASE_URL")
 	if dsn == "" {
 		t.Skip("requires a disposable local bridge_test database")
@@ -35,15 +37,15 @@ func TestTrackerStoresEachHashFromTheStatusThatCarriedIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer pool.Close()
+	t.Cleanup(pool.Close)
 	if _, err := pool.Exec(ctx, `CREATE SCHEMA loyal_yield`); err != nil {
 		t.Fatal(err)
 	}
-	defer func() {
+	t.Cleanup(func() {
 		if _, err := pool.Exec(ctx, `DROP SCHEMA loyal_yield CASCADE`); err != nil {
 			t.Error(err)
 		}
-	}()
+	})
 	var migrations []string
 	for _, pattern := range []string{"*_bridge_transfers*.sql", "*_relay_deposit_addresses.sql"} {
 		found, err := filepath.Glob("../../../../migrations/yield/" + pattern)
@@ -62,6 +64,11 @@ func TestTrackerStoresEachHashFromTheStatusThatCarriedIt(t *testing.T) {
 			t.Fatal(path, err)
 		}
 	}
+	return ctx, pool
+}
+
+func TestTrackerStoresEachHashFromTheStatusThatCarriedIt(t *testing.T) {
+	ctx, pool := trackerDB(t)
 	const (
 		refundHash  = "0x1111111111111111111111111111111111111111111111111111111111111111"
 		successHash = "0x2222222222222222222222222222222222222222222222222222222222222222"
@@ -192,6 +199,90 @@ FROM loyal_yield.bridge_transfers b WHERE request_id = $1`, c.requestID).Scan(&s
 	}
 	if want := filledID + "=" + settledOut + " " + pendingID + "=" + quotedOut; tronAmounts != want {
 		t.Errorf("got tron amount_out_raw %s; want only the USDC requests, the settled one at Relay's actual amount and the unsettled one unchanged: %s", tronAmounts, want)
+	}
+}
+
+func TestTrackerAdoptsQuotedTransfersRelaySaw(t *testing.T) {
+	ctx, pool := trackerDB(t)
+	originHash := "0x" + strings.Repeat("a", 64)
+	clientHash := "0x" + strings.Repeat("b", 64)
+	const fillHash = "4TgCELNYYxzv2uLxk7wKjaP77SB3fDCyq31EPsLHMQWTSiBmZ5QmSEYzCgdVSgYumZk45CCUMHmvVziAR1bTBmFx"
+	const clientSubmit = `UPDATE loyal_yield.bridge_transfers SET state = 'submitted', origin_tx = $2, submitted_at = now() WHERE request_id = $1 AND state = 'quoted'`
+	quote := func(requestID, age string) {
+		if _, err := pool.Exec(ctx, `INSERT INTO loyal_yield.bridge_transfers
+(request_id, solana_wallet, evm_address, chain, asset, amount_in_raw, amount_out_raw, quoted_at)
+VALUES ($1, 'wallet', '0x0000000000000000000000000000000000000001', 'base', 'usdc', 1000000, 990000, now() - $2::interval)`, requestID, age); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, id := range []string{"0xseen", "0xfilled", "0xunseen", "0xwaiting", "0xraced"} {
+		quote(id, "1 minute")
+	}
+	quote("0xexpired", "3 hours")
+
+	var mu sync.Mutex
+	polls := map[string]int{}
+	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id := r.URL.Query().Get("requestId")
+		mu.Lock()
+		polls[id]++
+		mu.Unlock()
+		switch id {
+		case "0xseen", "0xexpired":
+			fmt.Fprintf(w, `{"status":"pending","inTxHashes":[%q],"txHashes":[]}`, "0x"+strings.ToUpper(originHash[2:]))
+		case "0xfilled":
+			fmt.Fprintf(w, `{"status":"success","inTxHashes":[%q],"txHashes":[%q]}`, originHash, fillHash)
+		case "0xwaiting":
+			fmt.Fprint(w, `{"status":"waiting"}`)
+		case "0xraced":
+			if _, err := pool.Exec(r.Context(), clientSubmit, id, clientHash); err != nil {
+				t.Error(err)
+			}
+			fmt.Fprintf(w, `{"status":"pending","inTxHashes":[%q],"txHashes":[]}`, originHash)
+		default:
+			fmt.Fprint(w, `{"status":"unknown"}`)
+		}
+	}))
+	defer relay.Close()
+
+	tracker := &Tracker{DB: pool, Relay: &Relay{BaseURL: relay.URL, HTTP: relay.Client()}, Facts: engine.NewFacts(prometheus.NewRegistry())}
+	if err := tracker.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if tag, err := pool.Exec(ctx, clientSubmit, "0xseen", clientHash); err != nil || tag.RowsAffected() != 0 {
+		t.Fatalf("a late client submit changed an adopted row: %d rows, err = %v", tag.RowsAffected(), err)
+	}
+
+	for id, want := range map[string]struct{ state, originTx string }{
+		"0xseen":    {"submitted", originHash},
+		"0xfilled":  {"filled", originHash},
+		"0xunseen":  {"quoted", ""},
+		"0xwaiting": {"quoted", ""},
+		"0xexpired": {"quoted", ""},
+		"0xraced":   {"submitted", clientHash},
+	} {
+		var state, originTx string
+		var rows int
+		if err := pool.QueryRow(ctx, `SELECT min(state), coalesce(min(origin_tx), ''), count(*) FROM loyal_yield.bridge_transfers WHERE request_id = $1`, id).Scan(&state, &originTx, &rows); err != nil {
+			t.Fatal(err)
+		}
+		if state != want.state || originTx != want.originTx || rows != 1 {
+			t.Errorf("%s: %d rows, state %q, origin_tx %q; want one row, %q, %q", id, rows, state, originTx, want.state, want.originTx)
+		}
+	}
+	if polls["0xexpired"] != 0 {
+		t.Errorf("a quote past the window was polled %d times", polls["0xexpired"])
+	}
+
+	for i := range 2 * lostSubmitBatch {
+		quote(fmt.Sprintf("0xabandoned-%d", i), "1 minute")
+	}
+	clear(polls)
+	if err := tracker.adoptLostSubmits(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(polls); n != lostSubmitBatch {
+		t.Errorf("one tick polled %d quoted rows, want the batch of %d", n, lostSubmitBatch)
 	}
 }
 
