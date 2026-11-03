@@ -111,7 +111,7 @@ const (
 
 const solanaUSDCDecimals = 6
 
-const maxSwapShortfallBps = 300
+const maxSwapShortfallBps = 400
 
 type RequestError struct{ reason string }
 
