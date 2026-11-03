@@ -37,9 +37,12 @@ const (
 	bridgeBalancesPath  = "/api/funding/bridge/balances"
 	bridgeQuotePath     = "/api/funding/bridge/quote"
 	bridgeTransfersPath = "/api/funding/bridge/transfers"
+	bridgeConfirmPath   = "/api/funding/bridge/transfers/{requestId}/confirm"
 	bridgeSubmitPath    = "/api/funding/bridge/transfers/{requestId}/submit"
 	bridgeTransferLimit = 20
 )
+
+var bridgeQuoteBudget = budget{every: 15 * time.Second, burst: 12}
 
 type BridgeBalance struct {
 	Chain     bridge.Chain `json:"chain"`
@@ -107,6 +110,11 @@ type bridgeQuoteInput struct {
 	Raw rawJSON
 }
 
+type bridgeConfirmInput struct {
+	SessionInput
+	RequestID string `path:"requestId" doc:"Relay request id from the quote"`
+}
+
 type bridgeSubmitInput struct {
 	SessionInput
 	RequestID string `path:"requestId" doc:"Relay request id from the quote"`
@@ -126,9 +134,16 @@ func (h earnRoutes) registerBridge(api huma.API) {
 		Method:      http.MethodPost,
 		Path:        bridgeQuotePath,
 		Summary:     "Quote a Relay bridge from the signed-in wallet's EVM wallet to it",
-		Responses:   errorResponses[routeError](api, 400, 401, 404, 503),
+		Responses:   errorResponses[routeError](api, 400, 401, 404, 429, 503),
 	}, h.bridgeQuote)
 	documentJSONBody[BridgeQuoteRequest](api, bridgeQuotePath)
+	huma.Register(api, huma.Operation{
+		OperationID: "post-funding-bridge-transfer-confirm",
+		Method:      http.MethodPost,
+		Path:        bridgeConfirmPath,
+		Summary:     "Record that the user confirmed a quoted bridge, before any send",
+		Responses:   errorResponses[routeError](api, 401, 404, 503),
+	}, h.bridgeConfirm)
 	huma.Register(api, huma.Operation{
 		OperationID: "post-funding-bridge-transfer-submit",
 		Method:      http.MethodPost,
@@ -220,6 +235,9 @@ func (h earnRoutes) bridgeQuote(ctx context.Context, in *bridgeQuoteInput) (*bri
 	if !ok {
 		return nil, earnError(http.StatusBadRequest, "invalid_body", "amountRaw must be a decimal integer.")
 	}
+	if !h.bridgeQuotes.get(limiterKey{"bridge-quote", "wallet", wallet.String()}, bridgeQuoteBudget, time.Now()).Allow() {
+		return nil, earnError(http.StatusTooManyRequests, "rate_limited", "Too many quotes. Please wait a minute.")
+	}
 	q, err := h.Relay.Quote(ctx, bridge.QuoteRequest{Chain: body.Chain, Asset: body.Asset, AmountRaw: amount, From: from, Recipient: wallet.String()})
 	var refused *bridge.RequestError
 	var low *bridge.BelowMinimum
@@ -249,6 +267,29 @@ ON CONFLICT (request_id) DO NOTHING`, q.RequestID, wallet.String(), from, string
 		out.Body.Calls = append(out.Body.Calls, BridgeCall{To: c.To, Data: c.Data, Value: c.Value})
 	}
 	return out, nil
+}
+
+func (h earnRoutes) bridgeConfirm(ctx context.Context, in *bridgeConfirmInput) (*bridgeTransferOutput, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	wallet, err := h.evmDepositWallet(in.SessionInput)
+	if err != nil {
+		return nil, err
+	}
+	tag, err := h.YieldDB.Exec(ctx, `UPDATE loyal_yield.bridge_transfers
+SET confirmed_at = coalesce(confirmed_at, clock_timestamp()), updated_at = clock_timestamp()
+WHERE request_id = $1 AND solana_wallet = $2 AND state = 'quoted'`, in.RequestID, wallet.String())
+	if err != nil {
+		return nil, bridgeUnavailable("bridge transfer confirm", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return nil, earnError(http.StatusNotFound, "bridge_transfer_missing", "No quoted transfer with this id for this wallet.")
+	}
+	t, err := h.bridgeTransfer(ctx, wallet, in.RequestID)
+	if err != nil || t == nil {
+		return nil, bridgeUnavailable("bridge transfer read", err)
+	}
+	return &bridgeTransferOutput{Body: *t}, nil
 }
 
 func (h earnRoutes) bridgeSubmit(ctx context.Context, in *bridgeSubmitInput) (*bridgeTransferOutput, error) {

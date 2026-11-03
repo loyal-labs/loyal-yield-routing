@@ -51,8 +51,9 @@ type Privy struct {
 }
 
 type earnRoutes struct {
-	auth  *Auth
-	appDB *pgxpool.Pool
+	auth         *Auth
+	appDB        *pgxpool.Pool
+	bridgeQuotes *limiters
 	Earn
 }
 
@@ -66,5 +67,5 @@ func newEarnRoutes(auth *Auth, appDB *pgxpool.Pool, earn Earn) earnRoutes {
 	if earn.SponsorChain == nil && earn.Chain != nil {
 		earn.SponsorChain = earn.Chain
 	}
-	return earnRoutes{auth: auth, appDB: appDB, Earn: earn}
+	return earnRoutes{auth: auth, appDB: appDB, bridgeQuotes: newLimiters(), Earn: earn}
 }

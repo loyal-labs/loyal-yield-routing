@@ -2172,6 +2172,10 @@ export type PostFundingBridgeQuoteErrors = {
      */
     404: RouteError;
     /**
+     * Too Many Requests
+     */
+    429: RouteError;
+    /**
      * Service Unavailable
      */
     503: RouteError;
@@ -2221,6 +2225,49 @@ export type GetFundingBridgeTransfersResponses = {
 };
 
 export type GetFundingBridgeTransfersResponse = GetFundingBridgeTransfersResponses[keyof GetFundingBridgeTransfersResponses];
+
+export type PostFundingBridgeTransferConfirmData = {
+    body?: never;
+    headers?: {
+        Authorization?: string;
+        Cookie?: string;
+        'X-Forwarded-Host'?: string;
+    };
+    path: {
+        /**
+         * Relay request id from the quote
+         */
+        requestId: string;
+    };
+    query?: never;
+    url: '/api/funding/bridge/transfers/{requestId}/confirm';
+};
+
+export type PostFundingBridgeTransferConfirmErrors = {
+    /**
+     * Unauthorized
+     */
+    401: RouteError;
+    /**
+     * Not Found
+     */
+    404: RouteError;
+    /**
+     * Service Unavailable
+     */
+    503: RouteError;
+};
+
+export type PostFundingBridgeTransferConfirmError = PostFundingBridgeTransferConfirmErrors[keyof PostFundingBridgeTransferConfirmErrors];
+
+export type PostFundingBridgeTransferConfirmResponses = {
+    /**
+     * OK
+     */
+    200: BridgeTransfer;
+};
+
+export type PostFundingBridgeTransferConfirmResponse = PostFundingBridgeTransferConfirmResponses[keyof PostFundingBridgeTransferConfirmResponses];
 
 export type PostFundingBridgeSponsorRefusalData = {
     body?: BridgeSponsorRefusalRequest;
