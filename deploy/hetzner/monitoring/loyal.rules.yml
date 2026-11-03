@@ -320,6 +320,16 @@ groups:
           action: "Read the retail engine's recent Privy gas spend errors: a non-200 status, a currency other than usd or more wallets than the reader pages. Check the Privy status page and that the app secret is still valid."
           recovery: "Confirm the last-success timestamp advances every 5 minutes. A vanished series is not proof of recovery."
 
+      - alert: LoyalBridgeSponsorRefused
+        expr: sum by (chain) (increase(loyal_bridge_sponsor_refusals_total[15m])) > 0
+        labels: {severity: page}
+        annotations:
+          summary: "Privy refused to sponsor a Move send on {{ $labels.chain }}"
+          trigger: "A signed-in user's Move from their EVM wallet to Solana reported that Privy refused gas sponsorship in the last 15 minutes."
+          impact: "Users cannot move funds from that chain to Solana; the funds stay in their EVM wallet until sponsorship works again."
+          action: "Read loyal-web's 'bridge sponsored send refused' log lines for Privy's message. Check the Privy dashboard under Billing > Fee sponsorship for the credit balance and that the chain is enabled in the sponsorship policy."
+          recovery: "Confirm a fresh Move on that chain sends without a refusal and the counter stops increasing; the window expiring is not a fix."
+
   - name: monitoring
     rules:
       # node_exporter, Prometheus or Alertmanager not scrapeable: the unit

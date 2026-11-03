@@ -29,7 +29,7 @@ var earnBridgeFamily = earnFamily{
 		TableGrant("loyal_yield.bridge_transfers", "UPDATE"),
 	},
 	ready: func(h earnRoutes) bool {
-		return h.signedIn() && h.YieldDB != nil && h.Privy != nil && h.Privy.AppID != "" && h.Privy.AppSecret != ""
+		return h.signedIn() && h.YieldDB != nil && h.Privy != nil && h.Privy.AppID != "" && h.Privy.AppSecret != "" && h.Refusals != nil
 	},
 	register: earnRoutes.registerBridge,
 }
@@ -147,6 +147,7 @@ func (h earnRoutes) registerBridge(api huma.API) {
 		Summary:     "The signed-in wallet's latest bridges and their state",
 		Responses:   errorResponses[routeError](api, 401, 503),
 	}, h.bridgeTransfers)
+	h.registerBridgeRefusal(api)
 }
 
 func bridgeUnavailable(step string, err error) error {

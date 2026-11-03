@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/bridge"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
@@ -202,13 +203,13 @@ func earnMax(rpcClient *chain.Client, grants grantVerdicts, yieldDB *pgxpool.Poo
 	return &webapp.EarnMax{Reader: earnmax.NewReader(rpcClient, yield), Cluster: cluster, Invites: invites}
 }
 
-func earn(ctx context.Context, rpcClient *chain.Client, appDB, yieldDB, timescaleDB *pgxpool.Pool) *webapp.Earn {
+func earn(ctx context.Context, registry *prometheus.Registry, rpcClient *chain.Client, appDB, yieldDB, timescaleDB *pgxpool.Pool) *webapp.Earn {
 	cluster, err := webapp.ParseSolanaCluster(os.Getenv("LOYAL_WEB_SOLANA_CLUSTER"))
 	if err != nil {
 		degraded("Earn routes", err)
 		return nil
 	}
-	e := &webapp.Earn{YieldDB: yieldDB, Chain: rpcClient, Cluster: cluster, Timescale: timescaleDB, Relay: bridge.NewRelay()}
+	e := &webapp.Earn{YieldDB: yieldDB, Chain: rpcClient, Cluster: cluster, Timescale: timescaleDB, Relay: bridge.NewRelay(), Refusals: webapp.NewSponsorRefusals(registry)}
 	if raw, ok := optionalCredential("Relay swap quotes", "WEB_EVM_RPC_URLS"); ok {
 		if e.Relay.EVMRPC, err = bridge.ParseEVMRPCURLs(raw); err != nil {
 			degraded("Relay swap quotes", fmt.Errorf("WEB_EVM_RPC_URLS: %w", err))
@@ -314,7 +315,21 @@ func run(ctx context.Context) error {
 		cfg.EarnMax = earnMax(rpcClient, grants, yieldDB)
 		cfg.PushDB = grants.Push
 	}
-	cfg.Earn = earn(ctx, rpcClient, appDB, yieldDB, timescaleDB)
+	registry := prometheus.NewRegistry()
+	cfg.Earn = earn(ctx, registry, rpcClient, appDB, yieldDB, timescaleDB)
+	if address := os.Getenv("LOYAL_METRICS_ADDRESS"); address == "" {
+		degraded("metrics", errors.New("LOYAL_METRICS_ADDRESS is not set"))
+	} else {
+		metrics, err := engine.ListenMetrics(address, registry)
+		if err != nil {
+			return err
+		}
+		go func() {
+			if err := metrics.Run(ctx); err != nil {
+				slog.Error("loyal-web metrics", "error", err)
+			}
+		}()
+	}
 	server := &http.Server{
 		Addr:              cfg.Addr,
 		Handler:           webapp.New(cfg),

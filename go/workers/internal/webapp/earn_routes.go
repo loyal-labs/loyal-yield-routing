@@ -31,6 +31,7 @@ type Earn struct {
 	Timescale    *pgxpool.Pool
 	Push         *WalletPush
 	Granted      map[string]bool
+	Refusals     *SponsorRefusals
 }
 
 type WalletPush struct {

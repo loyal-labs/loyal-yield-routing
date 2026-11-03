@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus"
+
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
@@ -67,7 +69,7 @@ func TestEarnRelayKeepsTheRPCURLsWhenTheAPIKeyIsSet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	relay := earn(t.Context(), rpcClient, nil, nil, nil).Relay
+	relay := earn(t.Context(), prometheus.NewRegistry(), rpcClient, nil, nil, nil).Relay
 	if relay.APIKey != "k" || relay.EVMRPC["base"] != "https://rpc.example/base" {
 		t.Fatalf("Relay APIKey=%q EVMRPC=%v, want the key and the base RPC", relay.APIKey, relay.EVMRPC)
 	}
