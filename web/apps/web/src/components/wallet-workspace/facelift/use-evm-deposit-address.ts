@@ -1,16 +1,26 @@
 "use client";
 
+import type { EvmDepositAddressResponse, RouteError } from "@loyal-labs/api";
 import { useAuthorizationSignature, usePrivy } from "@privy-io/react-auth";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { usePublicEnv } from "@/contexts/public-env-context";
 
-export type EvmDepositInfo = {
-  address: string;
-  chains: readonly string[];
-  assets: readonly string[];
-  minimums: Record<string, number>;
-};
+type EvmDepositInfo = EvmDepositAddressResponse & { address: string };
+
+async function readDepositResponse(
+  res: Response
+): Promise<EvmDepositAddressResponse> {
+  const body = (await res.json().catch(() => null)) as
+    | EvmDepositAddressResponse
+    | Partial<RouteError>
+    | null;
+  if (res.ok && body && "address" in body) return body;
+  throw new Error(
+    (body && "error" in body && body.error?.message) ||
+      `Could not get a deposit address (${res.status}).`
+  );
+}
 
 /**
  * Cross-chain deposit address for the signed-in user's Privy-embedded wallet.
@@ -61,36 +71,24 @@ export function useEvmDepositAddress(walletAddress: string | null) {
     setLoading(true);
     setError(null);
     try {
-      const read = (await (
-        await fetch("/api/funding/evm-deposit-address", {
-          credentials: "include",
-        })
-      ).json()) as {
-        address?: string | null;
-        toSign?: unknown;
-        requestExpiry?: number;
-        chains?: readonly string[];
-        assets?: readonly string[];
-        minimums?: Record<string, number>;
-        error?: { message?: string };
-      };
-      if (read.error) throw new Error(read.error.message ?? "Request failed.");
+      const res = await fetch("/api/funding/evm-deposit-address", {
+        credentials: "include",
+      });
+      const read = await readDepositResponse(res);
       if (!current()) return;
       if (read.address) {
-        setInfo({
-          address: read.address,
-          chains: read.chains ?? [],
-          assets: read.assets ?? [],
-          minimums: read.minimums ?? {},
-        });
+        setInfo({ ...read, address: read.address });
         return;
+      }
+      if (read.kind !== "privy_autobridge" || !read.toSign) {
+        throw new Error(`Could not get a deposit address (${res.status}).`);
       }
       // First time: the wallet is user-owned, so the user signs the exact
       // Privy request with their key and the server forwards the signature.
       const { signature } = await generateAuthorizationSignature(
         read.toSign as Parameters<typeof generateAuthorizationSignature>[0]
       );
-      const res = await fetch("/api/funding/evm-deposit-address", {
+      const posted = await fetch("/api/funding/evm-deposit-address", {
         method: "POST",
         credentials: "include",
         headers: { "content-type": "application/json" },
@@ -99,17 +97,11 @@ export function useEvmDepositAddress(walletAddress: string | null) {
           requestExpiry: read.requestExpiry,
         }),
       });
-      const body = (await res.json().catch(() => null)) as
-        | (EvmDepositInfo & { error?: undefined })
-        | { error?: { message?: string } }
-        | null;
-      if (!res.ok || !body || body.error || !("address" in body)) {
-        throw new Error(
-          body?.error?.message ??
-            `Could not get a deposit address (${res.status}).`
-        );
+      const created = await readDepositResponse(posted);
+      if (!created.address) {
+        throw new Error(`Could not get a deposit address (${posted.status}).`);
       }
-      if (current()) setInfo(body);
+      if (current()) setInfo({ ...created, address: created.address });
     } catch (e) {
       if (current()) setError(e instanceof Error ? e.message : String(e));
     } finally {
