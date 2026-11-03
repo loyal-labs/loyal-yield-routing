@@ -95,7 +95,7 @@ export function InfoTooltip({
           placement === "bottom" ? "t-tt-bottom" : ""
         } ${
           tone === "dark"
-            ? "[--tt-bg:#8a8a8e] [--tt-fg:#fff] !rounded-xl !shadow-none"
+            ? "[--tt-bg:#8a8a8e] [--tt-fg:#fff] !max-w-[256px] !rounded-[12px] !shadow-none"
             : ""
         }`}
         id={id}
