@@ -43,6 +43,9 @@ func ParseEVMRPCURLs(s string) (map[Chain]string, error) {
 		if u, err := url.Parse(raw); err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
 			return nil, fmt.Errorf("the %s RPC is not an http(s) URL", name)
 		}
+		if _, dup := urls[c]; dup {
+			return nil, fmt.Errorf("the %s RPC is listed twice", name)
+		}
 		urls[c] = raw
 	}
 	return urls, nil

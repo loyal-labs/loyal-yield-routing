@@ -256,7 +256,6 @@ func earn(ctx context.Context, rpcClient *chain.Client, appDB, yieldDB, timescal
 		e.Privy = &webapp.Privy{AppID: strings.TrimSpace(appID), AppSecret: strings.TrimSpace(appSecret), CookieParentDomains: domains}
 	}
 	if key, ok := optionalCredential("Relay keyed quotes", "RELAY_API_KEY"); ok && key != "" {
-		e.Relay = bridge.NewRelay()
 		e.Relay.APIKey = strings.TrimSpace(key)
 	}
 	if timescaleDB == nil {
