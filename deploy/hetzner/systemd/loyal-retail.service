@@ -42,6 +42,14 @@ Environment=RETAIL_TIMESCALE_SCHEMA=kamino
 #   [Service]
 #   LoadCredentialEncrypted=RETAIL_SWEEP_NOTIFY_ENDPOINT:/etc/credstore.encrypted/loyal-retail/RETAIL_SWEEP_NOTIFY_ENDPOINT
 #   LoadCredentialEncrypted=RETAIL_SWEEP_NOTIFY_SECRET:/etc/credstore.encrypted/loyal-retail/RETAIL_SWEEP_NOTIFY_SECRET
+# The Privy gas-spend reader (LoyalPrivyGasSpendHigh and LoyalPrivyGasSpendStale)
+# runs in the process holding the autodeposit lock and needs both credentials in
+# /etc/systemd/system/loyal-retail.service.d/privy-gas-spend.conf:
+#   [Service]
+#   LoadCredentialEncrypted=RETAIL_PRIVY_APP_ID:/etc/credstore.encrypted/loyal-retail/RETAIL_PRIVY_APP_ID
+#   LoadCredentialEncrypted=RETAIL_PRIVY_APP_SECRET:/etc/credstore.encrypted/loyal-retail/RETAIL_PRIVY_APP_SECRET
+# Both absent means the reader is off and both alerts stay silent; one without
+# the other fails startup.
 EnvironmentFile=/etc/loyal/loyal-retail.env
 
 DynamicUser=yes

@@ -291,6 +291,35 @@ groups:
           action: "Inspect the first exit cause, OOM/resource events, startup configuration and dependency failures. Check signed/in-flight state before remediation; stop repeated blind restarts and follow the release rollback/recovery runbook."
           recovery: "Verify the restart count stabilizes and fresh work completes on the intended release; waiting for the counter window to expire is not a fix."
 
+      # Privy sponsors gas for user wallets and has no balance API: the
+      # balance, refill and low-balance notice live in its dashboard. The
+      # retail engine reads the last hour's app spend every 5m. A reading
+      # older than 15m is neither high nor low, so the spend rule requires a
+      # fresh one and the stale rule covers a Privy outage or a dead reader.
+      - alert: LoyalPrivyGasSpendHigh
+        expr: |
+          loyal_privy_gas_spend_1h_usd > 0.5
+          and on () (time() - max(loyal_privy_gas_spend_last_success_timestamp_seconds) < 900)
+        for: 5m
+        labels: {severity: page}
+        annotations:
+          summary: "Privy gas spend is ${{ printf \"%.2f\" $value }} in the last hour"
+          trigger: "Privy gas credits charged over the last hour stayed above $0.50, about 50 sponsored sends at the $0.01 ceiling per send; condition persisted for 5 minutes."
+          impact: "Sponsored gas is draining the Privy credit balance faster than normal sends explain, so users may soon fail to send."
+          action: "Compare with the Privy dashboard under Billing > Fee sponsorship and the app's recent sponsored sends. Check for a gas price spike on the chains we sponsor, a looping client or a drained wallet; confirm auto-refill is on and the balance covers the hour."
+          recovery: "Verify the one-hour spend reading is back under $0.50 on a fresh read and the credit balance is not falling. A stale reading does not prove recovery."
+
+      - alert: LoyalPrivyGasSpendStale
+        expr: time() - max(max_over_time(loyal_privy_gas_spend_last_success_timestamp_seconds[1h])) > 900
+        for: 2m
+        labels: {severity: page}
+        annotations:
+          summary: "Privy gas spend has not been read for 15m"
+          trigger: "No successful read of Privy's gas spend for over 15 minutes (three read intervals); condition persisted for 2 minutes."
+          impact: "Unusual sponsored gas spend would go unnoticed, and the Privy credit balance cannot be checked from here."
+          action: "Read the retail engine's recent Privy gas spend errors: a non-200 status, a currency other than usd or more wallets than the reader pages. Check the Privy status page and that the app secret is still valid."
+          recovery: "Confirm the last-success timestamp advances every 5 minutes. A vanished series is not proof of recovery."
+
   - name: monitoring
     rules:
       # node_exporter, Prometheus or Alertmanager not scrapeable: the unit

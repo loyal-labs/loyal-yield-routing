@@ -278,6 +278,32 @@
   },
   {
     "labels": {
+      "alertname": "LoyalPrivyGasSpendHigh",
+      "severity": "page"
+    },
+    "annotations": {
+      "action": "Compare with the Privy dashboard under Billing > Fee sponsorship and the app's recent sponsored sends. Check for a gas price spike on the chains we sponsor, a looping client or a drained wallet; confirm auto-refill is on and the balance covers the hour.",
+      "impact": "Sponsored gas is draining the Privy credit balance faster than normal sends explain, so users may soon fail to send.",
+      "recovery": "Verify the one-hour spend reading is back under $0.50 on a fresh read and the credit balance is not falling. A stale reading does not prove recovery.",
+      "summary": "Privy gas spend is $0.62 in the last hour",
+      "trigger": "Privy gas credits charged over the last hour stayed above $0.50, about 50 sponsored sends at the $0.01 ceiling per send; condition persisted for 5 minutes."
+    }
+  },
+  {
+    "labels": {
+      "alertname": "LoyalPrivyGasSpendStale",
+      "severity": "page"
+    },
+    "annotations": {
+      "action": "Read the retail engine's recent Privy gas spend errors: a non-200 status, a currency other than usd or more wallets than the reader pages. Check the Privy status page and that the app secret is still valid.",
+      "impact": "Unusual sponsored gas spend would go unnoticed, and the Privy credit balance cannot be checked from here.",
+      "recovery": "Confirm the last-success timestamp advances every 5 minutes. A vanished series is not proof of recovery.",
+      "summary": "Privy gas spend has not been read for 15m",
+      "trigger": "No successful read of Privy's gas spend for over 15 minutes (three read intervals); condition persisted for 2 minutes."
+    }
+  },
+  {
+    "labels": {
       "alertname": "LoyalMonitoringDown",
       "job": "alertmanager",
       "severity": "page"
