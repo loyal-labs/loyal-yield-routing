@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"net/http"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -320,14 +319,16 @@ func (h earnRoutes) createRelaySignedRoute(ctx context.Context, wallet solana.Pu
 	if err != nil {
 		return nil, err
 	}
-	if !slices.ContainsFunc(identity.Wallets, func(w PrivyLinkedWallet) bool { return w.Address == wallet.String() }) {
+	var linked, embedded bool
+	for _, w := range identity.Wallets {
+		if w.Address == wallet.String() {
+			linked, embedded = true, embedded || w.Embedded
+		}
+	}
+	if !linked {
 		return nil, earnError(http.StatusForbidden, "privy_wallet_not_linked", "Wallet is not linked to the authenticated Privy user.")
 	}
-	walletID, err := h.privySolanaWalletID(ctx, wallet.String())
-	if err != nil {
-		return nil, evmDepositUnavailable("privy wallet lookup", err)
-	}
-	if walletID != "" {
+	if embedded {
 		return nil, earnError(http.StatusConflict, "evm_deposit_privy_wallet", "This wallet takes deposits from other chains through Privy auto-bridge.")
 	}
 	for _, address := range identity.EmbeddedEVMWallets {

@@ -219,6 +219,10 @@ func privyAudienceMatches(raw json.RawMessage, appID string) bool {
 	return false
 }
 
+func isPrivyEmbedded(walletClientType string) bool {
+	return walletClientType == "privy" || walletClientType == "privy-v2"
+}
+
 // parsePrivyIdentity folds the token's JSON-string linked_accounts claim into
 // the shape privy-auth.ts derives from the SDK's user: Solana wallets with an
 // embedded marker, plus the first email claim (email account, then Google
@@ -243,9 +247,9 @@ func parsePrivyIdentity(claims privyIdentityTokenClaims) (PrivyIdentity, error) 
 		case account.Type == "wallet" && account.ChainType == "solana" && account.Address != "":
 			identity.Wallets = append(identity.Wallets, PrivyLinkedWallet{
 				Address:  account.Address,
-				Embedded: account.WalletClientType == "privy",
+				Embedded: isPrivyEmbedded(account.WalletClientType),
 			})
-		case account.Type == "wallet" && account.ChainType == "ethereum" && account.WalletClientType == "privy" && account.Address != "":
+		case account.Type == "wallet" && account.ChainType == "ethereum" && (isPrivyEmbedded(account.WalletClientType)) && account.Address != "":
 			identity.EmbeddedEVMWallets = append(identity.EmbeddedEVMWallets, account.Address)
 		case account.Type == "email" && account.Address != "":
 			identity.Email = account.Address
