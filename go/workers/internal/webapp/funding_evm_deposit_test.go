@@ -1,6 +1,7 @@
 package webapp
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -8,11 +9,14 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -221,5 +225,115 @@ func TestEvmDepositRelaySignedRefusesEmbeddedWalletWhenPrivyLookupIsEmpty(t *tes
 				t.Fatalf("evm_deposit_routes has %d rows; an embedded wallet must write none", rows)
 			}
 		})
+	}
+}
+
+const (
+	fakePrivyWalletID = "privy-wallet-1"
+	fakePrivyAddress  = "0x00000000000000000000000000000000000000ab"
+)
+
+type fakePrivy struct {
+	created atomic.Bool
+	creates atomic.Int32
+}
+
+func (f *fakePrivy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	route := []map[string]string{{"deposit_address": fakePrivyAddress, "wallet_id": fakePrivyWalletID}}
+	switch {
+	case r.URL.Path == "/v1/wallets":
+		wallet := map[string]string{"id": fakePrivyWalletID, "address": r.URL.Query().Get("address"), "chain_type": "solana"}
+		json.NewEncoder(w).Encode(map[string]any{"data": []map[string]string{wallet}})
+	case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/deposit_accounts/crypto"):
+		data := []map[string]string{}
+		if f.created.Load() {
+			data = route
+		}
+		json.NewEncoder(w).Encode(map[string]any{"data": data})
+	case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/deposit_accounts/crypto"):
+		f.creates.Add(1)
+		time.Sleep(200 * time.Millisecond)
+		f.created.Store(true)
+		json.NewEncoder(w).Encode(map[string]any{"deposit_accounts": route})
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+func TestEvmDepositConcurrentPostsMakeOnePrivyCreate(t *testing.T) {
+	pool := evmDepositTestDB(t)
+	ctx := context.Background()
+	wallet := solana.NewWallet().PublicKey()
+	if _, err := pool.Exec(ctx, `INSERT INTO app_users (provider, subject_address) VALUES ('solana', $1)`, wallet.String()); err != nil {
+		t.Fatal(err)
+	}
+	privy := &fakePrivy{}
+	server := httptest.NewServer(privy)
+	defer server.Close()
+	target, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys, err := jwt.NewKeys("isolated-session-test-secret", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer, err := jwt.NewSigner("isolated-session-test-secret", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := signer.Mint(map[string]any{"sub": wallet.String()}, mobileEarnAudience, time.Hour, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := chi.NewRouter()
+	earnRoutes{
+		auth:  &Auth{keys: keys},
+		appDB: pool,
+		Earn: Earn{
+			YieldDB: pool,
+			HTTP:    &http.Client{Transport: rewriteTransport{target}},
+			Privy:   &Privy{AppID: "app", AppSecret: "secret"},
+		},
+	}.registerEvmDeposit(humachi.New(router, apiConfig()))
+	body := fmt.Sprintf(`{"signature":"sig","requestExpiry":%d}`, time.Now().Add(time.Hour).UnixMilli())
+
+	const posters = 8
+	codes := make([]int, posters)
+	addresses := make([]string, posters)
+	var wg sync.WaitGroup
+	for i := range posters {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			req := httptest.NewRequest(http.MethodPost, evmDepositPath, bytes.NewReader([]byte(body)))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Authorization", "Bearer "+token)
+			res := httptest.NewRecorder()
+			router.ServeHTTP(res, req)
+			codes[i] = res.Code
+			var out struct {
+				Address string `json:"address"`
+			}
+			json.Unmarshal(res.Body.Bytes(), &out)
+			addresses[i] = out.Address
+		}()
+	}
+	wg.Wait()
+
+	if got := privy.creates.Load(); got != 1 {
+		t.Fatalf("privy create calls = %d; want 1", got)
+	}
+	for i := range posters {
+		if codes[i] != http.StatusOK || addresses[i] != fakePrivyAddress {
+			t.Fatalf("POST %d = %d %q; want 200 %s", i, codes[i], addresses[i], fakePrivyAddress)
+		}
+	}
+	var rows int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM loyal_yield.evm_deposit_routes`).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 1 {
+		t.Fatalf("evm_deposit_routes rows = %d; want 1", rows)
 	}
 }
