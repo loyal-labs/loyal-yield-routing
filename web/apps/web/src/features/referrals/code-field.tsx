@@ -20,13 +20,12 @@ import {
   type ClaimFailure,
 } from "./copy";
 import {
+  CODE_LENGTH,
   clearPendingCode,
   normalizeCode,
   readPendingCode,
   writePendingCode,
 } from "./pending-code";
-
-const CODE_LENGTH = 7;
 
 function CodeInput({
   value,
@@ -77,29 +76,24 @@ function CodeInput({
   );
 }
 
-function tidy(raw: string): string {
-  return raw.replace(/\s/g, "").toUpperCase();
-}
-
 function SignInCodeField({ autoFocus }: { autoFocus: boolean }) {
   const [value, setValue] = useState(() => readPendingCode()?.code ?? "");
   const [error, setError] = useState<ClaimFailure | null>(null);
   const latest = useRef(value);
 
   function change(raw: string) {
-    const next = tidy(raw);
-    latest.current = next;
-    setValue(next);
+    latest.current = raw;
+    setValue(raw);
     setError(null);
-    const code = normalizeCode(next);
+    const code = normalizeCode(raw);
     if (!code) {
       clearPendingCode();
-      if (next.length >= CODE_LENGTH) setError("malformed");
+      if (raw.trim().length >= CODE_LENGTH) setError("malformed");
       return;
     }
     writePendingCode({ code, source: "typed" });
     void codeExists(code).then((exists) => {
-      if (exists !== false || latest.current !== next) return;
+      if (exists !== false || latest.current !== raw) return;
       clearPendingCode();
       setError("unknown_code");
     });
@@ -196,7 +190,7 @@ export function SettingsCodeField() {
         }
         error={error}
         onChange={(raw) => {
-          setValue(tidy(raw));
+          setValue(raw);
           setError(null);
         }}
         value={value}

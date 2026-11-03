@@ -24,7 +24,7 @@ export async function claimCode(
     return { kind: "failed", failure: "malformed", answered: true };
   }
   if (response.status === 429) {
-    return { kind: "failed", failure: "rate_limited", answered: true };
+    return { kind: "failed", failure: "rate_limited", answered: false };
   }
   const body = response.ok
     ? ((await response.json().catch(() => null)) as
