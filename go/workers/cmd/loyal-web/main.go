@@ -19,6 +19,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/bridge"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnmax"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnprep"
@@ -248,6 +249,10 @@ func earn(ctx context.Context, rpcClient *chain.Client, appDB, yieldDB, timescal
 			degraded("Privy sign-in", errors.New("AUTH_COOKIE_PARENT_DOMAIN is not set"))
 		}
 		e.Privy = &webapp.Privy{AppID: strings.TrimSpace(appID), AppSecret: strings.TrimSpace(appSecret), CookieParentDomains: domains}
+	}
+	if key, ok := optionalCredential("Relay keyed quotes", "RELAY_API_KEY"); ok && key != "" {
+		e.Relay = bridge.NewRelay()
+		e.Relay.APIKey = strings.TrimSpace(key)
 	}
 	if timescaleDB == nil {
 		degraded(timescaleRoutes, errors.New("no TIMESCALEDB_URL pool"))

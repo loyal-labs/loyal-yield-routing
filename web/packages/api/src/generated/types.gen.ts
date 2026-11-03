@@ -1880,6 +1880,16 @@ export type SummaryTopic = {
     title: string;
 };
 
+export type TronDepositAddressResponse = {
+    address: string;
+    expiresAt: string;
+    /**
+     * Relay's fee in USD for a minimum deposit, from a deposit-address quote cached up to ten minutes; null until one has answered
+     */
+    feeUsd: string | null;
+    minUsd: number;
+};
+
 export type WireAddressLookupTable = {
     key: string;
     state: WireAddressLookupTableStateStruct;
@@ -2323,6 +2333,48 @@ export type PostFundingEvmDepositAddressResponses = {
 };
 
 export type PostFundingEvmDepositAddressResponse = PostFundingEvmDepositAddressResponses[keyof PostFundingEvmDepositAddressResponses];
+
+export type PostFundingTronDepositAddressData = {
+    body?: never;
+    headers?: {
+        Authorization?: string;
+        Cookie?: string;
+        'X-Forwarded-Host'?: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/funding/tron-deposit-address';
+};
+
+export type PostFundingTronDepositAddressErrors = {
+    /**
+     * Unauthorized
+     */
+    401: RouteError;
+    /**
+     * Forbidden
+     */
+    403: RouteError;
+    /**
+     * Bad Gateway
+     */
+    502: RouteError;
+    /**
+     * Service Unavailable
+     */
+    503: RouteError;
+};
+
+export type PostFundingTronDepositAddressError = PostFundingTronDepositAddressErrors[keyof PostFundingTronDepositAddressErrors];
+
+export type PostFundingTronDepositAddressResponses = {
+    /**
+     * OK
+     */
+    200: TronDepositAddressResponse;
+};
+
+export type PostFundingTronDepositAddressResponse = PostFundingTronDepositAddressResponses[keyof PostFundingTronDepositAddressResponses];
 
 export type GetMobileDappsData = {
     body?: never;
