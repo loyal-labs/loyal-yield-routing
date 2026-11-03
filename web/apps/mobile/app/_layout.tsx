@@ -6,6 +6,7 @@ import { DatadogInit } from "@/components/DatadogInit";
 import { ObservabilityInit } from "@/components/ObservabilityInit";
 import { OtaUpdateBanner } from "@/components/OtaUpdateBanner";
 import { PushTokenRegistrar } from "@/components/PushTokenRegistrar";
+import { ClaimPendingCode } from "@/features/referrals/ClaimPendingCode";
 import { PrivyProviderRoot } from "@/components/wallet/PrivyProviderRoot";
 import { SplashAnimation } from "@/components/SplashAnimation";
 import { WalletAuthGate } from "@/components/wallet/WalletAuthGate";
@@ -83,6 +84,7 @@ export default function RootLayout() {
               <DatadogInit />
               <ObservabilityInit />
               <PushTokenRegistrar />
+              <ClaimPendingCode />
               <StatusBar style="auto" />
               <WalletAuthGate />
               <AppReadyProvider splashDone={!showSplash}>
@@ -128,6 +130,7 @@ export default function RootLayout() {
                     name="browser/site"
                     options={{ headerShown: false }}
                   />
+                  <Stack.Screen name="invite" options={{ title: "Invite" }} />
                 </Stack>
               </AppReadyProvider>
               <OtaUpdateBanner />

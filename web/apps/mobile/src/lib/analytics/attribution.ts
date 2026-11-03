@@ -6,6 +6,7 @@ import {
   setUserProfileOnce,
   updateUserProfile,
 } from "@/lib/analytics/analytics";
+import { storePending } from "@/features/referrals/pending-code";
 import { mmkv } from "@/lib/storage";
 
 const ATTRIBUTION_KEYS = [
@@ -15,6 +16,7 @@ const ATTRIBUTION_KEYS = [
   "utm_campaign",
   "utm_term",
   "utm_content",
+  "ref",
 ] as const;
 
 const INSTALL_REFERRER_CHECKED_KEY = "attribution.installReferrerChecked";
@@ -49,7 +51,9 @@ function applyAttribution(source: string, params: Record<string, string>): void 
 
 function captureFromUrl(url: string): void {
   const params = parseAttributionParams(url);
-  if (params) applyAttribution("deep_link", params);
+  if (!params) return;
+  applyAttribution("deep_link", params);
+  if (params.ref) void storePending(params.ref, "link");
 }
 
 // Android only: the Play Install Referrer survives the store install, so it
@@ -67,7 +71,9 @@ function captureInstallReferrerOnce(): void {
       if (error || !info) return;
       mmkv.setBoolean(INSTALL_REFERRER_CHECKED_KEY, true);
       const params = parseAttributionParams(info.installReferrer ?? "");
-      if (params) applyAttribution("install_referrer", params);
+      if (!params) return;
+      applyAttribution("install_referrer", params);
+      if (params.ref) void storePending(params.ref, "install_referrer");
     });
   } catch {
   }
