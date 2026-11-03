@@ -235,6 +235,7 @@ const (
 
 type fakePrivy struct {
 	created atomic.Bool
+	lookups atomic.Int32
 	creates atomic.Int32
 }
 
@@ -245,6 +246,7 @@ func (f *fakePrivy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		wallet := map[string]string{"id": fakePrivyWalletID, "address": r.URL.Query().Get("address"), "chain_type": "solana"}
 		json.NewEncoder(w).Encode(map[string]any{"data": []map[string]string{wallet}})
 	case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/deposit_accounts/crypto"):
+		f.lookups.Add(1)
 		data := []map[string]string{}
 		if f.created.Load() {
 			data = route
@@ -321,8 +323,8 @@ func TestEvmDepositConcurrentPostsMakeOnePrivyCreate(t *testing.T) {
 	}
 	wg.Wait()
 
-	if got := privy.creates.Load(); got != 1 {
-		t.Fatalf("privy create calls = %d; want 1", got)
+	if lookups, creates := privy.lookups.Load(), privy.creates.Load(); lookups != 1 || creates != 1 {
+		t.Fatalf("privy lookups, creates = %d, %d; want 1, 1", lookups, creates)
 	}
 	for i := range posters {
 		if codes[i] != http.StatusOK || addresses[i] != fakePrivyAddress {
