@@ -23,14 +23,19 @@ const publicEnv =
     : resolvedEnv;
 
 export const Route = createRootRoute({
-  beforeLoad: ({ location }) => {
-    const { ref, ...search } = location.search as Record<string, unknown>;
-    if (ref === undefined) return;
-    storeLinkCode(String(ref));
+  beforeLoad: () => {
+    const { pathname, search, hash } = window.location;
+    const params = new URLSearchParams(search);
+    if (!params.has("ref")) return;
+    storeLinkCode(params.get("ref"));
+    const rest = search
+      .slice(1)
+      .split("&")
+      .filter((pair) => pair && !new URLSearchParams(pair).has("ref"))
+      .join("&");
     throw redirect({
-      to: location.pathname,
-      search,
-      hash: location.hash,
+      href: `${pathname}${rest && `?${rest}`}${hash}`,
+      reloadDocument: true,
       replace: true,
     });
   },
