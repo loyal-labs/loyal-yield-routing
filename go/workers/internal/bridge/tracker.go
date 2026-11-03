@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"regexp"
 	"slices"
@@ -25,7 +26,7 @@ const (
 const (
 	openState = `(state IN ('submitted', 'failed') OR (state = 'filled' AND destination_tx IS NULL) OR (state = 'refunded' AND refund_tx IS NULL))`
 
-	openTransfers = `SELECT request_id, state, deposit_address IS NOT NULL FROM loyal_yield.bridge_transfers
+	openTransfers = `SELECT request_id, state, CASE WHEN deposit_address IS NULL THEN '' ELSE solana_wallet END FROM loyal_yield.bridge_transfers
 WHERE ` + openState + ` AND submitted_at > now() - ` + trackWindow + `
 ORDER BY submitted_at`
 
@@ -65,6 +66,10 @@ func (t *Tracker) Run(ctx context.Context) error {
 	if t.Relay.APIKey == "" {
 		slog.Warn("relay requests disabled: no api key")
 	} else {
+		for _, s := range []TransferState{TransferSubmitted, TransferFilled, TransferRefunded, TransferFailed} {
+			t.Facts.BridgeDepositsRecorded(string(Tron.Chain), string(s), 0)
+		}
+		t.Facts.BridgeDetectionBatchesFailed(string(Tron.Chain), 0)
 		detection.Go(func() { t.detectEvery(ctx, Tron) })
 	}
 	ticker := time.NewTicker(trackInterval)
@@ -95,7 +100,7 @@ func (t *Tracker) Tick(ctx context.Context) error {
 	}
 	open, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (openTransfer, error) {
 		var o openTransfer
-		err := row.Scan(&o.requestID, &o.state, &o.depositAddress)
+		err := row.Scan(&o.requestID, &o.state, &o.depositWallet)
 		return o, err
 	})
 	if err != nil {
@@ -119,8 +124,8 @@ func (t *Tracker) Tick(ctx context.Context) error {
 			status, err := t.Relay.Status(ctx, o.requestID)
 			step := o.step(status)
 			var final DepositRequest
-			if err == nil && o.depositAddress && step.destinationTx != "" {
-				final, err = t.Relay.Request(ctx, Tron.RelayChainID, o.requestID)
+			if err == nil && o.depositWallet != "" && step.destinationTx != "" {
+				final, err = t.settledFill(ctx, o)
 			}
 			if err != nil {
 				mu.Lock()
@@ -146,9 +151,9 @@ func (t *Tracker) Tick(ctx context.Context) error {
 }
 
 type openTransfer struct {
-	requestID      string
-	state          TransferState
-	depositAddress bool
+	requestID     string
+	state         TransferState
+	depositWallet string
 }
 
 type transferStep struct {
@@ -172,8 +177,23 @@ func (o openTransfer) step(status Status) transferStep {
 	return s
 }
 
-// final is Relay's settled request for a deposit-address fill; its amounts
-// replace the ones detection froze.
+// settledFill is Relay's settled request for a deposit-address row's fill.
+func (t *Tracker) settledFill(ctx context.Context, o openTransfer) (DepositRequest, error) {
+	final, err := t.Relay.Request(ctx, Tron.RelayChainID, o.requestID)
+	if err != nil {
+		return DepositRequest{}, err
+	}
+	if !final.Settled {
+		return DepositRequest{}, fmt.Errorf("relay request %s is %s without a settled route", o.requestID, final.Status)
+	}
+	if reason := unrecordable(Tron, trackedAddress{solanaWallet: o.depositWallet}, final); reason != "" {
+		return DepositRequest{}, fmt.Errorf("relay request %s settled but %s", o.requestID, reason)
+	}
+	return final, nil
+}
+
+// final, when Settled, is Relay's settled request for a deposit-address fill;
+// its amounts replace the ones detection froze.
 func (t *Tracker) advance(ctx context.Context, o openTransfer, s transferStep, final DepositRequest) error {
 	if !s.known {
 		slog.Debug("bridge relay status unknown", "request_id", o.requestID, "relay_status", s.relayStatus)
@@ -183,7 +203,7 @@ func (t *Tracker) advance(ctx context.Context, o openTransfer, s transferStep, f
 		return nil
 	}
 	var amountIn, amountOut any
-	if final.AmountInRaw != nil && final.AmountInRaw.Sign() > 0 && final.AmountOutRaw != nil && final.AmountOutRaw.Sign() > 0 {
+	if final.Settled {
 		amountIn, amountOut = final.AmountInRaw.String(), final.AmountOutRaw.String()
 	}
 	tag, err := t.DB.Exec(ctx, advanceTransfer, o.requestID, string(o.state), string(s.next), s.destinationTx, s.refundTx, s.next.Settled(), amountIn, amountOut)
@@ -258,7 +278,8 @@ func (t *Tracker) detect(ctx context.Context, route DepositRoute, since time.Tim
 	if err != nil {
 		return err
 	}
-	inserted, failedBatches, failedRows := 0, 0, 0
+	seen, inserted, failedBatches, failedRows := 0, 0, 0, 0
+	var truncated []string
 	var firstErr error
 	fail := func(err error) {
 		if firstErr == nil {
@@ -272,17 +293,21 @@ func (t *Tracker) detect(ctx context.Context, route DepositRoute, since time.Tim
 			owners[a.address] = a
 			list = append(list, a.address)
 		}
-		requests, err := t.Relay.Requests(ctx, route.RelayChainID, list, since)
+		requests, cut, err := t.Relay.Requests(ctx, route.RelayChainID, list, since)
 		if err != nil {
 			failedBatches++
 			fail(err)
 			continue
+		}
+		if cut {
+			truncated = append(truncated, list...)
 		}
 		for _, r := range requests {
 			owner, ok := owners[r.DepositAddress]
 			if !ok {
 				continue
 			}
+			seen++
 			if reason := unrecordable(route, owner, r); reason != "" {
 				slog.Debug("relay deposit request not recorded", "request_id", r.ID, "deposit_address", r.DepositAddress, "reason", reason)
 				continue
@@ -297,14 +322,22 @@ func (t *Tracker) detect(ctx context.Context, route DepositRoute, since time.Tim
 			}
 			if tag.RowsAffected() == 1 {
 				inserted++
+				t.Facts.BridgeDepositsRecorded(string(route.Chain), string(state), 1)
 				slog.Info("bridge deposit detected", "request_id", r.ID, "deposit_address", owner.address, "state", state, "origin_tx", r.OriginTx)
 			}
 		}
 	}
+	t.Facts.BridgeDepositRequestsSeen(string(route.Chain), seen)
+	t.Facts.BridgeDetectionBatchesFailed(string(route.Chain), failedBatches)
+	if len(truncated) > 0 {
+		slog.Warn("bridge deposit requests truncated", "chain", route.Chain, "pages", requestsMaxPages, "deposit_addresses", truncated)
+	}
 	if firstErr != nil {
 		slog.Warn("bridge deposit detection incomplete", "chain", route.Chain, "failed_batches", failedBatches, "failed_rows", failedRows, "error", engine.ErrorText(firstErr))
+	} else {
+		t.Facts.BridgeDetectionPassed(string(route.Chain))
 	}
-	slog.Debug("bridge deposit detection", "chain", route.Chain, "addresses", len(addresses), "inserted", inserted)
+	slog.Debug("bridge deposit detection", "chain", route.Chain, "addresses", len(addresses), "seen", seen, "inserted", inserted)
 	return nil
 }
 

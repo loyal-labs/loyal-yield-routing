@@ -34,6 +34,9 @@ type DepositRequest struct {
 	AmountInRaw    *big.Int
 	AmountOutRaw   *big.Int
 	CreatedAt      time.Time
+	// Settled is a successful request whose route and amounts are Relay's
+	// actual ones; otherwise they may be the quote's.
+	Settled bool
 }
 
 type relayRequestRoute struct {
@@ -71,7 +74,8 @@ type relayRequests struct {
 }
 
 func (q relayRequest) parse(originChainID int64) DepositRequest {
-	d := DepositRequest{ID: q.ID, Status: q.Status, Recipient: q.Recipient, CreatedAt: q.CreatedAt}
+	d := DepositRequest{ID: q.ID, Status: q.Status, Recipient: q.Recipient, CreatedAt: q.CreatedAt,
+		Settled: q.Status == "success" && q.Data.Route.Actual != nil}
 	if q.DepositAddress != nil {
 		d.DepositAddress = q.DepositAddress.Address
 	}
@@ -97,14 +101,15 @@ func (q relayRequest) parse(originChainID int64) DepositRequest {
 
 // Requests lists the Relay requests created since since on up to
 // RequestsBatch deposit addresses of one origin chain, following Relay's
-// continuation to the last page.
-func (r *Relay) Requests(ctx context.Context, originChainID int64, depositAddresses []string, since time.Time) ([]DepositRequest, error) {
+// continuation for up to requestsMaxPages pages; truncated reports that the
+// last page still had a continuation.
+func (r *Relay) Requests(ctx context.Context, originChainID int64, depositAddresses []string, since time.Time) (requests []DepositRequest, truncated bool, err error) {
 	if len(depositAddresses) == 0 || len(depositAddresses) > RequestsBatch {
-		return nil, fmt.Errorf("relay requests: %d deposit addresses, want 1 to %d", len(depositAddresses), RequestsBatch)
+		return nil, false, fmt.Errorf("relay requests: %d deposit addresses, want 1 to %d", len(depositAddresses), RequestsBatch)
 	}
 	filters, err := json.Marshal([]map[string][]string{{"depositAddress": depositAddresses}})
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	query := url.Values{
 		"filters":                {string(filters)},
@@ -112,29 +117,28 @@ func (r *Relay) Requests(ctx context.Context, originChainID int64, depositAddres
 		"startTimestamp":         {strconv.FormatInt(since.Unix(), 10)},
 		"limit":                  {strconv.Itoa(requestsPage)},
 	}
-	var out []DepositRequest
 	for range requestsMaxPages {
 		hreq, err := http.NewRequestWithContext(ctx, http.MethodGet, r.BaseURL+"/requests/v3?"+query.Encode(), nil)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		raw, err := r.do(hreq)
 		if err != nil {
-			return nil, fmt.Errorf("relay requests: %w", err)
+			return nil, false, fmt.Errorf("relay requests: %w", err)
 		}
 		var page relayRequests
 		if err := json.Unmarshal(raw, &page); err != nil {
-			return nil, fmt.Errorf("relay requests: %w", err)
+			return nil, false, fmt.Errorf("relay requests: %w", err)
 		}
 		for _, q := range page.Requests {
-			out = append(out, q.parse(originChainID))
+			requests = append(requests, q.parse(originChainID))
 		}
 		if page.Continuation == "" || len(page.Requests) == 0 {
-			return out, nil
+			return requests, false, nil
 		}
 		query.Set("continuation", page.Continuation)
 	}
-	return nil, fmt.Errorf("relay requests: more than %d pages", requestsMaxPages)
+	return requests, true, nil
 }
 
 func (r *Relay) Request(ctx context.Context, originChainID int64, requestID string) (DepositRequest, error) {
