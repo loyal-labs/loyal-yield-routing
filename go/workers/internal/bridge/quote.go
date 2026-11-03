@@ -80,12 +80,14 @@ type relayQuote struct {
 	} `json:"details"`
 }
 
-const approveSelector = "095ea7b3"
+const (
+	approveSelector       = "095ea7b3"
+	depositErc20Selector  = "e8017952"
+	depositNativeSelector = "49290c1c"
+)
 
 // relayDepository is the contract every live Relay quote deposits into, the
-// same address on all five networks (checked 2026-11-02). The deposit calldata
-// is opaque, so pinning its target is what keeps a bad quote from routing the
-// user's funds to another contract.
+// same address on all five networks (checked 2026-11-02).
 const relayDepository = "0x4cd00e387622c35bddb9b4c962c136462338bc31"
 
 func resolve(req QuoteRequest) (Network, Token, error) {
@@ -111,10 +113,10 @@ func resolve(req QuoteRequest) (Network, Token, error) {
 
 // CheckQuote parses Relay's response, which is untrusted, and refuses any
 // quote whose transactions could move the user's funds anywhere but Relay's
-// deposit for their own Solana wallet. The deposit contract's calldata is
-// opaque to us; what binds it is that the transactions are the user's own, on
-// the right chain, spend no more than the quoted amount, and that the quote's
-// recipient and output are the ones requested.
+// deposit for their own Solana wallet. What binds a quote is that the
+// transactions are the user's own, on the right chain, spend no more than the
+// quoted amount, deposit exactly that amount of that token for that user, and
+// that the quote's recipient and output are the ones requested.
 func CheckQuote(req QuoteRequest, raw []byte) (Quote, error) {
 	net, tok, err := resolve(req)
 	if err != nil {
@@ -205,6 +207,9 @@ func CheckQuote(req QuoteRequest, raw []byte) (Quote, error) {
 	if !strings.EqualFold(deposit.tx.to, relayDepository) {
 		return Quote{}, fmt.Errorf("quote: deposit target %s is not Relay's deposit contract", deposit.tx.to)
 	}
+	if err := checkDeposit(deposit.tx.data, req.From, tok, req.AmountRaw); err != nil {
+		return Quote{}, fmt.Errorf("quote: deposit data: %w", err)
+	}
 	value, _ := parseAmount(deposit.tx.value)
 	if native {
 		if approve != nil {
@@ -217,9 +222,6 @@ func CheckQuote(req QuoteRequest, raw []byte) (Quote, error) {
 		if value.Sign() != 0 {
 			return Quote{}, fmt.Errorf("quote: deposit value %s must be 0 for a token", deposit.tx.value)
 		}
-		// The deposit calldata is opaque, so the approve is what bounds a token
-		// deposit to the requested amount; without it a standing allowance
-		// could be spent.
 		if approve == nil {
 			return Quote{}, fmt.Errorf("quote: a %s deposit needs an approve step", req.Asset)
 		}
@@ -258,17 +260,49 @@ func checkApprove(data, spender string, amount *big.Int) error {
 	if len(b) != 4+64 || hex.EncodeToString(b[:4]) != approveSelector {
 		return fmt.Errorf("not approve(spender, amount)")
 	}
-	word := b[4:36]
-	for _, z := range word[:12] {
-		if z != 0 {
-			return fmt.Errorf("spender word is not an address")
-		}
-	}
-	if !strings.EqualFold("0x"+hex.EncodeToString(word[12:]), spender) {
-		return fmt.Errorf("spender is not the deposit target")
+	if err := checkAddressWord(b[4:36], spender); err != nil {
+		return fmt.Errorf("spender %w", err)
 	}
 	if new(big.Int).SetBytes(b[36:]).Cmp(amount) != 0 {
 		return fmt.Errorf("approved amount is not the requested amount")
+	}
+	return nil
+}
+
+// checkDeposit accepts only depositErc20(depositor, token, amount, id) or
+// depositNative(depositor, id) with the depositor, token and amount we expect.
+// The trailing id word is Relay's own and is not checked.
+func checkDeposit(data, depositor string, tok Token, amount *big.Int) error {
+	b, _ := decodeHex(data)
+	if tok.Address == NativeToken {
+		if len(b) != 4+2*32 || hex.EncodeToString(b[:4]) != depositNativeSelector {
+			return fmt.Errorf("not depositNative(depositor, id)")
+		}
+	} else {
+		if len(b) != 4+4*32 || hex.EncodeToString(b[:4]) != depositErc20Selector {
+			return fmt.Errorf("not depositErc20(depositor, token, amount, id)")
+		}
+		if err := checkAddressWord(b[36:68], tok.Address); err != nil {
+			return fmt.Errorf("token %w", err)
+		}
+		if new(big.Int).SetBytes(b[68:100]).Cmp(amount) != 0 {
+			return fmt.Errorf("amount is not the requested amount")
+		}
+	}
+	if err := checkAddressWord(b[4:36], depositor); err != nil {
+		return fmt.Errorf("depositor %w", err)
+	}
+	return nil
+}
+
+func checkAddressWord(word []byte, want string) error {
+	for _, z := range word[:12] {
+		if z != 0 {
+			return fmt.Errorf("word is not an address")
+		}
+	}
+	if !strings.EqualFold("0x"+hex.EncodeToString(word[12:]), want) {
+		return fmt.Errorf("is not the expected address")
 	}
 	return nil
 }
