@@ -46,10 +46,12 @@ export function clearPendingCode(): void {
   } catch {}
 }
 
-export function storeLinkCode(raw: string | null | undefined): void {
-  if (!referralsEnabled()) return;
+export function storeLinkCode(raw: string | null | undefined): boolean {
+  if (!referralsEnabled()) return false;
   const code = normalizeCode(raw ?? "");
-  if (code) writePendingCode({ code, source: "link" });
+  if (!code) return false;
+  writePendingCode({ code, source: "link" });
+  return true;
 }
 
 export function withPendingLinkRef(href: string): string {

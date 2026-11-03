@@ -26,8 +26,7 @@ export const Route = createRootRoute({
   beforeLoad: () => {
     const { pathname, search, hash } = window.location;
     const params = new URLSearchParams(search);
-    if (!params.has("ref")) return;
-    storeLinkCode(params.get("ref"));
+    if (!storeLinkCode(params.get("ref"))) return;
     const rest = search
       .slice(1)
       .split("&")
