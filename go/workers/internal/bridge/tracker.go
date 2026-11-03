@@ -3,6 +3,8 @@ package bridge
 import (
 	"context"
 	"log/slog"
+	"regexp"
+	"slices"
 	"sync"
 	"time"
 
@@ -17,6 +19,7 @@ const (
 	trackDeadline = 30 * time.Second
 	trackParallel = 8
 	trackWindow   = "interval '7 days'"
+	trackLookback = 7 * 24 * time.Hour
 )
 
 const (
@@ -35,6 +38,15 @@ WHERE request_id = $1 AND state = $2 AND ` + openState + ` AND submitted_at > no
 WHERE ` + openState + ` AND submitted_at <= now() - ` + trackWindow + `
   AND updated_at < submitted_at + ` + trackWindow + `
 RETURNING request_id, state, submitted_at`
+
+	trackedDepositAddresses = `SELECT address, solana_wallet, chain, asset FROM loyal_yield.relay_deposit_addresses
+WHERE chain = $1 AND expires_at > now() - ` + trackWindow + `
+ORDER BY address`
+
+	insertDetected = `INSERT INTO loyal_yield.bridge_transfers
+(request_id, solana_wallet, origin_address, deposit_address, chain, asset, amount_in_raw, amount_out_raw, state, origin_tx, submitted_at)
+VALUES ($1, $2, $3, $3, $4, $5, $6::text::numeric, $7::text::numeric, $8, $9, $10)
+ON CONFLICT (request_id) DO NOTHING`
 )
 
 type Tracker struct {
@@ -46,6 +58,9 @@ type Tracker struct {
 func (t *Tracker) Run(ctx context.Context) error {
 	for _, s := range []TransferState{TransferFilled, TransferRefunded, TransferFailed} {
 		t.Facts.BridgeTransfersAdvanced(string(s), 0)
+	}
+	if t.Relay.APIKey == "" {
+		slog.Warn("relay requests disabled: no api key")
 	}
 	ticker := time.NewTicker(trackInterval)
 	defer ticker.Stop()
@@ -68,6 +83,11 @@ func (t *Tracker) Tick(ctx context.Context) error {
 	start := time.Now()
 	if err := t.dropUnsettled(ctx); err != nil {
 		return err
+	}
+	if t.Relay.APIKey != "" {
+		if err := t.detect(ctx, Tron); err != nil {
+			slog.Warn("bridge deposit detection failed", "chain", Tron.Chain, "error", engine.ErrorText(err))
+		}
 	}
 	rows, err := t.DB.Query(ctx, openTransfers)
 	if err != nil {
@@ -172,4 +192,80 @@ func (t *Tracker) dropUnsettled(ctx context.Context) error {
 		slog.Warn("bridge transfer unsettled", "request_id", requestID, "state", state, "submitted_at", submittedAt)
 	}
 	return rows.Err()
+}
+
+var tronTxHash = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+type trackedAddress struct {
+	address, solanaWallet, chain, asset string
+}
+
+// detect records each Relay request that moved a deposit into one of Loyal's
+// open deposit addresses on route, so the poll below follows it like any
+// other transfer.
+func (t *Tracker) detect(ctx context.Context, route DepositRoute) error {
+	rows, err := t.DB.Query(ctx, trackedDepositAddresses, string(route.Chain))
+	if err != nil {
+		return err
+	}
+	addresses, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (trackedAddress, error) {
+		var a trackedAddress
+		err := row.Scan(&a.address, &a.solanaWallet, &a.chain, &a.asset)
+		return a, err
+	})
+	if err != nil {
+		return err
+	}
+	since := time.Now().Add(-trackLookback)
+	inserted := 0
+	for batch := range slices.Chunk(addresses, RequestsBatch) {
+		owners := make(map[string]trackedAddress, len(batch))
+		list := make([]string, 0, len(batch))
+		for _, a := range batch {
+			owners[a.address] = a
+			list = append(list, a.address)
+		}
+		requests, err := t.Relay.Requests(ctx, route.RelayChainID, list, since)
+		if err != nil {
+			return err
+		}
+		for _, r := range requests {
+			owner, ok := owners[r.DepositAddress]
+			if !ok {
+				continue
+			}
+			if reason := unrecordable(route, owner, r); reason != "" {
+				slog.Debug("relay deposit request not recorded", "request_id", r.ID, "deposit_address", r.DepositAddress, "reason", reason)
+				continue
+			}
+			state, _ := TransferSubmitted.Advance(r.Status)
+			tag, err := t.DB.Exec(ctx, insertDetected, r.ID, owner.solanaWallet, owner.address, owner.chain, owner.asset,
+				r.AmountInRaw.String(), r.AmountOutRaw.String(), string(state), r.OriginTx, r.CreatedAt)
+			if err != nil {
+				return err
+			}
+			if tag.RowsAffected() == 1 {
+				inserted++
+				slog.Info("bridge deposit detected", "request_id", r.ID, "deposit_address", owner.address, "state", state, "origin_tx", r.OriginTx)
+			}
+		}
+	}
+	slog.Debug("bridge deposit detection", "chain", route.Chain, "addresses", len(addresses), "inserted", inserted)
+	return nil
+}
+
+func unrecordable(route DepositRoute, owner trackedAddress, r DepositRequest) string {
+	switch {
+	case r.OriginTx == "":
+		return "no origin deposit yet"
+	case !tronTxHash.MatchString(r.OriginTx):
+		return "origin tx is not a Tron transaction hash"
+	case r.Recipient != owner.solanaWallet:
+		return "recipient is not the address owner"
+	case r.OriginCurrency != route.Token:
+		return "origin currency is not the route token"
+	case r.AmountInRaw == nil || r.AmountInRaw.Sign() <= 0 || r.AmountOutRaw == nil:
+		return "amounts unknown"
+	}
+	return ""
 }

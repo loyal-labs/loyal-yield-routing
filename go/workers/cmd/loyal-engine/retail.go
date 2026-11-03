@@ -40,6 +40,7 @@ type retailConfig struct {
 	lookup                                             retailLookupConfig
 	sweepNotifier                                      *autodeposit.SweepNotifier
 	privyAppID, privyAppSecret                         string
+	relayAPIKey                                        string
 }
 
 func loadRetailConfig() (retailConfig, error) {
@@ -151,6 +152,7 @@ func loadRetailConfig() (retailConfig, error) {
 	if (cfg.privyAppID == "") != (cfg.privyAppSecret == "") {
 		return cfg, errors.New("RETAIL_PRIVY_APP_ID and RETAIL_PRIVY_APP_SECRET must both be set or both be absent")
 	}
+	cfg.relayAPIKey = optionalCredential("RETAIL_RELAY_API_KEY")
 	return cfg, nil
 }
 
@@ -398,7 +400,9 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 	for _, family := range families {
 		switch family {
 		case engine.FamilyAutodeposit:
-			lanes = append(lanes, control, aWorker, &bridge.Tracker{DB: yieldPool, Relay: bridge.NewRelay(), Facts: facts})
+			relay := bridge.NewRelay()
+			relay.APIKey = cfg.relayAPIKey
+			lanes = append(lanes, control, aWorker, &bridge.Tracker{DB: yieldPool, Relay: relay, Facts: facts})
 		case engine.FamilyFleet:
 			facts.LaneSucceeded(family, "planner")
 			facts.LaneSucceeded(family, "executor")
