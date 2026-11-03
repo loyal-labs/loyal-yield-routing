@@ -4,6 +4,7 @@ import { AppState } from "react-native";
 import { useWallet } from "@/lib/wallet/wallet-provider";
 import { claimReferral } from "@/services/api";
 
+import { referralsEnabled } from "./enabled";
 import { clearPending, readPending, subscribePending } from "./pending-code";
 
 export function useClaimPendingCode(): void {
@@ -13,7 +14,7 @@ export function useClaimPendingCode(): void {
   const again = useRef(false);
 
   const run = useCallback(async () => {
-    if (!wallet) return;
+    if (!wallet || !referralsEnabled()) return;
     if (running.current) {
       again.current = true;
       return;

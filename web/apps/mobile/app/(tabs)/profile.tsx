@@ -25,6 +25,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { LogoHeader } from "@/components/LogoHeader";
 import { REFERRAL_COPY } from "@/features/referrals/copy";
+import { referralsEnabled } from "@/features/referrals/enabled";
 import { ReferralClaimSetting } from "@/features/referrals/ReferralClaimSetting";
 import { PrivyAccountCell } from "@/components/wallet/PrivyAccountCell";
 import { PinPadInput } from "@/components/wallet/PinPadInput";
@@ -367,7 +368,7 @@ export default function ProfileScreen() {
           />
         </SettingsSection>
 
-        {isUnlocked && (
+        {isUnlocked && referralsEnabled() && (
           <SettingsSection>
             <ProfileCell
               icon={<UserPlus size={28} strokeWidth={1.5} color="rgba(0,0,0,0.6)" />}
