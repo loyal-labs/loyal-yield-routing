@@ -229,11 +229,11 @@ func (h earnRoutes) evmDepositAddress(ctx context.Context, in *sessionRequest) (
 func (h earnRoutes) createEvmDepositAddress(ctx context.Context, in *evmDepositInput) (*evmDepositOutput, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	claim, err := parseEvmDepositClaim(in.Raw.data)
+	wallet, err := h.evmDepositWallet(in.SessionInput)
 	if err != nil {
 		return nil, err
 	}
-	wallet, err := h.evmDepositWallet(in.SessionInput)
+	claim, err := parseEvmDepositClaim(in.Raw.data)
 	if err != nil {
 		return nil, err
 	}
