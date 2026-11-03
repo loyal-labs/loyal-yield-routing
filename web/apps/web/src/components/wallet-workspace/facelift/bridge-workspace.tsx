@@ -1,36 +1,36 @@
 "use client";
 
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useRef, useState } from "react";
 
+import {
+  BRIDGE_AMOUNT_TEXT,
+  BridgeCta,
+  BridgeDivider,
+  BridgePickerHeader,
+  BridgePickerHost,
+  BridgePickerRow,
+  BridgeQuoteRows,
+  BridgeRecipientRow,
+  BridgeScreen,
+  TokenPill,
+  useBridgeDesktop,
+  useBridgePickerFocus,
+} from "./bridge-pieces";
 import {
   BRIDGE_ASSETS,
   CHAINS,
   SOLANA_ASSETS,
   type BridgeAsset,
 } from "./bridge-preview-data";
-import {
-  BridgeRecipientPane,
-  BridgeWalletIcon,
-  shortBridgeAddress,
-} from "./bridge-recipient-pane";
+import { BridgeRecipientPane } from "./bridge-recipient-pane";
 import { useEscapeOverlay, useEscapePage } from "./escape-owner";
 import { PaneReveal } from "./pane-transitions";
-import { InlineSheetReveal, SheetReveal } from "./sheet-reveal";
-import { TextSwap } from "./text-swap";
-import { TokenIconSwap } from "./token-icon-swap";
 import { ThemedIcon } from "./themed-icon";
 
 const BASE = "/wallet-workspace/facelift";
-const DESKTOP_QUERY = "(min-width: 1204px)";
 const SEND_ASSETS = [SOLANA_ASSETS[0], BRIDGE_ASSETS[0], SOLANA_ASSETS[1]];
 type Picker = "send" | "receive" | "chain" | "recipient";
 type Chain = (typeof CHAINS)[number];
-
-function subscribeDesktop(onChange: () => void) {
-  const media = window.matchMedia(DESKTOP_QUERY);
-  media.addEventListener("change", onChange);
-  return () => media.removeEventListener("change", onChange);
-}
 
 function formatAmount(value: number, decimals = 2) {
   return value.toLocaleString("en-US", { maximumFractionDigits: decimals });
@@ -40,86 +40,8 @@ function dollars(value: number) {
   return value.toLocaleString("en-US", { style: "currency", currency: "USD" });
 }
 
-function BridgeIcon({
-  file,
-  chain,
-  size = 44,
-}: {
-  file: string;
-  chain?: string;
-  size?: number;
-}) {
-  return (
-    <span className="relative shrink-0" style={{ width: size, height: size }}>
-      {size === 36 ? (
-        <TokenIconSwap src={`${BASE}/receive/${file}`} />
-      ) : (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img
-          alt=""
-          className="size-full rounded-full object-cover"
-          height={size}
-          src={`${BASE}/receive/${file}`}
-          width={size}
-        />
-      )}
-      {chain && (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img
-          alt=""
-          className="absolute right-0 bottom-0 size-4 rounded-full border-2 border-card"
-          height={16}
-          src={`${BASE}/receive/${chain}.png`}
-          width={16}
-        />
-      )}
-    </span>
-  );
-}
-
-function TokenPill({
-  asset,
-  chain,
-  network,
-  label,
-  onClick,
-}: {
-  asset: BridgeAsset;
-  chain: string;
-  network: string;
-  label: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      aria-label={label}
-      className="t-hover ml-3 flex shrink-0 items-center rounded-full bg-accent py-1 pr-2.5 pl-1 text-left hover:bg-accent-active"
-      onClick={onClick}
-      type="button"
-    >
-      <BridgeIcon chain={chain} file={asset.icon} size={36} />
-      <span className="flex flex-col pl-2">
-        <span className="text-[16px] font-medium leading-5">
-          <TextSwap text={asset.symbol} />
-        </span>
-        <span className="text-[13px] leading-4 text-muted-foreground">
-          <TextSwap text={network} />
-        </span>
-      </span>
-      <ThemedIcon
-        className="size-6 text-tertiary"
-        src={`${BASE}/icon-chevron-right.svg`}
-      />
-    </button>
-  );
-}
-
 export function BridgeWorkspace({ onBack }: { onBack: () => void }) {
-  const desktop = useSyncExternalStore(
-    subscribeDesktop,
-    () => window.matchMedia(DESKTOP_QUERY).matches,
-    () => true
-  );
+  const desktop = useBridgeDesktop();
   const [sendAsset, setSendAsset] = useState<BridgeAsset>(SEND_ASSETS[0]);
   const [receiveAsset, setReceiveAsset] = useState<BridgeAsset>(
     BRIDGE_ASSETS[0]
@@ -176,47 +98,7 @@ export function BridgeWorkspace({ onBack }: { onBack: () => void }) {
     view === "chain" ? openPicker("receive") : closePicker()
   );
   useEscapePage(true, onBack);
-
-  useEffect(() => {
-    if (!picker) return;
-    const panel = panelRef.current;
-    const frame = requestAnimationFrame(() =>
-      (
-        panel?.querySelector<HTMLElement>("input, textarea") ??
-        panel?.querySelector<HTMLElement>("button")
-      )?.focus({ preventScroll: true })
-    );
-    const trapFocus = (event: KeyboardEvent) => {
-      if (desktop || event.key !== "Tab" || !panel) return;
-      const nodes = Array.from(
-        panel.querySelectorAll<HTMLElement>(
-          "button, input, textarea, [tabindex='0']"
-        )
-      ).filter((node) => !node.hasAttribute("disabled"));
-      const first = nodes[0],
-        last = nodes.at(-1);
-      if (
-        event.shiftKey &&
-        (document.activeElement === first ||
-          !panel.contains(document.activeElement))
-      ) {
-        event.preventDefault();
-        last?.focus();
-      } else if (
-        !event.shiftKey &&
-        (document.activeElement === last ||
-          !panel.contains(document.activeElement))
-      ) {
-        event.preventDefault();
-        first?.focus();
-      }
-    };
-    window.addEventListener("keydown", trapFocus, true);
-    return () => {
-      cancelAnimationFrame(frame);
-      window.removeEventListener("keydown", trapFocus, true);
-    };
-  }, [picker, desktop]);
+  useBridgePickerFocus(panelRef, picker !== null, desktop);
 
   const items =
     view === "chain" ? CHAINS : view === "send" ? SEND_ASSETS : BRIDGE_ASSETS;
@@ -231,39 +113,11 @@ export function BridgeWorkspace({ onBack }: { onBack: () => void }) {
       ref={panelRef}
       aria-label={title}
     >
-      <header className="flex shrink-0 items-center p-2">
-        {view === "chain" && (
-          <button
-            aria-label="Back to receive assets"
-            className="t-hover flex size-11 shrink-0 items-center justify-center rounded-full hover:bg-accent"
-            onClick={() => openPicker("receive")}
-            type="button"
-          >
-            <ThemedIcon
-              className="size-6 text-muted-foreground"
-              src={`${BASE}/icon-arrow-left.svg`}
-            />
-          </button>
-        )}
-        <h2
-          className={`min-w-0 flex-1 truncate py-2.5 text-[20px] font-semibold leading-6 ${
-            view === "chain" ? "pl-3" : "pl-4"
-          }`}
-        >
-          {title}
-        </h2>
-        <button
-          aria-label="Close bridge selector"
-          className="t-hover flex size-11 shrink-0 items-center justify-center rounded-full hover:bg-accent"
-          onClick={closePicker}
-          type="button"
-        >
-          <ThemedIcon
-            className="size-6 text-muted-foreground"
-            src={`${BASE}/icon-cross.svg`}
-          />
-        </button>
-      </header>
+      <BridgePickerHeader
+        onBack={view === "chain" ? () => openPicker("receive") : undefined}
+        onClose={closePicker}
+        title={title}
+      />
       {view === "recipient" ? (
         <BridgeRecipientPane
           key={chain.id}
@@ -304,9 +158,12 @@ export function BridgeWorkspace({ onBack }: { onBack: () => void }) {
           )}
           <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
             {filtered.map((item) => (
-              <button
-                className="t-hover flex min-h-[60px] w-full items-center gap-3 rounded-2xl px-4 text-left hover:bg-accent focus-visible:bg-accent"
+              <BridgePickerRow
+                badge={view === "send" ? "sol.png" : undefined}
+                detail={"symbol" in item ? item.symbol : undefined}
+                icon={"icon" in item ? item.icon : `${item.id}.png`}
                 key={item.name}
+                name={item.name}
                 onClick={() => {
                   if ("id" in item) {
                     setDestination((current) =>
@@ -325,34 +182,17 @@ export function BridgeWorkspace({ onBack }: { onBack: () => void }) {
                     openPicker("chain");
                   }
                 }}
-                type="button"
-              >
-                <BridgeIcon
-                  chain={view === "send" ? "sol" : undefined}
-                  file={"icon" in item ? item.icon : `${item.id}.png`}
-                />
-                <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                  <span className="text-[16px] font-medium leading-5">
-                    {item.name}
-                  </span>
-                  {"symbol" in item && (
-                    <span className="text-[13px] leading-4 text-muted-foreground">
-                      {item.symbol}
-                    </span>
-                  )}
-                </span>
-                {view === "send" && "symbol" in item && (
-                  <span className="flex flex-col items-end gap-0.5">
-                    <span className="text-[16px] font-medium leading-5">
-                      {item.symbol === "SOL" ? "$0.00" : "$9,750.00"}
-                    </span>
-                    <span className="text-[13px] leading-4 text-muted-foreground">
-                      {item.symbol === "SOL" ? "0.00" : "9,750.00"}{" "}
-                      {item.symbol}
-                    </span>
-                  </span>
-                )}
-              </button>
+                value={
+                  view === "send" && "symbol" in item
+                    ? [
+                        item.symbol === "SOL" ? "$0.00" : "$9,750.00",
+                        `${item.symbol === "SOL" ? "0.00" : "9,750.00"} ${
+                          item.symbol
+                        }`,
+                      ]
+                    : undefined
+                }
+              />
             ))}
             {filtered.length === 0 && (
               <p
@@ -370,27 +210,7 @@ export function BridgeWorkspace({ onBack }: { onBack: () => void }) {
 
   return (
     <>
-      <section
-        data-bridge-preview
-        aria-label="Bridge"
-        className="flex h-full min-w-0 flex-1 flex-col overflow-clip rounded-3xl bg-card"
-      >
-        <header className="flex shrink-0 items-center p-2">
-          <button
-            aria-label="Back to assets"
-            className="t-hover flex size-11 items-center justify-center rounded-full hover:bg-accent min-[796px]:hidden"
-            onClick={onBack}
-            type="button"
-          >
-            <ThemedIcon
-              className="size-6"
-              src={`${BASE}/icon-arrow-left.svg`}
-            />
-          </button>
-          <h1 className="px-4 py-2.5 text-[20px] font-semibold leading-6">
-            Bridge
-          </h1>
-        </header>
+      <BridgeScreen onBack={onBack}>
         <PaneReveal>
           <div className="min-h-0 flex-1 overflow-y-auto">
             <div className="p-2 pb-4">
@@ -404,7 +224,7 @@ export function BridgeWorkspace({ onBack }: { onBack: () => void }) {
                 <div className="flex items-center">
                   <input
                     aria-label="You send amount"
-                    className="h-12 min-w-0 flex-1 bg-transparent text-[40px] font-semibold leading-[48px] tracking-[-1px] outline-none placeholder:text-tertiary max-[480px]:text-[32px]"
+                    className={`h-12 bg-transparent outline-none placeholder:text-tertiary ${BRIDGE_AMOUNT_TEXT}`}
                     id="bridge-send-amount"
                     inputMode="decimal"
                     onBlur={() => setEditingAmount(false)}
@@ -429,11 +249,12 @@ export function BridgeWorkspace({ onBack }: { onBack: () => void }) {
                     }
                   />
                   <TokenPill
-                    asset={sendAsset}
-                    chain="sol"
+                    badge="sol.png"
+                    icon={sendAsset.icon}
                     label="Select asset to send"
                     network="Solana"
                     onClick={() => openPicker("send")}
+                    symbol={sendAsset.symbol}
                   />
                 </div>
                 <div className="flex items-center justify-between text-[16px] leading-5">
@@ -482,18 +303,7 @@ export function BridgeWorkspace({ onBack }: { onBack: () => void }) {
                   </button>
                 </div>
               </div>
-              <div
-                aria-hidden="true"
-                className="relative mx-4 flex h-11 items-center justify-center"
-              >
-                <div className="absolute inset-x-0 top-1/2 border-t border-border" />
-                <span className="relative flex size-11 items-center justify-center rounded-full bg-accent backdrop-blur-sm">
-                  <ThemedIcon
-                    className="size-6 text-tertiary"
-                    src={`${BASE}/bridge/down.svg`}
-                  />
-                </span>
-              </div>
+              <BridgeDivider />
               <div className="flex flex-col gap-0.5 px-4 py-2">
                 <p className="text-[16px] leading-5 text-muted-foreground">
                   You receive
@@ -501,16 +311,17 @@ export function BridgeWorkspace({ onBack }: { onBack: () => void }) {
                 <div className="flex items-center">
                   <output
                     aria-label="You receive amount"
-                    className="min-w-0 flex-1 truncate text-[40px] font-semibold leading-[48px] tracking-[-1px] max-[480px]:text-[32px]"
+                    className={`truncate ${BRIDGE_AMOUNT_TEXT}`}
                   >
                     {formatAmount(received)}
                   </output>
                   <TokenPill
-                    asset={receiveAsset}
-                    chain={chain.id}
+                    badge={`${chain.id}.png`}
+                    icon={receiveAsset.icon}
                     label="Select asset to receive"
                     network={chain.network}
                     onClick={() => openPicker("receive")}
+                    symbol={receiveAsset.symbol}
                   />
                 </div>
                 <p className="text-[16px] leading-5 text-muted-foreground">
@@ -518,66 +329,23 @@ export function BridgeWorkspace({ onBack }: { onBack: () => void }) {
                 </p>
               </div>
             </div>
-            <div className="px-2 pb-2">
-              <div
-                className={`flex items-center rounded-2xl pr-2 ${
-                  picker === "recipient" ? "bg-accent" : ""
-                }`}
-              >
-                <button
-                  className="t-hover flex min-h-[60px] min-w-0 flex-1 items-center gap-3 rounded-2xl px-4 text-left hover:bg-accent"
-                  onClick={() => openPicker("recipient")}
-                  type="button"
-                >
-                  <BridgeWalletIcon />
-                  <span className="flex min-w-0 flex-1 flex-col gap-1">
-                    <span className="text-[13px] leading-4 text-muted-foreground">
-                      {chain.network} recipient
-                    </span>
-                    <span
-                      className={`truncate text-[20px] font-medium leading-6 ${
-                        recipient ? "" : "text-tertiary"
-                      }`}
-                    >
-                      {recipient
-                        ? shortBridgeAddress(recipient)
-                        : `Enter ${chain.network} address`}
-                    </span>
-                  </span>
-                  {!recipient && (
-                    <ThemedIcon
-                      className="size-6 shrink-0 text-muted-foreground"
-                      src={`${BASE}/icon-chevron-right.svg`}
-                    />
-                  )}
-                </button>
-                {recipient && (
-                  <button
-                    aria-label="Remove recipient"
-                    className="t-hover flex size-11 shrink-0 items-center justify-center rounded-full hover:bg-accent"
-                    onClick={() => {
-                      setDestination((current) => ({
-                        ...current,
-                        recipient: "",
-                      }));
-                      setPreviewMessage(false);
-                    }}
-                    type="button"
-                  >
-                    <ThemedIcon
-                      className="size-6 text-muted-foreground"
-                      src={`${BASE}/icon-cross.svg`}
-                    />
-                  </button>
-                )}
-              </div>
-            </div>
+            <BridgeRecipientRow
+              active={picker === "recipient"}
+              network={chain.network}
+              onClear={() => {
+                setDestination((current) => ({
+                  ...current,
+                  recipient: "",
+                }));
+                setPreviewMessage(false);
+              }}
+              onOpen={() => openPicker("recipient")}
+              recipient={recipient}
+            />
             {recipient && hasAmount && (
-              <dl
-                className="mx-2 mb-2 rounded-2xl bg-accent px-4 py-1 text-[13px] leading-4"
-                aria-label="Bridge quote preview"
-              >
-                {[
+              <BridgeQuoteRows
+                label="Bridge quote preview"
+                rows={[
                   [
                     "Rate",
                     `1 ${sendAsset.symbol} ~ ${
@@ -591,16 +359,8 @@ export function BridgeWorkspace({ onBack }: { onBack: () => void }) {
                   ["Max slippage", "1%"],
                   ["Loyal fee", "0.4%"],
                   ["Network fee", "<$0.01"],
-                ].map(([label, value]) => (
-                  <div
-                    className="flex justify-between gap-3 py-2.5"
-                    key={label}
-                  >
-                    <dt className="text-muted-foreground">{label}</dt>
-                    <dd className="text-right">{value}</dd>
-                  </div>
-                ))}
-              </dl>
+                ]}
+              />
             )}
           </div>
           <footer className="shrink-0 px-4 pt-2 pb-4">
@@ -612,52 +372,33 @@ export function BridgeWorkspace({ onBack }: { onBack: () => void }) {
                 Bridge preview — transfers are not available yet.
               </p>
             )}
-            <button
-              className={`t-hover flex h-12 w-full items-center justify-center rounded-full px-3 text-[16px] font-medium leading-5 ${
-                recipient && hasAmount
-                  ? "bg-foreground text-background hover:opacity-90"
-                  : "bg-destructive/[0.14] text-destructive"
-              }`}
+            <BridgeCta
+              label={
+                !hasAmount
+                  ? "Enter amount"
+                  : !recipient
+                  ? "Enter recipient"
+                  : "Send now"
+              }
               onClick={() => {
                 if (!hasAmount) amountRef.current?.focus();
                 else if (!recipient) openPicker("recipient");
                 else setPreviewMessage(true);
               }}
-              type="button"
-            >
-              <TextSwap
-                text={
-                  !hasAmount
-                    ? "Enter amount"
-                    : !recipient
-                    ? "Enter recipient"
-                    : "Send now"
-                }
-              />
-            </button>
+              tone={recipient && hasAmount ? "ready" : "blocked"}
+            />
           </footer>
         </PaneReveal>
-      </section>
-      {desktop ? (
-        <aside className="h-full w-[400px] shrink-0">
-          <InlineSheetReveal
-            className="h-full overflow-clip rounded-3xl bg-card"
-            isOpen={picker !== null}
-          >
-            <PaneReveal key={view}>{pickerContent}</PaneReveal>
-          </InlineSheetReveal>
-        </aside>
-      ) : (
-        <SheetReveal
-          isOpen={picker !== null}
-          label={title}
-          onClose={closePicker}
-          scrimClassName="fixed inset-0 z-50 flex bg-black/20 p-2 backdrop-blur-[4px] max-[795px]:bg-white/60 max-[795px]:p-0 max-[795px]:pt-8"
-          sheetClassName="ml-auto flex h-full w-[392px] min-w-0 max-w-full flex-col overflow-clip rounded-3xl bg-card max-[795px]:w-full max-[795px]:rounded-b-none max-[795px]:shadow-[0px_-10px_40px_-10px_rgba(0,0,0,0.2)]"
-        >
-          <PaneReveal key={view}>{pickerContent}</PaneReveal>
-        </SheetReveal>
-      )}
+      </BridgeScreen>
+      <BridgePickerHost
+        desktop={desktop}
+        onClose={closePicker}
+        open={picker !== null}
+        title={title}
+        view={view}
+      >
+        {pickerContent}
+      </BridgePickerHost>
     </>
   );
 }
