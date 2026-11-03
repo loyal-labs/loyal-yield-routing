@@ -122,9 +122,9 @@ func TestEvmDepositRelaySignedRefusesEmbeddedWalletWhenPrivyLookupIsEmpty(t *tes
 				t.Fatal(err)
 			}
 			const appID = "b3-test-app"
-			kid := "b3-test-kid-" + name
 			b64 := base64.RawURLEncoding.EncodeToString
 			pad := func(b []byte) []byte { return append(make([]byte, 32-len(b)), b...) }
+			kid := "b3-test-kid-" + b64(pad(signing.X.Bytes()))
 			jwks, err := json.Marshal(map[string]any{"keys": []map[string]string{{
 				"kty": "EC", "crv": "P-256", "kid": kid,
 				"x": b64(pad(signing.X.Bytes())), "y": b64(pad(signing.Y.Bytes())),

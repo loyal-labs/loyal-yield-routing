@@ -19,12 +19,12 @@ import (
 var privyJWKSBase = "https://api.privy.io/v1/apps/"
 
 const (
-	privyJWTIssuer = "privy.io"
-	privyJWTAlg    = "ES256"
-	// node/lib/auth.js createRemoteJWKSet: cacheMaxAge 1h, cooldownDuration 10m.
-	privyJWKSCacheAge = time.Hour
-	privyJWKSCooldown = 10 * time.Minute
-	privyJWTTyp       = "JWT"
+	privyJWTIssuer       = "privy.io"
+	privyJWTAlg          = "ES256"
+	privyJWKSCacheAge    = time.Hour
+	privyJWKSCooldown    = 10 * time.Minute
+	privyJWKSMissRefetch = 30 * time.Second
+	privyJWTTyp          = "JWT"
 )
 
 type PrivyLinkedWallet struct {
@@ -44,40 +44,45 @@ type privyKey struct {
 }
 
 type privyJWKSCache struct {
+	url       string
 	mu        sync.Mutex
 	keys      map[string]privyKey
 	fetchedAt time.Time
-	failedAt  time.Time
+	retryAt   time.Time
 }
 
-var privyKeys = &privyJWKSCache{}
+var privyKeys sync.Map
 
-func (c *privyJWKSCache) key(ctx context.Context, client *http.Client, appID, kid string) (privyKey, error) {
+func privyJWKSFor(url string) *privyJWKSCache {
+	c, _ := privyKeys.LoadOrStore(url, &privyJWKSCache{url: url})
+	return c.(*privyJWKSCache)
+}
+
+func (c *privyJWKSCache) key(ctx context.Context, client *http.Client, kid string, now time.Time) (privyKey, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	now := time.Now()
 	if k, ok := c.keys[kid]; ok && now.Sub(c.fetchedAt) < privyJWKSCacheAge {
 		return k, nil
 	}
-	if now.Sub(c.failedAt) < privyJWKSCooldown {
+	if now.Before(c.retryAt) {
 		if k, ok := c.keys[kid]; ok {
 			return k, nil
 		}
 		return privyKey{}, fmt.Errorf("privy: JWKS has no key %q and is cooling down", kid)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, privyJWKSBase+appID+"/jwks.json", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url, nil)
 	if err != nil {
 		return privyKey{}, err
 	}
 	req.Header.Set("privy-client", "go")
 	res, err := client.Do(req)
 	if err != nil {
-		c.failedAt = now
+		c.retryAt = now.Add(privyJWKSCooldown)
 		return privyKey{}, fmt.Errorf("privy: fetch JWKS: %w", err)
 	}
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusOK {
-		c.failedAt = now
+		c.retryAt = now.Add(privyJWKSCooldown)
 		return privyKey{}, fmt.Errorf("privy: fetch JWKS: status %d", res.StatusCode)
 	}
 	raw, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
@@ -91,7 +96,7 @@ func (c *privyJWKSCache) key(ctx context.Context, client *http.Client, appID, ki
 		} `json:"keys"`
 	}
 	if json.Unmarshal(raw, &jwks) != nil {
-		c.failedAt = now
+		c.retryAt = now.Add(privyJWKSCooldown)
 		return privyKey{}, fmt.Errorf("privy: parse JWKS")
 	}
 	keys := make(map[string]privyKey, len(jwks.Keys))
@@ -107,15 +112,16 @@ func (c *privyJWKSCache) key(ctx context.Context, client *http.Client, appID, ki
 		keys[jwk.Kid] = privyKey{x: new(big.Int).SetBytes(x), y: new(big.Int).SetBytes(y)}
 	}
 	if len(keys) == 0 {
-		c.failedAt = now
+		c.retryAt = now.Add(privyJWKSCooldown)
 		return privyKey{}, fmt.Errorf("privy: JWKS has no P-256 keys")
 	}
 	c.keys, c.fetchedAt = keys, now
 	k, ok := keys[kid]
 	if !ok {
-		// Cool down on a miss too, like jose's remote JWK set: an unknown kid
-		// must not refetch Privy's JWKS on every request.
-		c.failedAt = now
+		// A short window, not the error cooldown: an unknown kid must not
+		// refetch on every request, but a key Privy publishes next must not
+		// be refused for minutes behind a stray kid.
+		c.retryAt = now.Add(privyJWKSMissRefetch)
 		return privyKey{}, fmt.Errorf("privy: JWKS has no key %q", kid)
 	}
 	return k, nil
@@ -169,7 +175,8 @@ func (h earnRoutes) parsePrivyIdentityToken(ctx context.Context, token string, n
 	if header.Alg != privyJWTAlg || header.Typ != privyJWTTyp || header.Kid == "" {
 		return PrivyIdentity{}, fmt.Errorf("privy: token header is not ES256 JWT with a kid")
 	}
-	key, err := privyKeys.key(ctx, h.HTTP, h.Privy.AppID, header.Kid)
+	jwksURL := privyJWKSBase + h.Privy.AppID + "/jwks.json"
+	key, err := privyJWKSFor(jwksURL).key(ctx, h.HTTP, header.Kid, now)
 	if err != nil {
 		return PrivyIdentity{}, err
 	}
