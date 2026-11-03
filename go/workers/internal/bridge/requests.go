@@ -29,6 +29,8 @@ type DepositRequest struct {
 	// every later request to the same address.
 	OriginTx       string
 	OriginCurrency string
+	OutputChainID  int64
+	OutputCurrency string
 	AmountInRaw    *big.Int
 	AmountOutRaw   *big.Int
 	CreatedAt      time.Time
@@ -43,27 +45,54 @@ type relayRequestRoute struct {
 	} `json:"destination"`
 }
 
+type relayRequest struct {
+	ID             string `json:"id"`
+	Status         string `json:"status"`
+	Recipient      string `json:"recipient"`
+	DepositAddress *struct {
+		Address string `json:"address"`
+	} `json:"depositAddress"`
+	Data struct {
+		InTxs []struct {
+			TxHash  string `json:"txHash"`
+			ChainID int64  `json:"chainId"`
+		} `json:"inTxs"`
+		Route struct {
+			Actual *relayRequestRoute `json:"actual"`
+			Quoted *relayRequestRoute `json:"quoted"`
+		} `json:"route"`
+	} `json:"data"`
+	CreatedAt time.Time `json:"createdAt"`
+}
+
 type relayRequests struct {
-	Requests []struct {
-		ID             string `json:"id"`
-		Status         string `json:"status"`
-		Recipient      string `json:"recipient"`
-		DepositAddress *struct {
-			Address string `json:"address"`
-		} `json:"depositAddress"`
-		Data struct {
-			InTxs []struct {
-				TxHash  string `json:"txHash"`
-				ChainID int64  `json:"chainId"`
-			} `json:"inTxs"`
-			Route struct {
-				Actual *relayRequestRoute `json:"actual"`
-				Quoted *relayRequestRoute `json:"quoted"`
-			} `json:"route"`
-		} `json:"data"`
-		CreatedAt time.Time `json:"createdAt"`
-	} `json:"requests"`
-	Continuation string `json:"continuation"`
+	Requests     []relayRequest `json:"requests"`
+	Continuation string         `json:"continuation"`
+}
+
+func (q relayRequest) parse(originChainID int64) DepositRequest {
+	d := DepositRequest{ID: q.ID, Status: q.Status, Recipient: q.Recipient, CreatedAt: q.CreatedAt}
+	if q.DepositAddress != nil {
+		d.DepositAddress = q.DepositAddress.Address
+	}
+	for _, tx := range q.Data.InTxs {
+		if tx.ChainID == originChainID && tx.TxHash != "" {
+			d.OriginTx = tx.TxHash
+			break
+		}
+	}
+	route := q.Data.Route.Actual
+	if route == nil {
+		route = q.Data.Route.Quoted
+	}
+	if route != nil {
+		d.OriginCurrency = route.Origin.InputCurrency.Currency.Address
+		d.OutputChainID = route.Destination.OutputCurrency.Currency.ChainID
+		d.OutputCurrency = route.Destination.OutputCurrency.Currency.Address
+		d.AmountInRaw, _ = parseAmount(route.Origin.InputCurrency.Amount)
+		d.AmountOutRaw, _ = parseAmount(route.Destination.OutputCurrency.Amount)
+	}
+	return d
 }
 
 // Requests lists the Relay requests created since since on up to
@@ -98,26 +127,7 @@ func (r *Relay) Requests(ctx context.Context, originChainID int64, depositAddres
 			return nil, fmt.Errorf("relay requests: %w", err)
 		}
 		for _, q := range page.Requests {
-			d := DepositRequest{ID: q.ID, Status: q.Status, Recipient: q.Recipient, CreatedAt: q.CreatedAt}
-			if q.DepositAddress != nil {
-				d.DepositAddress = q.DepositAddress.Address
-			}
-			for _, tx := range q.Data.InTxs {
-				if tx.ChainID == originChainID && tx.TxHash != "" {
-					d.OriginTx = tx.TxHash
-					break
-				}
-			}
-			route := q.Data.Route.Actual
-			if route == nil {
-				route = q.Data.Route.Quoted
-			}
-			if route != nil {
-				d.OriginCurrency = route.Origin.InputCurrency.Currency.Address
-				d.AmountInRaw, _ = parseAmount(route.Origin.InputCurrency.Amount)
-				d.AmountOutRaw, _ = parseAmount(route.Destination.OutputCurrency.Amount)
-			}
-			out = append(out, d)
+			out = append(out, q.parse(originChainID))
 		}
 		if page.Continuation == "" || len(page.Requests) == 0 {
 			return out, nil
@@ -125,4 +135,23 @@ func (r *Relay) Requests(ctx context.Context, originChainID int64, depositAddres
 		query.Set("continuation", page.Continuation)
 	}
 	return nil, fmt.Errorf("relay requests: more than %d pages", requestsMaxPages)
+}
+
+func (r *Relay) Request(ctx context.Context, originChainID int64, requestID string) (DepositRequest, error) {
+	hreq, err := http.NewRequestWithContext(ctx, http.MethodGet, r.BaseURL+"/requests/v3?"+url.Values{"id": {requestID}}.Encode(), nil)
+	if err != nil {
+		return DepositRequest{}, err
+	}
+	raw, err := r.do(hreq)
+	if err != nil {
+		return DepositRequest{}, fmt.Errorf("relay request: %w", err)
+	}
+	var page relayRequests
+	if err := json.Unmarshal(raw, &page); err != nil {
+		return DepositRequest{}, fmt.Errorf("relay request: %w", err)
+	}
+	if len(page.Requests) != 1 || page.Requests[0].ID != requestID {
+		return DepositRequest{}, fmt.Errorf("relay request %s: %d requests returned", requestID, len(page.Requests))
+	}
+	return page.Requests[0].parse(originChainID), nil
 }

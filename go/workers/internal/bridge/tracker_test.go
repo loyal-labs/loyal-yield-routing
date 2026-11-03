@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
@@ -82,12 +83,48 @@ func TestTrackerStoresEachHashFromTheStatusThatCarriedIt(t *testing.T) {
 	for _, c := range cases {
 		polls[c.requestID] = &atomic.Int32{}
 		if _, err := pool.Exec(ctx, `INSERT INTO loyal_yield.bridge_transfers
-(request_id, solana_wallet, origin_address, chain, asset, amount_in_raw, amount_out_raw, state, submitted_at)
+(request_id, solana_wallet, evm_address, chain, asset, amount_in_raw, amount_out_raw, state, submitted_at)
 VALUES ($1, 'wallet', '0x0000000000000000000000000000000000000001', 'base', 'usdc', 1000000, 990000, 'submitted', now())`, c.requestID); err != nil {
 			t.Fatal(err)
 		}
 	}
+	const (
+		owned      = "TZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ"
+		filledID   = "0xtron-usdc"
+		usdtID     = "0xtron-solana-usdt"
+		quotedOut  = "97000000"
+		settledOut = "97911694"
+	)
+	const base58Letters = "ABCDEFGHJKLMNPQRSTUVWXYZ"
+	for i := range RequestsBatch {
+		if _, err := pool.Exec(ctx, `INSERT INTO loyal_yield.relay_deposit_addresses (address, solana_wallet, app_user_id, chain, asset, quote_request_id, expires_at)
+VALUES ($1, 'other', gen_random_uuid(), 'tron', 'usdt', '0xquote', now() + interval '90 days')`, "T"+strings.Repeat("A", 31)+string(base58Letters[i/24])+string(base58Letters[i%24])); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO loyal_yield.relay_deposit_addresses (address, solana_wallet, app_user_id, chain, asset, quote_request_id, expires_at)
+VALUES ($1, $2, gen_random_uuid(), 'tron', 'usdt', '0xquote', now() + interval '90 days')`, owned, depositOrderWallet); err != nil {
+		t.Fatal(err)
+	}
+	tronRequest := func(id, hash, status, output, amountOut string) string {
+		return fmt.Sprintf(`{"id":%q,"status":%q,"recipient":%q,"depositAddress":{"address":%q},"createdAt":"2026-11-03T01:00:00Z",
+"data":{"inTxs":[{"chainId":%[5]d,"txHash":%[6]q}],"route":{"actual":{"origin":{"inputCurrency":{"currency":{"chainId":%[5]d,"address":%[7]q},"amount":"100000000"}},
+"destination":{"outputCurrency":{"currency":{"chainId":%[8]d,"address":%[9]q},"amount":%[10]q}}}}}}`,
+			id, status, depositOrderWallet, owned, Tron.RelayChainID, strings.Repeat(hash, 64), Tron.Token, SolanaRelayChainID, output, amountOut)
+	}
 	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/requests/v3" {
+			switch {
+			case r.URL.Query().Get("id") == filledID:
+				fmt.Fprintf(w, `{"requests":[%s]}`, tronRequest(filledID, "a", "success", SolanaUSDCMint, settledOut))
+			case !strings.Contains(r.URL.Query().Get("filters"), owned):
+				http.Error(w, "upstream timeout", http.StatusBadGateway)
+			default:
+				fmt.Fprintf(w, `{"requests":[%s,%s]}`, tronRequest(filledID, "a", "pending", SolanaUSDCMint, quotedOut),
+					tronRequest(usdtID, "b", "success", "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB", quotedOut))
+			}
+			return
+		}
 		id := r.URL.Query().Get("requestId")
 		for _, c := range cases {
 			if c.requestID != id {
@@ -106,7 +143,19 @@ VALUES ($1, 'wallet', '0x0000000000000000000000000000000000000001', 'base', 'usd
 	}))
 	defer relay.Close()
 
-	tracker := &Tracker{DB: pool, Relay: &Relay{BaseURL: relay.URL, HTTP: relay.Client()}, Facts: engine.NewFacts(prometheus.NewRegistry())}
+	cases = append(cases, struct {
+		requestID             string
+		reads                 []read
+		state                 TransferState
+		destinationTx, refund string
+		polls                 int32
+	}{filledID, []read{{"success", fillHash}}, TransferFilled, fillHash, "", 1})
+	polls[filledID] = &atomic.Int32{}
+
+	tracker := &Tracker{DB: pool, Relay: &Relay{BaseURL: relay.URL, HTTP: relay.Client(), APIKey: "key"}, Facts: engine.NewFacts(prometheus.NewRegistry())}
+	if err := tracker.detect(ctx, Tron, time.Now().Add(-trackLookback)); err != nil {
+		t.Fatal(err)
+	}
 	for range 3 {
 		if err := tracker.Tick(ctx); err != nil {
 			t.Fatal(err)
@@ -124,6 +173,15 @@ FROM loyal_yield.bridge_transfers b WHERE request_id = $1`, c.requestID).Scan(&s
 			t.Errorf("%s: got state %q destination_tx %s refund_tx %s after %d relay reads; want %q, %s, %s, %d reads",
 				c.requestID, state, deref(destinationTx), deref(refundTx), polls[c.requestID].Load(), c.state, orNull(c.destinationTx), orNull(c.refund), c.polls)
 		}
+	}
+
+	var tronRows int
+	var amountOut string
+	if err := pool.QueryRow(ctx, `SELECT count(*), coalesce(max(amount_out_raw::text) FILTER (WHERE request_id = $1), '') FROM loyal_yield.bridge_transfers WHERE chain = 'tron'`, filledID).Scan(&tronRows, &amountOut); err != nil {
+		t.Fatal(err)
+	}
+	if tronRows != 1 || amountOut != settledOut {
+		t.Errorf("got %d tron rows, %s amount_out_raw %q; want only the USDC request, at Relay's settled %s", tronRows, filledID, amountOut, settledOut)
 	}
 }
 
