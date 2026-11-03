@@ -75,10 +75,37 @@ jobs:
     if: needs.changes.outputs.workers == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    # The Go tests that need Postgres skip when their env var is unset, and a
+    # skip on trunk hid breakage twice. One server, one database per test:
+    # each test creates and drops its own loyal_yield schema.
+    env:
+      BRIDGE_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/bridge_test?sslmode=disable
+      EARNMAX_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/earnmax_test?sslmode=disable
+      BACKYARD_FOREIGN_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/backyard_foreign_test?sslmode=disable
+      EVM_DEPOSIT_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/evm_deposit_ci_test?sslmode=disable
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 15
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - name: Create the disposable test databases
+        env:
+          PGPASSWORD: postgres
+        run: |
+          for db in bridge_test earnmax_test backyard_foreign_test evm_deposit_ci_test; do
+            psql -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE $db"
+          done
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26.6'
@@ -127,6 +154,18 @@ jobs:
           WORKERS_V2_CACHE_DIR: ${{ runner.temp }}/workers-go
           WORKERS_V2_RACE: ${{ github.event_name == 'push' && '1' || '' }}
         run: bash scripts/verify-workers-v2.sh
+      - name: Database tests ran and were not skipped
+        working-directory: go/workers
+        env:
+          WORKERS_V2_CACHE_DIR: ${{ runner.temp }}/workers-go
+        run: |
+          export GOTOOLCHAIN=local GOENV=off
+          export GOMODCACHE="$WORKERS_V2_CACHE_DIR/gomod" GOCACHE="$WORKERS_V2_CACHE_DIR/gobuild"
+          tests="TestTrackerStoresEachHashFromTheStatusThatCarriedIt TestForeignInflowStoreCommitsEvidenceAndCursorTogether TestExitLiabilityUsesConfirmedReportAtEachMark TestEvmDepositRelaySignedRefusesEmbeddedWalletWhenPrivyLookupIsEmpty TestEvmDepositConcurrentPostsMakeOnePrivyCreate"
+          log="$RUNNER_TEMP/dbtests.log"
+          go test -count=1 -v -run "^($(echo $tests | tr ' ' '|'))\$" ./internal/bridge ./internal/backyard ./internal/earnmax ./internal/webapp | tee "$log"
+          ! grep -- '--- SKIP' "$log"
+          for t in $tests; do grep -q -- "--- PASS: $t " "$log"; done
       - name: Save Go module and build caches
         if: github.event_name == 'push'
         uses: actions/cache/save@v4
