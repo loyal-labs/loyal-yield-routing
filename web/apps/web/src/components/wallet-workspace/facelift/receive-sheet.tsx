@@ -165,7 +165,13 @@ function matches(query: string, ...texts: string[]) {
   return texts.some((text) => text.toLowerCase().includes(needle));
 }
 
-function Warning({ children }: { children: ReactNode }) {
+function Warning({
+  children,
+  onRetry,
+}: {
+  children: ReactNode;
+  onRetry?: () => void;
+}) {
   return (
     <div className="flex items-start rounded-2xl bg-destructive/[0.14] px-4 py-2 text-destructive">
       <ThemedIcon
@@ -173,6 +179,15 @@ function Warning({ children }: { children: ReactNode }) {
         src={`${BASE}/receive/warning.svg`}
       />
       <p className="min-w-0 flex-1 text-[13px] leading-4">{children}</p>
+      {onRetry && (
+        <button
+          className="t-hover ml-2 shrink-0 rounded-full bg-accent-selected px-3 text-[13px] leading-6 text-foreground"
+          onClick={onRetry}
+          type="button"
+        >
+          Try again
+        </button>
+      )}
     </div>
   );
 }
@@ -295,7 +310,13 @@ export function ReceiveSheet({
   walletAddress: string | null;
   initialTab?: Tab;
 }) {
-  const [tab, setTab] = useState<Tab>(initialTab);
+  const [tabState, setTabState] = useState<{
+    wallet: string | null;
+    tab: Tab;
+  }>({ wallet: walletAddress, tab: initialTab });
+  const tab = tabState.wallet === walletAddress ? tabState.tab : initialTab;
+  const setTab = (next: Tab) =>
+    setTabState({ wallet: walletAddress, tab: next });
   const [view, setView] = useState<View>("receive");
   const [selection, setSelection] = useState<Selection | null>(null);
   const [listing, setListing] = useState<string | null>(null);
@@ -304,7 +325,7 @@ export function ReceiveSheet({
   const panelRef = useRef<HTMLDivElement>(null);
   const bridge = tab === "Other chains";
   const evm = useEvmDepositAddress(walletAddress);
-  const live = bridgeOptedIn() && evm.eligible;
+  const live = bridgeOptedIn() && evm.ready;
   useEffect(() => {
     if (isOpen && bridge && live) void evm.load();
   }, [bridge, evm, isOpen, live]);
@@ -327,8 +348,8 @@ export function ReceiveSheet({
   useEscapeOverlay(isOpen, () => (view === "receive" ? onClose() : goBack()));
 
   useEffect(() => {
+    setTabState({ wallet: walletAddress, tab: initialTab });
     if (!isOpen) return;
-    setTab(initialTab);
     setView("receive");
     setQuery("");
     setSelection(null);
@@ -478,7 +499,11 @@ export function ReceiveSheet({
             {bridge ? (
               <div className="min-h-0 flex-1 overflow-y-auto">
                 <div className="flex flex-col gap-2 p-2 max-[795px]:px-4">
-                  {live && evm.error && <Warning>{evm.error}</Warning>}
+                  {live && evm.error && (
+                    <Warning onRetry={() => void evm.retry()}>
+                      {evm.error}
+                    </Warning>
+                  )}
                   {resolved && (
                     <>
                       <AddressCard
@@ -643,7 +668,9 @@ export function ReceiveSheet({
               {(view === "deposit-assets" || view === "chains") &&
                 networks.length === 0 &&
                 (evm.error ? (
-                  <Warning>{evm.error}</Warning>
+                  <Warning onRetry={() => void evm.retry()}>
+                    {evm.error}
+                  </Warning>
                 ) : (
                   evm.loading && (
                     <p className="px-4 py-3 text-[16px] leading-5 text-muted-foreground">

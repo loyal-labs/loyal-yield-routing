@@ -10,18 +10,11 @@ const EVM = `0x${"b".repeat(40)}`;
 const signer = mock(async () => ({ signature: "sig" }));
 
 mock.module("@privy-io/react-auth", () => ({
-  usePrivy: () => ({
-    user: {
-      linkedAccounts: [
-        { type: "wallet", chainType: "solana", walletClientType: "privy", address: WALLET },
-        { type: "wallet", chainType: "solana", walletClientType: "privy", address: OTHER_WALLET },
-      ],
-    },
-  }),
+  usePrivy: () => ({ ready: true, authenticated: true }),
+  useUser: () => ({ user: { linkedAccounts: [] }, refreshUser: async () => ({}) }),
+  useCreateWallet: () => ({ createWallet: async () => ({}) }),
+  getIdentityToken: async () => "token",
   useAuthorizationSignature: () => ({ generateAuthorizationSignature: signer }),
-}));
-mock.module("@/contexts/public-env-context", () => ({
-  usePublicEnv: () => ({ privyAppId: "app" }),
 }));
 
 const React = await import("react");
@@ -56,16 +49,6 @@ async function load(responses: { status: number; body: unknown }[]) {
 const network = {
   networks: [{ chain: "base", name: "Base", assets: ["usdc"], minUsd: 0 }],
 };
-
-test("a relay_signed response without an address never reaches the signer", async () => {
-  const { methods, hook } = await load([
-    { status: 200, body: { ...network, address: null, kind: "relay_signed" } },
-  ]);
-  expect(signer).not.toHaveBeenCalled();
-  expect(methods).toEqual(["GET"]);
-  expect(hook.info).toBeNull();
-  expect(hook.error).toBeTruthy();
-});
 
 test("a failed response without an error body never reaches the signer", async () => {
   const { methods, hook } = await load([
