@@ -50,6 +50,11 @@ Environment=RETAIL_TIMESCALE_SCHEMA=kamino
 #   LoadCredentialEncrypted=RETAIL_PRIVY_APP_SECRET:/etc/credstore.encrypted/loyal-retail/RETAIL_PRIVY_APP_SECRET
 # Both absent means the reader is off and both alerts stay silent; one without
 # the other fails startup.
+# Tron deposit-address detection runs in the same process and needs
+# /etc/systemd/system/loyal-retail.service.d/relay-requests.conf:
+#   [Service]
+#   LoadCredentialEncrypted=RETAIL_RELAY_API_KEY:/etc/credstore.encrypted/loyal-retail/RETAIL_RELAY_API_KEY
+# Absent means detection is off.
 EnvironmentFile=/etc/loyal/loyal-retail.env
 
 DynamicUser=yes

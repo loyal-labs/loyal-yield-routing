@@ -49,6 +49,18 @@ neither, let the process holding the autodeposit lock read Privy's app gas spend
 every five minutes (first read one interval after start). Both absent means the
 reader is off and the `LoyalPrivyGasSpendHigh` and `LoyalPrivyGasSpendStale`
 alerts stay silent; one without the other fails startup.
+The optional `RETAIL_RELAY_API_KEY` credential turns on deposit detection in the
+same process: every 10 seconds it lists Relay requests on Loyal's Tron deposit
+addresses and records each deposit in `bridge_transfers`. Absent, detection is
+off and logs `relay requests disabled: no api key` once at start. Detection and
+the tracker need SELECT on `loyal_yield.relay_deposit_addresses` and SELECT,
+INSERT and UPDATE on `loyal_yield.bridge_transfers`, including the
+`deposit_address` column 0134 adds, on `RETAIL_DATABASE_URL`. Detection exports
+`loyal_bridge_deposit_requests_seen`,
+`loyal_bridge_deposits_recorded_total` (by the state a row is born in, so a
+row born `filled` counts here and not in `loyal_bridge_transfers_advanced_total`),
+`loyal_bridge_deposit_batches_failed_total` and
+`loyal_bridge_detection_last_success_timestamp_seconds`, each by `chain`.
 `RETAIL_CROSS_MINT_ENABLED=true` opts the planner/controller into fresh cross-mint
 work; it defaults off. Existing signed recovery and custody continuation stay
 available with rollout off. Source database controls are checked independently.
