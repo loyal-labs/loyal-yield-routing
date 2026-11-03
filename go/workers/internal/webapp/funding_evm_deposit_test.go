@@ -80,7 +80,7 @@ func evmDepositTestDB(t *testing.T) *pgxpool.Pool {
 		}
 	})
 	setup := []string{`CREATE SCHEMA loyal_yield`, `CREATE TABLE app_users (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), provider text NOT NULL, subject_address text NOT NULL)`}
-	for _, file := range []string{"0126_evm_deposit_routes.sql", "0127_evm_deposit_routes_shared_wallet.sql"} {
+	for _, file := range []string{"0126_evm_deposit_routes.sql", "0127_evm_deposit_routes_shared_wallet.sql", "0130_evm_deposit_routes_route_set.sql"} {
 		migration, err := os.ReadFile("../../../../migrations/yield/" + file)
 		if err != nil {
 			t.Fatal(err)
@@ -236,17 +236,18 @@ type fakePrivy struct {
 	lookups atomic.Int32
 	creates atomic.Int32
 	started chan struct{}
+	source  atomic.Value
 }
 
 func (f *fakePrivy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	route := []map[string]string{{"deposit_address": f.address, "wallet_id": fakePrivyWalletID}}
+	route := []map[string]any{{"deposit_address": f.address, "wallet_id": fakePrivyWalletID, "source": f.source.Load()}}
 	switch {
 	case r.URL.Path == "/v1/wallets":
 		wallet := map[string]string{"id": fakePrivyWalletID, "address": r.URL.Query().Get("address"), "chain_type": "solana"}
 		json.NewEncoder(w).Encode(map[string]any{"data": []map[string]string{wallet}})
 	case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/deposit_accounts/crypto"):
 		f.lookups.Add(1)
-		data := []map[string]string{}
+		data := []map[string]any{}
 		if f.created.Load() {
 			data = route
 		}
@@ -259,8 +260,11 @@ func (f *fakePrivy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
+		var body PrivyDepositBody
+		json.NewDecoder(r.Body).Decode(&body)
+		f.source.Store(body.Source)
 		f.created.Store(true)
-		json.NewEncoder(w).Encode(map[string]any{"deposit_accounts": route})
+		json.NewEncoder(w).Encode(map[string]any{"deposit_accounts": []map[string]any{{"deposit_address": f.address, "wallet_id": fakePrivyWalletID, "source": body.Source}}})
 	default:
 		http.NotFound(w, r)
 	}

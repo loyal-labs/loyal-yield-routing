@@ -85,9 +85,8 @@ type relayQuote struct {
 }
 
 const (
-	approveSelector       = "095ea7b3"
-	depositErc20Selector  = "e8017952"
-	depositNativeSelector = "49290c1c"
+	approveSelector      = "095ea7b3"
+	depositErc20Selector = "e8017952"
 )
 
 // relayDepository is the contract every live Relay quote deposits into, the
@@ -160,7 +159,6 @@ func CheckQuote(req QuoteRequest, raw []byte) (Quote, error) {
 		return Quote{}, fmt.Errorf("quote: empty requestId")
 	}
 
-	native := tok.Address == NativeToken
 	type step struct {
 		id string
 		tx struct{ from, to, data, value string }
@@ -219,29 +217,20 @@ func CheckQuote(req QuoteRequest, raw []byte) (Quote, error) {
 		return Quote{}, fmt.Errorf("quote: deposit data: %w", err)
 	}
 	value, _ := parseAmount(deposit.tx.value)
-	if native {
-		if approve != nil {
-			return Quote{}, fmt.Errorf("quote: steps has an approve for the native coin")
-		}
-		if value.Cmp(req.AmountRaw) != 0 {
-			return Quote{}, fmt.Errorf("quote: deposit value %s is not the requested amount", deposit.tx.value)
-		}
-	} else {
-		if value.Sign() != 0 {
-			return Quote{}, fmt.Errorf("quote: deposit value %s must be 0 for a token", deposit.tx.value)
-		}
-		if approve == nil {
-			return Quote{}, fmt.Errorf("quote: a %s deposit needs an approve step", req.Asset)
-		}
-		if v, _ := parseAmount(approve.tx.value); v.Sign() != 0 {
-			return Quote{}, fmt.Errorf("quote: approve value %s must be 0", approve.tx.value)
-		}
-		if !strings.EqualFold(approve.tx.to, tok.Address) {
-			return Quote{}, fmt.Errorf("quote: approve target is not the %s contract", req.Asset)
-		}
-		if err := checkApprove(approve.tx.data, deposit.tx.to, req.AmountRaw); err != nil {
-			return Quote{}, fmt.Errorf("quote: approve data: %w", err)
-		}
+	if value.Sign() != 0 {
+		return Quote{}, fmt.Errorf("quote: deposit value %s must be 0 for a token", deposit.tx.value)
+	}
+	if approve == nil {
+		return Quote{}, fmt.Errorf("quote: a %s deposit needs an approve step", req.Asset)
+	}
+	if v, _ := parseAmount(approve.tx.value); v.Sign() != 0 {
+		return Quote{}, fmt.Errorf("quote: approve value %s must be 0", approve.tx.value)
+	}
+	if !strings.EqualFold(approve.tx.to, tok.Address) {
+		return Quote{}, fmt.Errorf("quote: approve target is not the %s contract", req.Asset)
+	}
+	if err := checkApprove(approve.tx.data, deposit.tx.to, req.AmountRaw); err != nil {
+		return Quote{}, fmt.Errorf("quote: approve data: %w", err)
 	}
 
 	q := Quote{
@@ -282,25 +271,19 @@ func checkApprove(data, spender string, amount *big.Int) error {
 	return nil
 }
 
-// checkDeposit accepts only depositErc20(depositor, token, amount, id) or
-// depositNative(depositor, id) with the depositor, token and amount we expect.
-// The trailing id word is Relay's own and is not checked.
+// checkDeposit accepts only depositErc20(depositor, token, amount, id) with
+// the depositor, token and amount we expect. The trailing id word is Relay's
+// own and is not checked.
 func checkDeposit(data, depositor string, tok Token, amount *big.Int) error {
 	b, _ := decodeHex(data)
-	if tok.Address == NativeToken {
-		if len(b) != 4+2*32 || hex.EncodeToString(b[:4]) != depositNativeSelector {
-			return fmt.Errorf("not depositNative(depositor, id)")
-		}
-	} else {
-		if len(b) != 4+4*32 || hex.EncodeToString(b[:4]) != depositErc20Selector {
-			return fmt.Errorf("not depositErc20(depositor, token, amount, id)")
-		}
-		if err := checkAddressWord(b[36:68], tok.Address); err != nil {
-			return fmt.Errorf("token %w", err)
-		}
-		if new(big.Int).SetBytes(b[68:100]).Cmp(amount) != 0 {
-			return fmt.Errorf("amount is not the requested amount")
-		}
+	if len(b) != 4+4*32 || hex.EncodeToString(b[:4]) != depositErc20Selector {
+		return fmt.Errorf("not depositErc20(depositor, token, amount, id)")
+	}
+	if err := checkAddressWord(b[36:68], tok.Address); err != nil {
+		return fmt.Errorf("token %w", err)
+	}
+	if new(big.Int).SetBytes(b[68:100]).Cmp(amount) != 0 {
+		return fmt.Errorf("amount is not the requested amount")
 	}
 	if err := checkAddressWord(b[4:36], depositor); err != nil {
 		return fmt.Errorf("depositor %w", err)

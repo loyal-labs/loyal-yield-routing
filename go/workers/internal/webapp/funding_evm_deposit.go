@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -54,6 +56,7 @@ const (
 type evmDepositRoute struct {
 	Kind    EvmDepositKind
 	Address string
+	Set     bridge.RouteSet
 }
 
 type walletLocks struct {
@@ -101,8 +104,8 @@ func (l *walletLocks) release(wallet solana.PublicKey, entry *walletLock) {
 var evmAddress = regexp.MustCompile(`^0x[0-9a-f]{40}$`)
 
 type PrivyDepositAsset struct {
-	Asset bridge.Asset `json:"asset"`
-	Chain string       `json:"chain"`
+	Asset string `json:"asset"`
+	Chain string `json:"chain"`
 }
 
 type PrivyDepositSource struct {
@@ -129,24 +132,89 @@ type PrivyDepositRequest struct {
 	Headers PrivyDepositHeaders `json:"headers"`
 }
 
-func (h earnRoutes) privyDepositRequest(walletID string, requestExpiryMs int64) PrivyDepositRequest {
+var privyDepositDestination = PrivyDepositAsset{Asset: "usdc", Chain: "solana"}
+
+// privyLegacy13Sources is the source list every legacy-13 account holds on
+// Privy, read back from all six on 2026-11-02.
+var privyLegacy13Sources = []PrivyDepositAsset{
+	{"usdc", "ethereum"}, {"usdt", "ethereum"}, {"eth", "ethereum"},
+	{"usdc", "base"}, {"usdt", "base"}, {"eth", "base"},
+	{"usdc", "arbitrum"}, {"usdt", "arbitrum"}, {"eth", "arbitrum"},
+	{"usdc", "polygon"}, {"usdt", "polygon"},
+	{"usdc", "bsc"}, {"usdt", "bsc"},
+}
+
+// privySources names tokens by contract address, since Privy refuses its own
+// aliases for some (chain, asset) pairs, such as usdc on Tempo.
+func privySources(set bridge.RouteSet) []PrivyDepositAsset {
+	if set == bridge.Legacy13 {
+		return privyLegacy13Sources
+	}
 	var sources []PrivyDepositAsset
-	for _, network := range bridge.Networks {
+	for _, network := range set.Networks() {
 		for _, token := range network.Tokens {
-			sources = append(sources, PrivyDepositAsset{Asset: token.Asset, Chain: string(network.Chain)})
+			sources = append(sources, PrivyDepositAsset{Asset: token.Address, Chain: string(network.Chain)})
 		}
 	}
+	return sources
+}
+
+func privyRouteSet(source PrivyDepositSource) (bridge.RouteSet, bool) {
+	if source.Mode != "include" {
+		return "", false
+	}
+	held := map[PrivyDepositAsset]bool{}
+	for _, v := range source.Values {
+		held[PrivyDepositAsset{Asset: strings.ToLower(v.Asset), Chain: strings.ToLower(v.Chain)}] = true
+	}
+	for _, set := range bridge.RouteSets {
+		sources := privySources(set)
+		missing := slices.ContainsFunc(sources, func(s PrivyDepositAsset) bool { return !held[s] })
+		if len(held) == len(sources) && !missing {
+			return set, true
+		}
+	}
+	return "", false
+}
+
+func (h earnRoutes) privyDepositRequest(walletID string, requestExpiryMs int64) PrivyDepositRequest {
 	return PrivyDepositRequest{
 		Version: 1,
 		Method:  http.MethodPost,
 		URL:     privyDepositRoutesURL(walletID),
 		Body: PrivyDepositBody{
 			Type:        "inline_route",
-			Source:      PrivyDepositSource{Mode: "include", Values: sources},
-			Destination: PrivyDepositAsset{Asset: bridge.USDC, Chain: "solana"},
+			Source:      PrivyDepositSource{Mode: "include", Values: privySources(bridge.Current)},
+			Destination: privyDepositDestination,
 		},
 		Headers: PrivyDepositHeaders{AppID: h.Privy.AppID, RequestExpiry: strconv.FormatInt(requestExpiryMs, 10)},
 	}
+}
+
+type EvmDepositToken struct {
+	Asset      bridge.Asset `json:"asset"`
+	Symbol     string       `json:"symbol"`
+	Name       string       `json:"name"`
+	Decimals   uint8        `json:"decimals"`
+	Stable     bool         `json:"stable"`
+	Icon       *string      `json:"icon" doc:"Image file in the receive sheet's assets; null while there is none"`
+	FeePercent *string      `json:"feePercent" doc:"Privy auto-bridge cost as a percent of a 100-token deposit, from Privy's deposit quote; null for relay_signed or when the quote failed"`
+}
+
+type EvmDepositNetwork struct {
+	Chain  bridge.Chain      `json:"chain"`
+	Name   string            `json:"name"`
+	Icon   *string           `json:"icon" doc:"Image file in the receive sheet's assets; null while there is none"`
+	Assets []bridge.Asset    `json:"assets"`
+	Tokens []EvmDepositToken `json:"tokens"`
+	MinUSD int               `json:"minUsd" doc:"Smallest deposit worth bridging in USD; 0 means none"`
+}
+
+func iconFile(name string) *string {
+	if name == "" {
+		return nil
+	}
+	return &name
 }
 
 type EvmDepositAddressResponse struct {
@@ -154,31 +222,50 @@ type EvmDepositAddressResponse struct {
 	Kind          EvmDepositKind       `json:"kind" enum:"privy_autobridge,relay_signed"`
 	ToSign        *PrivyDepositRequest `json:"toSign,omitempty"`
 	RequestExpiry *int64               `json:"requestExpiry,omitempty"`
+	Networks      []EvmDepositNetwork  `json:"networks"`
 	Chains        []bridge.Chain       `json:"chains"`
 	Assets        []bridge.Asset       `json:"assets"`
 	Minimums      map[string]int       `json:"minimums"`
 }
 
-func evmDepositResponse(kind EvmDepositKind, address *string) *evmDepositOutput {
-	out := EvmDepositAddressResponse{Address: address, Kind: kind, Minimums: map[string]int{}}
+func (h earnRoutes) evmDepositResponse(kind EvmDepositKind, address *string, set bridge.RouteSet) *evmDepositOutput {
+	networks := set.Networks()
+	var fees map[depositCell]*string
+	if kind == PrivyAutobridge {
+		fees = h.privyDepositFees(networks)
+	}
+	out := EvmDepositAddressResponse{Address: address, Kind: kind, Networks: []EvmDepositNetwork{}, Minimums: map[string]int{}}
 	seen := map[bridge.Asset]bool{}
-	for _, network := range bridge.Networks {
+	for _, network := range networks {
+		item := EvmDepositNetwork{Chain: network.Chain, Name: network.Name, Icon: iconFile(network.Icon), MinUSD: network.MinUSD}
 		out.Chains = append(out.Chains, network.Chain)
 		if network.MinUSD > 0 {
 			out.Minimums[string(network.Chain)] = network.MinUSD
 		}
 		for _, token := range network.Tokens {
+			info := bridge.Assets[token.Asset]
+			item.Assets = append(item.Assets, token.Asset)
+			item.Tokens = append(item.Tokens, EvmDepositToken{
+				Asset:      token.Asset,
+				Symbol:     info.Symbol,
+				Name:       info.Name,
+				Decimals:   token.Decimals,
+				Stable:     info.Stable,
+				Icon:       iconFile(info.Icon),
+				FeePercent: fees[depositCell{network.Chain, token.Asset}],
+			})
 			if !seen[token.Asset] {
 				seen[token.Asset] = true
 				out.Assets = append(out.Assets, token.Asset)
 			}
 		}
+		out.Networks = append(out.Networks, item)
 	}
 	return &evmDepositOutput{Body: out}
 }
 
-func evmDepositFound(route evmDepositRoute) *evmDepositOutput {
-	return evmDepositResponse(route.Kind, &route.Address)
+func (h earnRoutes) evmDepositFound(route evmDepositRoute) *evmDepositOutput {
+	return h.evmDepositResponse(route.Kind, &route.Address, route.Set)
 }
 
 type EvmDepositAddressRequest struct {
@@ -241,29 +328,29 @@ func (h earnRoutes) evmDepositAddress(ctx context.Context, in *sessionRequest) (
 		return nil, evmDepositUnavailable("evm deposit read", err)
 	}
 	if route != nil {
-		return evmDepositFound(*route), nil
+		return h.evmDepositFound(*route), nil
 	}
 	walletID, err := h.privyWalletID(ctx, "solana", wallet.String())
 	if err != nil {
 		return nil, evmDepositUnavailable("privy wallet lookup", err)
 	}
 	if walletID == "" {
-		return evmDepositResponse(RelaySigned, nil), nil
+		return h.evmDepositResponse(RelaySigned, nil, bridge.Current), nil
 	}
 	existing, err := h.privyDepositRoutes(ctx, walletID)
 	if err != nil {
 		return nil, evmDepositUnavailable("privy deposit routes", err)
 	}
-	if address, ok := evmDepositAddressOf(existing); ok {
+	if account, ok := evmDepositAccountOf(existing); ok {
 		userID, err := h.evmDepositAppUser(ctx, wallet)
 		if err != nil {
 			return nil, err
 		}
-		return h.storeEvmDepositRoute(ctx, wallet, userID, evmDepositRoute{Kind: PrivyAutobridge, Address: address})
+		return h.adoptPrivyDepositAccount(ctx, wallet, userID, account)
 	}
 	expiry := time.Now().Add(evmDepositSignWindow).UnixMilli()
 	toSign := h.privyDepositRequest(walletID, expiry)
-	out := evmDepositResponse(PrivyAutobridge, nil)
+	out := h.evmDepositResponse(PrivyAutobridge, nil, bridge.Current)
 	out.Body.ToSign, out.Body.RequestExpiry = &toSign, &expiry
 	return out, nil
 }
@@ -284,7 +371,7 @@ func (h earnRoutes) createEvmDepositAddress(ctx context.Context, in *evmDepositI
 		return nil, evmDepositUnavailable("evm deposit read", err)
 	}
 	if route != nil {
-		return evmDepositFound(*route), nil
+		return h.evmDepositFound(*route), nil
 	}
 	userID, err := h.evmDepositAppUser(ctx, wallet)
 	if err != nil {
@@ -346,7 +433,7 @@ func (h earnRoutes) createAutobridgeRoute(ctx context.Context, wallet solana.Pub
 		return nil, evmDepositUnavailable("evm deposit read", err)
 	}
 	if route != nil {
-		return evmDepositFound(*route), nil
+		return h.evmDepositFound(*route), nil
 	}
 	walletID, err := h.privyWalletID(ctx, "solana", wallet.String())
 	if err != nil {
@@ -359,8 +446,8 @@ func (h earnRoutes) createAutobridgeRoute(ctx context.Context, wallet solana.Pub
 	if err != nil {
 		return nil, evmDepositUnavailable("privy deposit routes", err)
 	}
-	if address, ok := evmDepositAddressOf(existing); ok {
-		return h.storeEvmDepositRoute(ctx, wallet, userID, evmDepositRoute{Kind: PrivyAutobridge, Address: address})
+	if account, ok := evmDepositAccountOf(existing); ok {
+		return h.adoptPrivyDepositAccount(ctx, wallet, userID, account)
 	}
 	created, err := h.privyCreateDepositRoutes(ctx, h.privyDepositRequest(walletID, requestExpiryMs), signature)
 	var refused *privyRefused
@@ -371,11 +458,22 @@ func (h earnRoutes) createAutobridgeRoute(ctx context.Context, wallet solana.Pub
 	if err != nil {
 		return nil, evmDepositUnavailable("privy deposit create", err)
 	}
-	address, ok := evmDepositAddressOf(created)
+	account, ok := evmDepositAccountOf(created)
 	if !ok {
 		return nil, earnError(http.StatusBadGateway, "evm_deposit_unavailable", "Privy returned no EVM deposit address.")
 	}
-	return h.storeEvmDepositRoute(ctx, wallet, userID, evmDepositRoute{Kind: PrivyAutobridge, Address: address})
+	return h.storeEvmDepositRoute(ctx, wallet, userID, evmDepositRoute{Kind: PrivyAutobridge, Address: account.DepositAddress, Set: bridge.Current})
+}
+
+// adoptPrivyDepositAccount records an account Privy already holds for the
+// wallet, with the set its own source list names.
+func (h earnRoutes) adoptPrivyDepositAccount(ctx context.Context, wallet solana.PublicKey, userID string, account privyDepositAddressRoute) (*evmDepositOutput, error) {
+	set, ok := privyRouteSet(account.Source)
+	if !ok {
+		source, _ := json.Marshal(account.Source)
+		return nil, evmDepositUnavailable("privy deposit account", fmt.Errorf("account %s converts an unknown source list %s", account.DepositAddress, source))
+	}
+	return h.storeEvmDepositRoute(ctx, wallet, userID, evmDepositRoute{Kind: PrivyAutobridge, Address: account.DepositAddress, Set: set})
 }
 
 func (h earnRoutes) createRelaySignedRoute(ctx context.Context, wallet solana.PublicKey, userID, identityToken string) (*evmDepositOutput, error) {
@@ -403,32 +501,50 @@ func (h earnRoutes) createRelaySignedRoute(ctx context.Context, wallet solana.Pu
 	return nil, earnError(http.StatusConflict, "evm_wallet_missing", "Your Privy account has no embedded EVM wallet yet.")
 }
 
-func evmDepositAddressOf(routes []privyDepositAddressRoute) (string, bool) {
+func evmDepositAccountOf(routes []privyDepositAddressRoute) (privyDepositAddressRoute, bool) {
 	for _, route := range routes {
 		if address := strings.ToLower(route.DepositAddress); evmAddress.MatchString(address) {
-			return address, true
+			route.DepositAddress = address
+			return route, true
 		}
 	}
-	return "", false
+	return privyDepositAddressRoute{}, false
 }
 
 func (h earnRoutes) storedEvmDepositRoute(ctx context.Context, wallet solana.PublicKey) (*evmDepositRoute, error) {
 	var route evmDepositRoute
-	err := h.YieldDB.QueryRow(ctx, `SELECT kind, evm_address FROM loyal_yield.evm_deposit_routes WHERE solana_wallet = $1`,
-		wallet.String()).Scan(&route.Kind, &route.Address)
+	var set *string
+	err := h.YieldDB.QueryRow(ctx, `SELECT kind, evm_address, route_set FROM loyal_yield.evm_deposit_routes WHERE solana_wallet = $1`,
+		wallet.String()).Scan(&route.Kind, &route.Address, &set)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
+	switch {
+	case route.Kind == RelaySigned:
+		route.Set = bridge.Current
+	case set == nil:
+		return nil, fmt.Errorf("evm deposit route of %s has no route set", wallet)
+	default:
+		var ok bool
+		if route.Set, ok = bridge.ParseRouteSet(*set); !ok {
+			return nil, fmt.Errorf("evm deposit route of %s has unknown route set %q", wallet, *set)
+		}
+	}
 	return &route, nil
 }
 
 func (h earnRoutes) storeEvmDepositRoute(ctx context.Context, wallet solana.PublicKey, userID string, route evmDepositRoute) (*evmDepositOutput, error) {
-	if _, err := h.YieldDB.Exec(ctx, `INSERT INTO loyal_yield.evm_deposit_routes (solana_wallet, app_user_id, kind, evm_address)
-VALUES ($1, $2::text::uuid, $3, $4)
-ON CONFLICT DO NOTHING`, wallet.String(), userID, string(route.Kind), route.Address); err != nil {
+	var set *string
+	if route.Kind == PrivyAutobridge {
+		name := string(route.Set)
+		set = &name
+	}
+	if _, err := h.YieldDB.Exec(ctx, `INSERT INTO loyal_yield.evm_deposit_routes (solana_wallet, app_user_id, kind, evm_address, route_set)
+VALUES ($1, $2::text::uuid, $3, $4, $5)
+ON CONFLICT DO NOTHING`, wallet.String(), userID, string(route.Kind), route.Address, set); err != nil {
 		return nil, evmDepositUnavailable("evm deposit insert", err)
 	}
 	stored, err := h.storedEvmDepositRoute(ctx, wallet)
@@ -439,5 +555,5 @@ ON CONFLICT DO NOTHING`, wallet.String(), userID, string(route.Kind), route.Addr
 		slog.Warn("evm deposit address already routes to another wallet", "wallet", wallet.String(), "address", route.Address)
 		return nil, earnError(http.StatusConflict, "evm_deposit_address_in_use", "This deposit address already belongs to another wallet.")
 	}
-	return evmDepositFound(*stored), nil
+	return h.evmDepositFound(*stored), nil
 }

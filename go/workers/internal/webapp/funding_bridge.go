@@ -15,6 +15,7 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/jackc/pgx/v5"
 	"github.com/solana-foundation/solana-go/v2"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/bridge"
 )
@@ -180,12 +181,21 @@ func (h earnRoutes) bridgeBalances(ctx context.Context, in *sessionRequest) (*br
 	if walletID == "" {
 		return nil, bridgeUnavailable("privy evm wallet lookup", fmt.Errorf("privy has no wallet %s", address))
 	}
-	var raw json.RawMessage
-	target := privyAPIBase + "/wallets/" + url.PathEscape(walletID) + "/balance?" + bridge.PrivyBalanceQuery().Encode()
-	if err := h.privyCall(ctx, http.MethodGet, target, nil, nil, &raw); err != nil {
+	queries := bridge.PrivyBalanceQueries()
+	pages := make([][]byte, len(queries))
+	calls, callsCtx := errgroup.WithContext(ctx)
+	for i, query := range queries {
+		calls.Go(func() error {
+			var raw json.RawMessage
+			err := h.privyCall(callsCtx, http.MethodGet, privyAPIBase+"/wallets/"+url.PathEscape(walletID)+"/balance?"+query.Encode(), nil, nil, &raw)
+			pages[i] = raw
+			return err
+		})
+	}
+	if err := calls.Wait(); err != nil {
 		return nil, bridgeUnavailable("privy balances", err)
 	}
-	balances, err := bridge.ParsePrivyBalances(raw)
+	balances, err := bridge.ParsePrivyBalances(pages)
 	if err != nil {
 		return nil, bridgeUnavailable("privy balances", err)
 	}
