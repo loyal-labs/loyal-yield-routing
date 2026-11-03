@@ -76,6 +76,9 @@ func (a *Application) HandlePolicyTransaction(ctx context.Context, update *pb.Su
 		if err := projectEarnMaxMemos(ctx, a.store, a.logger, decoded); err != nil {
 			return err
 		}
+		if err := a.recordEarnMaxCashFlows(ctx, transaction.GetTransaction(), decoded); err != nil {
+			return err
+		}
 		if err := a.recordRecurringDelegations(ctx, decoded); err != nil {
 			return err
 		}

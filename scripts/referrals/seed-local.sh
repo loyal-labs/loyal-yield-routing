@@ -19,6 +19,10 @@ deletes every fixture row first, so each run starts from the same state.
          that exercise the masked label:
   h      email h@referrals.test (one-character local part), $25 deposited
   ivan   no email (wallet-only), $5 deposited
+  kim    bound to alice, $40 into Earn MAX only (one Voltr deposit row)
+  lee    bound to alice, $10 in Earn and $15 into Earn MAX: $25 deposited
+  max    bound to alice, $20 into Earn MAX, then a claim of $20.10 (all of
+         it plus yield): principal 0, withdrawn
 
 Fixture emails are <name>@referrals.test, except ivan's, which is NULL.
 
@@ -53,7 +57,10 @@ fixtures="('alice', 'ESPHGrHg6YM1asBqFRmvrwUjrEfeeU5XEGn4C1L8aPWg', 40, 'alice@r
   ('frank', '3vKkNzPRDQAiYee6WxXkxs88m9buaHpSPTPuYcbjT6XP', 0, 'frank@referrals.test'),
   ('gina', 'Eq7tYdBcXyUJLbB8waw8G2UzAF6K8xmLwUe5jap2g1pq', 40, 'gina@referrals.test'),
   ('h', '69wFnDXsK7u9oBV9YiMQbbFskrBdvqddwTN7UFRPy6Hq', 20, 'h@referrals.test'),
-  ('ivan', '7h9Tu7eGNq2u3vqthQ8Af6mZ9V3fq9KM9eXus1DXPLmq', 15, NULL)"
+  ('ivan', '7h9Tu7eGNq2u3vqthQ8Af6mZ9V3fq9KM9eXus1DXPLmq', 15, NULL),
+  ('kim', '7udWYD3qKoEoWEjofKpWmksRX1Fwztz8veFGjFy6jH5W', 6, 'kim@referrals.test'),
+  ('lee', '2x6xahyv1eFzVcgyrcQEywKeHwHWVwGDMkmjqCsWz8EL', 5, 'lee@referrals.test'),
+  ('max', '6ygiYtSgEZoXt6e1dQq5DkgVXpaYQAfStQaQS4XWCP3C', 4, 'max@referrals.test')"
 
 run "$app" <<SQL
 DELETE FROM app_users
@@ -79,6 +86,7 @@ WHERE referee_wallet LIKE 'RefExtra%'
 DELETE FROM loyal_yield.referral_codes WHERE app_user_id IN (SELECT id FROM fixture);
 DELETE FROM loyal_yield.user_yield_positions
 WHERE wallet_address LIKE 'RefExtra%' OR wallet_address IN (SELECT wallet FROM fixture);
+DELETE FROM loyal_yield.earn_max_cash_flows WHERE wallet IN (SELECT wallet FROM fixture);
 
 INSERT INTO loyal_yield.referral_codes (app_user_id, code)
 SELECT id, code FROM fixture JOIN (VALUES ('alice', 'A11CE00'), ('frank', 'FRANK00'), ('gina', 'G1NA000')) c (name, code) USING (name);
@@ -86,7 +94,8 @@ SELECT id, code FROM fixture JOIN (VALUES ('alice', 'A11CE00'), ('frank', 'FRANK
 CREATE TEMP TABLE friend AS
 SELECT wallet, id, signed_up_at, principal, inviter FROM fixture
 JOIN (VALUES ('bob', 60000000, 'alice'), ('carol', NULL, 'alice'), ('dan', 0, 'alice'),
-             ('h', 25000000, 'gina'), ('ivan', 5000000, 'gina')) d (name, principal, inviter) USING (name)
+             ('h', 25000000, 'gina'), ('ivan', 5000000, 'gina'),
+             ('kim', NULL, 'alice'), ('lee', 10000000, 'alice'), ('max', NULL, 'alice')) d (name, principal, inviter) USING (name)
 UNION ALL
 SELECT 'RefExtra' || lpad(i::text, 6, '0'), md5('referrals-extra-' || i)::uuid, now() - interval '20 days', 10000000, 'alice'
 FROM generate_series(1, :friends) i;
@@ -105,6 +114,18 @@ SELECT wallet, 'vault-' || wallet, 'settings-' || wallet, 0, 'vault-' || wallet,
        'deposit-' || wallet, 'deposit-' || wallet, 1, 'active', signed_up_at + interval '2 hours', now(),
        'reserve', 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', principal, 1, now()
 FROM friend WHERE principal IS NOT NULL;
+SQL
+
+run "$yield" <<SQL
+INSERT INTO loyal_yield.earn_max_cash_flows (signature, wallet, kind, amount_raw, slot, transaction_index)
+SELECT signature, wallet, kind, amount_raw, slot, transaction_index
+FROM (VALUES
+  ('5ABZMDKE4EHKroCcAazPuGF8P17BSnzagdgXu8bWAGdfm3GUSikRh3YaLVwr8UjoatX4t2NgbNfrymkn9ic8a1Tq', 'kim', 'deposit', 40000000, 454568149, 207),
+  ('529LPd6UMKML67KSttZ3xtJ2JGhYKBMouHX6xabVqcZ1rK8xxRb8Pbxt5HB4paZahCRVmtmNMhNzQsYLVbQf8dLA', 'lee', 'deposit', 15000000, 454568150, 12),
+  ('2nURqt5Xr3dXViugg1696bXmGWM2ETRJn9FHmcGyPPiDXNBaV2MU5QGe1TC7oL2z8t53rNqVWbTd9KhkZt422LxN', 'max', 'deposit', 20000000, 454568151, 3),
+  ('4QVsumJ26kqqpCakmJxrXN55MLZTmbkzqi14qnD7KfwKQddssa3hFy5mNZ9CfEduFKgxR9gsHgjmNzzC7CEvE3J4', 'max', 'claim', 20100000, 454990000, 41)
+) v (signature, name, kind, amount_raw, slot, transaction_index)
+JOIN (VALUES $fixtures) f (name, wallet, age, email) USING (name);
 SQL
 
 psql -X -A -F ' ' -t "$app" -c "SELECT f.name, u.id, coalesce(u.email, '-'), u.subject_address

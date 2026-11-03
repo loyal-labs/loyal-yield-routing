@@ -223,6 +223,14 @@ func invocations(execution chain.Execution) []invocation {
 	return out
 }
 
+func TransactionEntries(execution chain.Execution, signature solana.Signature, a Authority) ([]Entry, error) {
+	user, err := voltr.UserAccounts(Vault, LPMint, a.key)
+	if err != nil {
+		return nil, err
+	}
+	return decodeEntries(execution, signature, time.Time{}, a.key, user.LPATA)
+}
+
 func decodeEntries(execution chain.Execution, signature solana.Signature, at time.Time, authority, lpATA solana.PublicKey) ([]Entry, error) {
 	keys := execution.Keys
 	var entries []Entry
