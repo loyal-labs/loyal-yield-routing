@@ -41,20 +41,20 @@ func (s *Store) Friends(ctx context.Context, referrer string) ([]Friend, error) 
 	ctx, cancel := context.WithTimeout(ctx, queryTimeout)
 	defer cancel()
 	rows, err := s.yield.Query(ctx, `WITH earn_max AS (
-  SELECT wallet, count(*) AS flows, sum(delta) - least(0, min(running)) AS principal
-  FROM (SELECT f.wallet, d.delta, sum(d.delta) OVER (PARTITION BY f.wallet ORDER BY f.slot, f.transaction_index, f.kind = 'deposit') AS running
+  SELECT wallet, count(*) FILTER (WHERE kind = 'deposit') AS deposits, sum(delta) - least(0, min(running)) AS principal
+  FROM (SELECT f.wallet, f.kind, d.delta, sum(d.delta) OVER (PARTITION BY f.wallet ORDER BY f.slot, f.transaction_index, f.kind = 'deposit') AS running
         FROM loyal_yield.earn_max_cash_flows f
         JOIN loyal_yield.referral_bindings b ON b.referee_wallet = f.wallet AND b.referrer_app_user_id = $1
         CROSS JOIN LATERAL (SELECT CASE f.kind WHEN 'deposit' THEN f.amount_raw ELSE -f.amount_raw END AS delta) d) flow
   GROUP BY wallet
 )
 SELECT b.referee_app_user_id::text, b.referee_wallet, b.bound_at,
-       (count(p.id) + COALESCE(m.flows, 0))::int, (COALESCE(sum(p.principal_amount_raw), 0) + COALESCE(m.principal, 0))::bigint
+       (count(p.id) + COALESCE(m.deposits, 0))::int, (COALESCE(sum(p.principal_amount_raw), 0) + COALESCE(m.principal, 0))::bigint
 FROM loyal_yield.referral_bindings b
 LEFT JOIN loyal_yield.user_yield_positions p ON p.wallet_address = b.referee_wallet
 LEFT JOIN earn_max m ON m.wallet = b.referee_wallet
 WHERE b.referrer_app_user_id = $1
-GROUP BY b.referee_app_user_id, b.referee_wallet, b.bound_at, m.flows, m.principal
+GROUP BY b.referee_app_user_id, b.referee_wallet, b.bound_at, m.deposits, m.principal
 ORDER BY b.bound_at DESC, b.referee_app_user_id`, referrer)
 	if err != nil {
 		return nil, err

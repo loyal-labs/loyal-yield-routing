@@ -66,9 +66,6 @@ type earnMaxOwner struct {
 	wallets   []solana.PublicKey
 }
 
-// The Squads program runs a sync execution only for signers who are members
-// of the settings, so a signer on the instruction naming the settings owns
-// the Earn MAX authority those settings derive.
 func earnMaxOwners(transaction *PolicyTransaction, keys []solana.PublicKey) []earnMaxOwner {
 	var owners []earnMaxOwner
 	for _, instruction := range transaction.Instructions {
@@ -129,15 +126,18 @@ func (a *Application) recordEarnMaxCashFlows(ctx context.Context, info *pb.Subsc
 			skip("the Squads execution has no single signer")
 			continue
 		}
+		if slices.ContainsFunc(entries, func(entry earnmax.Entry) bool {
+			claim, ok := entry.(earnmax.Claim)
+			return ok && claim.Paid == nil
+		}) {
+			skip("the claim has no single payout transfer")
+			continue
+		}
 		for _, entry := range entries {
 			switch e := entry.(type) {
 			case earnmax.Deposit:
 				add(owner.wallets[0], voltrDeposit, e.Amount)
 			case earnmax.Claim:
-				if e.Paid == nil {
-					skip("the claim has no single payout transfer")
-					continue
-				}
 				add(owner.wallets[0], voltrClaim, *e.Paid)
 			}
 		}
