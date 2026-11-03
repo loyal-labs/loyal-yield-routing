@@ -42,6 +42,11 @@ which must therefore be the direct Neon DSN, and exits when a lock is lost.
 Every family lands signed rows through one function, `solana.Land`: the
 bytes are written to the operation row before the first send and resent until
 they land or the finalized height passes their blockhash.
+The optional `RETAIL_PRIVY_APP_ID` and `RETAIL_PRIVY_APP_SECRET` credentials, both or
+neither, let the process holding the autodeposit lock read Privy's app gas spend
+every five minutes (first read one interval after start). Both absent means the
+reader is off and the `LoyalPrivyGasSpendHigh` and `LoyalPrivyGasSpendStale`
+alerts stay silent; one without the other fails startup.
 `RETAIL_CROSS_MINT_ENABLED=true` opts the planner/controller into fresh cross-mint
 work; it defaults off. Existing signed recovery and custody continuation stay
 available with rollout off. Source database controls are checked independently.

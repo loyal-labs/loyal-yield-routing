@@ -38,6 +38,7 @@ type retailConfig struct {
 	jupiterBuildURL, jupiterAPIKey                     string
 	lookup                                             retailLookupConfig
 	sweepNotifier                                      *autodeposit.SweepNotifier
+	privyAppID, privyAppSecret                         string
 }
 
 func loadRetailConfig() (retailConfig, error) {
@@ -144,6 +145,10 @@ func loadRetailConfig() (retailConfig, error) {
 		if cfg.sweepNotifier, err = autodeposit.NewSweepNotifier(endpoint, secret); err != nil {
 			return cfg, errors.New("RETAIL_SWEEP_NOTIFY_ENDPOINT must be an absolute HTTPS URL without user info")
 		}
+	}
+	cfg.privyAppID, cfg.privyAppSecret = optionalCredential("RETAIL_PRIVY_APP_ID"), optionalCredential("RETAIL_PRIVY_APP_SECRET")
+	if (cfg.privyAppID == "") != (cfg.privyAppSecret == "") {
+		return cfg, errors.New("RETAIL_PRIVY_APP_ID and RETAIL_PRIVY_APP_SECRET must both be set or both be absent")
 	}
 	return cfg, nil
 }
@@ -387,10 +392,7 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 	if err := startup.Err(); err != nil {
 		return err
 	}
-	gasSpend, err := newGasSpendLane(families, facts)
-	if err != nil {
-		return retailError("Privy gas spend", err)
-	}
+	gasSpend := newGasSpendLane(families, facts, cfg.privyAppID, cfg.privyAppSecret)
 	lanes := []engine.Lane{metrics}
 	for _, family := range families {
 		switch family {

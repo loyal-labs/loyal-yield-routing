@@ -28,34 +28,37 @@ const (
 type gasSpendReader struct {
 	appID, appSecret string
 	base             string
+	interval         time.Duration
 	client           *http.Client
 	facts            *engine.Facts
 }
 
 // newGasSpendLane is nil unless this process holds the autodeposit family
 // lock, which is what keeps Privy read by one process only.
-func newGasSpendLane(families []engine.Family, facts *engine.Facts) (engine.Lane, error) {
+func newGasSpendLane(families []engine.Family, facts *engine.Facts, appID, secret string) engine.Lane {
 	if !slices.Contains(families, engine.FamilyAutodeposit) {
-		return nil, nil
+		return nil
 	}
-	appID, secret := optionalCredential("RETAIL_PRIVY_APP_ID"), optionalCredential("RETAIL_PRIVY_APP_SECRET")
-	if appID == "" && secret == "" {
+	if appID == "" {
 		slog.Info("Privy gas spend off", "reason", "RETAIL_PRIVY_APP_ID and RETAIL_PRIVY_APP_SECRET are not installed")
-		return nil, nil
-	}
-	if appID == "" || secret == "" {
-		return nil, errors.New("RETAIL_PRIVY_APP_ID and RETAIL_PRIVY_APP_SECRET must both be set or both be absent")
+		return nil
 	}
 	facts.PrivyGasSpendUnread()
-	return &gasSpendReader{appID: appID, appSecret: secret, base: privyAPI, client: &http.Client{Timeout: 15 * time.Second}, facts: facts}, nil
+	return &gasSpendReader{appID: appID, appSecret: secret, base: privyAPI, interval: gasSpendInterval, client: &http.Client{Timeout: 15 * time.Second}, facts: facts}
 }
 
 // Run never returns a read error: engine.Run stops every lane when one stops,
-// and a Privy outage must only age the last-success timestamp.
+// and a Privy outage must only age the last-success timestamp. It reads one
+// interval after start so a crash-looping process does not hammer Privy.
 func (r *gasSpendReader) Run(ctx context.Context) error {
-	ticker := time.NewTicker(gasSpendInterval)
+	ticker := time.NewTicker(r.interval)
 	defer ticker.Stop()
 	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
 		readCtx, cancel := context.WithTimeout(ctx, gasSpendReadBudget)
 		usd, err := r.read(readCtx, time.Now())
 		cancel()
@@ -66,11 +69,6 @@ func (r *gasSpendReader) Run(ctx context.Context) error {
 			slog.Error("Privy gas spend read failed", "error", engine.ErrorText(err))
 		default:
 			r.facts.PrivyGasSpendRead(usd)
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ticker.C:
 		}
 	}
 }
