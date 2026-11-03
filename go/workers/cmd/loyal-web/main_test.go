@@ -50,3 +50,25 @@ func TestAMalformedYieldDatabaseURLStillServesEarnMaxWithoutAPY(t *testing.T) {
 		t.Fatal("a malformed yield database URL only costs APY; Earn MAX must still be served")
 	}
 }
+
+func TestEarnRelayKeepsTheRPCURLsWhenTheAPIKeyIsSet(t *testing.T) {
+	dir := t.TempDir()
+	for name, value := range map[string]string{
+		"WEB_EVM_RPC_URLS": "base=https://rpc.example/base",
+		"RELAY_API_KEY":    " k \n",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(value), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("CREDENTIALS_DIRECTORY", dir)
+	t.Setenv("LOYAL_WEB_SOLANA_CLUSTER", "mainnet")
+	rpcClient, err := chain.New("http://127.0.0.1:1", time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	relay := earn(t.Context(), rpcClient, nil, nil, nil).Relay
+	if relay.APIKey != "k" || relay.EVMRPC["base"] != "https://rpc.example/base" {
+		t.Fatalf("Relay APIKey=%q EVMRPC=%v, want the key and the base RPC", relay.APIKey, relay.EVMRPC)
+	}
+}

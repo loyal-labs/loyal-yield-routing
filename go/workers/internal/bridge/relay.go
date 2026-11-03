@@ -14,10 +14,13 @@ import (
 
 const maxRelayBody = 1 << 20
 
+// EVMRPC holds one RPC URL per origin chain, used to simulate swap deposits;
+// a chain without one gets no swap quotes.
 type Relay struct {
 	BaseURL string
 	HTTP    *http.Client
 	APIKey  string
+	EVMRPC  map[Chain]string
 }
 
 func NewRelay() *Relay {
@@ -58,6 +61,11 @@ func (r *Relay) Quote(ctx context.Context, req QuoteRequest) (Quote, error) {
 	}
 	if err := net.checkMinimum(q.AmountInUSD); err != nil {
 		return Quote{}, err
+	}
+	if q.minCredit != nil {
+		if err := r.simulateCredit(ctx, net, req, tok, q); err != nil {
+			return Quote{}, err
+		}
 	}
 	return q, nil
 }

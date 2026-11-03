@@ -208,7 +208,12 @@ func earn(ctx context.Context, rpcClient *chain.Client, appDB, yieldDB, timescal
 		degraded("Earn routes", err)
 		return nil
 	}
-	e := &webapp.Earn{YieldDB: yieldDB, Chain: rpcClient, Cluster: cluster, Timescale: timescaleDB}
+	e := &webapp.Earn{YieldDB: yieldDB, Chain: rpcClient, Cluster: cluster, Timescale: timescaleDB, Relay: bridge.NewRelay()}
+	if raw, ok := optionalCredential("Relay swap quotes", "WEB_EVM_RPC_URLS"); ok {
+		if e.Relay.EVMRPC, err = bridge.ParseEVMRPCURLs(raw); err != nil {
+			degraded("Relay swap quotes", fmt.Errorf("WEB_EVM_RPC_URLS: %w", err))
+		}
+	}
 	if raw, ok := optionalCredential("Earn transaction routes", "EARN_YIELD_ROUTER_PUBLIC_KEY"); ok && raw != "" {
 		if e.PolicySigner, err = earnprep.ParsePolicySigner(raw); err != nil {
 			degraded("Earn transaction routes", err)
@@ -251,7 +256,6 @@ func earn(ctx context.Context, rpcClient *chain.Client, appDB, yieldDB, timescal
 		e.Privy = &webapp.Privy{AppID: strings.TrimSpace(appID), AppSecret: strings.TrimSpace(appSecret), CookieParentDomains: domains}
 	}
 	if key, ok := optionalCredential("Relay keyed quotes", "RELAY_API_KEY"); ok && key != "" {
-		e.Relay = bridge.NewRelay()
 		e.Relay.APIKey = strings.TrimSpace(key)
 	}
 	if timescaleDB == nil {
