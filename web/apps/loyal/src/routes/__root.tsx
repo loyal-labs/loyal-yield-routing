@@ -1,6 +1,11 @@
 import "@/app/globals.css";
 
-import { createRootRoute, HeadContent, Outlet } from "@tanstack/react-router";
+import {
+  createRootRoute,
+  HeadContent,
+  Outlet,
+  redirect,
+} from "@tanstack/react-router";
 
 import AppError from "@/app/error";
 import NotFound from "@/app/not-found";
@@ -19,7 +24,15 @@ const publicEnv =
 
 export const Route = createRootRoute({
   beforeLoad: ({ location }) => {
-    storeLinkCode(new URLSearchParams(location.searchStr).get("ref"));
+    const { ref, ...search } = location.search as Record<string, unknown>;
+    if (ref === undefined) return;
+    storeLinkCode(String(ref));
+    throw redirect({
+      to: location.pathname,
+      search,
+      hash: location.hash,
+      replace: true,
+    });
   },
   head: () => rootHead(),
   component: () => (
@@ -37,6 +50,9 @@ export const Route = createRootRoute({
     </PublicEnvProvider>
   ),
   errorComponent: ({ error, reset }) => (
-    <AppError error={error instanceof Error ? error : new Error(String(error))} reset={reset} />
+    <AppError
+      error={error instanceof Error ? error : new Error(String(error))}
+      reset={reset}
+    />
   ),
 });

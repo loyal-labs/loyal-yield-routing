@@ -5,6 +5,7 @@ import { ArrowUpRight } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 import { TrackedExternalLink } from "@/components/analytics/tracked-external-link";
+import { withPendingLinkRef } from "@/features/referrals/pending-code";
 
 type MobileWallet = {
   name: string;
@@ -76,7 +77,10 @@ export function useNeedsMobileWalletBrowser(): boolean {
 
 export function MobileWalletList() {
   const currentUrl = useMemo(
-    () => (typeof window !== "undefined" ? window.location.href : ""),
+    () =>
+      typeof window !== "undefined"
+        ? withPendingLinkRef(window.location.href)
+        : "",
     []
   );
 

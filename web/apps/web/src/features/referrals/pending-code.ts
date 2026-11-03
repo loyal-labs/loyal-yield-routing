@@ -47,3 +47,15 @@ export function storeLinkCode(raw: string | null | undefined): void {
   const code = normalizeCode(raw ?? "");
   if (code) writePendingCode({ code, source: "link" });
 }
+
+export function withPendingLinkRef(href: string): string {
+  const pending = readPendingCode();
+  if (pending?.source !== "link") return href;
+  try {
+    const url = new URL(href);
+    url.searchParams.set("ref", pending.code);
+    return url.toString();
+  } catch {
+    return href;
+  }
+}
