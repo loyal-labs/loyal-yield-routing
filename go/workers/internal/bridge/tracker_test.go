@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -42,10 +43,15 @@ func TestTrackerStoresEachHashFromTheStatusThatCarriedIt(t *testing.T) {
 			t.Error(err)
 		}
 	}()
-	migrations, err := filepath.Glob("../../../../migrations/yield/*_bridge_transfers*.sql")
-	if err != nil || len(migrations) == 0 {
-		t.Fatal("bridge_transfers migrations not found", err)
+	var migrations []string
+	for _, pattern := range []string{"*_bridge_transfers*.sql", "*_relay_deposit_addresses.sql"} {
+		found, err := filepath.Glob("../../../../migrations/yield/" + pattern)
+		if err != nil || len(found) == 0 {
+			t.Fatal(pattern, "migrations not found", err)
+		}
+		migrations = append(migrations, found...)
 	}
+	slices.Sort(migrations)
 	for _, path := range migrations {
 		migration, err := os.ReadFile(path)
 		if err != nil {
@@ -76,7 +82,7 @@ func TestTrackerStoresEachHashFromTheStatusThatCarriedIt(t *testing.T) {
 	for _, c := range cases {
 		polls[c.requestID] = &atomic.Int32{}
 		if _, err := pool.Exec(ctx, `INSERT INTO loyal_yield.bridge_transfers
-(request_id, solana_wallet, evm_address, chain, asset, amount_in_raw, amount_out_raw, state, submitted_at)
+(request_id, solana_wallet, origin_address, chain, asset, amount_in_raw, amount_out_raw, state, submitted_at)
 VALUES ($1, 'wallet', '0x0000000000000000000000000000000000000001', 'base', 'usdc', 1000000, 990000, 'submitted', now())`, c.requestID); err != nil {
 			t.Fatal(err)
 		}

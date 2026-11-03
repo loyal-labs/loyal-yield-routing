@@ -233,7 +233,7 @@ func (h earnRoutes) bridgeQuote(ctx context.Context, in *bridgeQuoteInput) (*bri
 	case err != nil:
 		return nil, bridgeUnavailable("relay quote", err)
 	}
-	if _, err := h.YieldDB.Exec(ctx, `INSERT INTO loyal_yield.bridge_transfers (request_id, solana_wallet, evm_address, chain, asset, amount_in_raw, amount_out_raw)
+	if _, err := h.YieldDB.Exec(ctx, `INSERT INTO loyal_yield.bridge_transfers (request_id, solana_wallet, origin_address, chain, asset, amount_in_raw, amount_out_raw)
 VALUES ($1, $2, $3, $4, $5, $6::text::numeric, $7::text::numeric)
 ON CONFLICT (request_id) DO NOTHING`, q.RequestID, wallet.String(), from, string(body.Chain), string(body.Asset), q.AmountInRaw.String(), q.AmountOutRaw.String()); err != nil {
 		return nil, bridgeUnavailable("bridge transfer insert", err)
