@@ -9,6 +9,7 @@ import { useAuthSession } from "@/contexts/auth-session-context";
 import { usePublicEnv } from "@/contexts/public-env-context";
 import { useSignInModal } from "@/contexts/sign-in-modal-context";
 import { useCherryRuntime } from "@/features/cherry/client/runtime-context";
+import { SettingsCodeField } from "@/features/referrals/code-field";
 import { useEscapeOverlay } from "./escape-owner";
 import { useSessionDisconnect } from "./use-session-disconnect";
 import { useTheme } from "@/hooks/use-theme";
@@ -339,6 +340,7 @@ export function SettingsSheet({
                   ) : (
                     policyRow
                   )}
+                  <SettingsCodeField />
                 </>
               )}
               <SectionTitle>Preferences</SectionTitle>

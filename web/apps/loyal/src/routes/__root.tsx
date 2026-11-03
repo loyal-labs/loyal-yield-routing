@@ -6,6 +6,7 @@ import AppError from "@/app/error";
 import NotFound from "@/app/not-found";
 import { XPixelBootstrap } from "@/components/analytics/x-pixel-bootstrap";
 import { PublicEnvProvider } from "@/contexts/public-env-context";
+import { storeLinkCode } from "@/features/referrals/pending-code";
 import { createPublicEnv } from "@/lib/core/config/public";
 
 import { rootHead } from "../next-compat/metadata";
@@ -17,6 +18,9 @@ const publicEnv =
     : resolvedEnv;
 
 export const Route = createRootRoute({
+  beforeLoad: ({ location }) => {
+    storeLinkCode(new URLSearchParams(location.searchStr).get("ref"));
+  },
   head: () => rootHead(),
   component: () => (
     <>
