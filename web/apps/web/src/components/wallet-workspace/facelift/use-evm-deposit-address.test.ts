@@ -8,12 +8,29 @@ const WALLET = "SoLWaLLet11111111111111111111111111111111111";
 const OTHER_WALLET = "OtherWaLLet1111111111111111111111111111111";
 const EVM = `0x${"b".repeat(40)}`;
 const signer = mock(async () => ({ signature: "sig" }));
+const privyWallet = {
+  type: "wallet",
+  chainType: "ethereum",
+  walletClientType: "privy",
+};
+let privyUser: { linkedAccounts: object[] } = { linkedAccounts: [] };
+let usersMe = 0;
+const createWallet = mock(async () => ({}));
 
 mock.module("@privy-io/react-auth", () => ({
   usePrivy: () => ({ ready: true, authenticated: true }),
-  useUser: () => ({ user: { linkedAccounts: [] }, refreshUser: async () => ({}) }),
-  useCreateWallet: () => ({ createWallet: async () => ({}) }),
-  getIdentityToken: async () => "token",
+  useUser: () => ({
+    user: privyUser,
+    refreshUser: async () => {
+      usersMe += 1;
+      return privyUser;
+    },
+  }),
+  useCreateWallet: () => ({ createWallet }),
+  getIdentityToken: async () => {
+    usersMe += 1;
+    return "token";
+  },
   useAuthorizationSignature: () => ({ generateAuthorizationSignature: signer }),
 }));
 
@@ -30,6 +47,8 @@ async function load(responses: { status: number; body: unknown }[]) {
     return new Response(JSON.stringify(next.body), { status: next.status });
   }) as typeof fetch;
   signer.mockClear();
+  createWallet.mockClear();
+  usersMe = 0;
   let hook!: ReturnType<typeof useEvmDepositAddress>;
   function Probe() {
     hook = useEvmDepositAddress(WALLET);
@@ -96,4 +115,25 @@ test("a wallet switch never renders the previous wallet's address or networks", 
     await React.act(async () => root.unmount());
     globalThis.fetch = realFetch;
   }
+});
+
+const relaySigned = [
+  { status: 200, body: { ...network, address: null, kind: "relay_signed" } },
+  { status: 200, body: { ...network, address: EVM } },
+];
+
+test("an existing Privy wallet costs one users/me", async () => {
+  privyUser = { linkedAccounts: [privyWallet] };
+  const { hook } = await load(relaySigned);
+  expect(hook.info?.address).toBe(EVM);
+  expect(createWallet).not.toHaveBeenCalled();
+  expect(usersMe).toBe(1);
+});
+
+test("a new Privy wallet costs one users/me", async () => {
+  privyUser = { linkedAccounts: [] };
+  const { hook } = await load(relaySigned);
+  expect(hook.info?.address).toBe(EVM);
+  expect(createWallet).toHaveBeenCalledTimes(1);
+  expect(usersMe).toBe(1);
 });

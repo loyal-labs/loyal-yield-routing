@@ -85,7 +85,7 @@ const hasPrivyEvmWallet = (user: ReturnType<typeof useUser>["user"]) =>
  */
 export function useEvmDepositAddress(walletAddress: string | null) {
   const { ready: privyReady, authenticated } = usePrivy();
-  const { refreshUser } = useUser();
+  const { user: privyUser } = useUser();
   const { createWallet } = useCreateWallet();
   const { generateAuthorizationSignature } = useAuthorizationSignature();
   const [state, setState] = useState<DepositState>(emptyState(walletAddress));
@@ -99,6 +99,8 @@ export function useEvmDepositAddress(walletAddress: string | null) {
   const attemptedRef = useRef(false);
   const tronAttemptedRef = useRef(false);
   const walletRef = useRef(walletAddress);
+  const privyUserRef = useRef(privyUser);
+  privyUserRef.current = privyUser;
   useEffect(() => {
     attemptedRef.current = false;
     tronAttemptedRef.current = false;
@@ -138,19 +140,16 @@ export function useEvmDepositAddress(walletAddress: string | null) {
       if (read.networks) patch({ networks: read.networks });
       let claim: object;
       if (read.kind === "relay_signed") {
-        if (!hasPrivyEvmWallet(await refreshUser())) {
-          if (!current()) return;
+        if (!hasPrivyEvmWallet(privyUserRef.current)) {
           try {
             await createWallet();
           } catch {
-            if (!hasPrivyEvmWallet(await refreshUser())) {
-              throw new Error("Could not get a deposit address.");
-            }
+            // A stale in-memory user or a failed create falls through to the
+            // server, which checks the token's linked wallets.
           }
           if (!current()) return;
-          // Re-issue the identity token so it lists the new wallet.
-          await refreshUser();
         }
+        // Re-issues the token, so it lists a wallet created above.
         const privyIdentityToken = await getIdentityToken();
         if (!privyIdentityToken) {
           throw new Error("Privy identity token unavailable.");
@@ -197,7 +196,6 @@ export function useEvmDepositAddress(walletAddress: string | null) {
     info,
     loading,
     ready,
-    refreshUser,
     walletAddress,
   ]);
 
