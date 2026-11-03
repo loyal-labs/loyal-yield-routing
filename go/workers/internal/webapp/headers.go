@@ -23,7 +23,7 @@ var securityPolicy = strings.Join([]string{
 	"form-action 'self'",
 	"child-src https://auth.privy.io https://verify.walletconnect.com https://verify.walletconnect.org",
 	"frame-src https://auth.privy.io https://verify.walletconnect.com https://verify.walletconnect.org https://challenges.cloudflare.com https://vercel.live",
-	"connect-src 'self' https://auth.privy.io https://api.privy.io https://*.rpc.privy.systems wss://relay.walletconnect.com wss://relay.walletconnect.org wss://www.walletlink.org https://explorer-api.walletconnect.com https://*.helius-rpc.com wss://*.helius-rpc.com https://api.mainnet-beta.solana.com https://api.devnet.solana.com https://rpc.monad.xyz https://rpc.tempo.xyz https://rpc.mainnet.chain.robinhood.com https://mainnet.megaeth.com https://api.jup.ag https://lite-api.jup.ag https://realtime.askloyal.com https://api.mixpanel.com https://stats.askloyal.com https://analytics.twitter.com https://vercel.live wss://vercel.live",
+	"connect-src 'self' https://auth.privy.io https://api.privy.io https://*.rpc.privy.systems wss://relay.walletconnect.com wss://relay.walletconnect.org wss://www.walletlink.org https://explorer-api.walletconnect.com https://*.helius-rpc.com wss://*.helius-rpc.com https://api.mainnet-beta.solana.com https://api.devnet.solana.com https://rpc.monad.xyz https://rpc1.monad.xyz https://rpc.tempo.xyz https://rpc.mainnet.chain.robinhood.com https://mainnet.megaeth.com https://api.jup.ag https://lite-api.jup.ag https://realtime.askloyal.com https://api.mixpanel.com https://stats.askloyal.com https://analytics.twitter.com https://vercel.live wss://vercel.live",
 	"worker-src 'self' blob:",
 	"manifest-src 'self'",
 	"report-uri /api/csp-report",
