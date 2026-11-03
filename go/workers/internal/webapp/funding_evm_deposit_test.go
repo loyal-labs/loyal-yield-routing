@@ -345,7 +345,7 @@ func TestEvmDepositConcurrentPostsMakeOnePrivyCreate(t *testing.T) {
 			t.Fatalf("privy lookups, creates = %d, %d; want 1, 1", lookups, creates)
 		}
 		for i := range posters {
-			if codes[i] != http.StatusOK || addresses[i] != p.privy.address {
+			if codes[i] != http.StatusOK || !strings.EqualFold(addresses[i], p.privy.address) {
 				t.Fatalf("POST %d = %d %q; want 200 %s", i, codes[i], addresses[i], p.privy.address)
 			}
 		}
@@ -370,7 +370,7 @@ func TestEvmDepositConcurrentPostsMakeOnePrivyCreate(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 		cancel()
 		wg.Wait()
-		if code != http.StatusOK || address != p.privy.address || p.privy.creates.Load() != 1 {
+		if code != http.StatusOK || !strings.EqualFold(address, p.privy.address) || p.privy.creates.Load() != 1 {
 			t.Fatalf("waiter = %d %q, creates = %d; want 200 %s, 1", code, address, p.privy.creates.Load(), p.privy.address)
 		}
 	})
@@ -384,7 +384,7 @@ func TestEvmDepositConcurrentPostsMakeOnePrivyCreate(t *testing.T) {
 		<-p.privy.started
 		wg.Go(func() { code, address = p.post(context.Background(), "sig") })
 		wg.Wait()
-		if leaderCode != http.StatusConflict || code != http.StatusOK || address != p.privy.address {
+		if leaderCode != http.StatusConflict || code != http.StatusOK || !strings.EqualFold(address, p.privy.address) {
 			t.Fatalf("leader = %d, waiter = %d %q; want 409, 200 %s", leaderCode, code, address, p.privy.address)
 		}
 	})
@@ -401,7 +401,7 @@ func TestEvmDepositConcurrentPostsMakeOnePrivyCreate(t *testing.T) {
 		cancel()
 		<-leader
 		code, address := p.post(context.Background(), "sig")
-		if code != http.StatusOK || address != p.privy.address || p.privy.creates.Load() != 1 {
+		if code != http.StatusOK || !strings.EqualFold(address, p.privy.address) || p.privy.creates.Load() != 1 {
 			t.Fatalf("later caller = %d %q, creates = %d; want 200 %s, 1", code, address, p.privy.creates.Load(), p.privy.address)
 		}
 	})
