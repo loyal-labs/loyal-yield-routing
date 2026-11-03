@@ -51,19 +51,28 @@ func (s *Store) EnsureCode(ctx context.Context, user string) (Code, error) {
 	ctx, cancel := context.WithTimeout(ctx, queryTimeout)
 	defer cancel()
 	for range codeAttempts {
-		var code string
-		err := s.yield.QueryRow(ctx, `SELECT code FROM loyal_yield.referral_codes WHERE app_user_id = $1`, user).Scan(&code)
-		if err == nil {
-			return Code(code), nil
-		}
-		if !errors.Is(err, pgx.ErrNoRows) {
-			return "", err
+		code, found, err := s.code(ctx, user)
+		if err != nil || found {
+			return code, err
 		}
 		if _, err := s.yield.Exec(ctx, `INSERT INTO loyal_yield.referral_codes (app_user_id, code) VALUES ($1, $2) ON CONFLICT DO NOTHING`, user, string(newCode())); err != nil {
 			return "", err
 		}
 	}
+	code, found, err := s.code(ctx, user)
+	if err != nil || found {
+		return code, err
+	}
 	return "", fmt.Errorf("referral: no code for %s after %d attempts", user, codeAttempts)
+}
+
+func (s *Store) code(ctx context.Context, user string) (Code, bool, error) {
+	var code string
+	err := s.yield.QueryRow(ctx, `SELECT code FROM loyal_yield.referral_codes WHERE app_user_id = $1`, user).Scan(&code)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
+	}
+	return Code(code), err == nil, err
 }
 
 func (s *Store) CodeExists(ctx context.Context, code Code) (bool, error) {
