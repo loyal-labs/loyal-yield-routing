@@ -45,10 +45,12 @@ function clampTooltipShift(wrap: HTMLElement, bubble: HTMLElement) {
 export function InfoTooltip({
   iconClassName = "size-5",
   placement = "top",
+  tone = "default",
   text,
 }: {
   iconClassName?: string;
   placement?: "top" | "bottom";
+  tone?: "default" | "dark";
   text: string;
 }) {
   const id = useId();
@@ -91,6 +93,10 @@ export function InfoTooltip({
       <span
         className={`t-tt text-[13px] leading-4 ${
           placement === "bottom" ? "t-tt-bottom" : ""
+        } ${
+          tone === "dark"
+            ? "[--tt-bg:#8a8a8e] [--tt-fg:#fff] !rounded-xl !shadow-none"
+            : ""
         }`}
         id={id}
         ref={bubbleRef}
