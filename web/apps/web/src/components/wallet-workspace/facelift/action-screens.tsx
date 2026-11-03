@@ -51,9 +51,11 @@ const CONFETTI_PARTICLES = Array.from({ length: 18 }, (_, index) => {
 });
 
 export function ActionProcessingBody({
+  children,
   icons,
   label,
 }: {
+  children?: ReactNode;
   icons: ReactNode;
   label: string;
 }) {
@@ -70,6 +72,7 @@ export function ActionProcessingBody({
           </span>
         </p>
       </div>
+      {children}
     </div>
   );
 }
@@ -148,9 +151,13 @@ export function ActionSuccessBody({
 }
 
 export function ActionErrorBody({
+  backLabel = "Back",
+  explorer,
   message,
   onBack,
 }: {
+  backLabel?: string;
+  explorer?: ReactNode;
   message: string | null;
   onBack: () => void;
 }) {
@@ -179,13 +186,16 @@ export function ActionErrorBody({
           </p>
         ) : null}
       </div>
-      <button
-        className="t-hover relative flex h-12 items-center justify-center rounded-full bg-foreground px-5 font-medium text-[16px] text-background leading-5 hover:-translate-y-0.5 hover:bg-foreground/90 active:translate-y-0"
-        onClick={onBack}
-        type="button"
-      >
-        Back
-      </button>
+      <div className="relative flex flex-col items-center gap-3">
+        {explorer}
+        <button
+          className="t-hover flex h-12 items-center justify-center rounded-full bg-foreground px-5 font-medium text-[16px] text-background leading-5 hover:-translate-y-0.5 hover:bg-foreground/90 active:translate-y-0"
+          onClick={onBack}
+          type="button"
+        >
+          {backLabel}
+        </button>
+      </div>
     </div>
   );
 }

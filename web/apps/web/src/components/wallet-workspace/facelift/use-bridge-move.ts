@@ -17,10 +17,17 @@ export type MoveBalance = {
   chainIcon: string | null;
   asset: string;
   symbol: string;
+  name: string;
   icon: string | null;
-  stable: boolean;
   decimals: number;
   amountRaw: bigint;
+};
+
+export type MoveSource = {
+  sender: string;
+  recipient: string;
+  balances: MoveBalance[];
+  start: MoveBalance;
 };
 
 export type MoveStep =
@@ -108,8 +115,8 @@ export function useBridgeMoveBalances(
                 chainIcon: network.icon,
                 asset: b.asset,
                 symbol: token.symbol,
+                name: token.name,
                 icon: token.icon,
-                stable: token.stable,
                 decimals: b.decimals,
                 amountRaw,
               },
@@ -147,7 +154,7 @@ export function useBridgeMove(balance: MoveBalance, sender: string) {
   const { wallets } = useWallets();
   const [amountInput, setAmountInput] = useState("");
   const [quote, setQuote] = useState<{
-    amountRaw: bigint;
+    key: string;
     response: BridgeQuoteResponse;
   } | null>(null);
   const [quoteError, setQuoteError] = useState<string | null>(null);
@@ -156,9 +163,10 @@ export function useBridgeMove(balance: MoveBalance, sender: string) {
   const [step, setStep] = useState<MoveStep>({ kind: "form" });
   const amountRaw = toRaw(amountInput, balance.decimals);
   const insufficient = amountRaw > balance.amountRaw;
-  const current = quote && quote.amountRaw === amountRaw ? quote.response : null;
-  const latestRaw = useRef(amountRaw);
-  latestRaw.current = amountRaw;
+  const key = `${balance.chain}:${balance.asset}:${amountRaw}`;
+  const current = quote && quote.key === key ? quote.response : null;
+  const latestKey = useRef(key);
+  latestKey.current = key;
 
   useEffect(() => {
     if (amountRaw === BigInt(0) || insufficient) {
@@ -176,18 +184,18 @@ export function useBridgeMove(balance: MoveBalance, sender: string) {
       })
         .then((res) => readJSON<BridgeQuoteResponse>(res, "Could not get a quote"))
         .then((response) => {
-          if (latestRaw.current !== amountRaw) return;
-          setQuote({ amountRaw, response });
+          if (latestKey.current !== key) return;
+          setQuote({ key, response });
         })
         .catch((e) => {
-          if (latestRaw.current === amountRaw) setQuoteError(errorText(e));
+          if (latestKey.current === key) setQuoteError(errorText(e));
         })
         .finally(() => {
-          if (latestRaw.current === amountRaw) setQuoting(false);
+          if (latestKey.current === key) setQuoting(false);
         });
     }, QUOTE_DEBOUNCE_MS);
     return () => clearTimeout(timer);
-  }, [amountRaw, balance.asset, balance.chain, insufficient]);
+  }, [amountRaw, balance.asset, balance.chain, insufficient, key]);
 
   const send = useCallback(async () => {
     if (!current) return;
@@ -236,7 +244,13 @@ export function useBridgeMove(balance: MoveBalance, sender: string) {
           `/api/funding/bridge/transfers/${encodeURIComponent(quoted.requestId)}/sponsor-refusal`,
           { message: refused.slice(0, 500) }
         ).catch(() => undefined);
-      setStep({ kind: "failed", message: errorText(e), requestId: null });
+      setStep({
+        kind: "failed",
+        message: refused
+          ? `Not sponsored. ${balance.symbol} stays in your wallet.`
+          : errorText(e),
+        requestId: null,
+      });
       return;
     }
     if (!originTx) return;
@@ -256,7 +270,7 @@ export function useBridgeMove(balance: MoveBalance, sender: string) {
         else await new Promise((resolve) => setTimeout(resolve, 2000));
       }
     }
-  }, [current, sendTransaction, sender, wallets]);
+  }, [balance.symbol, current, sendTransaction, sender, wallets]);
 
   const bridging = step.kind === "bridging" ? step : null;
   useEffect(() => {
@@ -305,6 +319,5 @@ export function useBridgeMove(balance: MoveBalance, sender: string) {
     sendError,
     step,
     send,
-    reset: () => setStep({ kind: "form" }),
   };
 }

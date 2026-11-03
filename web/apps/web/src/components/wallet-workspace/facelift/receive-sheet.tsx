@@ -13,6 +13,11 @@ import { SlidingTabs } from "./sliding-tabs";
 import { TextSwap } from "./text-swap";
 import { ThemedIcon } from "./themed-icon";
 import { InfoTooltip } from "./info-tooltip";
+import {
+  fromRaw,
+  type MoveSource,
+  useBridgeMoveBalances,
+} from "./use-bridge-move";
 import { useEvmDepositAddress } from "./use-evm-deposit-address";
 import { useIsNarrowViewport } from "./use-is-narrow-viewport";
 
@@ -305,11 +310,13 @@ export function ReceiveSheet({
   onClose,
   walletAddress,
   initialTab = "Solana",
+  onMove,
 }: {
   isOpen: boolean;
   onClose: () => void;
   walletAddress: string | null;
   initialTab?: Tab;
+  onMove: (source: MoveSource) => void;
 }) {
   const [tabState, setTabState] = useState<{
     wallet: string | null;
@@ -334,6 +341,10 @@ export function ReceiveSheet({
   useEffect(() => {
     if (!isOpen) evm.retryOnNextLoad();
   }, [evm, isOpen]);
+  const moves = useBridgeMoveBalances(
+    isOpen && bridge && evm.info?.kind === "relay_signed",
+    evm.networks
+  );
   const narrow = useIsNarrowViewport();
   const title =
     view === "deposit-assets"
@@ -512,6 +523,40 @@ export function ReceiveSheet({
                   {live && routeError && (
                     <Warning onRetry={retryRoute}>{routeError}</Warning>
                   )}
+                  {moves.error && (
+                    <Warning onRetry={moves.reload}>{moves.error}</Warning>
+                  )}
+                  {moves.balances.map((item) => (
+                    <button
+                      className={`t-hover ${CELL} hover:bg-accent`}
+                      key={`${item.chain}:${item.asset}`}
+                      onClick={() => {
+                        if (!evm.info || !walletAddress) return;
+                        onMove({
+                          sender: evm.info.address,
+                          recipient: walletAddress,
+                          balances: moves.balances,
+                          start: item,
+                        });
+                      }}
+                      type="button"
+                    >
+                      <BadgedIcon
+                        file={item.icon}
+                        label={item.symbol}
+                        badge={item.chainIcon}
+                        badgeLabel={item.chainName}
+                      />
+                      <CellLabel label="Ready to move to Solana">
+                        {fromRaw(item.amountRaw, item.decimals)} {item.symbol}
+                        <Chip>{item.chainName}</Chip>
+                      </CellLabel>
+                      <ThemedIcon
+                        className="size-6 text-muted-foreground"
+                        src={`${BASE}/icon-chevron-right.svg`}
+                      />
+                    </button>
+                  ))}
                   {resolved && (
                     <>
                       <AddressCard

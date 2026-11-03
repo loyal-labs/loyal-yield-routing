@@ -21,7 +21,9 @@ import {
   type CryptoRowActions,
 } from "@/components/wallet-workspace/facelift/crypto-pane";
 import { deriveSwapTokens, selectSwapToken } from "@/components/wallet-sidebar/swap-tokens";
+import { BridgeMove } from "./bridge-move";
 import { BridgeWorkspace } from "./bridge-workspace";
+import type { MoveSource } from "./use-bridge-move";
 import { useEscapePage } from "@/components/wallet-workspace/facelift/escape-owner";
 import {
   MiddlePaneSlide,
@@ -78,6 +80,9 @@ function tokenRowToSwapToken(token: TokenRow): SwapToken {
   };
 }
 
+type BridgeAction = { type: "bridge" } | { type: "move"; source: MoveSource };
+export type AssetAction = { type: "send" } | { type: "swap" } | BridgeAction;
+
 export function CryptoPage({
   navigationNonce,
   onBack,
@@ -89,7 +94,7 @@ export function CryptoPage({
   onBack: () => void;
   onReceive: () => void;
   onEarn: (sourceMint?: string | null) => void;
-  requestedAction: { type: "send" | "swap" | "bridge" } | null;
+  requestedAction: AssetAction | null;
 }) {
   const publicEnv = usePublicEnv();
   const { isHydrated, isSignedIn } = useAuthCapability();
@@ -174,7 +179,7 @@ export function CryptoPage({
   const { recents: sendRecents, recordSend: recordSendRecent } =
     useSendRecentRecipients(data.walletAddress);
 
-  const [isBridgeOpen, setIsBridgeOpen] = useState(false);
+  const [bridge, setBridge] = useState<BridgeAction | null>(null);
   const [isSwapOpen, setIsSwapOpen] = useState(false);
   const [swapSelectSide, setSwapSelectSide] = useState<"from" | "to" | null>(
     null
@@ -292,7 +297,7 @@ export function CryptoPage({
   const closeUnshield = useCallback(() => setIsUnshieldOpen(false), []);
 
   useAbandonActionsOnNavigate(navigationNonce, () => {
-    setIsBridgeOpen(false);
+    setBridge(null);
     setViewStack([]);
     setSendSelect(null);
     closeSwap();
@@ -302,8 +307,12 @@ export function CryptoPage({
   useEffect(() => {
     if (!requestedAction) return;
     setIsDetailSheetOpen(false);
-    setIsBridgeOpen(requestedAction.type === "bridge");
-    if (requestedAction.type === "bridge") {
+    setBridge(
+      requestedAction.type === "bridge" || requestedAction.type === "move"
+        ? requestedAction
+        : null
+    );
+    if (requestedAction.type === "bridge" || requestedAction.type === "move") {
       setViewStack([]);
       setSendSelect(null);
       closeSwap();
@@ -450,10 +459,16 @@ export function CryptoPage({
       <div className="flex h-full min-h-0 min-w-0 flex-1 gap-2 p-2 max-[795px]:gap-0 max-[795px]:p-0">
         <MiddlePaneSlide
           actionPane={
-            isBridgeOpen ? (
+            bridge?.type === "move" ? (
+              <BridgeMove
+                key={navigationNonce}
+                onBack={() => setBridge(null)}
+                source={bridge.source}
+              />
+            ) : bridge ? (
               <BridgeWorkspace
                 key={navigationNonce}
-                onBack={() => setIsBridgeOpen(false)}
+                onBack={() => setBridge(null)}
               />
             ) : isSendOpen ? (
               <SendPane
@@ -528,7 +543,7 @@ export function CryptoPage({
             />
           </PaneReveal>
         </MiddlePaneSlide>
-        {isBridgeOpen ? null : isSendOpen ? (
+        {bridge ? null : isSendOpen ? (
           <div className="hidden h-full w-[400px] shrink-0 min-[1204px]:block">
             <InlineSheetReveal
               className="flex h-full w-full min-w-0 flex-col overflow-clip rounded-3xl bg-card"
