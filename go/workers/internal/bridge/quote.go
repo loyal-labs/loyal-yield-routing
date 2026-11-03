@@ -27,7 +27,11 @@ type Call struct {
 
 // Quote is a Relay quote that passed CheckQuote. Calls run in order as one
 // batch. The USD figures are Relay's own strings, empty when Relay omitted
-// them.
+// them. minCredit is set only for a swap through Relay's approval proxy. It is
+// the least USDC, in the origin chain's units, that the simulation must see
+// the depository credit the user, and equals the quote's minimum Solana USDC
+// out. Relay fills the Solana side against this deposit, so a deposit below
+// the minimum the user was quoted cannot fund it.
 type Quote struct {
 	RequestID       string
 	Calls           []Call
@@ -40,6 +44,7 @@ type Quote struct {
 	ImpactUSD       string
 	ImpactPercent   string
 	ETASeconds      *int64
+	minCredit       *big.Int
 }
 
 type relayCurrencyAmount struct {
@@ -92,18 +97,21 @@ const (
 	depositAllowanceSelector     = "5a1ee3ac"
 )
 
-// relayDepository is the contract every live Relay quote deposits into, the
-// same address on all five networks (checked 2026-11-02).
+// relayDepository is the contract every live Relay quote deposits into. It is
+// one address on every chain; Sourcify verifies it as RelayDepository on
+// ethereum, bsc, base, arbitrum, optimism and polygon (checked 2026-11-02).
 const relayDepository = "0x4cd00e387622c35bddb9b4c962c136462338bc31"
 
 // relayApprovalProxy and relayRouter are Relay's v3.2 approvalProxy and
-// erc20Router, the same on every network. The proxy hands the user's tokens
-// only to that router, an immutable of its verified source (checked
-// 2026-11-02).
+// erc20Router on ethereum, bsc, base, arbitrum, optimism and polygon, the
+// chains with swap routes. The proxy hands the user's tokens only to that
+// router, an immutable of its verified source (checked 2026-11-02).
 const (
 	relayApprovalProxy = "0x5567954cd026cebfe486062cb75848e0f1c12e58"
 	relayRouter        = "0x0729e2a4716d9f7dd17858d5d504426d228697f7"
 )
+
+const solanaUSDCDecimals = 6
 
 type RequestError struct{ reason string }
 
@@ -130,13 +138,16 @@ func resolve(req QuoteRequest) (Network, Token, error) {
 	return net, tok, nil
 }
 
-// CheckQuote parses Relay's response, which is untrusted, and refuses any
-// quote whose transactions could move the user's funds anywhere but Relay's
-// deposit for their own Solana wallet. What binds a quote is that the
-// transactions are the user's own, on the right chain, spend no more than the
-// quoted amount, deposit exactly that amount of that token for that user, or
-// hand exactly that amount to Relay's router to swap and deposit as USDC for
-// that user, and that the quote's recipient and output are the ones requested.
+// CheckQuote parses Relay's response, which is untrusted, and checks its
+// structure only. The transactions must be the user's own, on the right chain,
+// and approve and spend exactly the quoted amount of the requested token, and
+// the quote's recipient and output must be the ones requested. That fully
+// binds a direct deposit, whose depositErc20 names the user, the token and the
+// amount. A swap through Relay's approval proxy is bound only around the swap.
+// The proxy hands the amount to Relay's router, the router approves and calls
+// a swapper whose calldata is opaque, and then deposits whatever USDC it holds
+// for the user. Relay.Quote's simulation proves what the swapper does with the
+// tokens.
 func CheckQuote(req QuoteRequest, raw []byte) (Quote, error) {
 	net, tok, err := resolve(req)
 	if err != nil {
@@ -210,6 +221,7 @@ func CheckQuote(req QuoteRequest, raw []byte) (Quote, error) {
 
 	var approve *step
 	var deposit step
+	var minCredit *big.Int
 	switch {
 	case len(steps) == 1 && steps[0].id == "deposit":
 		deposit = steps[0]
@@ -228,10 +240,11 @@ func CheckQuote(req QuoteRequest, raw []byte) (Quote, error) {
 		err = checkDeposit(deposit.tx.data, req.From, tok, req.AmountRaw)
 	case strings.EqualFold(deposit.tx.to, relayApprovalProxy):
 		usdc, ok := net.Token(USDC)
-		if !ok {
+		if !ok || usdc.Decimals < solanaUSDCDecimals {
 			return Quote{}, fmt.Errorf("quote: %s has no USDC for Relay's router to deposit", req.Chain)
 		}
 		err = checkProxyDeposit(deposit.tx.data, req.From, tok, usdc, req.AmountRaw)
+		minCredit = new(big.Int).Mul(outMin, new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(usdc.Decimals-solanaUSDCDecimals)), nil))
 	default:
 		return Quote{}, fmt.Errorf("quote: deposit target %s is not Relay's deposit contract or approval proxy", deposit.tx.to)
 	}
@@ -266,6 +279,7 @@ func CheckQuote(req QuoteRequest, raw []byte) (Quote, error) {
 		RelayerUSD:      rq.Fees.Relayer.AmountUSD,
 		ImpactUSD:       d.TotalImpact.USD,
 		ImpactPercent:   d.TotalImpact.Percent,
+		minCredit:       minCredit,
 	}
 	if d.TimeEstimate != nil && *d.TimeEstimate >= 0 {
 		eta := int64(math.Ceil(*d.TimeEstimate))

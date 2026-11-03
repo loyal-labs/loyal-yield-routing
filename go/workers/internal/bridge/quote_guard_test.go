@@ -1,9 +1,12 @@
 package bridge
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"math/big"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -80,5 +83,77 @@ func TestApprovalProxyDepositBindsDepositorAndAmount(t *testing.T) {
 		if _, err := CheckQuote(req, quote); err == nil || !strings.Contains(err.Error(), "deposit data") {
 			t.Errorf("ApprovalProxy deposit with the %s tampered: err = %v", name, err)
 		}
+	}
+}
+
+func TestRelayQuoteRefusesSwapThatDepositsLess(t *testing.T) {
+	const user = "98f566dc02faf8fd0f3ebb6aab48c40164207fc7"
+	usds, _ := new(big.Int).SetString("25000000000000000000", 10)
+	recorded, _ := json.Marshal(recordedQuote(t, "relay-quote-ethereum-usds.json"))
+	tampered := []byte(strings.ReplaceAll(string(recorded), "0000000000001ff3684f28c67538d4d072c22734", "000000000000000000000000000000000000dead"))
+	_, baseQuote := baseUSDCQuote(t)
+	direct, _ := json.Marshal(baseQuote)
+	for _, c := range []struct {
+		name       string
+		req        QuoteRequest
+		quote      []byte
+		credit     string
+		accept     bool
+		rpcBatches int
+	}{
+		{"swap crediting the user", QuoteRequest{Chain: Ethereum, Asset: USDS, AmountRaw: usds}, recorded, "24969055", true, 2},
+		{"swap to another swapper", QuoteRequest{Chain: Ethereum, Asset: USDS, AmountRaw: usds}, tampered, "", false, 2},
+		{"direct deposit", QuoteRequest{Chain: Base, Asset: USDC, AmountRaw: big.NewInt(5000000)}, direct, "", true, 0},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			batches := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/quote/v2" {
+					w.Write(c.quote)
+					return
+				}
+				batches++
+				var calls []struct {
+					ID     int    `json:"id"`
+					Method string `json:"method"`
+				}
+				json.NewDecoder(r.Body).Decode(&calls)
+				var replies []any
+				for _, call := range calls {
+					var result any
+					switch call.Method {
+					case "eth_createAccessList":
+						result = map[string]any{"accessList": []any{map[string]any{"address": "0xdc035d45d973e3ec169d2276ddab16f1e407384f", "storageKeys": []string{"0x01"}}}}
+					case "eth_simulateV1":
+						var logs []any
+						if c.credit != "" {
+							amount, _ := new(big.Int).SetString(c.credit, 10)
+							logs = append(logs, map[string]any{
+								"address": relayDepository,
+								"topics":  []string{"0x49fed1d0b752ce30eee63c7a81133f3363b532fec5d4d7dd1ccfd005de4555e1"},
+								"data":    fmt.Sprintf("0x%064s%064s%064x%064x", user, "a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", amount, 1),
+							})
+						}
+						result = []any{map[string]any{"calls": []any{
+							map[string]any{"status": "0x1", "returnData": fmt.Sprintf("0x%064x", c.req.AmountRaw), "logs": []any{}},
+							map[string]any{"status": "0x1", "returnData": "0x", "logs": []any{}},
+							map[string]any{"status": "0x1", "returnData": "0x", "logs": logs},
+						}}}
+					}
+					replies = append(replies, map[string]any{"jsonrpc": "2.0", "id": call.ID, "result": result})
+				}
+				json.NewEncoder(w).Encode(replies)
+			}))
+			defer srv.Close()
+			relay := &Relay{BaseURL: srv.URL, HTTP: srv.Client(), EVMRPC: map[Chain]string{Ethereum: srv.URL + "/rpc", Base: srv.URL + "/rpc"}}
+			c.req.From, c.req.Recipient = "0x"+user, "62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5"
+			_, err := relay.Quote(context.Background(), c.req)
+			if (err == nil) != c.accept {
+				t.Errorf("accepted = %v, want %v (err = %v)", err == nil, c.accept, err)
+			}
+			if batches != c.rpcBatches {
+				t.Errorf("%d RPC batches, want %d", batches, c.rpcBatches)
+			}
+		})
 	}
 }
