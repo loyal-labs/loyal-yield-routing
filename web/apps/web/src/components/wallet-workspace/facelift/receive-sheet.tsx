@@ -396,6 +396,12 @@ export function ReceiveSheet({
   const listedNetworks = listing
     ? networks.filter((item) => tokenOn(item, listing))
     : [];
+  const assetResults = depositTokens.filter((item) =>
+    matches(query, item.name, item.symbol)
+  );
+  const chainResults = listedNetworks.filter((item) =>
+    matches(query, item.name)
+  );
   const network = selection
     ? networks.find((item) => item.chain === selection.chain)
     : undefined;
@@ -570,14 +576,22 @@ export function ReceiveSheet({
                       </span>
                     </div>
                   </div>
-                  {resolved && network.minUsd > 0 && (
+                  {resolved && (network.minUsd > 0 || deposit.feePercent) && (
                     <dl className="rounded-2xl bg-accent py-1 text-[13px] leading-4">
-                      <div className="flex h-9 items-center justify-between px-4">
-                        <dt className="text-muted-foreground">
-                          Minimum deposit amount
-                        </dt>
-                        <dd>{minDeposit(network.minUsd, deposit)}</dd>
-                      </div>
+                      {network.minUsd > 0 && (
+                        <div className="flex h-9 items-center justify-between px-4">
+                          <dt className="text-muted-foreground">
+                            Minimum deposit amount
+                          </dt>
+                          <dd>{minDeposit(network.minUsd, deposit)}</dd>
+                        </div>
+                      )}
+                      {deposit.feePercent && (
+                        <div className="flex h-9 items-center justify-between px-4">
+                          <dt className="text-muted-foreground">Fee</dt>
+                          <dd>{Number(deposit.feePercent)}%</dd>
+                        </div>
+                      )}
                     </dl>
                   )}
                 </div>
@@ -638,62 +652,71 @@ export function ReceiveSheet({
                   )
                 ))}
               {view === "deposit-assets" &&
-                depositTokens
-                  .filter((item) => matches(query, item.name, item.symbol))
-                  .map((item) => (
+                assetResults.map((item) => (
+                  <button
+                    className="t-hover flex h-[60px] w-full items-center rounded-2xl px-4 text-left hover:bg-accent"
+                    key={item.asset}
+                    onClick={() => {
+                      setListing(item.asset);
+                      setCopied(false);
+                      goTo("chains");
+                    }}
+                    type="button"
+                  >
+                    <AssetIcon file={item.icon} label={item.symbol} />
+                    <span className="ml-3 flex flex-1 flex-col gap-0.5">
+                      <span className="font-medium text-[16px] leading-5 tracking-[-0.176px]">
+                        {item.name}
+                      </span>
+                      <span className="text-[13px] leading-4 text-muted-foreground">
+                        {item.symbol}
+                      </span>
+                    </span>
+                  </button>
+                ))}
+              {view === "chains" &&
+                listing &&
+                chainResults.map((item) => {
+                  const token = tokenOn(item, listing);
+                  return (
                     <button
                       className="t-hover flex h-[60px] w-full items-center rounded-2xl px-4 text-left hover:bg-accent"
-                      key={item.asset}
+                      key={item.chain}
                       onClick={() => {
-                        setListing(item.asset);
+                        setSelection({ asset: listing, chain: item.chain });
                         setCopied(false);
-                        goTo("chains");
+                        goTo("receive");
                       }}
                       type="button"
                     >
-                      <AssetIcon file={item.icon} label={item.symbol} />
+                      <AssetIcon file={item.icon} label={item.name} />
                       <span className="ml-3 flex flex-1 flex-col gap-0.5">
-                        <span className="font-medium text-[16px] leading-5 tracking-[-0.176px]">
+                        <span className="font-medium text-[16px] leading-5">
                           {item.name}
                         </span>
-                        <span className="text-[13px] leading-4 text-muted-foreground">
-                          {item.symbol}
-                        </span>
+                        {token && item.minUsd > 0 && (
+                          <span className="text-[13px] leading-4 text-muted-foreground">
+                            Min deposit amount:{" "}
+                            {minDeposit(item.minUsd, token)}
+                          </span>
+                        )}
                       </span>
                     </button>
-                  ))}
-              {view === "chains" &&
-                listing &&
-                listedNetworks
-                  .filter((item) => matches(query, item.name))
-                  .map((item) => {
-                    const token = tokenOn(item, listing);
-                    return (
-                      <button
-                        className="t-hover flex h-[60px] w-full items-center rounded-2xl px-4 text-left hover:bg-accent"
-                        key={item.chain}
-                        onClick={() => {
-                          setSelection({ asset: listing, chain: item.chain });
-                          setCopied(false);
-                          goTo("receive");
-                        }}
-                        type="button"
-                      >
-                        <AssetIcon file={item.icon} label={item.name} />
-                        <span className="ml-3 flex flex-1 flex-col gap-0.5">
-                          <span className="font-medium text-[16px] leading-5">
-                            {item.name}
-                          </span>
-                          {token && item.minUsd > 0 && (
-                            <span className="text-[13px] leading-4 text-muted-foreground">
-                              Min deposit amount:{" "}
-                              {minDeposit(item.minUsd, token)}
-                            </span>
-                          )}
-                        </span>
-                      </button>
-                    );
-                  })}
+                  );
+                })}
+              {query.trim() &&
+                (view === "chains" ? chainResults : assetResults).length ===
+                  0 && (
+                  <div className="flex h-[60px] items-center px-4">
+                    <span
+                      aria-hidden="true"
+                      className="size-11 shrink-0 rounded-full border-2 border-dashed border-border"
+                    />
+                    <p className="ml-3 text-[16px] leading-5 text-muted-foreground">
+                      No results found
+                    </p>
+                  </div>
+                )}
             </div>
           </>
         )}
