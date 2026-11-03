@@ -449,6 +449,8 @@ no GRANT runs.
 | earn withdraw prepare (wprep) | SELECT on `managed_vaults`, `route_policies` |
 | earn withdraw (confirm, cleanup prepare and confirm) | SELECT on `user_yield_position_withdrawals`, `balance_sweep_executions`, `balance_sweep_wallet_balance_events`, `balance_sweep_lot_claim_items`, `managed_vaults`, `route_policies`; SELECT, UPDATE on `balance_sweep_policies`, `balance_sweep_targets`, `balance_sweep_surplus_lots`, `balance_sweep_lot_claims` |
 | Earn MAX reads | SELECT on `multiply_operations`, `multiply_route_current_apy_days`, `multiply_route_states` |
+| referrals | SELECT, INSERT on `referral_codes`, `referral_bindings`; SELECT on `user_yield_positions`, `earn_max_cash_flows` (and SELECT on `app_users` on App Neon) |
+| Earn MAX cash-flow writer (the observer, not proven by `CheckEarnGrants`) | INSERT on `earn_max_cash_flows` |
 
 Earn MAX activity includes an optional `earnings` breakdown: investment
 performance after actual trading costs, changes in estimated selling costs

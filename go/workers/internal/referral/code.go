@@ -13,10 +13,12 @@ const (
 
 type Code string
 
+var lookalikes = strings.NewReplacer("O", "0", "I", "1", "L", "1")
+
 var ErrMalformedCode = errors.New("referral: a code is 7 Crockford base32 characters")
 
 func ParseCode(raw string) (Code, error) {
-	code := strings.ToUpper(strings.TrimSpace(raw))
+	code := lookalikes.Replace(strings.ToUpper(strings.TrimSpace(raw)))
 	if len(code) != codeLength || strings.Trim(code, crockford) != "" {
 		return "", ErrMalformedCode
 	}

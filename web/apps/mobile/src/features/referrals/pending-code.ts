@@ -17,8 +17,12 @@ export function notifyPending(): void {
   listeners.forEach((listener) => listener());
 }
 
+export function foldLookalikes(upper: string): string {
+  return upper.replace(/O/g, "0").replace(/[IL]/g, "1");
+}
+
 export function parseCode(raw: string): string | null {
-  const code = raw.trim().toUpperCase();
+  const code = foldLookalikes(raw.trim().toUpperCase());
   return CODE_PATTERN.test(code) ? code : null;
 }
 

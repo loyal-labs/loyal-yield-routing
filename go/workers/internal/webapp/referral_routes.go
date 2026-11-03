@@ -25,6 +25,7 @@ var earnReferralsFamily = earnFamily{
 		TableGrant("loyal_yield.referral_bindings", "SELECT"),
 		TableGrant("loyal_yield.referral_bindings", "INSERT"),
 		TableGrant("loyal_yield.user_yield_positions", "SELECT"),
+		TableGrant("loyal_yield.earn_max_cash_flows", "SELECT"),
 	},
 	ready:    func(h earnRoutes) bool { return h.signedIn() && h.YieldDB != nil },
 	register: earnRoutes.registerReferrals,
