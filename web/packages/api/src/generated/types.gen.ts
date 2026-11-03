@@ -2780,6 +2780,10 @@ export type GetReferralCodeErrors = {
      */
     400: RouteError;
     /**
+     * Too Many Requests
+     */
+    429: RouteError;
+    /**
      * Service Unavailable
      */
     503: RouteError;
