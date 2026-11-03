@@ -1,6 +1,5 @@
 -- One Relay bridge from a relay_signed EVM wallet to its Solana wallet, keyed by
--- Relay's request id. loyal-web writes quoted and submitted; the status job
--- moves submitted and failed rows to filled or refunded.
+-- Relay's request id.
 CREATE TABLE loyal_yield.bridge_transfers (
     request_id text PRIMARY KEY,
     solana_wallet text NOT NULL,
