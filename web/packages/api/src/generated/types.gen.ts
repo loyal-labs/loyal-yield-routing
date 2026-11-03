@@ -156,6 +156,61 @@ export type AutodepositToggleConfirmRequest = {
     vaultIndex: number;
 };
 
+export type BridgeBalance = {
+    amountRaw: string;
+    asset: string;
+    chain: string;
+    decimals: number;
+};
+
+export type BridgeBalancesResponse = {
+    balances: Array<BridgeBalance> | null;
+};
+
+export type BridgeCall = {
+    data: string;
+    to: string;
+    value: string;
+};
+
+export type BridgeQuoteRequest = {
+    amountRaw: string;
+    asset: string;
+    chain: string;
+};
+
+export type BridgeQuoteResponse = {
+    amountOutMinRaw: string;
+    amountOutRaw: string;
+    calls: Array<BridgeCall> | null;
+    chainId: number;
+    etaSeconds: number | null;
+    relayerFeeUsd: string;
+    requestId: string;
+};
+
+export type BridgeSubmitRequest = {
+    originTx: string;
+};
+
+export type BridgeTransfer = {
+    amountInRaw: string;
+    amountOutRaw: string;
+    asset: string;
+    chain: string;
+    destinationTx: string | null;
+    originTx: string | null;
+    quotedAt: string;
+    requestId: string;
+    settledAt: string | null;
+    state: 'quoted' | 'submitted' | 'filled' | 'refunded' | 'failed';
+    submittedAt: string | null;
+};
+
+export type BridgeTransfersResponse = {
+    transfers: Array<BridgeTransfer> | null;
+};
+
 export type CrossMintDeleteReadinessRequest = {
     expectedGeneration?: string;
 };
@@ -1945,6 +2000,167 @@ export type HeadEarnStatsResponses = {
 };
 
 export type HeadEarnStatsResponse = HeadEarnStatsResponses[keyof HeadEarnStatsResponses];
+
+export type GetFundingBridgeBalancesData = {
+    body?: never;
+    headers?: {
+        Authorization?: string;
+        Cookie?: string;
+        'X-Forwarded-Host'?: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/funding/bridge/balances';
+};
+
+export type GetFundingBridgeBalancesErrors = {
+    /**
+     * Unauthorized
+     */
+    401: RouteError;
+    /**
+     * Not Found
+     */
+    404: RouteError;
+    /**
+     * Service Unavailable
+     */
+    503: RouteError;
+};
+
+export type GetFundingBridgeBalancesError = GetFundingBridgeBalancesErrors[keyof GetFundingBridgeBalancesErrors];
+
+export type GetFundingBridgeBalancesResponses = {
+    /**
+     * OK
+     */
+    200: BridgeBalancesResponse;
+};
+
+export type GetFundingBridgeBalancesResponse = GetFundingBridgeBalancesResponses[keyof GetFundingBridgeBalancesResponses];
+
+export type PostFundingBridgeQuoteData = {
+    body?: BridgeQuoteRequest;
+    headers?: {
+        Authorization?: string;
+        Cookie?: string;
+        'X-Forwarded-Host'?: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/funding/bridge/quote';
+};
+
+export type PostFundingBridgeQuoteErrors = {
+    /**
+     * Bad Request
+     */
+    400: RouteError;
+    /**
+     * Unauthorized
+     */
+    401: RouteError;
+    /**
+     * Not Found
+     */
+    404: RouteError;
+    /**
+     * Service Unavailable
+     */
+    503: RouteError;
+};
+
+export type PostFundingBridgeQuoteError = PostFundingBridgeQuoteErrors[keyof PostFundingBridgeQuoteErrors];
+
+export type PostFundingBridgeQuoteResponses = {
+    /**
+     * OK
+     */
+    200: BridgeQuoteResponse;
+};
+
+export type PostFundingBridgeQuoteResponse = PostFundingBridgeQuoteResponses[keyof PostFundingBridgeQuoteResponses];
+
+export type GetFundingBridgeTransfersData = {
+    body?: never;
+    headers?: {
+        Authorization?: string;
+        Cookie?: string;
+        'X-Forwarded-Host'?: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/funding/bridge/transfers';
+};
+
+export type GetFundingBridgeTransfersErrors = {
+    /**
+     * Unauthorized
+     */
+    401: RouteError;
+    /**
+     * Service Unavailable
+     */
+    503: RouteError;
+};
+
+export type GetFundingBridgeTransfersError = GetFundingBridgeTransfersErrors[keyof GetFundingBridgeTransfersErrors];
+
+export type GetFundingBridgeTransfersResponses = {
+    /**
+     * OK
+     */
+    200: BridgeTransfersResponse;
+};
+
+export type GetFundingBridgeTransfersResponse = GetFundingBridgeTransfersResponses[keyof GetFundingBridgeTransfersResponses];
+
+export type PostFundingBridgeTransferSubmitData = {
+    body?: BridgeSubmitRequest;
+    headers?: {
+        Authorization?: string;
+        Cookie?: string;
+        'X-Forwarded-Host'?: string;
+    };
+    path: {
+        /**
+         * Relay request id from the quote
+         */
+        requestId: string;
+    };
+    query?: never;
+    url: '/api/funding/bridge/transfers/{requestId}/submit';
+};
+
+export type PostFundingBridgeTransferSubmitErrors = {
+    /**
+     * Bad Request
+     */
+    400: RouteError;
+    /**
+     * Unauthorized
+     */
+    401: RouteError;
+    /**
+     * Not Found
+     */
+    404: RouteError;
+    /**
+     * Service Unavailable
+     */
+    503: RouteError;
+};
+
+export type PostFundingBridgeTransferSubmitError = PostFundingBridgeTransferSubmitErrors[keyof PostFundingBridgeTransferSubmitErrors];
+
+export type PostFundingBridgeTransferSubmitResponses = {
+    /**
+     * OK
+     */
+    200: BridgeTransfer;
+};
+
+export type PostFundingBridgeTransferSubmitResponse = PostFundingBridgeTransferSubmitResponses[keyof PostFundingBridgeTransferSubmitResponses];
 
 export type GetFundingEvmDepositAddressData = {
     body?: never;

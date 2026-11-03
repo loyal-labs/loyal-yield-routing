@@ -1,7 +1,10 @@
 // Package bridge moves a user's deposits on EVM chains to their Solana wallet.
 package bridge
 
-import "fmt"
+import (
+	"fmt"
+	"math/big"
+)
 
 type Chain string
 
@@ -42,6 +45,30 @@ type Network struct {
 }
 
 func (n Network) CAIP2() string { return fmt.Sprintf("eip155:%d", n.ChainID) }
+
+// BelowMinimum refuses a bridge worth less than its network's MinUSD.
+type BelowMinimum struct {
+	Chain  Chain
+	MinUSD int
+}
+
+func (e *BelowMinimum) Error() string {
+	return fmt.Sprintf("bridging from %s starts at %d USD", e.Chain, e.MinUSD)
+}
+
+func (n Network) checkMinimum(amountUSD string) error {
+	if n.MinUSD == 0 {
+		return nil
+	}
+	usd, ok := new(big.Rat).SetString(amountUSD)
+	if !ok {
+		return fmt.Errorf("quote: details.currencyIn.amountUsd %q is not a number", amountUSD)
+	}
+	if usd.Cmp(big.NewRat(int64(n.MinUSD), 1)) < 0 {
+		return &BelowMinimum{Chain: n.Chain, MinUSD: n.MinUSD}
+	}
+	return nil
+}
 
 func (n Network) Token(a Asset) (Token, bool) {
 	for _, t := range n.Tokens {

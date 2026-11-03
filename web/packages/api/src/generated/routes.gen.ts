@@ -3,6 +3,8 @@ import type * as Types from "./types.gen";
 export type Get = {
   "/api/earn-max/apy": Types.EarnMaxApy;
   "/api/earn/stats": Types.EarnPublicStats;
+  "/api/funding/bridge/balances": Types.BridgeBalancesResponse;
+  "/api/funding/bridge/transfers": Types.BridgeTransfersResponse;
   "/api/funding/evm-deposit-address": Types.EvmDepositAddressResponse;
   "/api/mobile/dapps": Types.MobileTrustedDappsResponse;
   "/api/mobile/library": Types.MobileLibraryResponse;
@@ -22,6 +24,8 @@ export type Get = {
 
 export type Post = {
   "/api/auth/privy/complete": Types.PrivyCompleteResponse;
+  "/api/funding/bridge/quote": Types.BridgeQuoteResponse;
+  "/api/funding/bridge/transfers/{requestId}/submit": Types.BridgeTransfer;
   "/api/funding/evm-deposit-address": Types.EvmDepositAddressResponse;
   "/api/observability/errors": Types.ObsIngestAccepted;
   "/api/observability/events": Types.ObsJourneyAccepted;

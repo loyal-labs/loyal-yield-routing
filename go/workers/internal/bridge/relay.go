@@ -52,7 +52,14 @@ func (r *Relay) Quote(ctx context.Context, req QuoteRequest) (Quote, error) {
 	if err != nil {
 		return Quote{}, fmt.Errorf("relay quote: %w", err)
 	}
-	return CheckQuote(req, raw)
+	q, err := CheckQuote(req, raw)
+	if err != nil {
+		return Quote{}, err
+	}
+	if err := net.checkMinimum(q.AmountInUSD); err != nil {
+		return Quote{}, err
+	}
+	return q, nil
 }
 
 type Status struct {
