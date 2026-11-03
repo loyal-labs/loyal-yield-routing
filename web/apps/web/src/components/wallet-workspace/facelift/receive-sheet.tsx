@@ -1,11 +1,10 @@
 "use client";
 
+import type { EvmDepositNetwork } from "@loyal-labs/api";
 import { QRCodeSVG } from "qrcode.react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { copyTextToClipboard } from "./copy-text";
-import { SplitUsd } from "./crypto-pane";
-import { useBalanceVisibility } from "./balance-visibility";
 import { useEscapeOverlay } from "./escape-owner";
 import { SheetReveal } from "./sheet-reveal";
 import { SlidingTabs } from "./sliding-tabs";
@@ -16,7 +15,7 @@ import { useEvmDepositAddress } from "./use-evm-deposit-address";
 const BASE = "/wallet-workspace/facelift";
 const TABS = ["Solana", "Other chains"] as const;
 type Tab = (typeof TABS)[number];
-type View = "receive" | "chains" | "assets" | "supported";
+type View = "receive" | "chains" | "supported";
 
 // Bridge stays off (#641) unless this browser opts in with
 // localStorage["loyal.bridge"] = "1".
@@ -28,37 +27,29 @@ function bridgeOptedIn() {
   }
 }
 
-// The design's chain list; only those the server names are offered. Privy
-// spells BNB Chain "bsc".
-const CHAINS = [
-  { id: "ethereum", name: "Ethereum" },
-  { id: "tron", name: "Tron" },
-  { id: "bitcoin", name: "Bitcoin" },
-  { id: "base", name: "Base" },
-  { id: "arbitrum", name: "Arbitrum" },
-  { id: "polygon", name: "Polygon" },
-  { id: "bnb", name: "BNB Smart Chain" },
-] as const;
-const RECEIVE_ASSETS = [
-  {
-    symbol: "USDC",
-    name: "USD Coin",
-    icon: "usdc.png",
-    value: "$9,750.00",
-    amount: "9,750.00 USDC",
-  },
-  {
-    symbol: "SOL",
-    name: "Solana",
-    icon: "sol.png",
-    value: "$0.00",
-    amount: "0.00 SOL",
-  },
-] as const;
-const SUPPORTED_ASSETS = [
-  { symbol: "USDT", name: "Tether USD", icon: "usdt.png" },
-  { symbol: "TRX", name: "Tron", icon: "tron.png" },
-];
+const ASSET_DISPLAY: Record<
+  string,
+  { symbol: string; name: string; icon: string }
+> = {
+  usdc: { symbol: "USDC", name: "USD Coin", icon: "usdc.png" },
+  usdt: { symbol: "USDT", name: "Tether USD", icon: "usdt.png" },
+  eth: { symbol: "ETH", name: "Ether", icon: "ethereum.png" },
+};
+
+function assetDisplay(code: string) {
+  return (
+    ASSET_DISPLAY[code] ?? {
+      symbol: code.toUpperCase(),
+      name: code.toUpperCase(),
+      icon: "assets.svg",
+    }
+  );
+}
+
+// Privy spells BNB Chain "bsc"; its icon file is bnb.png.
+function chainIcon(chain: string) {
+  return `${chain === "bsc" ? "bnb" : chain}.png`;
+}
 
 function AssetIcon({ file, size = 44 }: { file: string; size?: number }) {
   return (
@@ -89,14 +80,12 @@ function Warning({ children }: { children: ReactNode }) {
 function AddressCard({
   address,
   bridge,
-  preview = false,
   emptyLabel = "No wallet connected",
   chainIcon,
   onCopy,
 }: {
   address: string | null;
   bridge: boolean;
-  preview?: boolean;
   emptyLabel?: string;
   chainIcon: string;
   onCopy: () => void;
@@ -106,13 +95,11 @@ function AddressCard({
       className={`relative flex shrink-0 flex-col items-center bg-accent ${
         bridge ? "w-full rounded-2xl" : "w-64 rounded-3xl"
       }`}
-      title={preview ? "Bridge design preview — example address" : undefined}
     >
       <div className="px-8 pt-8 pb-5">
         {address ? (
           <QRCodeSVG
-            // Mock bridge QR intentionally contains no usable deposit address.
-            value={preview ? "loyal:bridge-design-preview" : address}
+            value={address}
             size={192}
             minVersion={5}
             level="M"
@@ -174,13 +161,9 @@ export function ReceiveSheet({
 }) {
   const [tab, setTab] = useState<Tab>(initialTab);
   const [view, setView] = useState<View>("receive");
-  const [chain, setChain] = useState<(typeof CHAINS)[number]>(CHAINS[0]);
-  const [asset, setAsset] = useState<(typeof RECEIVE_ASSETS)[number]>(
-    RECEIVE_ASSETS[0]
-  );
+  const [chainId, setChainId] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
-  const { isBalanceHidden } = useBalanceVisibility();
   const bridge = tab === "Other chains";
   const evm = useEvmDepositAddress(walletAddress);
   const live = bridgeOptedIn() && evm.eligible;
@@ -194,8 +177,6 @@ export function ReceiveSheet({
   const title =
     view === "chains"
       ? "Select chain"
-      : view === "assets"
-      ? "Select asset to receive"
       : view === "supported"
       ? "Supported assets"
       : "Receive";
@@ -256,27 +237,13 @@ export function ReceiveSheet({
   }, [copied]);
 
   const handleCopy = () => {
-    if (bridge && !live) {
-      setCopied(true);
-      return;
-    }
     const address = bridge ? evm.info?.address : walletAddress;
     if (address) void copyTextToClipboard(address).then(setCopied);
   };
-  const isTron = chain.id === "tron";
-  const exampleAddress = isTron
-    ? "TEFgdDE6vrxWNJfhEa3SJeWfVpwGdEC9Sh"
-    : "0xadC45bc2270491091e9C454B9e68FbFE91aA7BCb";
-  const chainKey = chain.id === "bnb" ? "bsc" : chain.id;
-  const offered = evm.info?.chains;
-  const chains = live
-    ? CHAINS.filter((item) =>
-        offered
-          ? offered.includes(item.id === "bnb" ? "bsc" : item.id)
-          : item.id !== "tron" && item.id !== "bitcoin"
-      )
-    : CHAINS;
-  const minimum = live ? evm.info?.minimums[chainKey] : isTron ? 2 : 1;
+  const networks = evm.info?.networks ?? [];
+  const network: EvmDepositNetwork | undefined =
+    networks.find((item) => item.chain === chainId) ?? networks[0];
+  const networkAssets = network?.assets ?? [];
 
   return (
     <SheetReveal
@@ -346,106 +313,90 @@ export function ReceiveSheet({
             </div>
             {bridge ? (
               <div className="min-h-0 flex-1 overflow-y-auto">
-                <div className="relative p-2">
-                  <div
-                    aria-hidden="true"
-                    className="pointer-events-none absolute left-[45px] top-[63px] z-10 h-[58px] w-0.5 bg-foreground/20"
-                  />
-                  <div className="group relative h-[100px] rounded-2xl hover:bg-accent">
-                    <button
-                      aria-label={`Sending from chain ${chain.name}`}
-                      className="absolute inset-0 rounded-2xl"
-                      onClick={() => setView("chains")}
-                      type="button"
+                {network && (
+                  <div className="relative p-2">
+                    <div
+                      aria-hidden="true"
+                      className="pointer-events-none absolute left-[45px] top-[63px] z-10 h-[58px] w-0.5 bg-foreground/20"
                     />
-                    <div className="pointer-events-none flex items-start px-4 py-2">
-                      <AssetIcon file={`${chain.id}.png`} />
-                      <div className="ml-3 flex min-w-0 flex-1 flex-col gap-1 py-0.5">
+                    <div className="group relative h-[100px] rounded-2xl hover:bg-accent">
+                      <button
+                        aria-label={`Sending from chain ${network.name}`}
+                        className="absolute inset-0 rounded-2xl"
+                        onClick={() => setView("chains")}
+                        type="button"
+                      />
+                      <div className="pointer-events-none flex items-start px-4 py-2">
+                        <AssetIcon file={chainIcon(network.chain)} />
+                        <div className="ml-3 flex min-w-0 flex-1 flex-col gap-1 py-0.5">
+                          <span className="text-[13px] leading-4 text-muted-foreground">
+                            Sending from chain
+                          </span>
+                          <span className="font-medium text-[16px] leading-5">
+                            {network.name}
+                          </span>
+                          <button
+                            aria-label={`${networkAssets.length} assets supported`}
+                            className="t-hover pointer-events-auto relative z-10 flex w-fit items-center rounded-3xl bg-accent p-2 hover:bg-accent-selected"
+                            onClick={() => setView("supported")}
+                            type="button"
+                          >
+                            <span className="flex items-center pr-2 [&>img+img]:-ml-[5px]">
+                              {networkAssets.map((code) => (
+                                <AssetIcon
+                                  file={assetDisplay(code).icon}
+                                  key={code}
+                                  size={20}
+                                />
+                              ))}
+                            </span>
+                            <span className="text-[13px] leading-4 text-muted-foreground">
+                              {networkAssets.length} assets supported
+                            </span>
+                            <ThemedIcon
+                              className="size-4 text-muted-foreground"
+                              src={`${BASE}/icon-chevron-right.svg`}
+                            />
+                          </button>
+                        </div>
+                        <ThemedIcon
+                          className="my-2.5 size-6 text-muted-foreground"
+                          src={`${BASE}/icon-chevron-right.svg`}
+                        />
+                      </div>
+                    </div>
+                    <div className="mt-1 flex h-[60px] w-full items-center rounded-2xl px-4">
+                      <AssetIcon file={assetDisplay("usdc").icon} />
+                      <span className="ml-3 flex flex-1 flex-col gap-1">
                         <span className="text-[13px] leading-4 text-muted-foreground">
-                          Sending from chain
+                          Receive asset
                         </span>
                         <span className="font-medium text-[16px] leading-5">
-                          {chain.name}
+                          {assetDisplay("usdc").symbol}
                         </span>
-                        <button
-                          aria-label={`${isTron ? 2 : 22} assets supported`}
-                          className="t-hover pointer-events-auto relative z-10 flex w-fit items-center rounded-3xl bg-accent p-2 hover:bg-accent-selected"
-                          onClick={() => setView("supported")}
-                          type="button"
-                        >
-                          <span className="flex items-center pr-2 [&>img+img]:-ml-[5px]">
-                            {(isTron
-                              ? ["tron.png", "usdt.png"]
-                              : ["usdg.svg", "pyusd.svg", "bitcoin.png"]
-                            ).map((file) => (
-                              <AssetIcon file={file} key={file} size={20} />
-                            ))}
-                          </span>
-                          <span className="text-[13px] leading-4 text-muted-foreground">
-                            {isTron ? 2 : 22} assets supported
-                          </span>
-                          <ThemedIcon
-                            className="size-4 text-muted-foreground"
-                            src={`${BASE}/icon-chevron-right.svg`}
-                          />
-                        </button>
-                      </div>
-                      <ThemedIcon
-                        className="my-2.5 size-6 text-muted-foreground"
-                        src={`${BASE}/icon-chevron-right.svg`}
-                      />
+                      </span>
                     </div>
                   </div>
-                  <button
-                    className="t-hover mt-1 flex h-[60px] w-full items-center rounded-2xl px-4 text-left hover:bg-accent"
-                    onClick={() => setView("assets")}
-                    type="button"
-                  >
-                    <AssetIcon file={asset.icon} />
-                    <span className="ml-3 flex flex-1 flex-col gap-1">
-                      <span className="text-[13px] leading-4 text-muted-foreground">
-                        Receive asset
-                      </span>
-                      <span className="font-medium text-[16px] leading-5">
-                        {asset.symbol}
-                      </span>
-                    </span>
-                    <ThemedIcon
-                      className="size-6 text-muted-foreground"
-                      src={`${BASE}/icon-chevron-right.svg`}
-                    />
-                  </button>
-                </div>
+                )}
                 <div className="flex flex-col gap-2 p-2">
-                  <Warning>
-                    Send funds only via the {chain.name} network and not from an
-                    exchange.
-                    {minimum !== undefined &&
-                      ` The minimum amount is $${minimum} in the selected asset.`}{" "}
-                    Sending an unsupported token will result in permanent loss
-                    of funds.
-                  </Warning>
+                  {network && (
+                    <Warning>
+                      Send funds only via the {network.name} network and not
+                      from an exchange.
+                      {network.minUsd > 0 &&
+                        ` The minimum amount is $${network.minUsd} in the selected asset.`}{" "}
+                      Sending an unsupported token will result in permanent loss
+                      of funds.
+                    </Warning>
+                  )}
                   {live && evm.error && <Warning>{evm.error}</Warning>}
                   <AddressCard
-                    address={live ? evm.info?.address ?? null : exampleAddress}
+                    address={evm.info?.address ?? null}
                     bridge
-                    preview={!live}
                     emptyLabel={evm.error ? "No deposit address yet" : "Loading address…"}
-                    chainIcon={`${chain.id}.png`}
+                    chainIcon={network ? chainIcon(network.chain) : "mascot.svg"}
                     onCopy={handleCopy}
                   />
-                  <dl className="rounded-2xl bg-accent py-1 text-[13px] leading-4">
-                    <div className="flex justify-between px-4 py-2.5">
-                      <dt className="text-muted-foreground">Fee</dt>
-                      <dd>1%</dd>
-                    </div>
-                    <div className="flex justify-between px-4 py-2.5">
-                      <dt className="text-muted-foreground">
-                        Estimated deposit time
-                      </dt>
-                      <dd>~2 min</dd>
-                    </div>
-                  </dl>
                 </div>
               </div>
             ) : (
@@ -467,67 +418,31 @@ export function ReceiveSheet({
             <div className="shrink-0 px-4 pt-2 pb-4">
               <button
                 className="t-hover flex h-12 w-full items-center justify-center rounded-full bg-accent text-[16px] font-medium leading-5 enabled:hover:bg-accent-selected disabled:opacity-40"
-                disabled={!bridge && !walletAddress}
+                disabled={!(bridge ? evm.info?.address : walletAddress)}
                 onClick={handleCopy}
                 type="button"
               >
-                <TextSwap
-                  text={
-                    copied
-                      ? bridge && !live
-                        ? "Preview only"
-                        : "Copied!"
-                      : "Copy address"
-                  }
-                />
+                <TextSwap text={copied ? "Copied!" : "Copy address"} />
               </button>
             </div>
           </>
         ) : (
           <div className="min-h-0 flex-1 overflow-y-auto p-2">
             {view === "chains" ? (
-              chains.map((item) => (
+              networks.map((item) => (
                 <button
                   className="t-hover flex h-[60px] w-full items-center rounded-2xl px-4 text-left hover:bg-accent"
-                  key={item.id}
+                  key={item.chain}
                   onClick={() => {
-                    setChain(item);
+                    setChainId(item.chain);
                     setCopied(false);
                     setView("receive");
                   }}
                   type="button"
                 >
-                  <AssetIcon file={`${item.id}.png`} />
+                  <AssetIcon file={chainIcon(item.chain)} />
                   <span className="ml-3 font-medium text-[16px] leading-5">
                     {item.name}
-                  </span>
-                </button>
-              ))
-            ) : view === "assets" ? (
-              RECEIVE_ASSETS.map((item) => (
-                <button
-                  className="t-hover flex h-[60px] w-full items-center rounded-2xl px-4 text-left hover:bg-accent"
-                  key={item.symbol}
-                  onClick={() => {
-                    setAsset(item);
-                    setView("receive");
-                  }}
-                  type="button"
-                >
-                  <AssetIcon file={item.icon} />
-                  <span className="ml-3 flex flex-1 flex-col gap-0.5">
-                    <span className="font-medium text-[16px] leading-5 tracking-[-0.176px]">
-                      {item.name}
-                    </span>
-                    <span className="text-[13px] leading-4 text-muted-foreground">
-                      {item.symbol}
-                    </span>
-                  </span>
-                  <span className="flex flex-col items-end gap-0.5 pl-3">
-                    <SplitUsd isHidden={isBalanceHidden} value={item.value} />
-                    <span className="text-[13px] leading-4 text-muted-foreground">
-                      {isBalanceHidden ? "••••" : item.amount}
-                    </span>
                   </span>
                 </button>
               ))
@@ -540,22 +455,25 @@ export function ReceiveSheet({
                     funds.
                   </Warning>
                 </div>
-                {SUPPORTED_ASSETS.map((item) => (
-                  <div
-                    className="flex h-[60px] w-full items-center rounded-2xl px-4 hover:bg-accent"
-                    key={item.symbol}
-                  >
-                    <AssetIcon file={item.icon} />
-                    <span className="ml-3 flex flex-1 flex-col gap-0.5">
-                      <span className="font-medium text-[16px] leading-5 tracking-[-0.176px]">
-                        {item.name}
+                {networkAssets.map((code) => {
+                  const item = assetDisplay(code);
+                  return (
+                    <div
+                      className="flex h-[60px] w-full items-center rounded-2xl px-4 hover:bg-accent"
+                      key={code}
+                    >
+                      <AssetIcon file={item.icon} />
+                      <span className="ml-3 flex flex-1 flex-col gap-0.5">
+                        <span className="font-medium text-[16px] leading-5 tracking-[-0.176px]">
+                          {item.name}
+                        </span>
+                        <span className="text-[13px] leading-4 text-muted-foreground">
+                          {item.symbol}
+                        </span>
                       </span>
-                      <span className="text-[13px] leading-4 text-muted-foreground">
-                        {item.symbol}
-                      </span>
-                    </span>
-                  </div>
-                ))}
+                    </div>
+                  );
+                })}
               </>
             )}
           </div>

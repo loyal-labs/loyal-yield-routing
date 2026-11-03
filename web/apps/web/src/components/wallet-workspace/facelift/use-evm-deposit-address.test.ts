@@ -51,7 +51,9 @@ async function load(responses: { status: number; body: unknown }[]) {
   }
 }
 
-const network = { chains: ["base"], assets: ["usdc"], minimums: {} };
+const network = {
+  networks: [{ chain: "base", name: "Base", assets: ["usdc"], minUsd: 0 }],
+};
 
 test("a relay_signed response without an address never reaches the signer", async () => {
   const { methods, hook } = await load([
