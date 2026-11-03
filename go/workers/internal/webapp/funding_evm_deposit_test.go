@@ -23,6 +23,7 @@ import (
 	"github.com/danielgtaylor/huma/v2/adapters/humachi"
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/bridge"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/jwt"
 	"github.com/solana-foundation/solana-go/v2"
 )
@@ -80,7 +81,7 @@ func evmDepositTestDB(t *testing.T) *pgxpool.Pool {
 		}
 	})
 	setup := []string{`CREATE SCHEMA loyal_yield`, `CREATE TABLE app_users (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), provider text NOT NULL, subject_address text NOT NULL)`}
-	for _, file := range []string{"0126_evm_deposit_routes.sql", "0127_evm_deposit_routes_shared_wallet.sql", "0130_evm_deposit_routes_route_set.sql"} {
+	for _, file := range []string{"0126_evm_deposit_routes.sql", "0127_evm_deposit_routes_shared_wallet.sql", "0130_evm_deposit_routes_route_set.sql", "0133_relay_deposit_addresses.sql"} {
 		migration, err := os.ReadFile("../../../../migrations/yield/" + file)
 		if err != nil {
 			t.Fatal(err)
@@ -195,6 +196,7 @@ func TestEvmDepositRelaySignedRefusesEmbeddedWalletWhenPrivyLookupIsEmpty(t *tes
 				YieldDB: pool,
 				HTTP:    &http.Client{Transport: rewriteTransport{target}},
 				Privy:   &Privy{AppID: appID, AppSecret: "secret"},
+				Relay:   &bridge.Relay{BaseURL: "http://127.0.0.1:9", HTTP: &http.Client{}},
 			}, appDB: pool}.registerEvmDeposit(api)
 			body, err := json.Marshal(map[string]string{"privyIdentityToken": identityToken})
 			if err != nil {
@@ -309,6 +311,7 @@ func newEvmDepositPoster(t *testing.T, pool *pgxpool.Pool) evmDepositPoster {
 			YieldDB: pool,
 			HTTP:    &http.Client{Transport: rewriteTransport{target}},
 			Privy:   &Privy{AppID: "app", AppSecret: "secret"},
+			Relay:   &bridge.Relay{BaseURL: "http://127.0.0.1:9", HTTP: &http.Client{}},
 		},
 	}.registerEvmDeposit(humachi.New(router, apiConfig()))
 	return evmDepositPoster{router: router, token: token, privy: privy}

@@ -28,10 +28,11 @@ var earnTronDepositFamily = earnFamily{
 const tronDepositPath = "/api/funding/tron-deposit-address"
 
 type TronDepositAddressResponse struct {
-	Address   string    `json:"address"`
-	MinUSD    int       `json:"minUsd"`
-	FeeUSD    *string   `json:"feeUsd" doc:"Relay's fee in USD for a minimum deposit, from a deposit-address quote cached up to ten minutes; null until one has answered"`
-	ExpiresAt time.Time `json:"expiresAt"`
+	Address     string    `json:"address"`
+	MinUSD      int       `json:"minUsd"`
+	FeeUSD      *string   `json:"feeUsd" doc:"Relay's fee in USD for a minimum deposit, from a deposit-address quote cached up to ten minutes; null until one has answered"`
+	ReceiveUSDC *string   `json:"receiveUsdc" doc:"USDC on Solana a minimum deposit pays after Relay's fee and price, from the same quote; null until one has answered"`
+	ExpiresAt   time.Time `json:"expiresAt"`
 }
 
 type tronDepositOutput struct{ Body TronDepositAddressResponse }
@@ -43,10 +44,40 @@ type tronDepositRow struct {
 
 var tronDepositCreates = walletLocks{held: map[solana.PublicKey]*walletLock{}}
 
+type tronDepositPrice struct {
+	FeeUSD      *string
+	ReceiveUSDC *string
+}
+
+func shownText(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
+func priceOf(quote bridge.DepositAddress) tronDepositPrice {
+	return tronDepositPrice{FeeUSD: shownText(quote.FeeUSD), ReceiveUSDC: shownText(quote.ReceiveUSDC)}
+}
+
 var (
-	tronDepositCell     = depositCell{bridge.Tron.Chain, bridge.Tron.Asset}
-	tronDepositFeeCache = depositFees{held: map[depositCell]depositFee{}, timeout: 15 * time.Second}
+	tronDepositCell       = depositCell{bridge.Tron.Chain, bridge.Tron.Asset}
+	tronDepositPriceCache = depositFees[tronDepositPrice]{held: map[depositCell]depositFee[tronDepositPrice]{}, timeout: 15 * time.Second}
 )
+
+func (h earnRoutes) tronDepositPrice(wallet solana.PublicKey) tronDepositPrice {
+	price := tronDepositPriceCache.read(tronDepositCell, func(ctx context.Context) (tronDepositPrice, error) {
+		quote, err := h.Relay.DepositAddress(ctx, bridge.Tron, wallet.String())
+		if err == nil && quote.FeeUSD == "" {
+			err = errors.New("relay deposit quote carries no relayer fee")
+		}
+		return priceOf(quote), err
+	})
+	if price == nil {
+		return tronDepositPrice{}
+	}
+	return *price
+}
 
 func (h earnRoutes) registerTronDeposit(api huma.API) {
 	huma.Register(api, huma.Operation{
@@ -84,14 +115,14 @@ func (h earnRoutes) tronDepositAddress(ctx context.Context, in *sessionRequest) 
 	if err != nil {
 		return nil, err
 	}
-	fee := tronDepositFeeCache.read(tronDepositCell, func(ctx context.Context) (string, error) {
-		quote, err := h.Relay.DepositAddress(ctx, bridge.Tron, wallet.String())
-		if err == nil && quote.FeeUSD == "" {
-			err = errors.New("relay deposit quote carries no relayer fee")
-		}
-		return quote.FeeUSD, err
-	})
-	return &tronDepositOutput{Body: TronDepositAddressResponse{Address: row.Address, MinUSD: bridge.Tron.MinUSD, FeeUSD: fee, ExpiresAt: row.ExpiresAt.UTC()}}, nil
+	price := h.tronDepositPrice(wallet)
+	return &tronDepositOutput{Body: TronDepositAddressResponse{
+		Address:     row.Address,
+		MinUSD:      bridge.Tron.MinUSD,
+		FeeUSD:      price.FeeUSD,
+		ReceiveUSDC: price.ReceiveUSDC,
+		ExpiresAt:   row.ExpiresAt.UTC(),
+	}}, nil
 }
 
 func (h earnRoutes) ensureTronDepositAddress(ctx context.Context, wallet solana.PublicKey, userID string) (*tronDepositRow, error) {
@@ -112,7 +143,7 @@ func (h earnRoutes) ensureTronDepositAddress(ctx context.Context, wallet solana.
 		return nil, err
 	}
 	if minted.FeeUSD != "" {
-		tronDepositFeeCache.store(tronDepositCell, minted.FeeUSD)
+		tronDepositPriceCache.store(tronDepositCell, priceOf(minted))
 	}
 	return &tronDepositRow{Address: minted.Address, ExpiresAt: minted.ExpiresAt}, nil
 }

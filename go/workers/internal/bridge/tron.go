@@ -20,6 +20,8 @@ import (
 // there becomes a Privy deposit source and Privy refuses these chains.
 type DepositRoute struct {
 	Chain        Chain
+	Name         string
+	Icon         string
 	RelayChainID int64
 	Asset        Asset
 	Token        string
@@ -32,6 +34,8 @@ type DepositRoute struct {
 
 var Tron = DepositRoute{
 	Chain:        "tron",
+	Name:         "Tron (TRC20)",
+	Icon:         "tron.png",
 	RelayChainID: 728126428,
 	Asset:        USDT,
 	Token:        "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
@@ -59,10 +63,11 @@ const (
 var plainDecimal = regexp.MustCompile(`^[0-9]+(\.[0-9]+)?$`)
 
 type DepositAddress struct {
-	Address   string
-	RequestID string
-	ExpiresAt time.Time
-	FeeUSD    string
+	Address     string
+	RequestID   string
+	ExpiresAt   time.Time
+	FeeUSD      string
+	ReceiveUSDC string
 }
 
 type RefusedOrder struct{ reason string }
@@ -121,7 +126,8 @@ type relayDepositQuote struct {
 		Relayer relayCurrencyAmount `json:"relayer"`
 	} `json:"fees"`
 	Details struct {
-		Recipient string `json:"recipient"`
+		Recipient   string              `json:"recipient"`
+		CurrencyOut relayCurrencyAmount `json:"currencyOut"`
 	} `json:"details"`
 	Protocol struct {
 		V2 struct {
@@ -217,7 +223,13 @@ func CheckDepositOrder(route DepositRoute, recipient string, raw []byte, now tim
 	if refund := in.Refunds[0].Deadline; refund < out.Deadline {
 		return DepositAddress{}, refuseOrder("refund deadline %d is before the order deadline %d", refund, out.Deadline)
 	}
-	return DepositAddress{Address: step.DepositAddress, RequestID: step.RequestID, ExpiresAt: deadline, FeeUSD: route.shownFee(q.Fees.Relayer.AmountUSD)}, nil
+	return DepositAddress{
+		Address:     step.DepositAddress,
+		RequestID:   step.RequestID,
+		ExpiresAt:   deadline,
+		FeeUSD:      route.shownFee(q.Fees.Relayer.AmountUSD),
+		ReceiveUSDC: route.shownReceive(q.Details.CurrencyOut, amount),
+	}, nil
 }
 
 // outputFloor is the least Solana USDC an order may pay for inputRaw: the
@@ -241,6 +253,18 @@ func (r DepositRoute) shownFee(usd string) string {
 		return ""
 	}
 	return usd
+}
+
+func (r DepositRoute) shownReceive(out relayCurrencyAmount, inputRaw *big.Int) string {
+	if out.Currency.ChainID != SolanaRelayChainID || out.Currency.Address != SolanaUSDCMint {
+		return ""
+	}
+	amount, ok := parseAmount(out.Amount)
+	ceiling := new(big.Int).Quo(inputRaw, new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(r.Decimals)-solanaUSDCDigits), nil))
+	if !ok || amount.Sign() <= 0 || amount.Cmp(ceiling) > 0 {
+		return ""
+	}
+	return new(big.Rat).SetFrac(amount, new(big.Int).Exp(big.NewInt(10), big.NewInt(solanaUSDCDigits), nil)).FloatString(solanaUSDCDigits)
 }
 
 func isTronAddress(s string) bool {

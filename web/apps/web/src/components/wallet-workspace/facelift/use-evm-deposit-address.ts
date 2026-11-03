@@ -4,6 +4,7 @@ import type {
   EvmDepositAddressResponse,
   EvmDepositNetwork,
   RouteError,
+  TronDepositAddressResponse,
 } from "@loyal-labs/api";
 import {
   getIdentityToken,
@@ -22,6 +23,9 @@ type DepositState = {
   networks: EvmDepositNetwork[];
   error: string | null;
   loading: boolean;
+  tron: TronDepositAddressResponse | null;
+  tronError: string | null;
+  tronLoading: boolean;
 };
 
 const emptyState = (wallet: string | null): DepositState => ({
@@ -30,13 +34,16 @@ const emptyState = (wallet: string | null): DepositState => ({
   networks: [],
   error: null,
   loading: false,
+  tron: null,
+  tronError: null,
+  tronLoading: false,
 });
 
-async function readDepositResponse(
+async function readDepositResponse<T extends { address: unknown }>(
   res: Response
-): Promise<EvmDepositAddressResponse> {
+): Promise<T> {
   const body = (await res.json().catch(() => null)) as
-    | EvmDepositAddressResponse
+    | T
     | Partial<RouteError>
     | null;
   if (res.ok && body && "address" in body) return body;
@@ -44,6 +51,23 @@ async function readDepositResponse(
     (body && "error" in body && body.error?.message) ||
       `Could not get a deposit address (${res.status}).`
   );
+}
+
+function withTron(
+  network: EvmDepositNetwork,
+  tron: TronDepositAddressResponse | null
+): EvmDepositNetwork {
+  if (network.route !== "tron_deposit" || !tron) return network;
+  return {
+    ...network,
+    address: tron.address,
+    tokens:
+      network.tokens?.map((token) => ({
+        ...token,
+        feeUsd: tron.feeUsd ?? token.feeUsd,
+        receiveUsdc: tron.receiveUsdc ?? token.receiveUsdc,
+      })) ?? null,
+  };
 }
 
 const hasPrivyEvmWallet = (user: ReturnType<typeof useUser>["user"]) =>
@@ -65,20 +89,25 @@ export function useEvmDepositAddress(walletAddress: string | null) {
   const { createWallet } = useCreateWallet();
   const { generateAuthorizationSignature } = useAuthorizationSignature();
   const [state, setState] = useState<DepositState>(emptyState(walletAddress));
-  const { info, networks, error, loading } =
+  const current =
     state.wallet === walletAddress ? state : emptyState(walletAddress);
+  const { info, error, loading, tron, tronError, tronLoading } = current;
+  const networks = current.networks.map((network) => withTron(network, tron));
 
   const ready = privyReady && authenticated && Boolean(walletAddress);
 
   const attemptedRef = useRef(false);
+  const tronAttemptedRef = useRef(false);
   const walletRef = useRef(walletAddress);
   useEffect(() => {
     attemptedRef.current = false;
+    tronAttemptedRef.current = false;
     walletRef.current = walletAddress;
   }, [walletAddress]);
   const retryOnNextLoad = useCallback(() => {
     if (!info) attemptedRef.current = false;
-  }, [info]);
+    if (!tron) tronAttemptedRef.current = false;
+  }, [info, tron]);
 
   const load = useCallback(async () => {
     if (!ready || !walletAddress || info || loading || attemptedRef.current) {
@@ -97,7 +126,7 @@ export function useEvmDepositAddress(walletAddress: string | null) {
       const res = await fetch("/api/funding/evm-deposit-address", {
         credentials: "include",
       });
-      const read = await readDepositResponse(res);
+      const read = await readDepositResponse<EvmDepositAddressResponse>(res);
       if (!current()) return;
       if (read.address) {
         patch({
@@ -145,7 +174,8 @@ export function useEvmDepositAddress(walletAddress: string | null) {
         headers: { "content-type": "application/json" },
         body: JSON.stringify(claim),
       });
-      const created = await readDepositResponse(posted);
+      const created =
+        await readDepositResponse<EvmDepositAddressResponse>(posted);
       if (!created.address) {
         throw new Error(`Could not get a deposit address (${posted.status}).`);
       }
@@ -176,5 +206,51 @@ export function useEvmDepositAddress(walletAddress: string | null) {
     return load();
   }, [load]);
 
-  return { ready, info, networks, error, loading, load, retry, retryOnNextLoad };
+  const mintTron = useCallback(async () => {
+    if (!ready || !walletAddress || tron || tronLoading) return;
+    if (tronAttemptedRef.current) return;
+    tronAttemptedRef.current = true;
+    const forWallet = walletAddress;
+    const patch = (next: Partial<DepositState>) =>
+      setState((prev) => ({
+        ...(prev.wallet === forWallet ? prev : emptyState(forWallet)),
+        ...next,
+      }));
+    patch({ tronLoading: true, tronError: null });
+    try {
+      const res = await fetch("/api/funding/tron-deposit-address", {
+        method: "POST",
+        credentials: "include",
+      });
+      const minted = await readDepositResponse<TronDepositAddressResponse>(res);
+      if (walletRef.current === forWallet) patch({ tron: minted });
+    } catch (e) {
+      if (walletRef.current === forWallet) {
+        patch({ tronError: e instanceof Error ? e.message : String(e) });
+      }
+    } finally {
+      setState((prev) =>
+        prev.wallet === forWallet ? { ...prev, tronLoading: false } : prev
+      );
+    }
+  }, [ready, tron, tronLoading, walletAddress]);
+
+  const retryTron = useCallback(() => {
+    tronAttemptedRef.current = false;
+    return mintTron();
+  }, [mintTron]);
+
+  return {
+    ready,
+    info,
+    networks,
+    error,
+    loading,
+    load,
+    retry,
+    retryOnNextLoad,
+    tronError,
+    mintTron,
+    retryTron,
+  };
 }

@@ -1517,6 +1517,10 @@ export type EvmDepositAddressResponse = {
 };
 
 export type EvmDepositNetwork = {
+    /**
+     * This entry's deposit address; null until it exists
+     */
+    address: string | null;
     assets: Array<string> | null;
     chain: string;
     /**
@@ -1528,6 +1532,10 @@ export type EvmDepositNetwork = {
      */
     minUsd: number;
     name: string;
+    /**
+     * How address is obtained: evm entries share the wallet's 0x deposit address; a tron_deposit entry's address is minted by POST /api/funding/tron-deposit-address
+     */
+    route: 'evm' | 'tron_deposit';
     tokens: Array<EvmDepositToken> | null;
 };
 
@@ -1539,10 +1547,18 @@ export type EvmDepositToken = {
      */
     feePercent: string | null;
     /**
+     * Relay's fee in USD on a minimum deposit, for tron_deposit entries; null otherwise or until a quote has answered
+     */
+    feeUsd: string | null;
+    /**
      * Image file in the receive sheet's assets; null while there is none
      */
     icon: string | null;
     name: string;
+    /**
+     * USDC on Solana a minimum deposit pays, from the same quote as feeUsd; null otherwise or until a quote has answered
+     */
+    receiveUsdc: string | null;
     stable: boolean;
     symbol: string;
 };
@@ -1888,6 +1904,10 @@ export type TronDepositAddressResponse = {
      */
     feeUsd: string | null;
     minUsd: number;
+    /**
+     * USDC on Solana a minimum deposit pays after Relay's fee and price, from the same quote; null until one has answered
+     */
+    receiveUsdc: string | null;
 };
 
 export type WireAddressLookupTable = {

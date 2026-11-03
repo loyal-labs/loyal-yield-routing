@@ -7,6 +7,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { copyTextToClipboard } from "./copy-text";
 import { useEscapeOverlay } from "./escape-owner";
+import { floorToCents } from "./floor-to-cents";
 import { SheetReveal } from "./sheet-reveal";
 import { SlidingTabs } from "./sliding-tabs";
 import { TextSwap } from "./text-swap";
@@ -402,10 +403,6 @@ export function ReceiveSheet({
     return () => clearTimeout(timer);
   }, [copied]);
 
-  const handleCopy = () => {
-    const address = bridge ? evm.info?.address : walletAddress;
-    if (address) void copyTextToClipboard(address).then(setCopied);
-  };
   const networks = evm.networks;
   const depositTokens = [
     ...new Map(
@@ -429,6 +426,19 @@ export function ReceiveSheet({
   const deposit =
     network && selection ? tokenOn(network, selection.asset) : undefined;
   const resolved = network && deposit;
+  const tronRoute = network?.route === "tron_deposit";
+  const bridgeAddress = network?.address ?? null;
+  const routeError = tronRoute ? evm.tronError : evm.error;
+  const retryRoute = () => void (tronRoute ? evm.retryTron() : evm.retry());
+  useEffect(() => {
+    if (isOpen && bridge && live && tronRoute && !bridgeAddress) {
+      void evm.mintTron();
+    }
+  }, [bridge, bridgeAddress, evm, isOpen, live, tronRoute]);
+  const handleCopy = () => {
+    const address = bridge ? bridgeAddress : walletAddress;
+    if (address) void copyTextToClipboard(address).then(setCopied);
+  };
 
   return (
     <SheetReveal
@@ -499,19 +509,17 @@ export function ReceiveSheet({
             {bridge ? (
               <div className="min-h-0 flex-1 overflow-y-auto">
                 <div className="flex flex-col gap-2 p-2 max-[795px]:px-4">
-                  {live && evm.error && (
-                    <Warning onRetry={() => void evm.retry()}>
-                      {evm.error}
-                    </Warning>
+                  {live && routeError && (
+                    <Warning onRetry={retryRoute}>{routeError}</Warning>
                   )}
                   {resolved && (
                     <>
                       <AddressCard
-                        address={evm.info?.address ?? null}
+                        address={bridgeAddress}
                         bridge
                         heading={`Send ${deposit.symbol} to this address`}
                         emptyLabel={
-                          evm.error
+                          routeError
                             ? "No deposit address yet"
                             : "Loading address…"
                         }
@@ -541,7 +549,9 @@ export function ReceiveSheet({
                       />
                       <Warning>
                         {narrow
-                          ? `Send funds only via the ${network.name} network and not from an exchange.`
+                          ? `Send funds only via the ${network.name} network${
+                              tronRoute ? "" : " and not from an exchange"
+                            }.`
                           : `Send funds to this address only via the ${network.name} network.`}
                         {network.minUsd > 0 &&
                           ` The minimum amount is $${network.minUsd} in the selected asset.`}{" "}
@@ -601,7 +611,11 @@ export function ReceiveSheet({
                       </span>
                     </div>
                   </div>
-                  {resolved && (network.minUsd > 0 || deposit.feePercent) && (
+                  {resolved &&
+                    (network.minUsd > 0 ||
+                      deposit.feePercent ||
+                      deposit.feeUsd ||
+                      deposit.receiveUsdc) && (
                     <dl className="rounded-2xl bg-accent py-1 text-[13px] leading-4">
                       {network.minUsd > 0 && (
                         <div className="flex h-9 items-center justify-between px-4">
@@ -611,10 +625,25 @@ export function ReceiveSheet({
                           <dd>{minDeposit(network.minUsd, deposit)}</dd>
                         </div>
                       )}
-                      {deposit.feePercent && (
+                      {(deposit.feePercent || deposit.feeUsd) && (
                         <div className="flex h-9 items-center justify-between px-4">
                           <dt className="text-muted-foreground">Fee</dt>
-                          <dd>{Number(deposit.feePercent)}%</dd>
+                          <dd>
+                            {deposit.feePercent
+                              ? `${Number(deposit.feePercent)}%`
+                              : `~$${Number(deposit.feeUsd).toFixed(2)}`}
+                          </dd>
+                        </div>
+                      )}
+                      {deposit.receiveUsdc && (
+                        <div className="flex h-9 items-center justify-between px-4">
+                          <dt className="text-muted-foreground">
+                            You receive about
+                          </dt>
+                          <dd>
+                            {floorToCents(Number(deposit.receiveUsdc))}{" "}
+                            {RECEIVE.symbol}
+                          </dd>
                         </div>
                       )}
                     </dl>
@@ -641,7 +670,7 @@ export function ReceiveSheet({
               <div className="shrink-0 px-4 pt-2 pb-4">
                 <button
                   className="t-hover flex h-12 w-full items-center justify-center rounded-full bg-accent text-[16px] font-medium leading-5 enabled:hover:bg-accent-selected disabled:opacity-40"
-                  disabled={!(bridge ? evm.info?.address : walletAddress)}
+                  disabled={!(bridge ? bridgeAddress : walletAddress)}
                   onClick={handleCopy}
                   type="button"
                 >
