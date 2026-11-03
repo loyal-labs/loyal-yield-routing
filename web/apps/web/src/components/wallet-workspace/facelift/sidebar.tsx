@@ -593,6 +593,21 @@ export function FaceliftSidebar({
       </nav>
       )}
 
+        {isSignedOutNav ? null : (
+          <button
+            className={`t-hover flex min-h-[60px] w-full items-center rounded-2xl px-4 text-left ${
+              activePage === "invite" ? "bg-accent" : "hover:bg-accent"
+            }`}
+            onClick={() => onSelectPage("invite")}
+            type="button"
+          >
+            <span className="mr-3 flex size-11 shrink-0 items-center justify-center rounded-[11px] bg-accent">
+              <ThemedIcon className="size-6 text-foreground" src={`${ASSET_BASE}/icon-invite.svg`} />
+            </span>
+            <span className="py-2 font-medium text-[16px] text-foreground leading-5">Invite</span>
+          </button>
+        )}
+
         <button
           className="flex min-h-[60px] w-full cursor-default items-center rounded-2xl px-4 text-left"
           disabled

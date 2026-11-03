@@ -1,5 +1,7 @@
 "use client";
 
+import dynamic from "next/dynamic";
+import { usePathname } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { WalletReconnectPrompt } from "@/components/auth/wallet-reconnect-prompt";
@@ -71,10 +73,16 @@ export type WorkspacePage =
   | "activity"
   | "earn"
   | "earnmax"
+  | "invite"
   | "wallet";
 
 type MiddleView = "earn" | "deposit" | "withdraw" | "autodeposit" | "autoswap";
 
+const InvitePage = dynamic(() =>
+  import("@/features/referrals/invite-page").then((module) => module.InvitePage)
+);
+
+const INVITE_PATH = "/app/invite";
 const PAGE_STORAGE_KEY = "loyal:workspace-page";
 const EARN_MAX_VISIBLE = true;
 const WORKSPACE_PAGES: WorkspacePage[] = [
@@ -82,6 +90,7 @@ const WORKSPACE_PAGES: WorkspacePage[] = [
   "activity",
   "earn",
   "earnmax",
+  "invite",
   "wallet",
 ];
 
@@ -123,7 +132,10 @@ export function WorkspaceFaceliftShell() {
   const [activePage, setActivePage] = useState<WorkspacePage>("earn");
   const { isHydrated, isSignedIn } = useAuthCapability();
   const { open: openSignIn } = useSignInModal();
-  const [storedPage] = useState(readStoredPage);
+  const pathname = usePathname();
+  const [storedPage] = useState(() =>
+    pathname === INVITE_PATH ? "invite" : readStoredPage()
+  );
   const hasRestoredPageRef = useRef(false);
   useEffect(() => {
     if (!isHydrated || hasRestoredPageRef.current) {
@@ -484,6 +496,8 @@ export function WorkspaceFaceliftShell() {
               settingsPda={earnData.settingsPda}
               walletAddress={earnData.walletAddress}
             />
+          ) : activePage === "invite" ? (
+            <InvitePage onBack={() => handleSelectPage("wallet")} />
           ) : EARN_MAX_VISIBLE && activePage === "earnmax" ? (
             <EarnMaxWorkspace
               policyUpdateCount={policyUpdates.earnMaxCount}
