@@ -5,6 +5,7 @@ const { window, document } = parseHTML("<!doctype html><html><body></body></html
 Object.assign(globalThis, { window, document, IS_REACT_ACT_ENVIRONMENT: true });
 
 const WALLET = "SoLWaLLet11111111111111111111111111111111111";
+const OTHER_WALLET = "OtherWaLLet1111111111111111111111111111111";
 const EVM = `0x${"b".repeat(40)}`;
 const signer = mock(async () => ({ signature: "sig" }));
 
@@ -13,6 +14,7 @@ mock.module("@privy-io/react-auth", () => ({
     user: {
       linkedAccounts: [
         { type: "wallet", chainType: "solana", walletClientType: "privy", address: WALLET },
+        { type: "wallet", chainType: "solana", walletClientType: "privy", address: OTHER_WALLET },
       ],
     },
   }),
@@ -85,4 +87,30 @@ test("a toSign response without a kind signs and posts the signature", async () 
   expect(methods).toEqual(["GET", "POST"]);
   expect(hook.info?.address).toBe(EVM);
   expect(hook.error).toBeNull();
+});
+
+test("a wallet switch never renders the previous wallet's address or networks", async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response(JSON.stringify({ ...network, address: EVM }), { status: 200 })) as typeof fetch;
+  const seen: { wallet: string; address: string | undefined; networks: number }[] = [];
+  let hook!: ReturnType<typeof useEvmDepositAddress>;
+  function Probe({ wallet }: { wallet: string }) {
+    hook = useEvmDepositAddress(wallet);
+    seen.push({ wallet, address: hook.info?.address, networks: hook.networks.length });
+    return null;
+  }
+  const root = createRoot(document.createElement("div") as unknown as Element);
+  try {
+    await React.act(async () => root.render(React.createElement(Probe, { wallet: WALLET })));
+    await React.act(async () => hook.load());
+    expect(hook.info?.address).toBe(EVM);
+    await React.act(async () => root.render(React.createElement(Probe, { wallet: OTHER_WALLET })));
+    const other = seen.filter((render) => render.wallet === OTHER_WALLET);
+    expect(other.length).toBeGreaterThan(0);
+    expect(other.every((render) => render.address === undefined && render.networks === 0)).toBe(true);
+  } finally {
+    await React.act(async () => root.unmount());
+    globalThis.fetch = realFetch;
+  }
 });

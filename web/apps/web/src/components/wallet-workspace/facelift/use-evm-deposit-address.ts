@@ -12,6 +12,22 @@ import { usePublicEnv } from "@/contexts/public-env-context";
 
 type EvmDepositInfo = EvmDepositAddressResponse & { address: string };
 
+type DepositState = {
+  wallet: string | null;
+  info: EvmDepositInfo | null;
+  networks: EvmDepositNetwork[];
+  error: string | null;
+  loading: boolean;
+};
+
+const emptyState = (wallet: string | null): DepositState => ({
+  wallet,
+  info: null,
+  networks: [],
+  error: null,
+  loading: false,
+});
+
 async function readDepositResponse(
   res: Response
 ): Promise<EvmDepositAddressResponse> {
@@ -36,10 +52,9 @@ export function useEvmDepositAddress(walletAddress: string | null) {
   const { privyAppId } = usePublicEnv();
   const { user } = usePrivy();
   const { generateAuthorizationSignature } = useAuthorizationSignature();
-  const [info, setInfo] = useState<EvmDepositInfo | null>(null);
-  const [networks, setNetworks] = useState<EvmDepositNetwork[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [state, setState] = useState<DepositState>(emptyState(walletAddress));
+  const { info, networks, error, loading } =
+    state.wallet === walletAddress ? state : emptyState(walletAddress);
 
   const eligible =
     Boolean(privyAppId) &&
@@ -52,12 +67,6 @@ export function useEvmDepositAddress(walletAddress: string | null) {
         a.address === walletAddress
     ) ??
       false);
-
-  useEffect(() => {
-    setInfo(null);
-    setNetworks([]);
-    setError(null);
-  }, [walletAddress]);
 
   const attemptedRef = useRef(false);
   const walletRef = useRef(walletAddress);
@@ -74,19 +83,26 @@ export function useEvmDepositAddress(walletAddress: string | null) {
     attemptedRef.current = true;
     const forWallet = walletAddress;
     const current = () => walletRef.current === forWallet;
-    setLoading(true);
-    setError(null);
+    const patch = (next: Partial<DepositState>) =>
+      setState((prev) => ({
+        ...(prev.wallet === forWallet ? prev : emptyState(forWallet)),
+        ...next,
+      }));
+    patch({ loading: true, error: null });
     try {
       const res = await fetch("/api/funding/evm-deposit-address", {
         credentials: "include",
       });
       const read = await readDepositResponse(res);
       if (!current()) return;
-      if (read.networks) setNetworks(read.networks);
       if (read.address) {
-        setInfo({ ...read, address: read.address });
+        patch({
+          info: { ...read, address: read.address },
+          networks: read.networks ?? [],
+        });
         return;
       }
+      if (read.networks) patch({ networks: read.networks });
       if (!read.toSign) {
         throw new Error(`Could not get a deposit address (${res.status}).`);
       }
@@ -109,12 +125,16 @@ export function useEvmDepositAddress(walletAddress: string | null) {
         throw new Error(`Could not get a deposit address (${posted.status}).`);
       }
       if (!current()) return;
-      if (created.networks) setNetworks(created.networks);
-      setInfo({ ...created, address: created.address });
+      patch({
+        info: { ...created, address: created.address },
+        networks: created.networks ?? [],
+      });
     } catch (e) {
-      if (current()) setError(e instanceof Error ? e.message : String(e));
+      if (current()) patch({ error: e instanceof Error ? e.message : String(e) });
     } finally {
-      setLoading(false);
+      setState((prev) =>
+        prev.wallet === forWallet ? { ...prev, loading: false } : prev
+      );
     }
   }, [eligible, generateAuthorizationSignature, info, loading, walletAddress]);
 
