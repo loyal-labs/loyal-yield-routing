@@ -2,7 +2,10 @@ package bridge
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"regexp"
+	"slices"
 	"sync"
 	"time"
 
@@ -17,17 +20,19 @@ const (
 	trackDeadline = 30 * time.Second
 	trackParallel = 8
 	trackWindow   = "interval '7 days'"
+	trackLookback = 7 * 24 * time.Hour
 )
 
 const (
 	openState = `(state IN ('submitted', 'failed') OR (state = 'filled' AND destination_tx IS NULL) OR (state = 'refunded' AND refund_tx IS NULL))`
 
-	openTransfers = `SELECT request_id, state FROM loyal_yield.bridge_transfers
+	openTransfers = `SELECT request_id, state, CASE WHEN deposit_address IS NULL THEN '' ELSE solana_wallet END FROM loyal_yield.bridge_transfers
 WHERE ` + openState + ` AND submitted_at > now() - ` + trackWindow + `
 ORDER BY submitted_at`
 
 	advanceTransfer = `UPDATE loyal_yield.bridge_transfers
 SET state = $3, destination_tx = coalesce(destination_tx, nullif($4, '')), refund_tx = coalesce(refund_tx, nullif($5, '')),
+    amount_in_raw = coalesce($7::text::numeric, amount_in_raw), amount_out_raw = coalesce($8::text::numeric, amount_out_raw),
     settled_at = CASE WHEN $6 THEN coalesce(settled_at, now()) ELSE settled_at END, updated_at = now()
 WHERE request_id = $1 AND state = $2 AND ` + openState + ` AND submitted_at > now() - ` + trackWindow
 
@@ -35,6 +40,15 @@ WHERE request_id = $1 AND state = $2 AND ` + openState + ` AND submitted_at > no
 WHERE ` + openState + ` AND submitted_at <= now() - ` + trackWindow + `
   AND updated_at < submitted_at + ` + trackWindow + `
 RETURNING request_id, state, submitted_at`
+
+	trackedDepositAddresses = `SELECT address, solana_wallet, chain, asset FROM loyal_yield.relay_deposit_addresses
+WHERE chain = $1 AND expires_at > now() - ` + trackWindow + `
+ORDER BY address`
+
+	insertDetected = `INSERT INTO loyal_yield.bridge_transfers
+(request_id, solana_wallet, evm_address, deposit_address, chain, asset, amount_in_raw, amount_out_raw, state, origin_tx, submitted_at)
+VALUES ($1, $2, $3, $3, $4, $5, $6::text::numeric, $7::text::numeric, $8, $9, $10)
+ON CONFLICT (request_id) DO NOTHING`
 )
 
 type Tracker struct {
@@ -46,6 +60,17 @@ type Tracker struct {
 func (t *Tracker) Run(ctx context.Context) error {
 	for _, s := range []TransferState{TransferFilled, TransferRefunded, TransferFailed} {
 		t.Facts.BridgeTransfersAdvanced(string(s), 0)
+	}
+	var detection sync.WaitGroup
+	defer detection.Wait()
+	if t.Relay.APIKey == "" {
+		slog.Warn("relay requests disabled: no api key")
+	} else {
+		for _, s := range []TransferState{TransferSubmitted, TransferFilled, TransferRefunded, TransferFailed} {
+			t.Facts.BridgeDepositsRecorded(string(Tron.Chain), string(s), 0)
+		}
+		t.Facts.BridgeDetectionBatchesFailed(string(Tron.Chain), 0)
+		detection.Go(func() { t.detectEvery(ctx, Tron) })
 	}
 	ticker := time.NewTicker(trackInterval)
 	defer ticker.Stop()
@@ -75,7 +100,7 @@ func (t *Tracker) Tick(ctx context.Context) error {
 	}
 	open, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (openTransfer, error) {
 		var o openTransfer
-		err := row.Scan(&o.requestID, &o.state)
+		err := row.Scan(&o.requestID, &o.state, &o.depositWallet)
 		return o, err
 	})
 	if err != nil {
@@ -97,6 +122,11 @@ func (t *Tracker) Tick(ctx context.Context) error {
 	for _, o := range open {
 		group.Go(func() error {
 			status, err := t.Relay.Status(ctx, o.requestID)
+			step := o.step(status)
+			var final DepositRequest
+			if err == nil && o.depositWallet != "" && step.destinationTx != "" {
+				final, err = t.settledFill(ctx, o)
+			}
 			if err != nil {
 				mu.Lock()
 				relayErrs++
@@ -106,7 +136,7 @@ func (t *Tracker) Tick(ctx context.Context) error {
 				mu.Unlock()
 				return nil
 			}
-			return t.advance(ctx, o, status)
+			return t.advance(ctx, o, step, final)
 		})
 	}
 	err = group.Wait()
@@ -121,39 +151,73 @@ func (t *Tracker) Tick(ctx context.Context) error {
 }
 
 type openTransfer struct {
-	requestID string
-	state     TransferState
+	requestID     string
+	state         TransferState
+	depositWallet string
 }
 
-func (t *Tracker) advance(ctx context.Context, o openTransfer, status Status) error {
+type transferStep struct {
+	relayStatus             string
+	next                    TransferState
+	known                   bool
+	destinationTx, refundTx string
+}
+
+func (o openTransfer) step(status Status) transferStep {
 	next, known := o.state.Advance(status.State)
-	if !known {
-		slog.Debug("bridge relay status unknown", "request_id", o.requestID, "relay_status", status.State)
-		return nil
-	}
-	var destinationTx, refundTx string
-	if n := len(status.TxHashes); n > 0 {
+	s := transferStep{relayStatus: status.State, next: next, known: known}
+	if n := len(status.TxHashes); known && n > 0 {
 		switch {
 		case status.State == "success" && next == TransferFilled:
-			destinationTx = status.TxHashes[n-1]
+			s.destinationTx = status.TxHashes[n-1]
 		case status.State == "refund" && next == TransferRefunded:
-			refundTx = status.TxHashes[n-1]
+			s.refundTx = status.TxHashes[n-1]
 		}
 	}
-	if next == o.state && destinationTx == "" && refundTx == "" {
+	return s
+}
+
+// settledFill is Relay's settled request for a deposit-address row's fill.
+func (t *Tracker) settledFill(ctx context.Context, o openTransfer) (DepositRequest, error) {
+	final, err := t.Relay.Request(ctx, Tron.RelayChainID, o.requestID)
+	if err != nil {
+		return DepositRequest{}, err
+	}
+	if !final.Settled {
+		return DepositRequest{}, fmt.Errorf("relay request %s is %s without a settled route", o.requestID, final.Status)
+	}
+	if reason := unrecordable(Tron, trackedAddress{solanaWallet: o.depositWallet}, final); reason != "" {
+		return DepositRequest{}, fmt.Errorf("relay request %s settled but %s", o.requestID, reason)
+	}
+	return final, nil
+}
+
+// final, when Settled, is Relay's settled request for a deposit-address fill;
+// its amounts replace the ones detection froze.
+func (t *Tracker) advance(ctx context.Context, o openTransfer, s transferStep, final DepositRequest) error {
+	if !s.known {
+		slog.Debug("bridge relay status unknown", "request_id", o.requestID, "relay_status", s.relayStatus)
 		return nil
 	}
-	tag, err := t.DB.Exec(ctx, advanceTransfer, o.requestID, string(o.state), string(next), destinationTx, refundTx, next.Settled())
+	if s.next == o.state && s.destinationTx == "" && s.refundTx == "" {
+		return nil
+	}
+	var amountIn, amountOut any
+	if final.Settled {
+		amountIn, amountOut = final.AmountInRaw.String(), final.AmountOutRaw.String()
+	}
+	tag, err := t.DB.Exec(ctx, advanceTransfer, o.requestID, string(o.state), string(s.next), s.destinationTx, s.refundTx, s.next.Settled(), amountIn, amountOut)
 	if err != nil {
 		return err
 	}
 	if tag.RowsAffected() == 0 {
 		return nil
 	}
-	if next != o.state {
-		t.Facts.BridgeTransfersAdvanced(string(next), 1)
+	if s.next != o.state {
+		t.Facts.BridgeTransfersAdvanced(string(s.next), 1)
 	}
-	slog.Info("bridge transfer advanced", "request_id", o.requestID, "from", o.state, "to", next, "destination_tx", destinationTx, "refund_tx", refundTx)
+	slog.Info("bridge transfer advanced", "request_id", o.requestID, "from", o.state, "to", s.next, "destination_tx", s.destinationTx, "refund_tx", s.refundTx,
+		"amount_in_raw", amountIn, "amount_out_raw", amountOut)
 	return nil
 }
 
@@ -172,4 +236,125 @@ func (t *Tracker) dropUnsettled(ctx context.Context) error {
 		slog.Warn("bridge transfer unsettled", "request_id", requestID, "state", state, "submitted_at", submittedAt)
 	}
 	return rows.Err()
+}
+
+var tronTxHash = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+type trackedAddress struct {
+	address, solanaWallet, chain, asset string
+}
+
+func (t *Tracker) detectEvery(ctx context.Context, route DepositRoute) {
+	ticker := time.NewTicker(trackInterval)
+	defer ticker.Stop()
+	for {
+		pass, cancel := context.WithTimeout(ctx, trackDeadline)
+		err := t.detect(pass, route, time.Now().Add(-trackLookback))
+		cancel()
+		if err != nil && ctx.Err() == nil {
+			slog.Error("bridge deposit detection failed", "chain", route.Chain, "error", engine.ErrorText(err))
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+// detect records each Relay request that moved a deposit into one of Loyal's
+// open deposit addresses on route, so the poll follows it like any other
+// transfer.
+func (t *Tracker) detect(ctx context.Context, route DepositRoute, since time.Time) error {
+	rows, err := t.DB.Query(ctx, trackedDepositAddresses, string(route.Chain))
+	if err != nil {
+		return err
+	}
+	addresses, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (trackedAddress, error) {
+		var a trackedAddress
+		err := row.Scan(&a.address, &a.solanaWallet, &a.chain, &a.asset)
+		return a, err
+	})
+	if err != nil {
+		return err
+	}
+	seen, inserted, failedBatches, failedRows := 0, 0, 0, 0
+	var truncated []string
+	var firstErr error
+	fail := func(err error) {
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
+	for batch := range slices.Chunk(addresses, RequestsBatch) {
+		owners := make(map[string]trackedAddress, len(batch))
+		list := make([]string, 0, len(batch))
+		for _, a := range batch {
+			owners[a.address] = a
+			list = append(list, a.address)
+		}
+		requests, cut, err := t.Relay.Requests(ctx, route.RelayChainID, list, since)
+		if err != nil {
+			failedBatches++
+			fail(err)
+			continue
+		}
+		if cut {
+			truncated = append(truncated, list...)
+		}
+		for _, r := range requests {
+			owner, ok := owners[r.DepositAddress]
+			if !ok {
+				continue
+			}
+			seen++
+			if reason := unrecordable(route, owner, r); reason != "" {
+				slog.Debug("relay deposit request not recorded", "request_id", r.ID, "deposit_address", r.DepositAddress, "reason", reason)
+				continue
+			}
+			state, _ := TransferSubmitted.Advance(r.Status)
+			tag, err := t.DB.Exec(ctx, insertDetected, r.ID, owner.solanaWallet, owner.address, owner.chain, owner.asset,
+				r.AmountInRaw.String(), r.AmountOutRaw.String(), string(state), r.OriginTx, r.CreatedAt)
+			if err != nil {
+				failedRows++
+				fail(err)
+				continue
+			}
+			if tag.RowsAffected() == 1 {
+				inserted++
+				t.Facts.BridgeDepositsRecorded(string(route.Chain), string(state), 1)
+				slog.Info("bridge deposit detected", "request_id", r.ID, "deposit_address", owner.address, "state", state, "origin_tx", r.OriginTx)
+			}
+		}
+	}
+	t.Facts.BridgeDepositRequestsSeen(string(route.Chain), seen)
+	t.Facts.BridgeDetectionBatchesFailed(string(route.Chain), failedBatches)
+	if len(truncated) > 0 {
+		slog.Warn("bridge deposit requests truncated", "chain", route.Chain, "pages", requestsMaxPages, "deposit_addresses", truncated)
+	}
+	if firstErr != nil {
+		slog.Warn("bridge deposit detection incomplete", "chain", route.Chain, "failed_batches", failedBatches, "failed_rows", failedRows, "error", engine.ErrorText(firstErr))
+	} else {
+		t.Facts.BridgeDetectionPassed(string(route.Chain))
+	}
+	slog.Debug("bridge deposit detection", "chain", route.Chain, "addresses", len(addresses), "seen", seen, "inserted", inserted)
+	return nil
+}
+
+func unrecordable(route DepositRoute, owner trackedAddress, r DepositRequest) string {
+	switch {
+	case r.OriginTx == "":
+		return "no origin deposit yet"
+	case !tronTxHash.MatchString(r.OriginTx):
+		return "origin tx is not a Tron transaction hash"
+	case r.Recipient != owner.solanaWallet:
+		return "recipient is not the address owner"
+	case r.OriginCurrency != route.Token:
+		return "origin currency is not the route token"
+	case r.OutputChainID != SolanaRelayChainID || r.OutputCurrency != SolanaUSDCMint:
+		return "output is not USDC on solana"
+	case r.AmountInRaw == nil || r.AmountInRaw.Sign() <= 0 || r.AmountOutRaw == nil || r.AmountOutRaw.Sign() <= 0:
+		return "amounts unknown"
+	}
+	return ""
 }

@@ -34,6 +34,10 @@ type Facts struct {
 	privyGasRead        *prometheus.GaugeVec
 	bridgePolled        *prometheus.GaugeVec
 	bridgeAdvanced      *prometheus.CounterVec
+	bridgeSeen          *prometheus.GaugeVec
+	bridgeRecorded      *prometheus.CounterVec
+	bridgeBatchFailed   *prometheus.CounterVec
+	bridgeDetected      *prometheus.GaugeVec
 }
 
 func NewFacts(registerer prometheus.Registerer) *Facts {
@@ -114,10 +118,22 @@ func NewFacts(registerer prometheus.Registerer) *Facts {
 		bridgeAdvanced: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "loyal_bridge_transfers_advanced_total", Help: "Bridge transfers the tracker moved to a new state, by that state.",
 		}, []string{"state"}),
+		bridgeSeen: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "loyal_bridge_deposit_requests_seen", Help: "Relay requests on Loyal's open deposit addresses that the last detection pass listed, by origin chain.",
+		}, []string{"chain"}),
+		bridgeRecorded: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "loyal_bridge_deposits_recorded_total", Help: "Deposit-address bridge transfers detection inserted, by origin chain and the state they were born in.",
+		}, []string{"chain", "state"}),
+		bridgeBatchFailed: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "loyal_bridge_deposit_batches_failed_total", Help: "Detection batches of deposit addresses whose Relay requests read failed, by origin chain.",
+		}, []string{"chain"}),
+		bridgeDetected: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "loyal_bridge_detection_last_success_timestamp_seconds", Help: "Last detection pass that read every batch and inserted every recordable request, by origin chain.",
+		}, []string{"chain"}),
 	}
 	registerer.MustRegister(f.withdrawalAttention, f.withdrawalObserved, f.navReported, f.landed, f.failed, f.inflight, f.progress, f.lane, f.payer, f.oldestDue, f.fleetReplans, f.fleetSimulations, f.fleetMovable,
 		f.leverageRoom, f.leverageGap, f.leverageLanded, f.leverageReaction, f.leverageOutages, f.termDebtDays, f.stepNoRoom, f.hold, f.privyGasSpend, f.privyGasRead,
-		f.bridgePolled, f.bridgeAdvanced)
+		f.bridgePolled, f.bridgeAdvanced, f.bridgeSeen, f.bridgeRecorded, f.bridgeBatchFailed, f.bridgeDetected)
 	return f
 }
 
@@ -238,6 +254,22 @@ func (f *Facts) BridgeTransfersPolled(state string, n int) {
 
 func (f *Facts) BridgeTransfersAdvanced(state string, n int) {
 	f.bridgeAdvanced.WithLabelValues(state).Add(float64(n))
+}
+
+func (f *Facts) BridgeDepositRequestsSeen(chain string, n int) {
+	f.bridgeSeen.WithLabelValues(chain).Set(float64(n))
+}
+
+func (f *Facts) BridgeDepositsRecorded(chain, state string, n int) {
+	f.bridgeRecorded.WithLabelValues(chain, state).Add(float64(n))
+}
+
+func (f *Facts) BridgeDetectionBatchesFailed(chain string, n int) {
+	f.bridgeBatchFailed.WithLabelValues(chain).Add(float64(n))
+}
+
+func (f *Facts) BridgeDetectionPassed(chain string) {
+	f.bridgeDetected.WithLabelValues(chain).Set(float64(time.Now().Unix()))
 }
 
 func (f *Facts) AutodepositOldestDueAge(seconds float64) { f.oldestDue.Set(seconds) }

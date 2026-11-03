@@ -7,9 +7,11 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
@@ -42,10 +44,15 @@ func TestTrackerStoresEachHashFromTheStatusThatCarriedIt(t *testing.T) {
 			t.Error(err)
 		}
 	}()
-	migrations, err := filepath.Glob("../../../../migrations/yield/*_bridge_transfers*.sql")
-	if err != nil || len(migrations) == 0 {
-		t.Fatal("bridge_transfers migrations not found", err)
+	var migrations []string
+	for _, pattern := range []string{"*_bridge_transfers*.sql", "*_relay_deposit_addresses.sql"} {
+		found, err := filepath.Glob("../../../../migrations/yield/" + pattern)
+		if err != nil || len(found) == 0 {
+			t.Fatal(pattern, "migrations not found", err)
+		}
+		migrations = append(migrations, found...)
 	}
+	slices.Sort(migrations)
 	for _, path := range migrations {
 		migration, err := os.ReadFile(path)
 		if err != nil {
@@ -81,7 +88,47 @@ VALUES ($1, 'wallet', '0x0000000000000000000000000000000000000001', 'base', 'usd
 			t.Fatal(err)
 		}
 	}
+	const (
+		owned      = "TZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ"
+		filledID   = "0xtron-usdc"
+		pendingID  = "0xtron-usdc-unsettled"
+		usdtID     = "0xtron-solana-usdt"
+		quotedOut  = "97000000"
+		settledOut = "97911694"
+	)
+	const base58Letters = "ABCDEFGHJKLMNPQRSTUVWXYZ"
+	for i := range RequestsBatch {
+		if _, err := pool.Exec(ctx, `INSERT INTO loyal_yield.relay_deposit_addresses (address, solana_wallet, app_user_id, chain, asset, quote_request_id, expires_at)
+VALUES ($1, 'other', gen_random_uuid(), 'tron', 'usdt', '0xquote', now() + interval '90 days')`, "T"+strings.Repeat("A", 31)+string(base58Letters[i/24])+string(base58Letters[i%24])); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO loyal_yield.relay_deposit_addresses (address, solana_wallet, app_user_id, chain, asset, quote_request_id, expires_at)
+VALUES ($1, $2, gen_random_uuid(), 'tron', 'usdt', '0xquote', now() + interval '90 days')`, owned, depositOrderWallet); err != nil {
+		t.Fatal(err)
+	}
+	tronRequest := func(id, hash, status, route, output, amountOut string) string {
+		return fmt.Sprintf(`{"id":%q,"status":%q,"recipient":%q,"depositAddress":{"address":%q},"createdAt":"2026-11-03T01:00:00Z",
+"data":{"inTxs":[{"chainId":%[5]d,"txHash":%[6]q}],"route":{%[11]q:{"origin":{"inputCurrency":{"currency":{"chainId":%[5]d,"address":%[7]q},"amount":"100000000"}},
+"destination":{"outputCurrency":{"currency":{"chainId":%[8]d,"address":%[9]q},"amount":%[10]q}}}}}}`,
+			id, status, depositOrderWallet, owned, Tron.RelayChainID, strings.Repeat(hash, 64), Tron.Token, SolanaRelayChainID, output, amountOut, route)
+	}
 	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/requests/v3" {
+			switch {
+			case r.URL.Query().Get("id") == filledID:
+				fmt.Fprintf(w, `{"requests":[%s]}`, tronRequest(filledID, "a", "success", "actual", SolanaUSDCMint, settledOut))
+			case r.URL.Query().Get("id") == pendingID:
+				fmt.Fprintf(w, `{"requests":[%s]}`, tronRequest(pendingID, "c", "pending", "quoted", SolanaUSDCMint, "96500000"))
+			case !strings.Contains(r.URL.Query().Get("filters"), owned):
+				http.Error(w, "upstream timeout", http.StatusBadGateway)
+			default:
+				fmt.Fprintf(w, `{"requests":[%s,%s,%s]}`, tronRequest(filledID, "a", "pending", "actual", SolanaUSDCMint, quotedOut),
+					tronRequest(usdtID, "b", "success", "actual", "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB", quotedOut),
+					tronRequest(pendingID, "c", "pending", "quoted", SolanaUSDCMint, quotedOut))
+			}
+			return
+		}
 		id := r.URL.Query().Get("requestId")
 		for _, c := range cases {
 			if c.requestID != id {
@@ -100,7 +147,26 @@ VALUES ($1, 'wallet', '0x0000000000000000000000000000000000000001', 'base', 'usd
 	}))
 	defer relay.Close()
 
-	tracker := &Tracker{DB: pool, Relay: &Relay{BaseURL: relay.URL, HTTP: relay.Client()}, Facts: engine.NewFacts(prometheus.NewRegistry())}
+	cases = append(cases, struct {
+		requestID             string
+		reads                 []read
+		state                 TransferState
+		destinationTx, refund string
+		polls                 int32
+	}{filledID, []read{{"success", fillHash}}, TransferFilled, fillHash, "", 1}, struct {
+		requestID             string
+		reads                 []read
+		state                 TransferState
+		destinationTx, refund string
+		polls                 int32
+	}{pendingID, []read{{"success", fillHash}}, TransferSubmitted, "", "", 3})
+	polls[filledID] = &atomic.Int32{}
+	polls[pendingID] = &atomic.Int32{}
+
+	tracker := &Tracker{DB: pool, Relay: &Relay{BaseURL: relay.URL, HTTP: relay.Client(), APIKey: "key"}, Facts: engine.NewFacts(prometheus.NewRegistry())}
+	if err := tracker.detect(ctx, Tron, time.Now().Add(-trackLookback)); err != nil {
+		t.Fatal(err)
+	}
 	for range 3 {
 		if err := tracker.Tick(ctx); err != nil {
 			t.Fatal(err)
@@ -118,6 +184,14 @@ FROM loyal_yield.bridge_transfers b WHERE request_id = $1`, c.requestID).Scan(&s
 			t.Errorf("%s: got state %q destination_tx %s refund_tx %s after %d relay reads; want %q, %s, %s, %d reads",
 				c.requestID, state, deref(destinationTx), deref(refundTx), polls[c.requestID].Load(), c.state, orNull(c.destinationTx), orNull(c.refund), c.polls)
 		}
+	}
+
+	var tronAmounts string
+	if err := pool.QueryRow(ctx, `SELECT string_agg(request_id || '=' || amount_out_raw, ' ' ORDER BY request_id) FROM loyal_yield.bridge_transfers WHERE chain = 'tron'`).Scan(&tronAmounts); err != nil {
+		t.Fatal(err)
+	}
+	if want := filledID + "=" + settledOut + " " + pendingID + "=" + quotedOut; tronAmounts != want {
+		t.Errorf("got tron amount_out_raw %s; want only the USDC requests, the settled one at Relay's actual amount and the unsettled one unchanged: %s", tronAmounts, want)
 	}
 }
 
