@@ -1510,8 +1510,25 @@ export type EvmDepositAddressResponse = {
     minimums: {
         [key: string]: number;
     };
+    networks: Array<EvmDepositNetwork> | null;
     requestExpiry?: number;
     toSign?: PrivyDepositRequest;
+};
+
+export type EvmDepositNetwork = {
+    assets: Array<string> | null;
+    chain: string;
+    /**
+     * Privy auto-bridge cost per asset as a percent of a 100-token deposit, from Privy's deposit quote; null for relay_signed, and per asset when the quote failed
+     */
+    feePercent: {
+        [key: string]: string | null;
+    } | null;
+    /**
+     * Smallest deposit worth bridging in USD; 0 means none
+     */
+    minUsd: number;
+    name: string;
 };
 
 export type ForecastUnavailableError = {

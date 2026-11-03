@@ -23,8 +23,9 @@ func (e *privyRefused) Error() string {
 }
 
 type privyDepositAddressRoute struct {
-	DepositAddress string `json:"deposit_address"`
-	WalletID       string `json:"wallet_id"`
+	DepositAddress string             `json:"deposit_address"`
+	WalletID       string             `json:"wallet_id"`
+	Source         PrivyDepositSource `json:"source"`
 }
 
 func (h earnRoutes) privyCall(ctx context.Context, method, target string, body []byte, headers map[string]string, out any) error {
@@ -108,4 +109,19 @@ func (h earnRoutes) privyCreateDepositRoutes(ctx context.Context, signed PrivyDe
 		"privy-authorization-signature": signature,
 	}, &created)
 	return created.DepositAccounts, err
+}
+
+type privyDepositQuote struct {
+	InputAmount           string `json:"input_amount"`
+	EstimatedOutputAmount string `json:"estimated_output_amount"`
+}
+
+func (h earnRoutes) privyQuoteDeposit(ctx context.Context, source PrivyDepositAsset, inputAmount string) (privyDepositQuote, error) {
+	body, err := json.Marshal(map[string]any{"source": source, "destination": privyDepositDestination, "input_amount": inputAmount})
+	if err != nil {
+		return privyDepositQuote{}, err
+	}
+	var quote privyDepositQuote
+	err = h.privyCall(ctx, http.MethodPost, privyAPIBase+"/deposit_accounts/crypto/quote", body, nil, &quote)
+	return quote, err
 }

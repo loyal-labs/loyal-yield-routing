@@ -51,7 +51,7 @@ The inventory behind it was taken from main @4d3fbf97 plus loyal-app main @2ac3d
 | Cross-mint opt-in | `cross_mint_vault_opt_ins` | the observer's write is deleted |
 | Cross-mint kill switch | `cross_mint_movement_controls` | an operator config row; kept |
 | Backyard manual-recovery latch | `backyard_manual_recovery_latches` | an operator halt; kept |
-| EVM deposit address of a Solana wallet, and how it bridges | `evm_deposit_routes` | new (0126); written only by loyal-web `/api/funding/evm-deposit-address`. Replaces the app's `app_user_wallets.evm_deposit_address`, whose 6 rows are copied over before that column's writer is deleted |
+| EVM deposit address of a Solana wallet, and how it bridges | `evm_deposit_routes` | new (0126); written only by loyal-web `/api/funding/evm-deposit-address`. Replaces the app's `app_user_wallets.evm_deposit_address`, whose 6 rows are copied over before that column's writer is deleted. `route_set` (0130) names the `bridge.RouteSet` a `privy_autobridge` account was created with, since Privy cannot widen an existing account; the 6 rows are `legacy-13`, and `relay_signed` rows hold none and offer `bridge.Current` |
 | Relay bridge of a `relay_signed` EVM wallet to its Solana wallet, by Relay request id | `bridge_transfers` | new (0128); `quoted` rows and the `quoted` to `submitted` step are written only by loyal-web `/api/funding/bridge/quote` and `/transfers/{requestId}/submit`; `filled`, `refunded` and `failed` are written only by the status tracker (B6), which polls `submitted` and `failed` rows through the `updated_at` partial index |
 
 ### Projections (one writer each; already true unless noted)
