@@ -3,10 +3,15 @@ import { referralsEnabled } from "./enabled";
 export type PendingCode = { code: string; source: "link" | "typed" };
 
 const STORAGE_KEY = "loyal.referral.pending";
-const CODE_PATTERN = /^[0-9A-HJKMNP-TV-Z]{7}$/;
+export const CODE_LENGTH = 7;
+const CODE_PATTERN = new RegExp(`^[0-9A-HJKMNP-TV-Z]{${CODE_LENGTH}}$`);
 
 export function normalizeCode(raw: string): string | null {
-  const code = raw.trim().toUpperCase();
+  const code = raw
+    .replace(/\s/g, "")
+    .toUpperCase()
+    .replace(/O/g, "0")
+    .replace(/[IL]/g, "1");
   return CODE_PATTERN.test(code) ? code : null;
 }
 
