@@ -87,3 +87,15 @@ test("a privy_autobridge response signs toSign and posts the signature", async (
   expect(hook.info?.address).toBe(EVM);
   expect(hook.error).toBeNull();
 });
+
+test("a toSign response without a kind signs and posts the signature", async () => {
+  const toSign = { version: 1, method: "POST" };
+  const { methods, hook } = await load([
+    { status: 200, body: { ...network, address: null, toSign, requestExpiry: 123 } },
+    { status: 200, body: { ...network, address: EVM } },
+  ]);
+  expect(signer).toHaveBeenCalledWith(toSign);
+  expect(methods).toEqual(["GET", "POST"]);
+  expect(hook.info?.address).toBe(EVM);
+  expect(hook.error).toBeNull();
+});

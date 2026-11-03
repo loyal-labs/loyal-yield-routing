@@ -80,7 +80,7 @@ export function useEvmDepositAddress(walletAddress: string | null) {
         setInfo({ ...read, address: read.address });
         return;
       }
-      if (read.kind !== "privy_autobridge" || !read.toSign) {
+      if (!read.toSign) {
         throw new Error(`Could not get a deposit address (${res.status}).`);
       }
       // First time: the wallet is user-owned, so the user signs the exact
