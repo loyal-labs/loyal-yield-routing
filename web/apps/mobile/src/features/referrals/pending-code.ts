@@ -13,6 +13,10 @@ const SOURCES: readonly ReferralSource[] = ["link", "typed", "install_referrer"]
 let cached: PendingCode | null | undefined;
 const listeners = new Set<() => void>();
 
+export function notifyPending(): void {
+  listeners.forEach((listener) => listener());
+}
+
 export function parseCode(raw: string): string | null {
   const code = raw.trim().toUpperCase();
   return CODE_PATTERN.test(code) ? code : null;
@@ -42,7 +46,7 @@ export async function readPending(): Promise<PendingCode | null> {
 
 async function write(next: PendingCode | null): Promise<void> {
   cached = next;
-  listeners.forEach((listener) => listener());
+  notifyPending();
   try {
     if (next) await SecureStore.setItemAsync(STORAGE_KEY, JSON.stringify(next));
     else await SecureStore.deleteItemAsync(STORAGE_KEY);

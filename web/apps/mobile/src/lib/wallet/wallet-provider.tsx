@@ -26,6 +26,10 @@ import { AppState } from "react-native";
 
 import { isPrivyConfigured } from "@/components/wallet/PrivyProviderRoot";
 import {
+  clearPending,
+  notifyPending,
+} from "@/features/referrals/pending-code";
+import {
   identifyWallet,
   resetAnalytics,
   track,
@@ -100,7 +104,6 @@ interface WalletContextValue {
   state: WalletState;
   signer: Signer | null;
   publicKey: string | null;
-  appUserReady: boolean;
   onboardingReplayActive: boolean;
 
   importWallet: (secretKey: Uint8Array, pin: string, expectedPublicKey?: string) => Promise<Keypair>;
@@ -135,7 +138,6 @@ interface WalletContextValue {
 const WalletContext = createContext<WalletContextValue | null>(null);
 
 const PRIVY_EMBEDDED_KEY = "loyal:privy-embedded-wallet";
-const APP_USER_CONFIRMED_KEY = "loyal:app-user-confirmed-wallet";
 
 export function useWallet(): WalletContextValue {
   const ctx = useContext(WalletContext);
@@ -186,11 +188,6 @@ function WalletProviderCore({
   >("idle");
   const [signer, setSigner] = useState<Signer | null>(null);
   const [publicKey, setPublicKey] = useState<string | null>(null);
-  const [confirmedWallet, setConfirmedWallet] = useState<string | null>(
-    () => mmkv.getString(APP_USER_CONFIRMED_KEY) ?? null,
-  );
-  const appUserReady =
-    isWalletUnlocked(state) && publicKey !== null && confirmedWallet === publicKey;
   const [biometricEnabled, setBiometricEnabledState] = useState(false);
   const [onboardingReplayActive, setOnboardingReplayActive] = useState(false);
 
@@ -404,9 +401,7 @@ function WalletProviderCore({
         const token = await privy.getIdentityToken();
         if (token) {
           await exchangePrivySession(token, sessionSigner);
-          const wallet = sessionSigner.publicKey.toBase58();
-          mmkv.setString(APP_USER_CONFIRMED_KEY, wallet);
-          setConfirmedWallet(wallet);
+          notifyPending();
         }
       } catch (error) {
         console.warn("[privy] session exchange failed", error);
@@ -583,8 +578,7 @@ function WalletProviderCore({
       }
       mmkv.setBoolean(PRIVY_MIGRATION_DONE_KEY, false);
       mmkv.setBoolean(PRIVY_EMBEDDED_KEY, false);
-      mmkv.delete(APP_USER_CONFIRMED_KEY);
-      setConfirmedWallet(null);
+      await clearPending();
 
       await clearMwaAccount();
       await clearDeeplinkSession();
@@ -621,7 +615,6 @@ function WalletProviderCore({
       state,
       signer,
       publicKey,
-      appUserReady,
       onboardingReplayActive,
       importWallet,
       finalizeSigner,
@@ -645,7 +638,6 @@ function WalletProviderCore({
       state,
       signer,
       publicKey,
-      appUserReady,
       onboardingReplayActive,
       importWallet,
       finalizeSigner,
