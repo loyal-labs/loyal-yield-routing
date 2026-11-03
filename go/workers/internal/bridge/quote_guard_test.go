@@ -39,12 +39,45 @@ func TestRefusesApproveCarryingValue(t *testing.T) {
 	}
 }
 
-func TestRefusesTokenDepositWithoutApprove(t *testing.T) {
-	req, q := baseUSDCQuote(t)
+func depositOnly(q map[string]any) []byte {
 	q["steps"] = q["steps"].([]any)[1:]
 	b, _ := json.Marshal(q)
-	if _, err := CheckQuote(req, b); err == nil {
-		t.Fatal("ERC-20 deposit with no approve accepted")
+	return b
+}
+
+func TestDepositOnlyQuoteKeepsTheDepositGuards(t *testing.T) {
+	baseReq, baseQuote := baseUSDCQuote(t)
+	if q, err := CheckQuote(baseReq, depositOnly(baseQuote)); err != nil {
+		t.Fatalf("deposit into Relay's depository refused: %v", err)
+	} else if len(q.Calls) != 1 || !strings.EqualFold(q.Calls[0].To, relayDepository) {
+		t.Fatalf("calls = %+v, want the deposit alone", q.Calls)
+	}
+
+	amt, _ := new(big.Int).SetString("25000000000000000000", 10)
+	swapReq := QuoteRequest{Chain: Ethereum, Asset: USDS, AmountRaw: amt, From: baseReq.From, Recipient: baseReq.Recipient}
+	swap := func(edit func(q map[string]any, deposit map[string]any)) []byte {
+		q := recordedQuote(t, "relay-quote-ethereum-usds.json")
+		edit(q, q["steps"].([]any)[1].(map[string]any)["items"].([]any)[0].(map[string]any)["data"].(map[string]any))
+		return depositOnly(q)
+	}
+	q, err := CheckQuote(swapReq, swap(func(map[string]any, map[string]any) {}))
+	if err != nil {
+		t.Fatalf("deposit through the approval proxy refused: %v", err)
+	}
+	if len(q.Calls) != 1 || q.minCredit == nil {
+		t.Fatalf("calls = %+v, minCredit = %v; want the deposit alone with a floor to simulate", q.Calls, q.minCredit)
+	}
+
+	for name, raw := range map[string][]byte{
+		"wrong target": swap(func(_, deposit map[string]any) { deposit["to"] = "0x1111111111111111111111111111111111111111" }),
+		"short floor": swap(func(q, _ map[string]any) {
+			q["details"].(map[string]any)["currencyOut"].(map[string]any)["minimumAmount"] = "1"
+		}),
+		"native value": swap(func(_, deposit map[string]any) { deposit["value"] = "1" }),
+	} {
+		if _, err := CheckQuote(swapReq, raw); err == nil {
+			t.Errorf("deposit-only quote with a %s accepted", name)
+		}
 	}
 }
 
@@ -97,6 +130,7 @@ func TestRelayQuoteRefusesSwapThatDepositsLess(t *testing.T) {
 	minimumOne, _ := json.Marshal(floorless)
 	_, baseQuote := baseUSDCQuote(t)
 	direct, _ := json.Marshal(baseQuote)
+	retried := depositOnly(recordedQuote(t, "relay-quote-ethereum-usds.json"))
 	for _, c := range []struct {
 		name       string
 		req        QuoteRequest
@@ -104,11 +138,15 @@ func TestRelayQuoteRefusesSwapThatDepositsLess(t *testing.T) {
 		credit     string
 		accept     bool
 		rpcBatches int
+		reverts    bool
 	}{
-		{"swap crediting the user", QuoteRequest{Chain: Ethereum, Asset: USDS, AmountRaw: usds}, recorded, "24969055", true, 2},
-		{"swap to another swapper", QuoteRequest{Chain: Ethereum, Asset: USDS, AmountRaw: usds}, tampered, "", false, 2},
-		{"minimum of 1 and a swap forwarding 1", QuoteRequest{Chain: Ethereum, Asset: USDS, AmountRaw: usds}, minimumOne, "1", false, 0},
-		{"direct deposit", QuoteRequest{Chain: Base, Asset: USDC, AmountRaw: big.NewInt(5000000)}, direct, "", true, 0},
+		{"swap crediting the user", QuoteRequest{Chain: Ethereum, Asset: USDS, AmountRaw: usds}, recorded, "24969055", true, 2, false},
+		{"swap to another swapper", QuoteRequest{Chain: Ethereum, Asset: USDS, AmountRaw: usds}, tampered, "", false, 2, false},
+		{"minimum of 1 and a swap forwarding 1", QuoteRequest{Chain: Ethereum, Asset: USDS, AmountRaw: usds}, minimumOne, "1", false, 0, false},
+		{"direct deposit", QuoteRequest{Chain: Base, Asset: USDC, AmountRaw: big.NewInt(5000000)}, direct, "", true, 0, false},
+		{"retry spending the allowance on chain", QuoteRequest{Chain: Ethereum, Asset: USDS, AmountRaw: usds}, retried, "24969055", true, 2, false},
+		{"retry with no allowance on chain", QuoteRequest{Chain: Ethereum, Asset: USDS, AmountRaw: usds}, retried, "24969055", false, 2, true},
+		{"retry crediting too little", QuoteRequest{Chain: Ethereum, Asset: USDS, AmountRaw: usds}, retried, "1", false, 2, false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			batches := 0
@@ -139,10 +177,17 @@ func TestRelayQuoteRefusesSwapThatDepositsLess(t *testing.T) {
 					case "eth_simulateV1":
 						var sim struct {
 							BlockStateCalls []struct {
+								StateOverrides map[string]struct {
+									StateDiff map[string]string
+								}
 								Calls []struct{ To, Data string }
 							}
 						}
 						json.Unmarshal(call.Params[0], &sim)
+						overrides := sim.BlockStateCalls[0].StateOverrides
+						if len(overrides) != 1 || len(overrides[usdsAddress].StateDiff) != 1 || overrides[usdsAddress].StateDiff["0x01"] == "" {
+							t.Errorf("state overrides %+v, want the user's balance slot alone", overrides)
+						}
 						want := []struct{ To, Data string }{{usdsAddress, balanceOf}}
 						var served relayQuote
 						json.Unmarshal(c.quote, &served)
@@ -161,11 +206,15 @@ func TestRelayQuoteRefusesSwapThatDepositsLess(t *testing.T) {
 								"data":    fmt.Sprintf("0x%064s%064s%064x%064x", user, "a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", amount, 1),
 							})
 						}
-						result = []any{map[string]any{"calls": []any{
-							map[string]any{"status": "0x1", "returnData": fmt.Sprintf("0x%064x", c.req.AmountRaw), "logs": []any{}},
-							map[string]any{"status": "0x1", "returnData": "0x", "logs": []any{}},
-							map[string]any{"status": "0x1", "returnData": "0x", "logs": logs},
-						}}}
+						simulated := []any{map[string]any{"status": "0x1", "returnData": fmt.Sprintf("0x%064x", c.req.AmountRaw), "logs": []any{}}}
+						for range served.Steps[1:] {
+							simulated = append(simulated, map[string]any{"status": "0x1", "returnData": "0x", "logs": []any{}})
+						}
+						deposit := map[string]any{"status": "0x1", "returnData": "0x", "logs": logs}
+						if c.reverts {
+							deposit = map[string]any{"status": "0x0", "returnData": "0x", "logs": []any{}, "error": map[string]any{"message": "insufficient allowance"}}
+						}
+						result = []any{map[string]any{"calls": append(simulated, deposit)}}
 					}
 					replies = append(replies, map[string]any{"jsonrpc": "2.0", "id": call.ID, "result": result})
 				}
