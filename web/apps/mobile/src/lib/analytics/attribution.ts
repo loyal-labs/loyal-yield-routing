@@ -6,6 +6,7 @@ import {
   setUserProfileOnce,
   updateUserProfile,
 } from "@/lib/analytics/analytics";
+import { storePending } from "@/features/referrals/pending-code";
 import { mmkv } from "@/lib/storage";
 
 const ATTRIBUTION_KEYS = [
@@ -35,6 +36,14 @@ export function parseAttributionParams(
   return Object.keys(out).length > 0 ? out : null;
 }
 
+function readRef(input: string): string | null {
+  const withoutFragment = input.split("#")[0];
+  const queryIndex = withoutFragment.indexOf("?");
+  const query =
+    queryIndex >= 0 ? withoutFragment.slice(queryIndex + 1) : withoutFragment;
+  return new URLSearchParams(query).get("ref");
+}
+
 function applyAttribution(source: string, params: Record<string, string>): void {
   registerSuperProperties(params);
   updateUserProfile({ ...params, attribution_source: source });
@@ -48,6 +57,8 @@ function applyAttribution(source: string, params: Record<string, string>): void 
 }
 
 function captureFromUrl(url: string): void {
+  const ref = readRef(url);
+  if (ref) void storePending(ref, "link");
   const params = parseAttributionParams(url);
   if (params) applyAttribution("deep_link", params);
 }
@@ -66,6 +77,8 @@ function captureInstallReferrerOnce(): void {
     PlayInstallReferrer.getInstallReferrerInfo((info, error) => {
       if (error || !info) return;
       mmkv.setBoolean(INSTALL_REFERRER_CHECKED_KEY, true);
+      const ref = readRef(info.installReferrer ?? "");
+      if (ref) void storePending(ref, "install_referrer");
       const params = parseAttributionParams(info.installReferrer ?? "");
       if (params) applyAttribution("install_referrer", params);
     });

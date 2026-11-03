@@ -26,6 +26,10 @@ import { AppState } from "react-native";
 
 import { isPrivyConfigured } from "@/components/wallet/PrivyProviderRoot";
 import {
+  clearPending,
+  notifyPending,
+} from "@/features/referrals/pending-code";
+import {
   identifyWallet,
   resetAnalytics,
   track,
@@ -395,7 +399,10 @@ function WalletProviderCore({
       if (!privy) return;
       try {
         const token = await privy.getIdentityToken();
-        if (token) await exchangePrivySession(token, sessionSigner);
+        if (token) {
+          await exchangePrivySession(token, sessionSigner);
+          notifyPending();
+        }
       } catch (error) {
         console.warn("[privy] session exchange failed", error);
       }
@@ -571,6 +578,7 @@ function WalletProviderCore({
       }
       mmkv.setBoolean(PRIVY_MIGRATION_DONE_KEY, false);
       mmkv.setBoolean(PRIVY_EMBEDDED_KEY, false);
+      await clearPending();
 
       await clearMwaAccount();
       await clearDeeplinkSession();

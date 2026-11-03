@@ -8,6 +8,8 @@ import {
   TextInput,
 } from "react-native";
 
+import { referralsEnabled } from "@/features/referrals/enabled";
+import { SignUpReferralField } from "@/features/referrals/SignUpReferralField";
 import { isValidEmail } from "@/lib/wallet/email";
 import { Pressable, SafeAreaView, Text, View } from "@/tw";
 
@@ -187,6 +189,9 @@ export function PrivySignInScreen({
                       </Text>
                     )}
                   </Pressable>
+                ) : null}
+                {intent === "create" && referralsEnabled() ? (
+                  <SignUpReferralField editable={!disabled} />
                 ) : null}
               </View>
             </View>

@@ -3,12 +3,15 @@ import type {
   Get,
   MobileTokenDetailResponse,
   MobileTrustedDapp,
+  Post,
+  ReferralClaimRequest,
   Summary,
 } from "@loyal-labs/api";
 
-import { earnWalletRead } from "@/lib/solana/earn/earn-session";
+import { earnHeaders, earnWalletRead } from "@/lib/solana/earn/earn-session";
 
 import { env } from "@/config/env";
+import { fetchWithTimeout } from "@/lib/network/fetch-with-timeout";
 import { EarnApiError } from "@/lib/solana/earn/earn-api";
 
 type EarnMaxReadPath =
@@ -51,6 +54,60 @@ export async function provisionEarnMaxAccount(
     response,
     "Earn MAX is temporarily unavailable. Please try again later."
   );
+}
+
+export async function fetchReferrals(
+  walletAddress: string
+): Promise<Get["/api/referrals"]> {
+  const response = await earnWalletRead(
+    walletAddress,
+    `${env.apiBaseUrl}/api/referrals`
+  );
+  if (!response.ok) {
+    throw new Error(`Failed to fetch referrals: ${response.status}`);
+  }
+  return (await response.json()) as Get["/api/referrals"];
+}
+
+export type ReferralClaimAnswer =
+  | { answered: true; result: Post["/api/referrals/claim"] }
+  | { answered: false };
+
+export async function claimReferral(
+  walletAddress: string,
+  request: ReferralClaimRequest
+): Promise<ReferralClaimAnswer> {
+  try {
+    const response = await earnWalletRead(
+      walletAddress,
+      `${env.apiBaseUrl}/api/referrals/claim`,
+      { method: "POST", body: JSON.stringify(request) }
+    );
+    if (response.ok) {
+      return {
+        answered: true,
+        result: (await response.json()) as Post["/api/referrals/claim"],
+      };
+    }
+    if (response.status === 400) {
+      return { answered: true, result: { refusal: "unknown_code" } };
+    }
+  } catch {}
+  return { answered: false };
+}
+
+export async function lookupReferralCode(code: string): Promise<boolean | null> {
+  try {
+    const response = await fetchWithTimeout(
+      `${env.apiBaseUrl}/api/referrals/codes/${encodeURIComponent(code)}`,
+      { headers: earnHeaders() }
+    );
+    if (!response.ok) return null;
+    const data: Get["/api/referrals/codes/{code}"] = await response.json();
+    return data.valid;
+  } catch {
+    return null;
+  }
 }
 
 export type GroupChat = {

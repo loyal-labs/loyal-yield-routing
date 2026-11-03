@@ -17,12 +17,16 @@ import {
   MessageSquare,
   RotateCcw,
   Trash2,
+  UserPlus,
 } from "lucide-react-native";
 import { useCallback, useEffect, useState } from "react";
 import { Alert, StyleSheet, Switch } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { LogoHeader } from "@/components/LogoHeader";
+import { REFERRAL_COPY } from "@/features/referrals/copy";
+import { referralsEnabled } from "@/features/referrals/enabled";
+import { ReferralClaimSetting } from "@/features/referrals/ReferralClaimSetting";
 import { PrivyAccountCell } from "@/components/wallet/PrivyAccountCell";
 import { PinPadInput } from "@/components/wallet/PinPadInput";
 import { getShowTips, setShowTips } from "@/lib/settings";
@@ -363,6 +367,19 @@ export default function ProfileScreen() {
             onPress={handleReplayOnboarding}
           />
         </SettingsSection>
+
+        {isUnlocked && referralsEnabled() && (
+          <SettingsSection>
+            <ProfileCell
+              icon={<UserPlus size={28} strokeWidth={1.5} color="rgba(0,0,0,0.6)" />}
+              title={REFERRAL_COPY.inviteCell}
+              subtitle={REFERRAL_COPY.inviteCellSubtitle}
+              showChevron
+              onPress={() => router.push("/invite")}
+            />
+            <ReferralClaimSetting />
+          </SettingsSection>
+        )}
 
         {isUnlocked && (
           <SettingsSection>

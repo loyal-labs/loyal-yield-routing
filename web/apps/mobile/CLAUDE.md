@@ -191,6 +191,23 @@ EXPO_PUBLIC_SOLANA_ENV=mainnet
   - Grid runtime helpers go in `@loyal-labs/grid-core`
   - WebAuthn/passkey browser flow logic stays in `passkey`
 
+### Referrals
+
+`src/features/referrals/pending-code.ts` keeps one `{code, source}` in SecureStore until
+`POST /api/referrals/claim` answers. `ClaimPendingCode` (mounted in `app/_layout.tsx`) sends it on
+three events only, with no ready flag, timer or retry counter: right after the Privy session
+exchange succeeds (`exchangeSession` calls `notifyPending`), when an unlocked wallet is present at
+launch or after sign-in, and on foreground while a code is pending. It clears the code on a 2xx or
+400 answer and keeps it on a network failure, 401 (no app user yet, so the next trigger binds),
+429 or 5xx. Each claim reads the current wallet when it fires and drops its answer if the wallet
+changed mid-flight. `resetWallet` clears the pending code.
+Everything here runs only when MMKV `loyal.referrals` is `"1"` (`referralsEnabled()` in `enabled.ts`). `ref` in a URL or the Play Install Referrer is stored by `attribution.ts` as `link` or
+`install_referrer`; `loyal-dev://i/<code>` is the `app/i/[code].tsx` route (`link`); the typed
+field on sign-up (`create` intent) and in Settings while `can_claim` stores or sends `typed`.
+Calls use the Earn bearer through `earnWalletRead`, types come from `@loyal-labs/api`. iOS has no
+deferred deep link, so the typed field is its install path. `https://next.askloyal.com/i/<code>`
+opens the app only after `applinks:next.askloyal.com` ships in a native build.
+
 ### Earn MAX
 
 `src/features/earn-max/EarnMaxProvider.tsx` reads the Go routes
