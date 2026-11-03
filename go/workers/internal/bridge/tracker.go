@@ -20,16 +20,16 @@ const (
 )
 
 const (
-	openState = `(state IN ('submitted', 'failed') OR (state = 'refunded' AND refund_tx IS NULL))`
+	openState = `(state IN ('submitted', 'failed') OR (state = 'filled' AND destination_tx IS NULL) OR (state = 'refunded' AND refund_tx IS NULL))`
 
 	openTransfers = `SELECT request_id, state FROM loyal_yield.bridge_transfers
 WHERE ` + openState + ` AND submitted_at > now() - ` + trackWindow + `
 ORDER BY submitted_at`
 
 	advanceTransfer = `UPDATE loyal_yield.bridge_transfers
-SET state = $3, destination_tx = nullif($4, ''), refund_tx = nullif($5, ''),
+SET state = $3, destination_tx = coalesce(destination_tx, nullif($4, '')), refund_tx = coalesce(refund_tx, nullif($5, '')),
     settled_at = CASE WHEN $6 THEN coalesce(settled_at, now()) ELSE settled_at END, updated_at = now()
-WHERE request_id = $1 AND state = $2 AND refund_tx IS NULL AND submitted_at > now() - ` + trackWindow
+WHERE request_id = $1 AND state = $2 AND ` + openState + ` AND submitted_at > now() - ` + trackWindow
 
 	markUnsettled = `UPDATE loyal_yield.bridge_transfers SET updated_at = now()
 WHERE ` + openState + ` AND submitted_at <= now() - ` + trackWindow + `
@@ -81,7 +81,7 @@ func (t *Tracker) Tick(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	polled := map[TransferState]int{TransferSubmitted: 0, TransferFailed: 0, TransferRefunded: 0}
+	polled := map[TransferState]int{TransferSubmitted: 0, TransferFailed: 0, TransferFilled: 0, TransferRefunded: 0}
 	for _, o := range open {
 		polled[o.state]++
 	}
@@ -109,11 +109,12 @@ func (t *Tracker) Tick(ctx context.Context) error {
 			return t.advance(ctx, o, status)
 		})
 	}
-	if err := group.Wait(); err != nil {
-		return err
-	}
+	err = group.Wait()
 	if relayErrs > 0 {
 		slog.Warn("bridge relay status failed", "rows", relayErrs, "error", engine.ErrorText(firstRelayErr))
+	}
+	if err != nil {
+		return err
 	}
 	slog.Debug("bridge tracker tick", "polled", len(open), "relay_errors", relayErrs, "duration_ms", time.Since(start).Milliseconds())
 	return nil
@@ -130,17 +131,16 @@ func (t *Tracker) advance(ctx context.Context, o openTransfer, status Status) er
 		slog.Debug("bridge relay status unknown", "request_id", o.requestID, "relay_status", status.State)
 		return nil
 	}
-	var hash, destinationTx, refundTx string
+	var destinationTx, refundTx string
 	if n := len(status.TxHashes); n > 0 {
-		hash = status.TxHashes[n-1]
+		switch {
+		case status.State == "success" && next == TransferFilled:
+			destinationTx = status.TxHashes[n-1]
+		case status.State == "refund" && next == TransferRefunded:
+			refundTx = status.TxHashes[n-1]
+		}
 	}
-	switch next {
-	case TransferFilled:
-		destinationTx = hash
-	case TransferRefunded:
-		refundTx = hash
-	}
-	if next == o.state && refundTx == "" {
+	if next == o.state && destinationTx == "" && refundTx == "" {
 		return nil
 	}
 	tag, err := t.DB.Exec(ctx, advanceTransfer, o.requestID, string(o.state), string(next), destinationTx, refundTx, next.Settled())
