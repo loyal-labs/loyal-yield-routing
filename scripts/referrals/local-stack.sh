@@ -23,10 +23,11 @@ databases app and yield, and loyal-web serving the Go API against them.
         random value made once. Unserved /api paths proxy to a closed
         local port, never to production.
   stop  stop Postgres.
-  env   print APP_DATABASE_URL and YIELD_DATABASE_URL for seed-local.sh.
+  env   print the local APP_DATABASE_URL and YIELD_DATABASE_URL, always
+        127.0.0.1 on REFERRALS_PG_PORT. seed-local.sh and session-local.sh
+        take their URLs from here and from nowhere else.
 
 Then:
-  eval "$(scripts/referrals/local-stack.sh env)"
   scripts/referrals/seed-local.sh
   curl -H "Cookie: $(scripts/referrals/session-local.sh alice)" http://127.0.0.1:8787/api/referrals
 
@@ -38,6 +39,7 @@ EOF
 root=$(cd "$(dirname "$0")/../.." && pwd)
 dir=${REFERRALS_LOCAL_DIR:-/tmp/referrals-local}
 port=${REFERRALS_PG_PORT:-55491}
+case $port in *[!0-9]* | "") echo "REFERRALS_PG_PORT must be a port number" >&2; exit 2 ;; esac
 pgbin=$(brew --prefix postgresql@17 2>/dev/null)/bin
 url() { echo "postgres://postgres@127.0.0.1:$port/$1"; }
 psql_on() { db=$1; shift; "$pgbin/psql" -X -q -v ON_ERROR_STOP=1 -h 127.0.0.1 -p "$port" -U postgres -d "$db" "$@"; }
@@ -49,8 +51,19 @@ start_postgres() {
     "$pgbin/pg_ctl" -D "$dir/pg" -o "-p $port -k $dir" -l "$dir/postgres.log" -w start >/dev/null
 }
 
+need_web_modules() {
+  [ -d "$root/web/node_modules" ] || { echo "web/node_modules is missing: run bun install in web/" >&2; exit 1; }
+}
+
+build() {
+  mkdir -p "$dir"
+  (cd "$root/go/workers" && GOTOOLCHAIN=local /usr/bin/lockf /Users/user/xstock-scratch/build.lock nice -n 15 \
+    env GOMAXPROCS=4 GOMEMLIMIT=3GiB GOFLAGS=-p=4 go build -o "$dir/$1" "./cmd/$1")
+}
+
 migrate() {
-  (cd "$root/go/workers" && NEON_DATABASE_URL=$(url yield) GOTOOLCHAIN=local go run ./cmd/loyal-migrate -db yield "$@")
+  build loyal-migrate
+  NEON_DATABASE_URL=$(url yield) "$dir/loyal-migrate" -db yield "$@"
 }
 
 schemas() {
@@ -78,13 +91,13 @@ web() {
   url app >"$creds/WEB_APP_DATABASE_URL"
   url yield >"$creds/WEB_YIELD_DATABASE_URL"
   echo "http://127.0.0.1:8899" >"$creds/WEB_SOLANA_RPC_URL"
-  cd "$root/go/workers"
+  build loyal-web
   CREDENTIALS_DIRECTORY=$creds LOYAL_WEB_ADDRESS=${LOYAL_WEB_ADDRESS:-127.0.0.1:8787} \
-    LOYAL_WEB_UPSTREAM=http://127.0.0.1:9 GOTOOLCHAIN=local exec go run ./cmd/loyal-web
+    LOYAL_WEB_UPSTREAM=http://127.0.0.1:9 exec "$dir/loyal-web"
 }
 
 case ${1:-} in
-  db) start_postgres && schemas ;;
+  db) need_web_modules && start_postgres && schemas ;;
   web) web ;;
   stop) "$pgbin/pg_ctl" -D "$dir/pg" stop ;;
   env) echo "export APP_DATABASE_URL=$(url app) YIELD_DATABASE_URL=$(url yield)" ;;

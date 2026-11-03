@@ -20,7 +20,9 @@ creates its own wallet, and its dev app needs secrets a lane never reads.
 
 In a browser on 127.0.0.1:8787, set the same cookie for that origin.
 
-Env: REFERRALS_LOCAL_DIR (default /tmp/referrals-local), APP_DATABASE_URL.
+Env: REFERRALS_LOCAL_DIR (default /tmp/referrals-local), REFERRALS_PG_PORT.
+The database is always 127.0.0.1 on that port; no database URL is read from
+the environment.
 EOF
 }
 
@@ -32,7 +34,10 @@ esac
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
 dir=${REFERRALS_LOCAL_DIR:-/tmp/referrals-local}
-app=${APP_DATABASE_URL:-postgres://postgres@127.0.0.1:${REFERRALS_PG_PORT:-55491}/app}
+[ -d "$root/web/node_modules" ] || { echo "web/node_modules is missing: run bun install in web/" >&2; exit 1; }
+unset PGHOST PGHOSTADDR PGSERVICE PGSERVICEFILE PGDATABASE PGPORT
+eval "$("$root/scripts/referrals/local-stack.sh" env)"
+app=$APP_DATABASE_URL
 secret_file=$dir/credentials/AUTH_JWT_SECRET
 [ -s "$secret_file" ] || { echo "no $secret_file: run scripts/referrals/local-stack.sh web first" >&2; exit 1; }
 
