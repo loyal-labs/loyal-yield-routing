@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnstats"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/referral"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/webserve"
 )
 
@@ -157,7 +158,7 @@ func site(cfg Config) http.Handler {
 		case pagePath == "/dev/txv1" && cfg.Environment == "prod":
 			app.Shell(w, r, http.StatusNotFound)
 		default:
-			if slices.Contains(pages, pagePath) {
+			if slices.Contains(pages, pagePath) || inviteLink(pagePath) {
 				r = r.Clone(r.Context())
 				r.URL.Path = "/"
 			} else {
@@ -184,6 +185,15 @@ func site(cfg Config) http.Handler {
 		}
 		serve(w, r)
 	})
+}
+
+func inviteLink(pagePath string) bool {
+	code, ok := strings.CutPrefix(pagePath, "/i/")
+	if !ok {
+		return false
+	}
+	_, err := referral.ParseCode(code)
+	return err == nil
 }
 
 var nextMatcherSkips = regexp.MustCompile(`^/(?:_next|api|favicon.ico|.*\..*)`)

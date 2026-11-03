@@ -28,6 +28,7 @@ import { useEarnForecastApy } from "@/hooks/use-earn-forecast-apy";
 import { useSignInModal } from "@/contexts/sign-in-modal-context";
 import { useCherryRuntime } from "@/features/cherry/client/runtime-context";
 import { useAuthCapability } from "@/lib/auth/capability";
+import { referralsEnabled } from "@/features/referrals/enabled";
 import { captureBrowserLoadingMetricAfterPaint } from "@/features/observability/client";
 import {
   splitUsdBalance,
@@ -593,7 +594,7 @@ export function FaceliftSidebar({
       </nav>
       )}
 
-        {isSignedOutNav ? null : (
+        {isSignedOutNav || !referralsEnabled() ? null : (
           <button
             className={`t-hover flex min-h-[60px] w-full items-center rounded-2xl px-4 text-left ${
               activePage === "invite" ? "bg-accent" : "hover:bg-accent"
