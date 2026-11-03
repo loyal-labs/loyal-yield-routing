@@ -325,6 +325,15 @@ export function CryptoPage({
     }
   }, [requestedAction, closeSwap, closeUnshield, openSend, openSwap]);
 
+  useEffect(() => {
+    if (data.walletAddress)
+      setBridge((open) =>
+        open?.type === "move" && open.source.recipient !== data.walletAddress
+          ? null
+          : open
+      );
+  }, [data.walletAddress]);
+
   useEscapePage(
     viewStack.length > 0 || isSwapOpen || isUnshieldOpen,
     () => {
