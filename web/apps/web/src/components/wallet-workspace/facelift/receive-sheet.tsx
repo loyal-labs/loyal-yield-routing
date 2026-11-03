@@ -109,6 +109,7 @@ function SearchField({
           strokeWidth={2}
         />
         <input
+          aria-label={placeholder}
           className="min-w-0 flex-1 bg-transparent py-3 text-[16px] text-foreground leading-5 outline-none placeholder:text-muted-foreground"
           onChange={(event) => onChange(event.target.value)}
           placeholder={placeholder}
@@ -317,7 +318,7 @@ export function ReceiveSheet({
     const address = bridge ? evm.info?.address : walletAddress;
     if (address) void copyTextToClipboard(address).then(setCopied);
   };
-  const networks = evm.info?.networks ?? [];
+  const networks = evm.networks;
   const depositAssets = [
     ...new Set(networks.flatMap((item) => item.assets ?? [])),
   ];
@@ -539,6 +540,17 @@ export function ReceiveSheet({
               />
             )}
             <div className="min-h-0 flex-1 overflow-y-auto p-2">
+              {(view === "deposit-assets" || view === "chains") &&
+                networks.length === 0 &&
+                (evm.error ? (
+                  <Warning>{evm.error}</Warning>
+                ) : (
+                  evm.loading && (
+                    <p className="px-4 py-3 text-[16px] leading-5 text-muted-foreground">
+                      Loading…
+                    </p>
+                  )
+                ))}
               {view === "deposit-assets" &&
                 depositAssets
                   .filter((code) =>

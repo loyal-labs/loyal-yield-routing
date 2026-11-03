@@ -1,6 +1,10 @@
 "use client";
 
-import type { EvmDepositAddressResponse, RouteError } from "@loyal-labs/api";
+import type {
+  EvmDepositAddressResponse,
+  EvmDepositNetwork,
+  RouteError,
+} from "@loyal-labs/api";
 import { useAuthorizationSignature, usePrivy } from "@privy-io/react-auth";
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -33,6 +37,7 @@ export function useEvmDepositAddress(walletAddress: string | null) {
   const { user } = usePrivy();
   const { generateAuthorizationSignature } = useAuthorizationSignature();
   const [info, setInfo] = useState<EvmDepositInfo | null>(null);
+  const [networks, setNetworks] = useState<EvmDepositNetwork[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -50,6 +55,7 @@ export function useEvmDepositAddress(walletAddress: string | null) {
 
   useEffect(() => {
     setInfo(null);
+    setNetworks([]);
     setError(null);
   }, [walletAddress]);
 
@@ -76,6 +82,7 @@ export function useEvmDepositAddress(walletAddress: string | null) {
       });
       const read = await readDepositResponse(res);
       if (!current()) return;
+      if (read.networks) setNetworks(read.networks);
       if (read.address) {
         setInfo({ ...read, address: read.address });
         return;
@@ -101,7 +108,9 @@ export function useEvmDepositAddress(walletAddress: string | null) {
       if (!created.address) {
         throw new Error(`Could not get a deposit address (${posted.status}).`);
       }
-      if (current()) setInfo({ ...created, address: created.address });
+      if (!current()) return;
+      if (created.networks) setNetworks(created.networks);
+      setInfo({ ...created, address: created.address });
     } catch (e) {
       if (current()) setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -109,5 +118,5 @@ export function useEvmDepositAddress(walletAddress: string | null) {
     }
   }, [eligible, generateAuthorizationSignature, info, loading, walletAddress]);
 
-  return { eligible, info, error, loading, load, retryOnNextLoad };
+  return { eligible, info, networks, error, loading, load, retryOnNextLoad };
 }
