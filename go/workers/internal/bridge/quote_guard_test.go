@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"math/big"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -36,5 +37,17 @@ func TestRefusesTokenDepositWithoutApprove(t *testing.T) {
 	b, _ := json.Marshal(q)
 	if _, err := CheckQuote(req, b); err == nil {
 		t.Fatal("ERC-20 deposit with no approve accepted")
+	}
+}
+
+func TestRefusesDepositForAnotherDepositor(t *testing.T) {
+	req, q := baseUSDCQuote(t)
+	step := q["steps"].([]any)[1].(map[string]any)
+	data := step["items"].([]any)[0].(map[string]any)["data"].(map[string]any)
+	data["data"] = strings.Replace(data["data"].(string), "98f566dc02faf8fd0f3ebb6aab48c40164207fc7", "1111111111111111111111111111111111111111", 1)
+	b, _ := json.Marshal(q)
+	_, err := CheckQuote(req, b)
+	if err == nil || !strings.Contains(err.Error(), "deposit data") {
+		t.Fatalf("deposit naming another depositor: err = %v", err)
 	}
 }
