@@ -23,6 +23,11 @@ const relayErc20DepositTopic = "0x49fed1d0b752ce30eee63c7a81133f3363b532fec5d4d7
 
 const balanceOfSelector = "70a08231"
 
+// balanceProbeGas caps the access-list probe. Without it a node charges the
+// block gas limit to the zero address, and Arbitrum's limit makes that
+// "insufficient funds".
+const balanceProbeGas = "0x30d40"
+
 // ParseEVMRPCURLs reads chain=url pairs separated by commas or whitespace.
 func ParseEVMRPCURLs(s string) (map[Chain]string, error) {
 	urls := map[Chain]string{}
@@ -67,7 +72,8 @@ func (r *Relay) simulateCredit(ctx context.Context, net Network, req QuoteReques
 			StorageKeys []string `json:"storageKeys"`
 		} `json:"accessList"`
 	}
-	if err := r.rpc(ctx, endpoint, []rpcCall{{"eth_createAccessList", []any{map[string]string{"to": tok.Address, "data": balanceOf}, "latest"}}}, &lists); err != nil {
+	probe := map[string]string{"to": tok.Address, "data": balanceOf, "gas": balanceProbeGas}
+	if err := r.rpc(ctx, endpoint, []rpcCall{{"eth_createAccessList", []any{probe, "latest"}}}, &lists); err != nil {
 		return fmt.Errorf("quote: balance slot: %w", err)
 	}
 	var keys []string

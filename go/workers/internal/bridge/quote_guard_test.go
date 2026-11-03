@@ -130,10 +130,10 @@ func TestRelayQuoteRefusesSwapThatDepositsLess(t *testing.T) {
 					var result any
 					switch call.Method {
 					case "eth_createAccessList":
-						var probe struct{ To, Data string }
+						var probe struct{ To, Data, Gas string }
 						json.Unmarshal(call.Params[0], &probe)
-						if probe.To != usdsAddress || probe.Data != balanceOf {
-							t.Errorf("access list probes %s %s, want balanceOf(user) on USDS", probe.To, probe.Data)
+						if probe.To != usdsAddress || probe.Data != balanceOf || probe.Gas == "" {
+							t.Errorf("access list probes %+v, want balanceOf(user) on USDS with a gas cap", probe)
 						}
 						result = map[string]any{"accessList": []any{map[string]any{"address": usdsAddress, "storageKeys": []string{"0x01"}}}}
 					case "eth_simulateV1":
