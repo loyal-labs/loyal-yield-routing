@@ -1,6 +1,6 @@
 "use client";
 
-import type { EvmDepositNetwork } from "@loyal-labs/api";
+import type { EvmDepositNetwork, EvmDepositToken } from "@loyal-labs/api";
 import { Search } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
@@ -31,55 +31,21 @@ function bridgeOptedIn() {
   }
 }
 
-type AssetDisplay = {
-  symbol: string;
-  name: string;
-  icon: string | null;
-  stable: boolean;
+type Selection = { asset: string; chain: string };
+
+const RECEIVE = {
+  symbol: "USDC",
+  icon: "usdc.png",
+  chain: "Solana",
+  chainIcon: "sol.png",
 };
 
-const ASSET_DISPLAY: Record<string, AssetDisplay> = {
-  usdc: { symbol: "USDC", name: "USD Coin", icon: "usdc.png", stable: true },
-  usdt: { symbol: "USDT", name: "Tether USD", icon: "usdt.png", stable: true },
-  pyusd: {
-    symbol: "PYUSD",
-    name: "PayPal USD",
-    icon: "pyusd.svg",
-    stable: true,
-  },
-  usdg: {
-    symbol: "USDG",
-    name: "Global Dollar",
-    icon: "usdg.svg",
-    stable: true,
-  },
-  usds: { symbol: "USDS", name: "USDS", icon: null, stable: true },
-  eth: { symbol: "ETH", name: "Ether", icon: "ethereum.png", stable: false },
-};
+const tokenOn = (network: EvmDepositNetwork, asset: string) =>
+  network.tokens?.find((token) => token.asset === asset);
 
-function assetDisplay(code: string): AssetDisplay {
-  return (
-    ASSET_DISPLAY[code] ?? {
-      symbol: code.toUpperCase(),
-      name: code.toUpperCase(),
-      icon: null,
-      stable: false,
-    }
-  );
-}
-
-const CHAIN_ICONS: Record<string, string> = {
-  ethereum: "ethereum.png",
-  base: "base.png",
-  arbitrum: "arbitrum.png",
-  polygon: "polygon.png",
-  bsc: "bnb.png",
-  tron: "tron.png",
-};
-
-function minDeposit(minUsd: number, asset: AssetDisplay) {
-  return asset.stable
-    ? `${minUsd.toFixed(2)} ${asset.symbol}`
+function minDeposit(minUsd: number, token: EvmDepositToken) {
+  return token.stable
+    ? `${minUsd.toFixed(2)} ${token.symbol}`
     : `$${minUsd.toFixed(2)}`;
 }
 
@@ -331,8 +297,8 @@ export function ReceiveSheet({
 }) {
   const [tab, setTab] = useState<Tab>(initialTab);
   const [view, setView] = useState<View>("receive");
-  const [assetCode, setAssetCode] = useState<string | null>(null);
-  const [chainId, setChainId] = useState<string | null>(null);
+  const [selection, setSelection] = useState<Selection | null>(null);
+  const [listing, setListing] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [copied, setCopied] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -357,8 +323,7 @@ export function ReceiveSheet({
     setQuery("");
     setView(next);
   };
-  const goBack = () =>
-    goTo(view === "chains" && !chainId ? "deposit-assets" : "receive");
+  const goBack = () => goTo("receive");
   useEscapeOverlay(isOpen, () => (view === "receive" ? onClose() : goBack()));
 
   useEffect(() => {
@@ -366,8 +331,8 @@ export function ReceiveSheet({
     setTab(initialTab);
     setView("receive");
     setQuery("");
-    setAssetCode(null);
-    setChainId(null);
+    setSelection(null);
+    setListing(null);
     setCopied(false);
     const previous =
       document.activeElement instanceof HTMLElement
@@ -421,19 +386,21 @@ export function ReceiveSheet({
     if (address) void copyTextToClipboard(address).then(setCopied);
   };
   const networks = evm.networks;
-  const depositAssets = [
-    ...new Set(networks.flatMap((item) => item.assets ?? [])),
+  const depositTokens = [
+    ...new Map(
+      networks.flatMap((item) =>
+        (item.tokens ?? []).map((token) => [token.asset, token] as const)
+      )
+    ).values(),
   ];
-  const assetNetworks = assetCode
-    ? networks.filter((item) => item.assets?.includes(assetCode))
+  const listedNetworks = listing
+    ? networks.filter((item) => tokenOn(item, listing))
     : [];
-  const network: EvmDepositNetwork | undefined = assetNetworks.find(
-    (item) => item.chain === chainId
-  );
-  const deposit = assetCode ? assetDisplay(assetCode) : null;
-  const usdc = assetDisplay("usdc");
-  const networkIcon = (item: EvmDepositNetwork) =>
-    CHAIN_ICONS[item.chain] ?? null;
+  const network = selection
+    ? networks.find((item) => item.chain === selection.chain)
+    : undefined;
+  const deposit =
+    network && selection ? tokenOn(network, selection.asset) : undefined;
 
   return (
     <SheetReveal
@@ -516,15 +483,18 @@ export function ReceiveSheet({
                             ? "No deposit address yet"
                             : "Loading address…"
                         }
-                        qrIcon={narrow ? networkIcon(network) : deposit.icon}
+                        qrIcon={narrow ? network.icon : deposit.icon}
                         pill={
                           <button
                             className="t-hover mt-5 flex h-9 items-center gap-2 rounded-full bg-accent-selected pl-2 pr-3 text-[16px] leading-5 max-[795px]:hidden"
-                            onClick={() => goTo("chains")}
+                            onClick={() => {
+                              setListing(deposit.asset);
+                              goTo("chains");
+                            }}
                             type="button"
                           >
                             <AssetIcon
-                              file={networkIcon(network)}
+                              file={network.icon}
                               label={network.name}
                               size={24}
                             />
@@ -562,7 +532,7 @@ export function ReceiveSheet({
                         <BadgedIcon
                           file={deposit.icon}
                           label={deposit.symbol}
-                          badge={network ? networkIcon(network) : null}
+                          badge={network?.icon}
                           badgeLabel={network?.name}
                         />
                       ) : (
@@ -585,17 +555,17 @@ export function ReceiveSheet({
                     </button>
                     <div className={`${CELL} mt-1`}>
                       <BadgedIcon
-                        file={usdc.icon}
-                        label={usdc.symbol}
-                        badge="sol.png"
-                        badgeLabel="Solana"
+                        file={RECEIVE.icon}
+                        label={RECEIVE.symbol}
+                        badge={RECEIVE.chainIcon}
+                        badgeLabel={RECEIVE.chain}
                       />
                       <CellLabel label="Asset to receive">
-                        {usdc.symbol}
-                        <Chip>Solana</Chip>
+                        {RECEIVE.symbol}
+                        <Chip>{RECEIVE.chain}</Chip>
                       </CellLabel>
                       <span className="flex size-6 items-center justify-center">
-                        <InfoTooltip text="The asset you’ll receive after bridging. Transferred assets will be automatically converted to this asset." />
+                        <InfoTooltip tone="dark" text="The asset you’ll receive after bridging. Transferred assets will be automatically converted to this asset." />
                       </span>
                     </div>
                   </div>
@@ -643,9 +613,9 @@ export function ReceiveSheet({
         ) : (
           <>
             {((view === "deposit-assets" &&
-              depositAssets.length >= SEARCH_MIN_ITEMS) ||
+              depositTokens.length >= SEARCH_MIN_ITEMS) ||
               (view === "chains" &&
-                assetNetworks.length >= SEARCH_MIN_ITEMS)) && (
+                listedNetworks.length >= SEARCH_MIN_ITEMS)) && (
               <SearchField
                 placeholder={
                   view === "chains" ? "Search chains" : "Search assets"
@@ -667,69 +637,62 @@ export function ReceiveSheet({
                   )
                 ))}
               {view === "deposit-assets" &&
-                depositAssets
-                  .filter((code) =>
-                    matches(
-                      query,
-                      assetDisplay(code).name,
-                      assetDisplay(code).symbol
-                    )
-                  )
-                  .map((code) => {
-                    const item = assetDisplay(code);
+                depositTokens
+                  .filter((item) => matches(query, item.name, item.symbol))
+                  .map((item) => (
+                    <button
+                      className="t-hover flex h-[60px] w-full items-center rounded-2xl px-4 text-left hover:bg-accent"
+                      key={item.asset}
+                      onClick={() => {
+                        setListing(item.asset);
+                        setCopied(false);
+                        goTo("chains");
+                      }}
+                      type="button"
+                    >
+                      <AssetIcon file={item.icon} label={item.symbol} />
+                      <span className="ml-3 flex flex-1 flex-col gap-0.5">
+                        <span className="font-medium text-[16px] leading-5 tracking-[-0.176px]">
+                          {item.name}
+                        </span>
+                        <span className="text-[13px] leading-4 text-muted-foreground">
+                          {item.symbol}
+                        </span>
+                      </span>
+                    </button>
+                  ))}
+              {view === "chains" &&
+                listing &&
+                listedNetworks
+                  .filter((item) => matches(query, item.name))
+                  .map((item) => {
+                    const token = tokenOn(item, listing);
                     return (
                       <button
                         className="t-hover flex h-[60px] w-full items-center rounded-2xl px-4 text-left hover:bg-accent"
-                        key={code}
+                        key={item.chain}
                         onClick={() => {
-                          setAssetCode(code);
-                          setChainId(null);
+                          setSelection({ asset: listing, chain: item.chain });
                           setCopied(false);
-                          goTo("chains");
+                          goTo("receive");
                         }}
                         type="button"
                       >
-                        <AssetIcon file={item.icon} label={item.symbol} />
+                        <AssetIcon file={item.icon} label={item.name} />
                         <span className="ml-3 flex flex-1 flex-col gap-0.5">
-                          <span className="font-medium text-[16px] leading-5 tracking-[-0.176px]">
+                          <span className="font-medium text-[16px] leading-5">
                             {item.name}
                           </span>
-                          <span className="text-[13px] leading-4 text-muted-foreground">
-                            {item.symbol}
-                          </span>
+                          {token && item.minUsd > 0 && (
+                            <span className="text-[13px] leading-4 text-muted-foreground">
+                              Min deposit amount:{" "}
+                              {minDeposit(item.minUsd, token)}
+                            </span>
+                          )}
                         </span>
                       </button>
                     );
                   })}
-              {view === "chains" &&
-                deposit &&
-                assetNetworks
-                  .filter((item) => matches(query, item.name))
-                  .map((item) => (
-                    <button
-                      className="t-hover flex h-[60px] w-full items-center rounded-2xl px-4 text-left hover:bg-accent"
-                      key={item.chain}
-                      onClick={() => {
-                        setChainId(item.chain);
-                        setCopied(false);
-                        goTo("receive");
-                      }}
-                      type="button"
-                    >
-                      <AssetIcon file={networkIcon(item)} label={item.name} />
-                      <span className="ml-3 flex flex-1 flex-col gap-0.5">
-                        <span className="font-medium text-[16px] leading-5">
-                          {item.name}
-                        </span>
-                        {item.minUsd > 0 && (
-                          <span className="text-[13px] leading-4 text-muted-foreground">
-                            Min deposit amount:{" "}
-                            {minDeposit(item.minUsd, deposit)}
-                          </span>
-                        )}
-                      </span>
-                    </button>
-                  ))}
             </div>
           </>
         )}

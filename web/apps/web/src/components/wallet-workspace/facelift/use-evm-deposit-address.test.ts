@@ -91,7 +91,7 @@ test("a toSign response without a kind signs and posts the signature", async () 
 
 test("a wallet switch never renders the previous wallet's address or networks", async () => {
   const realFetch = globalThis.fetch;
-  globalThis.fetch = (async () =>
+  globalThis.fetch = (async (_url: string) =>
     new Response(JSON.stringify({ ...network, address: EVM }), { status: 200 })) as typeof fetch;
   const seen: { wallet: string; address: string | undefined; networks: number }[] = [];
   let hook!: ReturnType<typeof useEvmDepositAddress>;
