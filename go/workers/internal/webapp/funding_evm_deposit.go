@@ -228,11 +228,11 @@ type EvmDepositAddressResponse struct {
 	Minimums      map[string]int       `json:"minimums"`
 }
 
-func (h earnRoutes) evmDepositResponse(ctx context.Context, kind EvmDepositKind, address *string, set bridge.RouteSet) *evmDepositOutput {
+func (h earnRoutes) evmDepositResponse(kind EvmDepositKind, address *string, set bridge.RouteSet) *evmDepositOutput {
 	networks := set.Networks()
 	var fees map[depositCell]*string
 	if kind == PrivyAutobridge {
-		fees = h.privyDepositFees(ctx, networks)
+		fees = h.privyDepositFees(networks)
 	}
 	out := EvmDepositAddressResponse{Address: address, Kind: kind, Networks: []EvmDepositNetwork{}, Minimums: map[string]int{}}
 	seen := map[bridge.Asset]bool{}
@@ -264,8 +264,8 @@ func (h earnRoutes) evmDepositResponse(ctx context.Context, kind EvmDepositKind,
 	return &evmDepositOutput{Body: out}
 }
 
-func (h earnRoutes) evmDepositFound(ctx context.Context, route evmDepositRoute) *evmDepositOutput {
-	return h.evmDepositResponse(ctx, route.Kind, &route.Address, route.Set)
+func (h earnRoutes) evmDepositFound(route evmDepositRoute) *evmDepositOutput {
+	return h.evmDepositResponse(route.Kind, &route.Address, route.Set)
 }
 
 type EvmDepositAddressRequest struct {
@@ -328,14 +328,14 @@ func (h earnRoutes) evmDepositAddress(ctx context.Context, in *sessionRequest) (
 		return nil, evmDepositUnavailable("evm deposit read", err)
 	}
 	if route != nil {
-		return h.evmDepositFound(ctx, *route), nil
+		return h.evmDepositFound(*route), nil
 	}
 	walletID, err := h.privyWalletID(ctx, "solana", wallet.String())
 	if err != nil {
 		return nil, evmDepositUnavailable("privy wallet lookup", err)
 	}
 	if walletID == "" {
-		return h.evmDepositResponse(ctx, RelaySigned, nil, bridge.Current), nil
+		return h.evmDepositResponse(RelaySigned, nil, bridge.Current), nil
 	}
 	existing, err := h.privyDepositRoutes(ctx, walletID)
 	if err != nil {
@@ -350,7 +350,7 @@ func (h earnRoutes) evmDepositAddress(ctx context.Context, in *sessionRequest) (
 	}
 	expiry := time.Now().Add(evmDepositSignWindow).UnixMilli()
 	toSign := h.privyDepositRequest(walletID, expiry)
-	out := h.evmDepositResponse(ctx, PrivyAutobridge, nil, bridge.Current)
+	out := h.evmDepositResponse(PrivyAutobridge, nil, bridge.Current)
 	out.Body.ToSign, out.Body.RequestExpiry = &toSign, &expiry
 	return out, nil
 }
@@ -371,7 +371,7 @@ func (h earnRoutes) createEvmDepositAddress(ctx context.Context, in *evmDepositI
 		return nil, evmDepositUnavailable("evm deposit read", err)
 	}
 	if route != nil {
-		return h.evmDepositFound(ctx, *route), nil
+		return h.evmDepositFound(*route), nil
 	}
 	userID, err := h.evmDepositAppUser(ctx, wallet)
 	if err != nil {
@@ -433,7 +433,7 @@ func (h earnRoutes) createAutobridgeRoute(ctx context.Context, wallet solana.Pub
 		return nil, evmDepositUnavailable("evm deposit read", err)
 	}
 	if route != nil {
-		return h.evmDepositFound(ctx, *route), nil
+		return h.evmDepositFound(*route), nil
 	}
 	walletID, err := h.privyWalletID(ctx, "solana", wallet.String())
 	if err != nil {
@@ -555,5 +555,5 @@ ON CONFLICT DO NOTHING`, wallet.String(), userID, string(route.Kind), route.Addr
 		slog.Warn("evm deposit address already routes to another wallet", "wallet", wallet.String(), "address", route.Address)
 		return nil, earnError(http.StatusConflict, "evm_deposit_address_in_use", "This deposit address already belongs to another wallet.")
 	}
-	return h.evmDepositFound(ctx, *stored), nil
+	return h.evmDepositFound(*stored), nil
 }

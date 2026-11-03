@@ -27,6 +27,7 @@ type Asset string
 
 const (
 	USDC  Asset = "usdc"
+	USDCe Asset = "usdce"
 	USDT  Asset = "usdt"
 	PYUSD Asset = "pyusd"
 	USDG  Asset = "usdg"
@@ -45,6 +46,7 @@ type AssetInfo struct {
 
 var Assets = map[Asset]AssetInfo{
 	USDC:  {"USDC", "USD Coin", true, "usdc.png"},
+	USDCe: {"USDC.e", "Bridged USDC", true, "usdc.png"},
 	USDT:  {"USDT", "Tether USD", true, "usdt.png"},
 	PYUSD: {"PYUSD", "PayPal USD", true, "pyusd.svg"},
 	USDG:  {"USDG", "Global Dollar", true, "usdg.svg"},
@@ -58,12 +60,12 @@ func init() {
 			if _, ok := Assets[t.Asset]; !ok {
 				panic(fmt.Sprintf("bridge: %s on %s has no entry in Assets", t.Asset, n.Chain))
 			}
+			if !slices.Contains(RouteSets, t.Since) {
+				panic(fmt.Sprintf("bridge: %s on %s has Since %q, which is not in RouteSets", t.Asset, n.Chain, t.Since))
+			}
 		}
 	}
 }
-
-// NativeToken is the address Privy and Relay use for a chain's own coin.
-const NativeToken = "0x0000000000000000000000000000000000000000"
 
 // RouteSet names the cells a Privy deposit account was created to convert.
 // Privy cannot add sources to an existing account, so an account keeps the set
@@ -161,10 +163,12 @@ func (n Network) Token(a Asset) (Token, bool) {
 
 // Networks holds the stablecoins that both Privy auto-bridge and a direct
 // Relay deposit turn into USDC on Solana. USDT0 is listed as usdt, and on
-// Optimism usdt is the bridged legacy USDT. BNB Chain's USDC and USDT and
-// every DAI and USDe use 18 decimals.
+// Optimism usdt is the bridged legacy USDT, and Tempo's usdce is Stargate's
+// bridged USDC. BNB Chain's USDC and USDT and every DAI and USDe use 18
+// decimals. A token is never removed: a Privy account created with it keeps
+// converting it.
 var Networks = []Network{
-	{Chain: Ethereum, Name: "Ethereum", Icon: "ethereum.png", ChainID: 1, MinUSD: 20, Tokens: []Token{
+	{Chain: Ethereum, Name: "Ethereum (ERC20)", Icon: "ethereum.png", ChainID: 1, MinUSD: 20, Tokens: []Token{
 		{USDC, "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", 6, Legacy13},
 		{USDT, "0xdac17f958d2ee523a2206206994597c13d831ec7", 6, Legacy13},
 		{PYUSD, "0x6c3ea9036406852006290770bedfcaba0e23a0e8", 6, StablesV1},
@@ -172,25 +176,25 @@ var Networks = []Network{
 		{DAI, "0x6b175474e89094c44da98b954eedeac495271d0f", 18, StablesV1},
 		{USDe, "0x4c9edd5852cd905f086c759e8383e09bff1e68b3", 18, StablesV1},
 	}},
-	{Chain: BNB, Name: "BNB Smart Chain", Icon: "bnb.png", ChainID: 56, Tokens: []Token{
+	{Chain: BNB, Name: "BNB Smart Chain (BEP20)", Icon: "bnb.png", ChainID: 56, Tokens: []Token{
 		{USDC, "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d", 18, Legacy13},
 		{USDT, "0x55d398326f99059ff775485246999027b3197955", 18, Legacy13},
 		{USDe, "0x5d3a1ff2b6bab83b63cd9ad0787074081a52ef34", 18, StablesV1},
 	}},
-	{Chain: Base, Name: "Base", Icon: "base.png", ChainID: 8453, Tokens: []Token{
+	{Chain: Base, Name: "Base Mainnet", Icon: "base.png", ChainID: 8453, Tokens: []Token{
 		{USDC, "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913", 6, Legacy13},
 		{USDT, "0xfde4c96c8593536e31f229ea8f37b2ada2699bb2", 6, Legacy13},
 	}},
-	{Chain: Arbitrum, Name: "Arbitrum", Icon: "arbitrum.png", ChainID: 42161, Tokens: []Token{
+	{Chain: Arbitrum, Name: "Arbitrum One", Icon: "arbitrum.png", ChainID: 42161, Tokens: []Token{
 		{USDC, "0xaf88d065e77c8cc2239327c5edb3a432268e5831", 6, Legacy13},
 		{USDT, "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9", 6, Legacy13},
 		{USDe, "0x5d3a1ff2b6bab83b63cd9ad0787074081a52ef34", 18, StablesV1},
 	}},
-	{Chain: Optimism, Name: "Optimism", ChainID: 10, Tokens: []Token{
+	{Chain: Optimism, Name: "OP Mainnet", ChainID: 10, Tokens: []Token{
 		{USDC, "0x0b2c639c533813f4aa9d7837caf62653d097ff85", 6, StablesV1},
 		{USDT, "0x94b008aa00579c1307b0ef2c499ad98a8ce58e58", 6, StablesV1},
 	}},
-	{Chain: Polygon, Name: "Polygon", Icon: "polygon.png", ChainID: 137, Tokens: []Token{
+	{Chain: Polygon, Name: "Polygon PoS", Icon: "polygon.png", ChainID: 137, Tokens: []Token{
 		{USDC, "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359", 6, Legacy13},
 		{USDT, "0xc2132d05d31c914a87c6611c10748aeb04b58e8f", 6, Legacy13},
 	}},
@@ -199,7 +203,7 @@ var Networks = []Network{
 		{USDT, "0xe7cd86e13ac4309349f30b3435a9d337750fc82d", 6, StablesV1},
 	}},
 	{Chain: Tempo, Name: "Tempo", ChainID: 4217, Tokens: []Token{
-		{USDC, "0x20c000000000000000000000b9537d11c60e8b50", 6, StablesV1},
+		{USDCe, "0x20c000000000000000000000b9537d11c60e8b50", 6, StablesV1},
 		{USDT, "0x20c00000000000000000000014f22ca97301eb73", 6, StablesV1},
 	}},
 	{Chain: Robinhood, Name: "Robinhood Chain", ChainID: 4663, Tokens: []Token{
