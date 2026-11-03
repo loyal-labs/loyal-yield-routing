@@ -36,6 +36,7 @@ var earnEvmDepositFamily = earnFamily{
 	yieldGrants: []Grant{
 		TableGrant("loyal_yield.evm_deposit_routes", "SELECT"),
 		TableGrant("loyal_yield.evm_deposit_routes", "INSERT"),
+		TableGrant("loyal_yield.relay_deposit_addresses", "SELECT"),
 	},
 	ready: func(h earnRoutes) bool {
 		return h.signedIn() && h.YieldDB != nil && h.Privy != nil && h.Privy.AppID != "" && h.Privy.AppSecret != ""
@@ -53,6 +54,13 @@ type EvmDepositKind string
 const (
 	PrivyAutobridge EvmDepositKind = "privy_autobridge"
 	RelaySigned     EvmDepositKind = "relay_signed"
+)
+
+type DepositRouteKind string
+
+const (
+	EVMRoute                 DepositRouteKind = "evm"
+	RelayDepositAddressRoute DepositRouteKind = "relay_deposit_address"
 )
 
 type evmDepositRoute struct {
@@ -194,22 +202,26 @@ func (h earnRoutes) privyDepositRequest(walletID string, requestExpiryMs int64) 
 }
 
 type EvmDepositToken struct {
-	Asset      bridge.Asset `json:"asset"`
-	Symbol     string       `json:"symbol"`
-	Name       string       `json:"name"`
-	Decimals   uint8        `json:"decimals"`
-	Stable     bool         `json:"stable"`
-	Icon       *string      `json:"icon" doc:"Image file in the receive sheet's assets; null while there is none"`
-	FeePercent *string      `json:"feePercent" doc:"Privy auto-bridge cost as a percent of a 100-token deposit, from Privy's deposit quote; null for relay_signed or when the quote failed"`
+	Asset       bridge.Asset `json:"asset"`
+	Symbol      string       `json:"symbol"`
+	Name        string       `json:"name"`
+	Decimals    uint8        `json:"decimals"`
+	Stable      bool         `json:"stable"`
+	Icon        *string      `json:"icon" doc:"Image file in the receive sheet's assets; null while there is none"`
+	FeePercent  *string      `json:"feePercent" doc:"Privy auto-bridge cost as a percent of a 100-token deposit, from Privy's deposit quote; null for relay_signed or when the quote failed"`
+	FeeUSD      *string      `json:"feeUsd" doc:"Relay's fee in USD on a minimum deposit, for relay_deposit_address entries; null otherwise or until a quote has answered"`
+	ReceiveUSDC *string      `json:"receiveUsdc" doc:"USDC on Solana a minimum deposit pays, from the same quote as feeUsd; null otherwise or until a quote has answered"`
 }
 
 type EvmDepositNetwork struct {
-	Chain  bridge.Chain      `json:"chain"`
-	Name   string            `json:"name"`
-	Icon   *string           `json:"icon" doc:"Image file in the receive sheet's assets; null while there is none"`
-	Assets []bridge.Asset    `json:"assets"`
-	Tokens []EvmDepositToken `json:"tokens"`
-	MinUSD int               `json:"minUsd" doc:"Smallest deposit worth bridging in USD; 0 means none"`
+	Route   DepositRouteKind  `json:"route" enum:"evm,relay_deposit_address" doc:"How address is obtained: evm entries share the wallet's 0x deposit address; a relay_deposit_address entry's address is minted by POST /api/funding/tron-deposit-address"`
+	Address *string           `json:"address" doc:"This entry's deposit address; null until it exists"`
+	Chain   bridge.Chain      `json:"chain"`
+	Name    string            `json:"name"`
+	Icon    *string           `json:"icon" doc:"Image file in the receive sheet's assets; null while there is none"`
+	Assets  []bridge.Asset    `json:"assets"`
+	Tokens  []EvmDepositToken `json:"tokens"`
+	MinUSD  int               `json:"minUsd" doc:"Smallest deposit worth bridging in USD; 0 means none"`
 }
 
 func iconFile(name string) *string {
@@ -243,7 +255,7 @@ func checksumAddress(address string) string {
 	return string(out)
 }
 
-func (h earnRoutes) evmDepositResponse(kind EvmDepositKind, address *string, set bridge.RouteSet) *evmDepositOutput {
+func (h earnRoutes) evmDepositResponse(ctx context.Context, wallet solana.PublicKey, kind EvmDepositKind, address *string, set bridge.RouteSet) (*evmDepositOutput, error) {
 	if address != nil {
 		cased := checksumAddress(*address)
 		address = &cased
@@ -256,7 +268,7 @@ func (h earnRoutes) evmDepositResponse(kind EvmDepositKind, address *string, set
 	out := EvmDepositAddressResponse{Address: address, Kind: kind, Networks: []EvmDepositNetwork{}, Minimums: map[string]int{}}
 	seen := map[bridge.Asset]bool{}
 	for _, network := range networks {
-		item := EvmDepositNetwork{Chain: network.Chain, Name: network.Name, Icon: iconFile(network.Icon), MinUSD: network.MinUSD}
+		item := EvmDepositNetwork{Route: EVMRoute, Address: address, Chain: network.Chain, Name: network.Name, Icon: iconFile(network.Icon), MinUSD: network.MinUSD}
 		out.Chains = append(out.Chains, network.Chain)
 		if network.MinUSD > 0 {
 			out.Minimums[string(network.Chain)] = network.MinUSD
@@ -280,11 +292,41 @@ func (h earnRoutes) evmDepositResponse(kind EvmDepositKind, address *string, set
 		}
 		out.Networks = append(out.Networks, item)
 	}
-	return &evmDepositOutput{Body: out}
+	tron := h.tronDepositNetwork(ctx, wallet)
+	at := slices.IndexFunc(out.Networks, func(n EvmDepositNetwork) bool { return n.Chain == bridge.Ethereum }) + 1
+	out.Networks = slices.Insert(out.Networks, at, tron)
+	return &evmDepositOutput{Body: out}, nil
 }
 
-func (h earnRoutes) evmDepositFound(route evmDepositRoute) *evmDepositOutput {
-	return h.evmDepositResponse(route.Kind, &route.Address, route.Set)
+// chains, assets and minimums exclude Tron because the prod client reads them
+// with the shared 0x address; W1 and T1c ship in one deploy.
+func (h earnRoutes) tronDepositNetwork(ctx context.Context, wallet solana.PublicKey) EvmDepositNetwork {
+	route := bridge.Tron
+	item := EvmDepositNetwork{Route: RelayDepositAddressRoute, Chain: route.Chain, Name: route.Name, Icon: iconFile(route.Icon), MinUSD: route.MinUSD, Assets: []bridge.Asset{route.Asset}}
+	row, err := h.storedTronDepositAddress(ctx, wallet)
+	if err != nil {
+		slog.Warn("tron deposit address read failed", "wallet", wallet.String(), "err", err)
+	}
+	if row != nil {
+		item.Address = &row.Address
+	}
+	info := bridge.Assets[route.Asset]
+	price := h.tronDepositPrice(wallet)
+	item.Tokens = []EvmDepositToken{{
+		Asset:       route.Asset,
+		Symbol:      info.Symbol,
+		Name:        info.Name,
+		Decimals:    route.Decimals,
+		Stable:      info.Stable,
+		Icon:        iconFile(info.Icon),
+		FeeUSD:      price.FeeUSD,
+		ReceiveUSDC: price.ReceiveUSDC,
+	}}
+	return item
+}
+
+func (h earnRoutes) evmDepositFound(ctx context.Context, wallet solana.PublicKey, route evmDepositRoute) (*evmDepositOutput, error) {
+	return h.evmDepositResponse(ctx, wallet, route.Kind, &route.Address, route.Set)
 }
 
 type EvmDepositAddressRequest struct {
@@ -347,14 +389,14 @@ func (h earnRoutes) evmDepositAddress(ctx context.Context, in *sessionRequest) (
 		return nil, evmDepositUnavailable("evm deposit read", err)
 	}
 	if route != nil {
-		return h.evmDepositFound(*route), nil
+		return h.evmDepositFound(ctx, wallet, *route)
 	}
 	walletID, err := h.privyWalletID(ctx, "solana", wallet.String())
 	if err != nil {
 		return nil, evmDepositUnavailable("privy wallet lookup", err)
 	}
 	if walletID == "" {
-		return h.evmDepositResponse(RelaySigned, nil, bridge.Current), nil
+		return h.evmDepositResponse(ctx, wallet, RelaySigned, nil, bridge.Current)
 	}
 	existing, err := h.privyDepositRoutes(ctx, walletID)
 	if err != nil {
@@ -369,7 +411,10 @@ func (h earnRoutes) evmDepositAddress(ctx context.Context, in *sessionRequest) (
 	}
 	expiry := time.Now().Add(evmDepositSignWindow).UnixMilli()
 	toSign := h.privyDepositRequest(walletID, expiry)
-	out := h.evmDepositResponse(PrivyAutobridge, nil, bridge.Current)
+	out, err := h.evmDepositResponse(ctx, wallet, PrivyAutobridge, nil, bridge.Current)
+	if err != nil {
+		return nil, err
+	}
 	out.Body.ToSign, out.Body.RequestExpiry = &toSign, &expiry
 	return out, nil
 }
@@ -390,7 +435,7 @@ func (h earnRoutes) createEvmDepositAddress(ctx context.Context, in *evmDepositI
 		return nil, evmDepositUnavailable("evm deposit read", err)
 	}
 	if route != nil {
-		return h.evmDepositFound(*route), nil
+		return h.evmDepositFound(ctx, wallet, *route)
 	}
 	userID, err := h.evmDepositAppUser(ctx, wallet)
 	if err != nil {
@@ -452,7 +497,7 @@ func (h earnRoutes) createAutobridgeRoute(ctx context.Context, wallet solana.Pub
 		return nil, evmDepositUnavailable("evm deposit read", err)
 	}
 	if route != nil {
-		return h.evmDepositFound(*route), nil
+		return h.evmDepositFound(ctx, wallet, *route)
 	}
 	walletID, err := h.privyWalletID(ctx, "solana", wallet.String())
 	if err != nil {
@@ -574,5 +619,5 @@ ON CONFLICT DO NOTHING`, wallet.String(), userID, string(route.Kind), route.Addr
 		slog.Warn("evm deposit address already routes to another wallet", "wallet", wallet.String(), "address", route.Address)
 		return nil, earnError(http.StatusConflict, "evm_deposit_address_in_use", "This deposit address already belongs to another wallet.")
 	}
-	return h.evmDepositFound(*stored), nil
+	return h.evmDepositFound(ctx, wallet, *stored)
 }

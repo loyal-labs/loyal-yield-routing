@@ -23,21 +23,21 @@ type depositCell struct {
 	asset bridge.Asset
 }
 
-type depositFee struct {
-	value      *string
+type depositFee[T any] struct {
+	value      *T
 	until      time.Time
 	refreshing bool
 }
 
-type depositFees struct {
+type depositFees[T any] struct {
 	mu      sync.Mutex
-	held    map[depositCell]depositFee
+	held    map[depositCell]depositFee[T]
 	timeout time.Duration
 }
 
-var privyDepositFeeCache = depositFees{held: map[depositCell]depositFee{}, timeout: depositFeeTimeout}
+var privyDepositFeeCache = depositFees[string]{held: map[depositCell]depositFee[string]{}, timeout: depositFeeTimeout}
 
-func (c *depositFees) read(cell depositCell, quote func(context.Context) (string, error)) *string {
+func (c *depositFees[T]) read(cell depositCell, quote func(context.Context) (T, error)) *T {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	fee := c.held[cell]
@@ -50,7 +50,7 @@ func (c *depositFees) read(cell depositCell, quote func(context.Context) (string
 	return fee.value
 }
 
-func (c *depositFees) refresh(cell depositCell, quote func(context.Context) (string, error)) {
+func (c *depositFees[T]) refresh(cell depositCell, quote func(context.Context) (T, error)) {
 	ctx, cancel := context.WithTimeout(context.Background(), c.timeout)
 	defer cancel()
 	value, err := quote(ctx)
@@ -58,16 +58,16 @@ func (c *depositFees) refresh(cell depositCell, quote func(context.Context) (str
 		slog.Warn("deposit fee quote failed", "chain", cell.chain, "asset", cell.asset, "err", err)
 		c.mu.Lock()
 		defer c.mu.Unlock()
-		c.held[cell] = depositFee{value: c.held[cell].value, until: time.Now().Add(depositFeeRetry)}
+		c.held[cell] = depositFee[T]{value: c.held[cell].value, until: time.Now().Add(depositFeeRetry)}
 		return
 	}
 	c.store(cell, value)
 }
 
-func (c *depositFees) store(cell depositCell, value string) {
+func (c *depositFees[T]) store(cell depositCell, value T) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.held[cell] = depositFee{value: &value, until: time.Now().Add(depositFeeTTL)}
+	c.held[cell] = depositFee[T]{value: &value, until: time.Now().Add(depositFeeTTL)}
 }
 
 func (h earnRoutes) privyDepositFees(networks []bridge.Network) map[depositCell]*string {
