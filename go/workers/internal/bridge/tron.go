@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math/big"
 	"net/http"
+	"regexp"
 	"time"
 
 	"github.com/mr-tron/base58"
@@ -46,6 +47,13 @@ const DepositAddressLead = 30 * 24 * time.Hour
 const depositOrderMaxLife = 200 * 24 * time.Hour
 
 const tronZeroAddress = "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb"
+
+const (
+	depositShortfallBps = 300
+	solanaUSDCDigits    = 6
+)
+
+var plainDecimal = regexp.MustCompile(`^[0-9]+(\.[0-9]+)?$`)
 
 type DepositAddress struct {
 	Address   string
@@ -124,14 +132,16 @@ type relayDepositQuote struct {
 						ChainID   string `json:"chainId"`
 						Recipient string `json:"recipient"`
 						Currency  string `json:"currency"`
+						Deadline  int64  `json:"deadline"`
 						ExtraData string `json:"extraData"`
 					} `json:"refunds"`
 				} `json:"inputs"`
 				Output struct {
 					ChainID  string `json:"chainId"`
 					Payments []struct {
-						Recipient string `json:"recipient"`
-						Currency  string `json:"currency"`
+						Recipient     string `json:"recipient"`
+						Currency      string `json:"currency"`
+						MinimumAmount string `json:"minimumAmount"`
 					} `json:"payments"`
 					Calls     []json.RawMessage `json:"calls"`
 					Deadline  int64             `json:"deadline"`
@@ -185,8 +195,12 @@ func CheckDepositOrder(route DepositRoute, recipient string, raw []byte, now tim
 	if out.ChainID != "solana" || len(out.Payments) != 1 {
 		return DepositAddress{}, refuseOrder("output is not one payment on solana")
 	}
-	if p := out.Payments[0]; p.Recipient != recipient || p.Currency != SolanaUSDCMint {
+	p := out.Payments[0]
+	if p.Recipient != recipient || p.Currency != SolanaUSDCMint {
 		return DepositAddress{}, refuseOrder("output pays %s %s, not USDC to the requested recipient", p.Currency, p.Recipient)
+	}
+	if least, ok := parseAmount(p.MinimumAmount); !ok || least.Sign() <= 0 || least.Cmp(route.outputFloor()) < 0 {
+		return DepositAddress{}, refuseOrder("output minimumAmount %q is below the %s USDC floor", p.MinimumAmount, route.outputFloor())
 	}
 	if len(out.Calls) != 0 || len(order.Fees) != 0 || out.ExtraData != "0x" {
 		return DepositAddress{}, refuseOrder("order carries %d output calls, %d fees and extraData %q", len(out.Calls), len(order.Fees), out.ExtraData)
@@ -195,7 +209,31 @@ func CheckDepositOrder(route DepositRoute, recipient string, raw []byte, now tim
 	if !deadline.After(now.Add(DepositAddressLead)) || deadline.After(now.Add(depositOrderMaxLife)) {
 		return DepositAddress{}, refuseOrder("deadline %s is not between %s and %s from now", deadline.Format(time.RFC3339), DepositAddressLead, depositOrderMaxLife)
 	}
-	return DepositAddress{Address: step.DepositAddress, RequestID: step.RequestID, ExpiresAt: deadline, FeeUSD: q.Fees.Relayer.AmountUSD}, nil
+	if refund := in.Refunds[0].Deadline; refund < out.Deadline {
+		return DepositAddress{}, refuseOrder("refund deadline %d is before the order deadline %d", refund, out.Deadline)
+	}
+	return DepositAddress{Address: step.DepositAddress, RequestID: step.RequestID, ExpiresAt: deadline, FeeUSD: route.shownFee(q.Fees.Relayer.AmountUSD)}, nil
+}
+
+// outputFloor is the least Solana USDC a minimum deposit may pay: the input
+// taken 1:1 in USD, less depositShortfallBps.
+func (r DepositRoute) outputFloor() *big.Int {
+	floor := new(big.Int).Mul(r.minimumRaw(), big.NewInt(10000-depositShortfallBps))
+	floor.Quo(floor, big.NewInt(10000))
+	return floor.Quo(floor, new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(r.Decimals)-solanaUSDCDigits), nil))
+}
+
+// shownFee is Relay's fee in USD when it is a plain decimal no larger than
+// the route minimum; anything else is not shown.
+func (r DepositRoute) shownFee(usd string) string {
+	if !plainDecimal.MatchString(usd) {
+		return ""
+	}
+	fee, ok := new(big.Rat).SetString(usd)
+	if !ok || fee.Cmp(new(big.Rat).SetInt64(int64(r.MinUSD))) > 0 {
+		return ""
+	}
+	return usd
 }
 
 func isTronAddress(s string) bool {
