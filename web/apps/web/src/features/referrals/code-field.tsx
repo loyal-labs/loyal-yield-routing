@@ -11,6 +11,7 @@ import {
 
 import { earnToast } from "@/components/wallet-workspace/facelift/earn-toast";
 
+import { referralsEnabled } from "./enabled";
 import { claimCode, codeExists, readClaimWindow } from "./claim";
 import {
   closesCopy,
@@ -32,11 +33,13 @@ function CodeInput({
   onChange,
   error,
   action,
+  autoFocus,
 }: {
   value: string;
   onChange: (value: string) => void;
   error: ClaimFailure | null;
   action?: ReactNode;
+  autoFocus?: boolean;
 }) {
   const id = useId();
   return (
@@ -48,6 +51,7 @@ function CodeInput({
         <input
           aria-describedby={`${id}-note`}
           aria-invalid={error !== null}
+          autoFocus={autoFocus}
           autoCapitalize="characters"
           autoComplete="off"
           className="h-12 min-w-0 flex-1 rounded-full bg-secondary px-4 font-mono text-sm uppercase tracking-wider outline-none placeholder:font-sans placeholder:normal-case placeholder:tracking-normal placeholder:text-tertiary"
@@ -77,7 +81,7 @@ function tidy(raw: string): string {
   return raw.replace(/\s/g, "").toUpperCase();
 }
 
-export function SignInCodeField() {
+function SignInCodeField({ autoFocus }: { autoFocus: boolean }) {
   const [value, setValue] = useState(() => readPendingCode()?.code ?? "");
   const [error, setError] = useState<ClaimFailure | null>(null);
   const latest = useRef(value);
@@ -101,7 +105,36 @@ export function SignInCodeField() {
     });
   }
 
-  return <CodeInput error={error} onChange={change} value={value} />;
+  return (
+    <CodeInput
+      autoFocus={autoFocus}
+      error={error}
+      onChange={change}
+      value={value}
+    />
+  );
+}
+
+function InviteCodeRow() {
+  const [open, setOpen] = useState(() => readPendingCode() !== null);
+  const [pressed, setPressed] = useState(false);
+  if (open) return <SignInCodeField autoFocus={pressed} />;
+  return (
+    <button
+      className="t-hover self-start rounded-full px-3 py-1.5 text-[14px] text-muted-foreground leading-5 hover:bg-accent hover:text-foreground"
+      onClick={() => {
+        setPressed(true);
+        setOpen(true);
+      }}
+      type="button"
+    >
+      {referralCopy.haveCode}
+    </button>
+  );
+}
+
+export function SignInCodeRow() {
+  return referralsEnabled() ? <InviteCodeRow /> : null;
 }
 
 export function SettingsCodeField() {

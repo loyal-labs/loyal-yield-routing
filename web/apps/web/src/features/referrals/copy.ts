@@ -20,6 +20,7 @@ export const failureCopy: Record<ClaimFailure, string> = {
 export const referralCopy = {
   joined: "You joined with an invite",
   label: "Invite code",
+  haveCode: "Have an invite code?",
   placeholder: "Invite code (optional)",
   apply: "Apply",
   applying: "Applying…",

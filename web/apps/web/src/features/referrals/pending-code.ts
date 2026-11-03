@@ -1,3 +1,5 @@
+import { referralsEnabled } from "./enabled";
+
 export type PendingCode = { code: string; source: "link" | "typed" };
 
 const STORAGE_KEY = "loyal.referral.pending";
@@ -18,6 +20,7 @@ function storage(): Storage | null {
 }
 
 export function readPendingCode(): PendingCode | null {
+  if (!referralsEnabled()) return null;
   try {
     const raw = storage()?.getItem(STORAGE_KEY);
     if (!raw) return null;
@@ -44,6 +47,7 @@ export function clearPendingCode(): void {
 }
 
 export function storeLinkCode(raw: string | null | undefined): void {
+  if (!referralsEnabled()) return;
   const code = normalizeCode(raw ?? "");
   if (code) writePendingCode({ code, source: "link" });
 }

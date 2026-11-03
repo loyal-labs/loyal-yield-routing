@@ -35,6 +35,7 @@ import { useAuthSession } from "@/contexts/auth-session-context";
 import { useSignInModal } from "@/contexts/sign-in-modal-context";
 import { useCherryRuntime } from "@/features/cherry/client/runtime-context";
 import { useAuthCapability } from "@/lib/auth/capability";
+import { referralsEnabled } from "@/features/referrals/enabled";
 import { usePublicEnv } from "@/contexts/public-env-context";
 import {
   splitUsdBalance,
@@ -674,23 +675,25 @@ export function WalletHomePage({
                     />
                   ) : null}
                 </div>
-                <button
-                  className="t-hover mb-2 flex min-h-11 w-full shrink-0 items-center rounded-2xl px-4 text-left hover:bg-accent"
-                  onClick={() => onSelectPage("invite")}
-                  type="button"
-                >
-                  <ThemedIcon
-                    className="mr-3 size-6 text-muted-foreground"
-                    src={`${ASSET_BASE}/icon-invite.svg`}
-                  />
-                  <span className="flex-1 font-medium text-[16px] text-foreground leading-5">
-                    Invite friends
-                  </span>
-                  <ThemedIcon
-                    className="size-4 text-tertiary"
-                    src={`${ASSET_BASE}/icon-chevron-right.svg`}
-                  />
-                </button>
+                {referralsEnabled() ? (
+                  <button
+                    className="t-hover mb-2 flex min-h-11 w-full shrink-0 items-center rounded-2xl px-4 text-left hover:bg-accent"
+                    onClick={() => onSelectPage("invite")}
+                    type="button"
+                  >
+                    <ThemedIcon
+                      className="mr-3 size-6 text-muted-foreground"
+                      src={`${ASSET_BASE}/icon-invite.svg`}
+                    />
+                    <span className="flex-1 font-medium text-[16px] text-foreground leading-5">
+                      Invite friends
+                    </span>
+                    <ThemedIcon
+                      className="size-4 text-tertiary"
+                      src={`${ASSET_BASE}/icon-chevron-right.svg`}
+                    />
+                  </button>
+                ) : null}
               </div>
             </div>
           </section>

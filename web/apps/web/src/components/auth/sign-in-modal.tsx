@@ -22,7 +22,7 @@ import { useSignInModal } from "@/contexts/sign-in-modal-context";
 import { usePublicEnv } from "@/contexts/public-env-context";
 import { CherryPrivySignIn } from "@/features/cherry/client/privy-sign-in";
 import { useCherryRuntime } from "@/features/cherry/client/runtime-context";
-import { SignInCodeField } from "@/features/referrals/code-field";
+import { SignInCodeRow } from "@/features/referrals/code-field";
 
 import { PrivyAccountPanel } from "./privy-account-panel";
 import { PrivySignIn } from "./privy-sign-in";
@@ -203,9 +203,6 @@ function SignInDialog({ privyModalOpen = false }: { privyModalOpen?: boolean }) 
                 </DialogDescription>
               </DialogHeader>
               <div className="flex flex-col gap-5 px-6 pb-6">
-                {cherryRuntime.mode === "standalone" ? (
-                  <SignInCodeField />
-                ) : null}
                 {!privyAppId || isLedgerMode ? (
                   <WalletSignIn defaultUseLedgerProof={isLedgerMode} />
                 ) : cherryRuntime.mode === "cherry_embedded" ? (
@@ -213,6 +210,7 @@ function SignInDialog({ privyModalOpen = false }: { privyModalOpen?: boolean }) 
                 ) : (
                   <PrivySignIn />
                 )}
+                {cherryRuntime.mode === "standalone" ? <SignInCodeRow /> : null}
               </div>
             </>
           )}
