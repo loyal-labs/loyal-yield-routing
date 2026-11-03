@@ -9,12 +9,12 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/jackc/pgx/v5"
 	"github.com/solana-foundation/solana-go/v2"
-	"golang.org/x/sync/singleflight"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/bridge"
 )
@@ -56,7 +56,47 @@ type evmDepositRoute struct {
 	Address string
 }
 
-var evmDepositCreates singleflight.Group
+type walletLocks struct {
+	mu   sync.Mutex
+	held map[solana.PublicKey]*walletLock
+}
+
+type walletLock struct {
+	turn chan struct{}
+	refs int
+}
+
+var evmDepositCreates = walletLocks{held: map[solana.PublicKey]*walletLock{}}
+
+func (l *walletLocks) lock(ctx context.Context, wallet solana.PublicKey) (unlock func(), err error) {
+	l.mu.Lock()
+	entry := l.held[wallet]
+	if entry == nil {
+		entry = &walletLock{turn: make(chan struct{}, 1)}
+		l.held[wallet] = entry
+	}
+	entry.refs++
+	l.mu.Unlock()
+	select {
+	case entry.turn <- struct{}{}:
+		return func() {
+			<-entry.turn
+			l.release(wallet, entry)
+		}, nil
+	case <-ctx.Done():
+		l.release(wallet, entry)
+		return nil, ctx.Err()
+	}
+}
+
+func (l *walletLocks) release(wallet solana.PublicKey, entry *walletLock) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	entry.refs--
+	if entry.refs == 0 {
+		delete(l.held, wallet)
+	}
+}
 
 var evmAddress = regexp.MustCompile(`^0x[0-9a-f]{40}$`)
 
@@ -253,13 +293,17 @@ func (h earnRoutes) createEvmDepositAddress(ctx context.Context, in *evmDepositI
 	if claim.PrivyIdentityToken != "" {
 		return h.createRelaySignedRoute(ctx, wallet, userID, claim.PrivyIdentityToken)
 	}
-	out, err, _ := evmDepositCreates.Do(wallet.String(), func() (any, error) {
-		return h.createAutobridgeRoute(ctx, wallet, userID, claim.Signature, claim.RequestExpiry)
-	})
-	if err != nil {
-		return nil, err
+	if claim.RequestExpiry <= time.Now().UnixMilli() {
+		return nil, earnError(http.StatusBadRequest, "evm_deposit_signature_expired", "Signature expired, try again.")
 	}
-	return out.(*evmDepositOutput), nil
+	unlock, err := evmDepositCreates.lock(ctx, wallet)
+	if err != nil {
+		return nil, evmDepositUnavailable("evm deposit lock", err)
+	}
+	defer unlock()
+	create, cancelCreate := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancelCreate()
+	return h.createAutobridgeRoute(create, wallet, userID, claim.Signature, claim.RequestExpiry)
 }
 
 // evmDepositAppUser runs before any Privy call, so a wallet with no app user
@@ -297,9 +341,6 @@ func parseEvmDepositClaim(raw []byte) (EvmDepositAddressRequest, error) {
 }
 
 func (h earnRoutes) createAutobridgeRoute(ctx context.Context, wallet solana.PublicKey, userID, signature string, requestExpiryMs int64) (*evmDepositOutput, error) {
-	if requestExpiryMs <= time.Now().UnixMilli() {
-		return nil, earnError(http.StatusBadRequest, "evm_deposit_signature_expired", "Signature expired, try again.")
-	}
 	route, err := h.storedEvmDepositRoute(ctx, wallet)
 	if err != nil {
 		return nil, evmDepositUnavailable("evm deposit read", err)

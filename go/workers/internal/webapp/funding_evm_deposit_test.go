@@ -1,13 +1,13 @@
 package webapp
 
 import (
-	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -228,19 +228,18 @@ func TestEvmDepositRelaySignedRefusesEmbeddedWalletWhenPrivyLookupIsEmpty(t *tes
 	}
 }
 
-const (
-	fakePrivyWalletID = "privy-wallet-1"
-	fakePrivyAddress  = "0x00000000000000000000000000000000000000ab"
-)
+const fakePrivyWalletID = "privy-wallet-1"
 
 type fakePrivy struct {
+	address string
 	created atomic.Bool
 	lookups atomic.Int32
 	creates atomic.Int32
+	started chan struct{}
 }
 
 func (f *fakePrivy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	route := []map[string]string{{"deposit_address": fakePrivyAddress, "wallet_id": fakePrivyWalletID}}
+	route := []map[string]string{{"deposit_address": f.address, "wallet_id": fakePrivyWalletID}}
 	switch {
 	case r.URL.Path == "/v1/wallets":
 		wallet := map[string]string{"id": fakePrivyWalletID, "address": r.URL.Query().Get("address"), "chain_type": "solana"}
@@ -254,7 +253,12 @@ func (f *fakePrivy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{"data": data})
 	case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/deposit_accounts/crypto"):
 		f.creates.Add(1)
+		f.started <- struct{}{}
 		time.Sleep(200 * time.Millisecond)
+		if r.Header.Get("privy-authorization-signature") != "sig" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
 		f.created.Store(true)
 		json.NewEncoder(w).Encode(map[string]any{"deposit_accounts": route})
 	default:
@@ -262,16 +266,21 @@ func (f *fakePrivy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func TestEvmDepositConcurrentPostsMakeOnePrivyCreate(t *testing.T) {
-	pool := evmDepositTestDB(t)
-	ctx := context.Background()
+type evmDepositPoster struct {
+	router http.Handler
+	token  string
+	privy  *fakePrivy
+}
+
+func newEvmDepositPoster(t *testing.T, pool *pgxpool.Pool) evmDepositPoster {
+	t.Helper()
 	wallet := solana.NewWallet().PublicKey()
-	if _, err := pool.Exec(ctx, `INSERT INTO app_users (provider, subject_address) VALUES ('solana', $1)`, wallet.String()); err != nil {
+	if _, err := pool.Exec(context.Background(), `INSERT INTO app_users (provider, subject_address) VALUES ('solana', $1)`, wallet.String()); err != nil {
 		t.Fatal(err)
 	}
-	privy := &fakePrivy{}
+	privy := &fakePrivy{address: "0x" + hex.EncodeToString(wallet[:20]), started: make(chan struct{}, 16)}
 	server := httptest.NewServer(privy)
-	defer server.Close()
+	t.Cleanup(server.Close)
 	target, err := url.Parse(server.URL)
 	if err != nil {
 		t.Fatal(err)
@@ -298,44 +307,98 @@ func TestEvmDepositConcurrentPostsMakeOnePrivyCreate(t *testing.T) {
 			Privy:   &Privy{AppID: "app", AppSecret: "secret"},
 		},
 	}.registerEvmDeposit(humachi.New(router, apiConfig()))
-	body := fmt.Sprintf(`{"signature":"sig","requestExpiry":%d}`, time.Now().Add(time.Hour).UnixMilli())
+	return evmDepositPoster{router: router, token: token, privy: privy}
+}
 
-	const posters = 8
-	codes := make([]int, posters)
-	addresses := make([]string, posters)
-	var wg sync.WaitGroup
-	for i := range posters {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			req := httptest.NewRequest(http.MethodPost, evmDepositPath, bytes.NewReader([]byte(body)))
-			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("Authorization", "Bearer "+token)
-			res := httptest.NewRecorder()
-			router.ServeHTTP(res, req)
-			codes[i] = res.Code
-			var out struct {
-				Address string `json:"address"`
-			}
-			json.Unmarshal(res.Body.Bytes(), &out)
-			addresses[i] = out.Address
-		}()
+func (p evmDepositPoster) post(ctx context.Context, signature string) (int, string) {
+	body := fmt.Sprintf(`{"signature":%q,"requestExpiry":%d}`, signature, time.Now().Add(time.Hour).UnixMilli())
+	req := httptest.NewRequestWithContext(ctx, http.MethodPost, evmDepositPath, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+p.token)
+	res := httptest.NewRecorder()
+	p.router.ServeHTTP(res, req)
+	var out struct {
+		Address string `json:"address"`
 	}
-	wg.Wait()
+	json.Unmarshal(res.Body.Bytes(), &out)
+	return res.Code, out.Address
+}
 
-	if lookups, creates := privy.lookups.Load(), privy.creates.Load(); lookups != 1 || creates != 1 {
-		t.Fatalf("privy lookups, creates = %d, %d; want 1, 1", lookups, creates)
-	}
-	for i := range posters {
-		if codes[i] != http.StatusOK || addresses[i] != fakePrivyAddress {
-			t.Fatalf("POST %d = %d %q; want 200 %s", i, codes[i], addresses[i], fakePrivyAddress)
+func TestEvmDepositConcurrentPostsMakeOnePrivyCreate(t *testing.T) {
+	pool := evmDepositTestDB(t)
+
+	t.Run("eight concurrent posts", func(t *testing.T) {
+		p := newEvmDepositPoster(t, pool)
+		const posters = 8
+		codes := make([]int, posters)
+		addresses := make([]string, posters)
+		var wg sync.WaitGroup
+		for i := range posters {
+			wg.Go(func() { codes[i], addresses[i] = p.post(context.Background(), "sig") })
 		}
-	}
-	var rows int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM loyal_yield.evm_deposit_routes`).Scan(&rows); err != nil {
-		t.Fatal(err)
-	}
-	if rows != 1 {
-		t.Fatalf("evm_deposit_routes rows = %d; want 1", rows)
-	}
+		wg.Wait()
+		if lookups, creates := p.privy.lookups.Load(), p.privy.creates.Load(); lookups != 1 || creates != 1 {
+			t.Fatalf("privy lookups, creates = %d, %d; want 1, 1", lookups, creates)
+		}
+		for i := range posters {
+			if codes[i] != http.StatusOK || addresses[i] != p.privy.address {
+				t.Fatalf("POST %d = %d %q; want 200 %s", i, codes[i], addresses[i], p.privy.address)
+			}
+		}
+		var rows int
+		if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM loyal_yield.evm_deposit_routes WHERE evm_address = $1`, p.privy.address).Scan(&rows); err != nil {
+			t.Fatal(err)
+		}
+		if rows != 1 {
+			t.Fatalf("evm_deposit_routes rows = %d; want 1", rows)
+		}
+	})
+
+	t.Run("leader disconnects, waiter gets the address", func(t *testing.T) {
+		p := newEvmDepositPoster(t, pool)
+		ctx, cancel := context.WithCancel(context.Background())
+		var wg sync.WaitGroup
+		wg.Go(func() { p.post(ctx, "sig") })
+		<-p.privy.started
+		var code int
+		var address string
+		wg.Go(func() { code, address = p.post(context.Background(), "sig") })
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+		wg.Wait()
+		if code != http.StatusOK || address != p.privy.address || p.privy.creates.Load() != 1 {
+			t.Fatalf("waiter = %d %q, creates = %d; want 200 %s, 1", code, address, p.privy.creates.Load(), p.privy.address)
+		}
+	})
+
+	t.Run("leader bad signature, waiter good signature", func(t *testing.T) {
+		p := newEvmDepositPoster(t, pool)
+		var wg sync.WaitGroup
+		var leaderCode, code int
+		var address string
+		wg.Go(func() { leaderCode, _ = p.post(context.Background(), "bad") })
+		<-p.privy.started
+		wg.Go(func() { code, address = p.post(context.Background(), "sig") })
+		wg.Wait()
+		if leaderCode != http.StatusConflict || code != http.StatusOK || address != p.privy.address {
+			t.Fatalf("leader = %d, waiter = %d %q; want 409, 200 %s", leaderCode, code, address, p.privy.address)
+		}
+	})
+
+	t.Run("leader disconnects mid-create, later caller does not create again", func(t *testing.T) {
+		p := newEvmDepositPoster(t, pool)
+		ctx, cancel := context.WithCancel(context.Background())
+		leader := make(chan struct{})
+		go func() {
+			defer close(leader)
+			p.post(ctx, "sig")
+		}()
+		<-p.privy.started
+		cancel()
+		<-leader
+		code, address := p.post(context.Background(), "sig")
+		if code != http.StatusOK || address != p.privy.address || p.privy.creates.Load() != 1 {
+			t.Fatalf("later caller = %d %q, creates = %d; want 200 %s, 1", code, address, p.privy.creates.Load(), p.privy.address)
+		}
+	})
 }
