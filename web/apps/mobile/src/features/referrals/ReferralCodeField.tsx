@@ -6,7 +6,7 @@ import { REFERRAL_COPY } from "./copy";
 
 const CODE_LENGTH = 7;
 
-export function sanitizeCodeInput(text: string): string {
+function sanitizeCodeInput(text: string): string {
   return text.toUpperCase().replace(/[^0-9A-Z]/g, "").slice(0, CODE_LENGTH);
 }
 

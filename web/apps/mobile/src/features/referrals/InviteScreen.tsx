@@ -87,9 +87,11 @@ function FriendRow({ friend }: { friend: ReferralFriend }) {
         <Text style={styles.rowDate}>{formatJoinDate(friend.bound_at)}</Text>
       </View>
       <View style={styles.rowSide}>
-        <Text style={styles.rowAmount}>
-          {formatDeposited(friend.deposited_micro)}
-        </Text>
+        {friend.status === "deposited" ? (
+          <Text style={styles.rowAmount}>
+            {formatDeposited(friend.deposited_micro)}
+          </Text>
+        ) : null}
         <View style={[styles.chip, friend.status === "deposited" && styles.chipActive]}>
           <Text
             style={[
