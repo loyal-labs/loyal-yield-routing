@@ -52,7 +52,7 @@ const tronZeroAddress = "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb"
 const (
 	depositSlippageBps  = 50
 	depositShortfallBps = 100
-	depositFeeAllowance = 2_500_000
+	depositFeeAllowance = 4_000_000
 	solanaUSDCDigits    = 6
 )
 

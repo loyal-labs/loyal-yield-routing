@@ -75,15 +75,15 @@ func TestRefusesDepositOrderThatCannotRefundOrNeverExpires(t *testing.T) {
 		"refund in another token": func(q map[string]any) {
 			input(q)["refunds"].([]any)[0].(map[string]any)["currency"] = "So11111111111111111111111111111111111111112"
 		},
-		"refund leg with calldata":              func(q map[string]any) { input(q)["refunds"].([]any)[0].(map[string]any)["extraData"] = "0xdeadbeef" },
-		"deadline in milliseconds":              func(q map[string]any) { output(q)["deadline"] = depositOrderNow.Add(180 * 24 * time.Hour).UnixMilli() },
-		"deadline in a year":                    func(q map[string]any) { output(q)["deadline"] = depositOrderNow.AddDate(1, 0, 0).Unix() },
-		"output with calldata":                  func(q map[string]any) { output(q)["extraData"] = "0xdeadbeef" },
-		"output calldata missing":               func(q map[string]any) { delete(output(q), "extraData") },
-		"output minimum zero":                   func(q map[string]any) { payment(q)["minimumAmount"] = "0" },
-		"output minimum of one unit":            func(q map[string]any) { payment(q)["minimumAmount"] = "1" },
-		"output minimum at relay's 2% slippage": func(q map[string]any) { payment(q)["minimumAmount"] = "95953460" },
-		"refund leg without deadline":           func(q map[string]any) { delete(refund(q), "deadline") },
+		"refund leg with calldata":                   func(q map[string]any) { input(q)["refunds"].([]any)[0].(map[string]any)["extraData"] = "0xdeadbeef" },
+		"deadline in milliseconds":                   func(q map[string]any) { output(q)["deadline"] = depositOrderNow.Add(180 * 24 * time.Hour).UnixMilli() },
+		"deadline in a year":                         func(q map[string]any) { output(q)["deadline"] = depositOrderNow.AddDate(1, 0, 0).Unix() },
+		"output with calldata":                       func(q map[string]any) { output(q)["extraData"] = "0xdeadbeef" },
+		"output calldata missing":                    func(q map[string]any) { delete(output(q), "extraData") },
+		"output minimum zero":                        func(q map[string]any) { payment(q)["minimumAmount"] = "0" },
+		"output minimum of one unit":                 func(q map[string]any) { payment(q)["minimumAmount"] = "1" },
+		"output minimum below the fee-allowed floor": func(q map[string]any) { payment(q)["minimumAmount"] = "94999999" },
+		"refund leg without deadline":                func(q map[string]any) { delete(refund(q), "deadline") },
 		"refund leg ending before the order": func(q map[string]any) {
 			refund(q)["deadline"] = depositOrderNow.Add(179 * 24 * time.Hour).Unix()
 		},
