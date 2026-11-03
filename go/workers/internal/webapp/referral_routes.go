@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
+	"github.com/danielgtaylor/huma/v2/adapters/humachi"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/referral"
 )
@@ -28,6 +29,8 @@ var earnReferralsFamily = earnFamily{
 	ready:    func(h earnRoutes) bool { return h.signedIn() && h.YieldDB != nil },
 	register: earnRoutes.registerReferrals,
 }
+
+var referralLookupBudget = budget{every: 10 * time.Second, burst: 60}
 
 const (
 	referralsPath       = "/api/referrals"
@@ -79,7 +82,14 @@ type referralsOutput struct{ Body Referrals }
 type referralClaimOutput struct{ Body ReferralClaim }
 
 type referralCodeInput struct {
-	Code string `path:"code"`
+	Code   string `path:"code"`
+	client string
+}
+
+func (i *referralCodeInput) Resolve(ctx huma.Context) []error {
+	r, _ := humachi.Unwrap(ctx)
+	i.client = clientIP(r)
+	return nil
 }
 
 type referralCodeOutput struct{ Body ReferralCode }
@@ -89,6 +99,7 @@ type referralRoutes struct {
 	store      *referral.Store
 	inviteBase string
 	tries      *inviteAttempts
+	lookups    *limiters
 }
 
 func (h earnRoutes) registerReferrals(api huma.API) {
@@ -97,6 +108,7 @@ func (h earnRoutes) registerReferrals(api huma.API) {
 		store:      referral.NewStore(h.YieldDB, h.appDB),
 		inviteBase: strings.TrimRight(cmp.Or(os.Getenv("LOYAL_INVITE_BASE_URL"), defaultInviteBase), "/"),
 		tries:      newInviteAttempts(),
+		lookups:    newLimiters(),
 	}
 	huma.Register(api, huma.Operation{
 		OperationID: "get-referrals",
@@ -118,7 +130,7 @@ func (h earnRoutes) registerReferrals(api huma.API) {
 		Method:      http.MethodGet,
 		Path:        "/api/referrals/codes/{code}",
 		Summary:     "Whether a referral code exists",
-		Responses:   errorResponses[routeError](api, 400, 503),
+		Responses:   errorResponses[routeError](api, 400, 429, 503),
 	}, routes.code)
 }
 
@@ -210,6 +222,10 @@ func (h referralRoutes) claim(ctx context.Context, in *redeemRequest) (*referral
 }
 
 func (h referralRoutes) code(ctx context.Context, in *referralCodeInput) (*referralCodeOutput, error) {
+	now := time.Now()
+	if !h.lookups.get(limiterKey{"referral-code", "client", in.client}, referralLookupBudget, now).AllowN(now, 1) {
+		return nil, earnError(http.StatusTooManyRequests, "rate_limited", "")
+	}
 	code, err := referral.ParseCode(in.Code)
 	if err != nil {
 		return nil, earnError(http.StatusBadRequest, "invalid_code", "")
