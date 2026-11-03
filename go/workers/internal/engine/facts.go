@@ -30,6 +30,8 @@ type Facts struct {
 	termDebtDays        *prometheus.GaugeVec
 	stepNoRoom          *prometheus.CounterVec
 	hold                *prometheus.GaugeVec
+	privyGasSpend       *prometheus.GaugeVec
+	privyGasRead        *prometheus.GaugeVec
 }
 
 func NewFacts(registerer prometheus.Registerer) *Facts {
@@ -98,9 +100,15 @@ func NewFacts(registerer prometheus.Registerer) *Facts {
 		hold: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "loyal_backyard_hold", Help: "Why the last Backyard tick did not move the vault: 1 for its lane and hold reason (at_target, no_room, stale, chain_refused, stopped); no series while it acts.",
 		}, []string{"vault", "lane", "reason"}),
+		privyGasSpend: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "loyal_privy_gas_spend_1h_usd", Help: "Privy gas credits charged in USD over the last hour for every wallet of the app, as of the last successful read.",
+		}, nil),
+		privyGasRead: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "loyal_privy_gas_spend_last_success_timestamp_seconds", Help: "Last time Privy's gas spend was read successfully; 0 until the first read.",
+		}, nil),
 	}
 	registerer.MustRegister(f.withdrawalAttention, f.withdrawalObserved, f.navReported, f.landed, f.failed, f.inflight, f.progress, f.lane, f.payer, f.oldestDue, f.fleetReplans, f.fleetSimulations, f.fleetMovable,
-		f.leverageRoom, f.leverageGap, f.leverageLanded, f.leverageReaction, f.leverageOutages, f.termDebtDays, f.stepNoRoom, f.hold)
+		f.leverageRoom, f.leverageGap, f.leverageLanded, f.leverageReaction, f.leverageOutages, f.termDebtDays, f.stepNoRoom, f.hold, f.privyGasSpend, f.privyGasRead)
 	return f
 }
 
@@ -206,6 +214,13 @@ func (f *Facts) LaneSucceeded(family Family, lane string) {
 
 func (f *Facts) FeePayerBalance(payer string, lamports uint64) {
 	f.payer.WithLabelValues(payer).Set(float64(lamports))
+}
+
+func (f *Facts) PrivyGasSpendUnread() { f.privyGasRead.WithLabelValues().Set(0) }
+
+func (f *Facts) PrivyGasSpendRead(usd float64) {
+	f.privyGasSpend.WithLabelValues().Set(usd)
+	f.privyGasRead.WithLabelValues().Set(float64(time.Now().Unix()))
 }
 
 func (f *Facts) AutodepositOldestDueAge(seconds float64) { f.oldestDue.Set(seconds) }

@@ -387,6 +387,10 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 	if err := startup.Err(); err != nil {
 		return err
 	}
+	gasSpend, err := newGasSpendLane(families, facts)
+	if err != nil {
+		return retailError("Privy gas spend", err)
+	}
 	lanes := []engine.Lane{metrics}
 	for _, family := range families {
 		switch family {
@@ -403,6 +407,9 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 		case engine.FamilyMultiply:
 			lanes = append(lanes, multiplyWorker)
 		}
+	}
+	if gasSpend != nil {
+		lanes = append(lanes, gasSpend)
 	}
 	err = engine.Run(ctx, lanes...)
 	if cause := context.Cause(ctx); errors.Is(cause, errFamilyLockLost) {
