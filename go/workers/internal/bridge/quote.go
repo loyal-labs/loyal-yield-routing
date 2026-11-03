@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
 	"math/big"
 	"strings"
 )
@@ -33,10 +34,12 @@ type Quote struct {
 	AmountInRaw     *big.Int
 	AmountOutRaw    *big.Int
 	AmountOutMinRaw *big.Int
+	AmountInUSD     string
 	GasUSD          string
 	RelayerUSD      string
 	ImpactUSD       string
 	ImpactPercent   string
+	ETASeconds      *int64
 }
 
 type relayCurrencyAmount struct {
@@ -70,10 +73,11 @@ type relayQuote struct {
 		Relayer relayCurrencyAmount `json:"relayer"`
 	} `json:"fees"`
 	Details struct {
-		Recipient   string              `json:"recipient"`
-		CurrencyIn  relayCurrencyAmount `json:"currencyIn"`
-		CurrencyOut relayCurrencyAmount `json:"currencyOut"`
-		TotalImpact struct {
+		Recipient    string              `json:"recipient"`
+		TimeEstimate *float64            `json:"timeEstimate"`
+		CurrencyIn   relayCurrencyAmount `json:"currencyIn"`
+		CurrencyOut  relayCurrencyAmount `json:"currencyOut"`
+		TotalImpact  struct {
 			USD     string `json:"usd"`
 			Percent string `json:"percent"`
 		} `json:"totalImpact"`
@@ -90,23 +94,27 @@ const (
 // same address on all five networks (checked 2026-11-02).
 const relayDepository = "0x4cd00e387622c35bddb9b4c962c136462338bc31"
 
+type RequestError struct{ reason string }
+
+func (e *RequestError) Error() string { return "quote request: " + e.reason }
+
 func resolve(req QuoteRequest) (Network, Token, error) {
 	net, ok := Lookup(req.Chain)
 	if !ok {
-		return Network{}, Token{}, fmt.Errorf("quote request: unsupported chain %q", req.Chain)
+		return Network{}, Token{}, &RequestError{fmt.Sprintf("unsupported chain %q", req.Chain)}
 	}
 	tok, ok := net.Token(req.Asset)
 	if !ok {
-		return Network{}, Token{}, fmt.Errorf("quote request: %s has no %s", req.Chain, req.Asset)
+		return Network{}, Token{}, &RequestError{fmt.Sprintf("%s has no %s", req.Chain, req.Asset)}
 	}
 	if req.AmountRaw == nil || req.AmountRaw.Sign() <= 0 {
-		return Network{}, Token{}, fmt.Errorf("quote request: amount must be positive")
+		return Network{}, Token{}, &RequestError{"amount must be positive"}
 	}
 	if !isAddress(req.From) {
-		return Network{}, Token{}, fmt.Errorf("quote request: from is not an EVM address")
+		return Network{}, Token{}, &RequestError{"from is not an EVM address"}
 	}
 	if req.Recipient == "" {
-		return Network{}, Token{}, fmt.Errorf("quote request: empty recipient")
+		return Network{}, Token{}, &RequestError{"empty recipient"}
 	}
 	return net, tok, nil
 }
@@ -241,10 +249,15 @@ func CheckQuote(req QuoteRequest, raw []byte) (Quote, error) {
 		AmountInRaw:     in,
 		AmountOutRaw:    out,
 		AmountOutMinRaw: outMin,
+		AmountInUSD:     d.CurrencyIn.AmountUSD,
 		GasUSD:          rq.Fees.Gas.AmountUSD,
 		RelayerUSD:      rq.Fees.Relayer.AmountUSD,
 		ImpactUSD:       d.TotalImpact.USD,
 		ImpactPercent:   d.TotalImpact.Percent,
+	}
+	if d.TimeEstimate != nil && *d.TimeEstimate >= 0 {
+		eta := int64(math.Ceil(*d.TimeEstimate))
+		q.ETASeconds = &eta
 	}
 	if approve != nil {
 		q.Calls = append(q.Calls, Call{To: approve.tx.to, Data: approve.tx.data, Value: approve.tx.value})

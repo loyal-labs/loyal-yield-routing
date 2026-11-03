@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/solana-foundation/solana-go/v2"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/bridge"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnprep"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/jwt"
@@ -24,6 +25,7 @@ type Earn struct {
 	RealtimeURL  string
 	SponsorChain SponsorChain
 	HTTP         *http.Client
+	Relay        *bridge.Relay
 	OTLP         *OTLP
 	Privy        *Privy
 	Timescale    *pgxpool.Pool
@@ -56,6 +58,9 @@ type earnRoutes struct {
 func newEarnRoutes(auth *Auth, appDB *pgxpool.Pool, earn Earn) earnRoutes {
 	if earn.HTTP == nil {
 		earn.HTTP = &http.Client{Timeout: 15 * time.Second}
+	}
+	if earn.Relay == nil {
+		earn.Relay = bridge.NewRelay()
 	}
 	if earn.SponsorChain == nil && earn.Chain != nil {
 		earn.SponsorChain = earn.Chain

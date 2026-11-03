@@ -243,7 +243,7 @@ func (h earnRoutes) evmDepositAddress(ctx context.Context, in *sessionRequest) (
 	if route != nil {
 		return evmDepositFound(*route), nil
 	}
-	walletID, err := h.privySolanaWalletID(ctx, wallet.String())
+	walletID, err := h.privyWalletID(ctx, "solana", wallet.String())
 	if err != nil {
 		return nil, evmDepositUnavailable("privy wallet lookup", err)
 	}
@@ -348,7 +348,7 @@ func (h earnRoutes) createAutobridgeRoute(ctx context.Context, wallet solana.Pub
 	if route != nil {
 		return evmDepositFound(*route), nil
 	}
-	walletID, err := h.privySolanaWalletID(ctx, wallet.String())
+	walletID, err := h.privyWalletID(ctx, "solana", wallet.String())
 	if err != nil {
 		return nil, evmDepositUnavailable("privy wallet lookup", err)
 	}
