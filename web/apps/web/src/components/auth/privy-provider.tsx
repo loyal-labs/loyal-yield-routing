@@ -1,6 +1,6 @@
 "use client";
 
-import { PrivyProvider } from "@privy-io/react-auth";
+import { PrivyProvider, SUPPORTED_CHAINS } from "@privy-io/react-auth";
 import {
   toSolanaWalletConnectors,
   useStandardWallets,
@@ -8,6 +8,7 @@ import {
 import { createSolanaRpc, createSolanaRpcSubscriptions } from "@solana/kit";
 import { registerWallet } from "@wallet-standard/wallet";
 import { type ReactNode, useEffect, useState } from "react";
+import { megaeth, monad, robinhood, tempo } from "viem/chains";
 
 import { usePublicEnv } from "@/contexts/public-env-context";
 import { getFrontendSolanaEndpoints } from "@/lib/solana/rpc-endpoints";
@@ -109,6 +110,8 @@ function installPrivyNoiseFilter() {
   }
 }
 
+const supportedChains = [...SUPPORTED_CHAINS, monad, tempo, robinhood, megaeth];
+
 export function PrivyAuthProvider({ children }: { children: ReactNode }) {
   const { privyAppId } = usePublicEnv();
   const theme = usePrivyTheme();
@@ -120,6 +123,7 @@ export function PrivyAuthProvider({ children }: { children: ReactNode }) {
       appId={privyAppId}
       config={{
         solana: { rpcs: solanaRpcs },
+        supportedChains,
         loginMethods: ["email", "google", "wallet"],
         appearance: {
           ...theme,
