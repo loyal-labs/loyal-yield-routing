@@ -28,10 +28,8 @@ type Call struct {
 // Quote is a Relay quote that passed CheckQuote. Calls run in order as one
 // batch. The USD figures are Relay's own strings, empty when Relay omitted
 // them. minCredit is set only for a swap through Relay's approval proxy. It is
-// the least USDC, in the origin chain's units, that the simulation must see
-// the depository credit the user, and equals the quote's minimum Solana USDC
-// out. Relay fills the Solana side against this deposit, so a deposit below
-// the minimum the user was quoted cannot fund it.
+// the swap floor in the origin chain's USDC units, the least the simulation
+// must see the depository credit the user.
 type Quote struct {
 	RequestID       string
 	Calls           []Call
@@ -113,6 +111,8 @@ const (
 
 const solanaUSDCDecimals = 6
 
+const maxSwapShortfallBps = 300
+
 type RequestError struct{ reason string }
 
 func (e *RequestError) Error() string { return "quote request: " + e.reason }
@@ -146,8 +146,11 @@ func resolve(req QuoteRequest) (Network, Token, error) {
 // amount. A swap through Relay's approval proxy is bound only around the swap.
 // The proxy hands the amount to Relay's router, the router approves and calls
 // a swapper whose calldata is opaque, and then deposits whatever USDC it holds
-// for the user. Relay.Quote's simulation proves what the swapper does with the
-// tokens.
+// for the user. Relay's minimum output must reach the swap floor, set from the
+// requested amount, and Relay.Quote simulates the calls to check the deposit
+// credits the user at least that floor. The simulation skips validation and
+// overrides no block fields, so a swapper able to tell it from a real block
+// could behave differently on chain.
 func CheckQuote(req QuoteRequest, raw []byte) (Quote, error) {
 	net, tok, err := resolve(req)
 	if err != nil {
@@ -243,8 +246,15 @@ func CheckQuote(req QuoteRequest, raw []byte) (Quote, error) {
 		if !ok || usdc.Decimals < solanaUSDCDecimals {
 			return Quote{}, fmt.Errorf("quote: %s has no USDC for Relay's router to deposit", req.Chain)
 		}
+		if tok.Decimals < solanaUSDCDecimals {
+			return Quote{}, fmt.Errorf("quote: %s has fewer decimals than USDC", req.Asset)
+		}
 		err = checkProxyDeposit(deposit.tx.data, req.From, tok, usdc, req.AmountRaw)
-		minCredit = new(big.Int).Mul(outMin, new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(usdc.Decimals-solanaUSDCDecimals)), nil))
+		floor := swapFloor(req.AmountRaw, tok.Decimals)
+		if outMin.Cmp(floor) < 0 {
+			return Quote{}, fmt.Errorf("quote: details.currencyOut.minimumAmount %s is below the %s USDC floor", outMin, floor)
+		}
+		minCredit = new(big.Int).Mul(floor, pow10(usdc.Decimals-solanaUSDCDecimals))
 	default:
 		return Quote{}, fmt.Errorf("quote: deposit target %s is not Relay's deposit contract or approval proxy", deposit.tx.to)
 	}
@@ -290,6 +300,19 @@ func CheckQuote(req QuoteRequest, raw []byte) (Quote, error) {
 	}
 	q.Calls = append(q.Calls, Call{To: deposit.tx.to, Data: deposit.tx.data, Value: deposit.tx.value})
 	return q, nil
+}
+
+// swapFloor is the least Solana USDC a swap of amount may deliver. Every swap
+// asset is a USD stablecoin, so the amount is taken 1:1 in USD, less
+// maxSwapShortfallBps.
+func swapFloor(amount *big.Int, decimals uint8) *big.Int {
+	expected := new(big.Int).Quo(amount, pow10(decimals-solanaUSDCDecimals))
+	expected.Mul(expected, big.NewInt(10000-maxSwapShortfallBps))
+	return expected.Quo(expected, big.NewInt(10000))
+}
+
+func pow10(n uint8) *big.Int {
+	return new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(n)), nil)
 }
 
 // checkApprove accepts only approve(spender, amount) with the spender and

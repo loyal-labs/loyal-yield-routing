@@ -43,14 +43,17 @@ func ParseEVMRPCURLs(s string) (map[Chain]string, error) {
 	return urls, nil
 }
 
-// proveCredit runs the quote's calls in order in one simulated block on the
+// simulateCredit runs the quote's calls in order in one simulated block on the
 // origin chain, from the user's address holding exactly the input amount, and
 // refuses the quote unless Relay's depository logs a deposit crediting the user
-// with at least q.minCredit of the chain's USDC. The user's balance slot is not
-// known per token, so each storage key balanceOf(user) reads is tried in its
-// own simulation, and the one whose leading balanceOf call returns the amount
-// is the one that counts.
-func (r *Relay) proveCredit(ctx context.Context, net Network, req QuoteRequest, tok Token, q Quote) error {
+// with at least q.minCredit of the chain's USDC. It checks the calls against
+// the latest state only and cannot bind what they do in the block that mines
+// them. The user's balance slot is not known per token, so each storage key
+// balanceOf(user) reads is tried in its own simulation, and the one whose
+// leading balanceOf call succeeds and returns exactly the amount as one word is
+// the one that counts. Overriding a key that is not the balance can make that
+// call revert.
+func (r *Relay) simulateCredit(ctx context.Context, net Network, req QuoteRequest, tok Token, q Quote) error {
 	endpoint := r.EVMRPC[net.Chain]
 	if endpoint == "" {
 		return fmt.Errorf("quote: no EVM RPC for %s to simulate Relay's swap deposit", net.Chain)
@@ -105,7 +108,7 @@ func (r *Relay) proveCredit(ctx context.Context, net Network, req QuoteRequest, 
 		}
 		results := b[0].Calls
 		held, err := decodeHex(results[0].ReturnData)
-		if err != nil || new(big.Int).SetBytes(held).Cmp(req.AmountRaw) != 0 {
+		if results[0].Status != "0x1" || err != nil || len(held) != 32 || new(big.Int).SetBytes(held).Cmp(req.AmountRaw) != 0 {
 			continue
 		}
 		for i, c := range results[1:] {

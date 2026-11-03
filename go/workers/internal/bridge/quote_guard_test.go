@@ -88,9 +88,13 @@ func TestApprovalProxyDepositBindsDepositorAndAmount(t *testing.T) {
 
 func TestRelayQuoteRefusesSwapThatDepositsLess(t *testing.T) {
 	const user = "98f566dc02faf8fd0f3ebb6aab48c40164207fc7"
+	const usdsAddress = "0xdc035d45d973e3ec169d2276ddab16f1e407384f"
 	usds, _ := new(big.Int).SetString("25000000000000000000", 10)
 	recorded, _ := json.Marshal(recordedQuote(t, "relay-quote-ethereum-usds.json"))
 	tampered := []byte(strings.ReplaceAll(string(recorded), "0000000000001ff3684f28c67538d4d072c22734", "000000000000000000000000000000000000dead"))
+	floorless := recordedQuote(t, "relay-quote-ethereum-usds.json")
+	floorless["details"].(map[string]any)["currencyOut"].(map[string]any)["minimumAmount"] = "1"
+	minimumOne, _ := json.Marshal(floorless)
 	_, baseQuote := baseUSDCQuote(t)
 	direct, _ := json.Marshal(baseQuote)
 	for _, c := range []struct {
@@ -103,6 +107,7 @@ func TestRelayQuoteRefusesSwapThatDepositsLess(t *testing.T) {
 	}{
 		{"swap crediting the user", QuoteRequest{Chain: Ethereum, Asset: USDS, AmountRaw: usds}, recorded, "24969055", true, 2},
 		{"swap to another swapper", QuoteRequest{Chain: Ethereum, Asset: USDS, AmountRaw: usds}, tampered, "", false, 2},
+		{"minimum of 1 and a swap forwarding 1", QuoteRequest{Chain: Ethereum, Asset: USDS, AmountRaw: usds}, minimumOne, "1", false, 0},
 		{"direct deposit", QuoteRequest{Chain: Base, Asset: USDC, AmountRaw: big.NewInt(5000000)}, direct, "", true, 0},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -114,17 +119,39 @@ func TestRelayQuoteRefusesSwapThatDepositsLess(t *testing.T) {
 				}
 				batches++
 				var calls []struct {
-					ID     int    `json:"id"`
-					Method string `json:"method"`
+					ID     int               `json:"id"`
+					Method string            `json:"method"`
+					Params []json.RawMessage `json:"params"`
 				}
 				json.NewDecoder(r.Body).Decode(&calls)
+				balanceOf := "0x70a08231000000000000000000000000" + user
 				var replies []any
 				for _, call := range calls {
 					var result any
 					switch call.Method {
 					case "eth_createAccessList":
-						result = map[string]any{"accessList": []any{map[string]any{"address": "0xdc035d45d973e3ec169d2276ddab16f1e407384f", "storageKeys": []string{"0x01"}}}}
+						var probe struct{ To, Data string }
+						json.Unmarshal(call.Params[0], &probe)
+						if probe.To != usdsAddress || probe.Data != balanceOf {
+							t.Errorf("access list probes %s %s, want balanceOf(user) on USDS", probe.To, probe.Data)
+						}
+						result = map[string]any{"accessList": []any{map[string]any{"address": usdsAddress, "storageKeys": []string{"0x01"}}}}
 					case "eth_simulateV1":
+						var sim struct {
+							BlockStateCalls []struct {
+								Calls []struct{ To, Data string }
+							}
+						}
+						json.Unmarshal(call.Params[0], &sim)
+						want := []struct{ To, Data string }{{usdsAddress, balanceOf}}
+						var served relayQuote
+						json.Unmarshal(c.quote, &served)
+						for _, step := range served.Steps {
+							want = append(want, struct{ To, Data string }{step.Items[0].Data.To, step.Items[0].Data.Data})
+						}
+						if len(sim.BlockStateCalls) != 1 || fmt.Sprint(sim.BlockStateCalls[0].Calls) != fmt.Sprint(want) {
+							t.Errorf("simulated %v, want the served quote's calls after balanceOf: %v", sim.BlockStateCalls, want)
+						}
 						var logs []any
 						if c.credit != "" {
 							amount, _ := new(big.Int).SetString(c.credit, 10)

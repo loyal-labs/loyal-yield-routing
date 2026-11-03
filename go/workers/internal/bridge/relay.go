@@ -63,7 +63,7 @@ func (r *Relay) Quote(ctx context.Context, req QuoteRequest) (Quote, error) {
 		return Quote{}, err
 	}
 	if q.minCredit != nil {
-		if err := r.proveCredit(ctx, net, req, tok, q); err != nil {
+		if err := r.simulateCredit(ctx, net, req, tok, q); err != nil {
 			return Quote{}, err
 		}
 	}
