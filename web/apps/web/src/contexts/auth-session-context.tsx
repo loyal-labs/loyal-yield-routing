@@ -18,6 +18,7 @@ import { usePublicEnv } from "@/contexts/public-env-context";
 import { createAuthApiClient, type AuthApiClient } from "@/lib/auth/client";
 import type { WalletSessionResponse } from "@/features/identity/wallet-session-contracts";
 import { shouldRecheckAuthSession } from "@/contexts/auth-session-refresh";
+import { unlockTestWalletFlags } from "@/features/test-wallets";
 import { resetAuthenticatedUser, trackAuthLogout } from "@/lib/core/analytics";
 
 type AuthSessionContextValue = {
@@ -42,6 +43,7 @@ export function AuthSessionProvider({ children }: { children: ReactNode }) {
 
   const user = sessionState?.user ?? null;
   const session = sessionState?.session ?? null;
+  unlockTestWalletFlags(user?.subjectAddress);
 
   const readSession = useCallback(
     async (variant: "initial" | "return" | "refresh") => {
