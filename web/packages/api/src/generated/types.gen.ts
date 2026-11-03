@@ -1740,6 +1740,43 @@ export type RealtimeTokenResponse = {
     schemaVersion: number;
 };
 
+export type ReferralClaim = {
+    bound?: boolean;
+    refusal?: 'unknown_code' | 'own_code' | 'already_bound' | 'referrer_newer' | 'window_closed';
+};
+
+export type ReferralClaimRequest = {
+    code: string;
+    source: 'link' | 'typed' | 'install_referrer';
+};
+
+export type ReferralCode = {
+    valid: boolean;
+};
+
+export type ReferralCounts = {
+    deposited: number;
+    joined: number;
+    withdrawn: number;
+};
+
+export type ReferralFriend = {
+    bound_at: string;
+    deposited_micro: number;
+    label: string;
+    status: 'joined' | 'deposited' | 'withdrawn';
+};
+
+export type Referrals = {
+    can_claim: boolean;
+    closes_at: string;
+    code: string;
+    counts: ReferralCounts;
+    deposited_micro: number;
+    friends: Array<ReferralFriend>;
+    link: string;
+};
+
 export type RefundPrepareRequest = {
     kind?: 'policy' | 'recurring_delegation' | 'vault';
     policyAccount?: string;
@@ -2651,6 +2688,117 @@ export type PostPushTokenResponses = {
 };
 
 export type PostPushTokenResponse = PostPushTokenResponses[keyof PostPushTokenResponses];
+
+export type GetReferralsData = {
+    body?: never;
+    headers?: {
+        Authorization?: string;
+        Cookie?: string;
+        'X-Forwarded-Host'?: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/referrals';
+};
+
+export type GetReferralsErrors = {
+    /**
+     * Unauthorized
+     */
+    401: RouteError;
+    /**
+     * Service Unavailable
+     */
+    503: RouteError;
+};
+
+export type GetReferralsError = GetReferralsErrors[keyof GetReferralsErrors];
+
+export type GetReferralsResponses = {
+    /**
+     * OK
+     */
+    200: Referrals;
+};
+
+export type GetReferralsResponse = GetReferralsResponses[keyof GetReferralsResponses];
+
+export type PostReferralsClaimData = {
+    body?: ReferralClaimRequest;
+    headers?: {
+        Authorization?: string;
+        Cookie?: string;
+        'X-Forwarded-Host'?: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/referrals/claim';
+};
+
+export type PostReferralsClaimErrors = {
+    /**
+     * Bad Request
+     */
+    400: RouteError;
+    /**
+     * Unauthorized
+     */
+    401: RouteError;
+    /**
+     * Too Many Requests
+     */
+    429: RouteError;
+    /**
+     * Service Unavailable
+     */
+    503: RouteError;
+};
+
+export type PostReferralsClaimError = PostReferralsClaimErrors[keyof PostReferralsClaimErrors];
+
+export type PostReferralsClaimResponses = {
+    /**
+     * OK
+     */
+    200: ReferralClaim;
+};
+
+export type PostReferralsClaimResponse = PostReferralsClaimResponses[keyof PostReferralsClaimResponses];
+
+export type GetReferralCodeData = {
+    body?: never;
+    path: {
+        code: string;
+    };
+    query?: never;
+    url: '/api/referrals/codes/{code}';
+};
+
+export type GetReferralCodeErrors = {
+    /**
+     * Bad Request
+     */
+    400: RouteError;
+    /**
+     * Too Many Requests
+     */
+    429: RouteError;
+    /**
+     * Service Unavailable
+     */
+    503: RouteError;
+};
+
+export type GetReferralCodeError = GetReferralCodeErrors[keyof GetReferralCodeErrors];
+
+export type GetReferralCodeResponses = {
+    /**
+     * OK
+     */
+    200: ReferralCode;
+};
+
+export type GetReferralCodeResponse = GetReferralCodeResponses[keyof GetReferralCodeResponses];
 
 export type GetEarnForecastSummaryData = {
     body?: never;

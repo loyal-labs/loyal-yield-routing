@@ -9,6 +9,8 @@ export type Get = {
   "/api/mobile/dapps": Types.MobileTrustedDappsResponse;
   "/api/mobile/library": Types.MobileLibraryResponse;
   "/api/mobile/tokens/{mint}": Types.MobileTokenDetailResponse;
+  "/api/referrals": Types.Referrals;
+  "/api/referrals/codes/{code}": Types.ReferralCode;
   "/api/smart-accounts/earn-forecast/summary": Types.EarnForecastSummaryResponse;
   "/api/smart-accounts/earn-max/activity": Types.EarnMaxActivity;
   "/api/smart-accounts/earn-max/invite": Types.InviteStatus;
@@ -31,6 +33,7 @@ export type Post = {
   "/api/observability/events": Types.ObsJourneyAccepted;
   "/api/observability/metrics": Types.ObsIngestAccepted;
   "/api/push-tokens": Types.PushTokenSaved;
+  "/api/referrals/claim": Types.ReferralClaim;
   "/api/smart-accounts/earn-max/context": Types.EarnMaxContextResponse;
   "/api/smart-accounts/earn-max/invite": Types.InviteStatus;
   "/api/smart-accounts/earn/session": Types.EarnSessionResponse;
