@@ -343,7 +343,8 @@ export function ReceiveSheet({
   }, [evm, isOpen]);
   const moves = useBridgeMoveBalances(
     isOpen && bridge && evm.info?.kind === "relay_signed",
-    evm.networks
+    evm.networks,
+    walletAddress
   );
   const narrow = useIsNarrowViewport();
   const title =
@@ -556,6 +557,20 @@ export function ReceiveSheet({
                         src={`${BASE}/icon-chevron-right.svg`}
                       />
                     </button>
+                  ))}
+                  {moves.transfers.map((item) => (
+                    <div className={CELL} key={item.requestId}>
+                      <BadgedIcon
+                        file={item.icon}
+                        label={item.symbol}
+                        badge={item.chainIcon}
+                        badgeLabel={item.chainName}
+                      />
+                      <CellLabel label={item.status}>
+                        {item.amount} {item.symbol}
+                        <Chip>{item.chainName}</Chip>
+                      </CellLabel>
+                    </div>
                   ))}
                   {resolved && (
                     <>

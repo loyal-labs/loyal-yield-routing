@@ -88,11 +88,11 @@ export function BridgeMove({
   const { step, quote } = move;
   const closePicker = () => setPicking(false);
   useEscapeOverlay(picking, closePicker);
-  useEscapePage(true, onBack);
+  const sending = step.kind === "sending";
+  useEscapePage(!sending, onBack);
   useBridgePickerFocus(panelRef, picking, desktop);
 
   const hasAmount = move.amountRaw > BigInt(0);
-  const sending = step.kind === "sending";
   const rate = quote
     ? plain(receivedAmount(quote.amountOutRaw)) /
       plain(fromRaw(move.amountRaw, balance.decimals))
@@ -107,7 +107,9 @@ export function BridgeMove({
     ? { tone: "blocked", label: "Change amount" }
     : sending
     ? { tone: "busy", label: "Sending…" }
-    : !quote
+    : move.elsewhere
+    ? { tone: "blocked", label: "Move in progress" }
+    : !move.ready
     ? { tone: "busy", label: "Getting quote…" }
     : { tone: "ready", label: "Send now" };
 
@@ -260,11 +262,6 @@ export function BridgeMove({
         label="Bridging..."
       >
         <div className="flex flex-col items-center gap-3">
-          {move.sendError ? (
-            <p className="max-w-[320px] text-center text-[13px] text-destructive leading-4">
-              {move.sendError}
-            </p>
-          ) : null}
           <ExplorerButton
             href={relayExplorer(step.quote.requestId)}
             source="bridge_move_processing"
@@ -303,7 +300,7 @@ export function BridgeMove({
 
   return (
     <>
-      <BridgeScreen onBack={onBack}>
+      <BridgeScreen onBack={sending ? undefined : onBack}>
         <PaneReveal key={step.kind === "sending" ? "form" : step.kind}>
           {screen}
         </PaneReveal>

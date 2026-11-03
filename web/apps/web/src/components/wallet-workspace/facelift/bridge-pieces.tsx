@@ -167,7 +167,7 @@ export function BridgeScreen({
   onBack,
   children,
 }: {
-  onBack: () => void;
+  onBack?: () => void;
   children: ReactNode;
 }) {
   return (
@@ -179,7 +179,8 @@ export function BridgeScreen({
       <header className="flex shrink-0 items-center p-2">
         <button
           aria-label="Back to assets"
-          className="t-hover flex size-11 items-center justify-center rounded-full hover:bg-accent min-[796px]:hidden"
+          className="t-hover flex size-11 items-center justify-center rounded-full hover:bg-accent disabled:opacity-50 min-[796px]:hidden"
+          disabled={!onBack}
           onClick={onBack}
           type="button"
         >
