@@ -181,6 +181,21 @@ func attributeEarnings(h History, p Position, days []DayEnd, now time.Time, cost
 			}
 			free = LPRaw(lp)
 			switch e := entry.(type) {
+			case Transfer:
+				if e.Amount == nil || f.PoolLPBefore == 0 {
+					return false
+				}
+				before, beforeOK := allocatedCost(costs[i], free-f.LPDelta, f.PoolLPBefore)
+				after, afterOK := allocatedCost(costs[i], free, f.PoolLPBefore)
+				if !beforeOK || !afterOK {
+					return false
+				}
+				if principal, ok = rawSum(principal, *e.Amount); !ok {
+					return false
+				}
+				if costBasis, ok = rawSum(costBasis, after, -before); !ok {
+					return false
+				}
 			case Deposit:
 				if f.LPDelta <= 0 {
 					return false

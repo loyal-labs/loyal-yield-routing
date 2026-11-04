@@ -2,6 +2,7 @@ package earnmax
 
 import (
 	"context"
+	"math"
 	"sort"
 	"strconv"
 	"time"
@@ -105,8 +106,11 @@ func earned(h History, p Position) *USDCRaw {
 		return nil
 	}
 	total := p.Value
+	var ok bool
 	if p.Withdrawal != nil {
-		total += p.Withdrawal.Payout
+		if total, ok = rawSum(total, p.Withdrawal.Payout); !ok {
+			return nil
+		}
 	}
 	for _, e := range h.Entries {
 		if e.flow().Slot > p.ObservedSlot {
@@ -117,12 +121,26 @@ func earned(h History, p Position) *USDCRaw {
 			if e.Paid == nil {
 				return nil
 			}
-			total += *e.Paid
+			if total, ok = rawSum(total, *e.Paid); !ok {
+				return nil
+			}
 		case Deposit:
-			total -= e.Amount
+			if total, ok = rawSum(total, -e.Amount); !ok {
+				return nil
+			}
+		case Transfer:
+			if e.Amount == nil {
+				return nil
+			}
+			if *e.Amount == math.MinInt64 {
+				return nil
+			}
+			if total, ok = rawSum(total, -*e.Amount); !ok {
+				return nil
+			}
 		}
 	}
-	if total < 0 && -total < dustRaw {
+	if total < 0 && total > -dustRaw {
 		total = 0
 	}
 	return &total
@@ -152,6 +170,12 @@ func activity(h History, p Position, dayEnd []DayEnd, now time.Time) Activity {
 		switch e := h.Entries[i].(type) {
 		case Deposit:
 			principal += e.Amount
+		case Transfer:
+			if e.Amount == nil {
+				known = false
+			} else {
+				principal += *e.Amount
+			}
 		case Request:
 			if paid[i] == nil {
 				known = false

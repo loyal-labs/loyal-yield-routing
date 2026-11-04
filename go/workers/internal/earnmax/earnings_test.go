@@ -1,6 +1,7 @@
 package earnmax
 
 import (
+	"math"
 	"testing"
 	"time"
 )
@@ -111,5 +112,55 @@ func TestEarningsUsesThirtyUTCCalendarDays(t *testing.T) {
 	got := attributeEarnings(History{}, Position{}, days, now, costs)
 	if got == nil || len(got.Days) != 30 || got.Days[0].Date != "2026-09-27" || got.Days[29].Date != "2026-10-26" {
 		t.Fatalf("wrong thirty-day window: %+v", got)
+	}
+}
+
+func TestShareTransfersDoNotHideLossesOrCreateYield(t *testing.T) {
+	deposit := Deposit{Flow: flowAt(1, 1, 10, 90, 100), Amount: 100_000_000}
+	for _, tc := range []struct {
+		name   string
+		delta  LPRaw
+		amount USDCRaw
+	}{
+		{"compensation", 2, 19_600_000},
+		{"outgoing", -4, -39_200_000},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			transfer := Transfer{Flow: flowAt(2, 2, tc.delta, 100, 100), Amount: cost(tc.amount)}
+			h := History{Entries: []Entry{transfer, deposit}}
+			lp := 10 + tc.delta
+			p := Position{ObservedSlot: 10, LP: lp, Value: USDCRaw(lp) * 9_800_000, PoolLP: 100, PoolValue: 980_000_000}
+			costs := []*USDCRaw{cost(20_000_000), cost(0), cost(20_000_000), cost(20_000_000), cost(20_000_000)}
+			days := []DayEnd{{At: earningsTime(1).Add(time.Hour), Price: 9_800_000, PoolLP: 100}, {At: earningsTime(2).Add(time.Hour), Price: 9_800_000, PoolLP: 100}}
+			assertEarnings(t, attributeEarnings(h, p, days, earningsTime(3), costs), 0, -2, -2)
+			if got := earned(h, p); got == nil || *got != -2_000_000 {
+				t.Fatalf("transfer changed actual loss: %v", got)
+			}
+			p.Value, p.PoolValue = USDCRaw(lp)*10_000_000, 1_000_000_000
+			gain := float64(lp) * .2
+			got := attributeEarnings(h, p, days, earningsTime(3), costs)
+			if got == nil || math.Abs(got.PerformanceUsd-gain) > 1e-6 || math.Abs(got.NetEarnedUsd-(gain-2)) > 1e-6 || len(got.Days) != 3 || got.Days[1].PerformanceUsd != 0 {
+				t.Fatalf("post-transfer return attributed incorrectly: %+v", got)
+			}
+		})
+	}
+}
+
+func TestUnpricedShareTransferKeepsEarningsUnknown(t *testing.T) {
+	transfer := Transfer{Flow: flowAt(1, 1, 2, 100, 100)}
+	h := History{Entries: []Entry{transfer}}
+	p := Position{ObservedSlot: 10, LP: 2, Value: 20_000_000, PoolLP: 100}
+	if earned(h, p) != nil || attributeEarnings(h, p, nil, earningsTime(2), []*USDCRaw{cost(0), cost(0)}) != nil {
+		t.Fatal("unpriced incoming shares were counted as profit")
+	}
+	transfer.Amount = cost(20_000_000)
+	h.Entries[0] = transfer
+	assertEarnings(t, attributeEarnings(h, p, nil, earningsTime(2), []*USDCRaw{cost(0), cost(0)}), 0, 0, 0)
+}
+
+func TestTransferredPrincipalCannotOverflowEarned(t *testing.T) {
+	h := History{Entries: []Entry{Transfer{Flow: flowAt(1, 1, -1, 100, 100), Amount: cost(-math.MaxInt64)}}}
+	if earned(h, Position{ObservedSlot: 2, Value: 1}) != nil {
+		t.Fatal("overflowing transferred principal became earnings")
 	}
 }
