@@ -359,7 +359,7 @@ func (h earnRoutes) bridgeTransfers(ctx context.Context, in *bridgeTransfersInpu
 
 func listBridgeTransfers(ctx context.Context, db *pgxpool.Pool, wallet solana.PublicKey, direction bridge.Direction) ([]BridgeTransfer, error) {
 	rows, err := db.Query(ctx, bridgeTransferSelect+` WHERE solana_wallet = $1 AND direction = $3 AND (state <> 'quoted' OR (direction = 'out' AND confirmed_at > clock_timestamp() - make_interval(secs => $4)))
-ORDER BY submitted_at DESC NULLS LAST LIMIT $2`, wallet.String(), bridgeTransferLimit, string(direction), bridge.OutConfirmWindow.Seconds())
+ORDER BY (state = 'quoted') DESC, submitted_at DESC NULLS LAST LIMIT $2`, wallet.String(), bridgeTransferLimit, string(direction), bridge.OutConfirmWindow.Seconds())
 	if err != nil {
 		return nil, err
 	}
