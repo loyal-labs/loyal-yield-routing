@@ -224,3 +224,399 @@ test("a busy batch endpoint is a retryable refusal and a forbidden one is not", 
   expect(forbidden.ok).toBe(false);
   if (!forbidden.ok) expect(forbidden.retry).toBe(false);
 });
+
+const OTHER = "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin";
+const SWAPPED = [USER_ATA, VAULT_ATA];
+
+function setAmount(a: AccountState, amount: bigint) {
+  new DataView(a.data.buffer, a.data.byteOffset).setBigUint64(
+    AMOUNT_AT,
+    amount,
+    true
+  );
+}
+
+function amountOf(a: AccountState) {
+  return new DataView(a.data.buffer, a.data.byteOffset).getBigUint64(
+    AMOUNT_AT,
+    true
+  );
+}
+
+const plain = (lamports: number): AccountState => ({
+  lamports,
+  owner: SYSTEM_PROGRAM_ID,
+  data: new Uint8Array(),
+});
+
+type Maps = {
+  pre: Map<string, AccountState | null>;
+  post: Map<string, AccountState | null>;
+};
+
+const judgeRows: [string, (m: Maps) => void, RegExp, bigint?][] = [
+  [
+    "a negative amount that the balances happen to match",
+    ({ pre, post }) => {
+      for (const k of SWAPPED) {
+        const before = pre.get(k) as AccountState;
+        pre.set(k, post.get(k) as AccountState);
+        post.set(k, before);
+      }
+    },
+    /amount is not positive/,
+    -AMOUNT,
+  ],
+  [
+    "an extra account only in the post state",
+    ({ post }) => post.set(OTHER, null),
+    /does not cover the writable set/,
+  ],
+  [
+    "a post state keyed by other accounts, same size",
+    ({ pre, post }) => {
+      pre.set(STRANGER, null);
+      post.set(OTHER, null);
+    },
+    /no post state for/,
+  ],
+  [
+    "an account created by the transaction",
+    ({ pre, post }) => {
+      pre.set(STRANGER, null);
+      post.set(STRANGER, plain(1000));
+    },
+    /was created/,
+  ],
+  [
+    "an account closed by the transaction",
+    ({ pre, post }) => {
+      pre.set(STRANGER, plain(1000));
+      post.set(STRANGER, null);
+    },
+    /was closed/,
+  ],
+  [
+    "lamports beyond exact integer range",
+    ({ pre, post }) => {
+      pre.set(STRANGER, plain(2 ** 53));
+      post.set(STRANGER, plain(2 ** 53));
+    },
+    /beyond exact range/,
+  ],
+  [
+    "a wallet owned by a program",
+    ({ pre, post }) => {
+      for (const side of [pre, post])
+        mutate(side, OWNER, (a) => {
+          a.owner = TOKEN_PROGRAM;
+        });
+    },
+    /plain system account/,
+  ],
+  [
+    "the wallet gaining lamports",
+    ({ pre, post }) => {
+      const before = pre.get(OWNER) as AccountState;
+      mutate(post, OWNER, (a) => {
+        a.lamports = before.lamports + 1;
+      });
+    },
+    /gained lamports/,
+  ],
+  [
+    "a second owner USDC account drained by the same amount",
+    ({ pre, post }) => {
+      pre.set(OTHER, tokenAccount(USDC, OWNER, AMOUNT));
+      post.set(OTHER, tokenAccount(USDC, OWNER, BigInt(0)));
+    },
+    /two owner USDC accounts/,
+  ],
+  [
+    "a stranger's token account of another mint changing",
+    ({ pre, post }) => {
+      pre.set(OTHER, tokenAccount(USDT, STRANGER, BigInt(5_000_000)));
+      post.set(OTHER, tokenAccount(USDT, STRANGER, BigInt(0)));
+    },
+    /of another mint changed/,
+  ],
+  [
+    "a delegate set on the vault account",
+    ({ post }) =>
+      mutate(post, VAULT_ATA, (a) => {
+        a.data[DELEGATE_OPTION_AT] = 1;
+      }),
+    /USDC account .* changed beyond its balance/,
+  ],
+  [
+    "the vault gaining one more than the amount",
+    ({ post }) =>
+      mutate(post, VAULT_ATA, (a) => setAmount(a, amountOf(a) + ONE)),
+    /moved by/,
+  ],
+  [
+    "the wallet missing from the set",
+    ({ pre, post }) => {
+      pre.delete(OWNER);
+      post.delete(OWNER);
+    },
+    /owner is not in the set/,
+  ],
+  [
+    "the owner USDC account missing from the set",
+    ({ pre, post }) => {
+      pre.delete(USER_ATA);
+      post.delete(USER_ATA);
+    },
+    /owner USDC account is not in the set/,
+  ],
+];
+
+test("each tampered account state is refused for its own reason", () => {
+  for (const [name, tamper, reason, amount] of judgeRows) {
+    const maps = load();
+    tamper(maps);
+    const v = run(maps.pre, maps.post, { amount });
+    expect(v.ok, name).toBe(false);
+    if (!v.ok) expect(v.reason, name).toMatch(reason);
+  }
+});
+
+const SLOT = 400_000_000;
+const WIRE = (raw: Raw) => ({
+  lamports: raw.lamports,
+  owner: raw.owner,
+  data: [raw.data, "base64"],
+});
+
+type Reply = { id: number; result?: any; error?: unknown }[];
+
+async function preflightOver(
+  tamper: (reply: Reply) => unknown = () => undefined,
+  quoteOver: Record<string, unknown> = {},
+  tableValue: unknown = undefined
+) {
+  const realFetch = globalThis.fetch;
+  const requests: any[] = [];
+  const [wallet, ata, vault] = Object.keys(recorded.pre);
+  const connection = {
+    rpcEndpoint: "http://rpc.test",
+    getLatestBlockhash: async () => ({
+      blockhash: "11111111111111111111111111111111",
+    }),
+    getAddressLookupTable: async () => ({ value: tableValue }),
+  } as never;
+  const quote = {
+    lookupTables: [],
+    instructions: [
+      {
+        programId: "99vQwtBwYtrqqD9YSXbdum3KBdxPAVxYTaQ3cfnJSrN2",
+        keys: [wallet, ata, vault].map((pubkey, i) => ({
+          pubkey,
+          isSigner: i === 0,
+          isWritable: true,
+        })),
+        data: "00",
+      },
+    ],
+    ...quoteOver,
+  } as never;
+  globalThis.fetch = Object.assign(
+    async (_: unknown, init?: RequestInit): Promise<Response> => {
+      const req = JSON.parse(String(init?.body));
+      requests.push(req);
+      const addresses: string[] = req[0].params[0];
+      const side = (o: Record<string, Raw>) =>
+        addresses.map((a) => WIRE(o[a] as Raw));
+      const reply: Reply = [
+        { id: 1, result: { context: { slot: SLOT }, value: side(recorded.pre) } },
+        {
+          id: 2,
+          result: {
+            context: { slot: SLOT },
+            value: { err: null, accounts: side(recorded.post) },
+          },
+        },
+      ];
+      return (tamper(reply) as Response | undefined) ?? Response.json(reply);
+    },
+    { preconnect: realFetch.preconnect }
+  );
+  try {
+    const verdict = await runBridgeOutPreflight({
+      connection,
+      owner: new PublicKey(OWNER),
+      quote,
+      amountRaw: AMOUNT,
+    });
+    return { verdict, requests };
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+}
+
+test("the batch asks for the writable set at confirmed with no replacement and returns the simulated bytes", async () => {
+  const { verdict, requests } = await preflightOver();
+  expect(verdict.ok).toBe(true);
+  const [reads, simulates] = requests[0];
+  expect(reads.params[0]).toEqual(Object.keys(recorded.pre));
+  expect(reads.params[1].commitment).toBe("confirmed");
+  expect(simulates.params[1].commitment).toBe("confirmed");
+  expect(simulates.params[1].sigVerify).toBe(false);
+  expect(simulates.params[1].replaceRecentBlockhash).toBeUndefined();
+  if (verdict.ok)
+    expect(Buffer.from(verdict.transaction.serialize()).toString("base64")).toBe(
+      simulates.params[0]
+    );
+});
+
+const canonicalTail = () => {
+  const text = recorded.pre[VAULT_ATA as keyof typeof recorded.pre].data;
+  const alphabet =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  const at = text.length - 3;
+  return (
+    text.slice(0, at) + alphabet[alphabet.indexOf(text[at] as string) + 1] + "=="
+  );
+};
+
+const wireRows: [string, (r: Reply) => void, RegExp, boolean?][] = [
+  [
+    "a pre answer without a slot",
+    (r) => {
+      r[0].result.context = {};
+    },
+    /pre state came back malformed/,
+  ],
+  [
+    "a third answer in the batch",
+    (r) => {
+      r.push({ id: 3, result: null });
+    },
+    /not one answer per call/,
+  ],
+  [
+    "an error answer for the simulation",
+    (r) => {
+      r[1] = { id: 2, error: { code: -32005 } };
+    },
+    /batch call 2 failed/,
+  ],
+  [
+    "answers from two slots",
+    (r) => {
+      r[1].result.context.slot = SLOT + 1;
+    },
+    /never shared a slot/,
+    true,
+  ],
+  [
+    "a post state one account short",
+    (r) => {
+      r[1].result.value.accounts.pop();
+    },
+    /no post state/,
+  ],
+  [
+    "account data with a third element",
+    (r) => {
+      r[0].result.value[1].data.push("x");
+    },
+    /an account came back malformed/,
+  ],
+  [
+    "account data in another encoding",
+    (r) => {
+      r[0].result.value[1].data[1] = "base58";
+    },
+    /an account came back malformed/,
+  ],
+  [
+    "account data with characters outside base64",
+    (r) => {
+      r[0].result.value[1].data[0] = "!!!!";
+    },
+    /an account came back malformed/,
+  ],
+  [
+    "account data that decodes to bytes it does not re-encode to",
+    (r) => {
+      r[0].result.value[2].data[0] = canonicalTail();
+    },
+    /not canonical base64/,
+  ],
+  [
+    "a reported size that disagrees with the decoded data",
+    (r) => {
+      r[0].result.value[1].space = 1;
+    },
+    /disagrees with its size/,
+  ],
+  [
+    "a pre state that is not a list",
+    (r) => {
+      r[0].result.value = {};
+    },
+    /simulation answer came back malformed/,
+  ],
+  [
+    "a simulation value that is not an object",
+    (r) => {
+      r[1].result.value = "ok";
+    },
+    /simulation answer came back malformed/,
+  ],
+  [
+    "a simulation value without an err",
+    (r) => {
+      delete r[1].result.value.err;
+    },
+    /simulation answer came back malformed/,
+  ],
+];
+
+test("each malformed or inconsistent batch reply is refused for its own reason", async () => {
+  for (const [name, tamper, reason, retry] of wireRows) {
+    const { verdict } = await preflightOver(tamper);
+    expect(verdict.ok, name).toBe(false);
+    if (!verdict.ok) {
+      expect(verdict.reason, name).toMatch(reason);
+      expect(verdict.retry, name).toBe(retry ?? false);
+    }
+  }
+});
+
+test("a lookup table that does not resolve refuses", async () => {
+  const { verdict } = await preflightOver(
+    undefined,
+    { lookupTables: [STRANGER] },
+    null
+  );
+  expect(verdict.ok).toBe(false);
+  if (!verdict.ok) expect(verdict.reason).toMatch(/does not resolve/);
+});
+
+test("a preflight that never answers is refused when its timer fires", async () => {
+  const realSetTimeout = globalThis.setTimeout;
+  let fire: (() => void) | undefined;
+  globalThis.setTimeout = Object.assign(
+    (fn: () => void, ms?: number) => {
+      if (ms !== undefined && ms >= 10_000) {
+        fire = fn;
+        return 0;
+      }
+      return realSetTimeout(fn, ms);
+    },
+    { preconnect: undefined }
+  ) as never;
+  try {
+    const pending = preflightOver(() => new Promise(() => undefined) as never);
+    await new Promise((r) => realSetTimeout(r, 50));
+    fire?.();
+    const { verdict } = await pending;
+    expect(verdict.ok).toBe(false);
+    if (!verdict.ok) expect(verdict.reason).toBe("preflight timed out");
+  } finally {
+    globalThis.setTimeout = realSetTimeout;
+  }
+}, 2000);

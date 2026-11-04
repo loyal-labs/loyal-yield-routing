@@ -175,9 +175,6 @@ export function judge(
     const tokenBefore = parseToken(before);
     const tokenAfter = parseToken(after);
     if (tokenBefore === null || tokenAfter === null) {
-      if (tokenBefore !== tokenAfter) {
-        return refuse(`${address} changed its kind`);
-      }
       if (!identical(before, after)) return refuse(`${address} changed`);
       continue;
     }
@@ -299,6 +296,7 @@ type WireAccount = {
   lamports: number;
   owner: string;
   data: [string, string];
+  space?: number;
 };
 
 type Slotted<T> = { context: { slot: number }; value: T };
@@ -308,14 +306,28 @@ type SimulationValue = {
   accounts: (WireAccount | null)[] | null;
 };
 
+const BASE64 =
+  /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+
 function toState(a: WireAccount | null): AccountState | null {
-  return a
-    ? {
-        lamports: a.lamports,
-        owner: a.owner,
-        data: Buffer.from(a.data[0], "base64"),
-      }
-    : null;
+  if (a === null) return null;
+  const pair = a?.data;
+  if (
+    !Array.isArray(pair) ||
+    pair.length !== 2 ||
+    pair[1] !== "base64" ||
+    !BASE64.test(pair[0])
+  ) {
+    throw new Error("an account came back malformed");
+  }
+  const data = Buffer.from(pair[0], "base64");
+  if (data.toString("base64") !== pair[0]) {
+    throw new Error("an account's data is not canonical base64");
+  }
+  if (a.space !== undefined && a.space !== data.length) {
+    throw new Error("an account's data length disagrees with its size");
+  }
+  return { lamports: a.lamports, owner: a.owner, data };
 }
 
 function slotted(result: unknown, what: string): Slotted<unknown> {
@@ -382,9 +394,20 @@ async function readAndSimulate(
     }
     return item.result;
   };
+  const pre = slotted(answer(1), "pre state");
+  const sim = slotted(answer(2), "simulation");
+  const simValue = sim.value as SimulationValue | null;
+  if (
+    !Array.isArray(pre.value) ||
+    typeof simValue !== "object" ||
+    simValue === null ||
+    !("err" in simValue)
+  ) {
+    throw new Error("the simulation answer came back malformed");
+  }
   return {
-    pre: slotted(answer(1), "pre state") as Slotted<(WireAccount | null)[]>,
-    sim: slotted(answer(2), "simulation") as Slotted<SimulationValue>,
+    pre: pre as Slotted<(WireAccount | null)[]>,
+    sim: sim as Slotted<SimulationValue>,
   };
 }
 

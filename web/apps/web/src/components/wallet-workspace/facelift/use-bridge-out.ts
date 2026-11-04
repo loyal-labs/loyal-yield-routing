@@ -56,16 +56,67 @@ class BridgeApiError extends Error {
   }
 }
 
-async function readJSON<T>(res: Response, fallback: string): Promise<T> {
-  const body = (await res.json().catch(() => null)) as
-    | T
-    | Partial<RouteError>
-    | null;
-  if (res.ok && body) return body as T;
+type Shape<T> = (body: unknown) => body is T;
+
+const isRecord = (b: unknown): b is Record<string, unknown> =>
+  typeof b === "object" && b !== null && !Array.isArray(b);
+
+const isText = (v: unknown): v is string => typeof v === "string" && v !== "";
+
+const isListOrNull = (v: unknown) => v === null || Array.isArray(v);
+
+const TRANSFER_STATES = ["quoted", "submitted", "filled", "refunded", "failed"];
+
+const isTransfer: Shape<BridgeTransfer> = (b): b is BridgeTransfer =>
+  isRecord(b) &&
+  isText(b.requestId) &&
+  TRANSFER_STATES.includes(b.state as string) &&
+  (b.direction === "in" || b.direction === "out");
+
+const isQuote: Shape<BridgeOutQuoteResponse> = (
+  b
+): b is BridgeOutQuoteResponse =>
+  isRecord(b) &&
+  isText(b.requestId) &&
+  Array.isArray(b.instructions) &&
+  isListOrNull(b.lookupTables) &&
+  isText(b.amountOutRaw) &&
+  isText(b.amountOutMinRaw) &&
+  isText(b.loyalFeeRaw) &&
+  typeof b.loyalFeeBps === "number" &&
+  typeof b.slippageBps === "number";
+
+const isTransfers: Shape<BridgeTransfersResponse> = (
+  b
+): b is BridgeTransfersResponse =>
+  isRecord(b) &&
+  isListOrNull(b.transfers) &&
+  (b.transfers as unknown[] | null ?? []).every(isTransfer);
+
+const isDestinations: Shape<BridgeDestinationsResponse> = (
+  b
+): b is BridgeDestinationsResponse => isRecord(b) && isListOrNull(b.destinations);
+
+const isRecipients: Shape<BridgeRecipientsResponse> = (
+  b
+): b is BridgeRecipientsResponse => isRecord(b) && isListOrNull(b.recipients);
+
+async function readJSON<T>(
+  res: Response,
+  fallback: string,
+  shape: Shape<T>
+): Promise<T> {
+  const body: unknown = await res.json().catch(() => null);
+  if (res.ok && shape(body)) return body;
   const detail =
-    body && typeof body === "object" && "error" in body ? body.error : null;
+    isRecord(body) && isRecord(body.error)
+      ? (body.error as Partial<RouteError["error"]>)
+      : null;
   throw new BridgeApiError(
-    detail?.message || `${fallback} (${res.status}).`,
+    detail?.message ||
+      (res.ok
+        ? `${fallback}: the reply was not what we expected.`
+        : `${fallback} (${res.status}).`),
     detail?.code ?? null,
     res.status
   );
@@ -88,7 +139,8 @@ const readTransfers = async () =>
       await fetch("/api/funding/bridge/transfers?direction=out", {
         credentials: "include",
       }),
-      "Could not read the bridge"
+      "Could not read the bridge",
+      isTransfers
     )
   ).transfers ?? [];
 
@@ -104,7 +156,8 @@ export function useBridgeDestinations() {
       .then((res) =>
         readJSON<BridgeDestinationsResponse>(
           res,
-          "Could not load the chains"
+          "Could not load the chains",
+          isDestinations
         )
       )
       .then((body) => {
@@ -136,7 +189,8 @@ export function useBridgeRecipients(chain: string, enabled: boolean) {
       .then((res) =>
         readJSON<BridgeRecipientsResponse>(
           res,
-          "Could not load recent recipients"
+          "Could not load recent recipients",
+          isRecipients
         )
       )
       .then((body) => {
@@ -220,7 +274,7 @@ export function useBridgeOut({
         signal
       )
         .then((res) =>
-          readJSON<BridgeOutQuoteResponse>(res, "Could not get a quote")
+          readJSON<BridgeOutQuoteResponse>(res, "Could not get a quote", isQuote)
         )
         .then(
           (response): HeldQuote => ({
@@ -297,7 +351,10 @@ export function useBridgeOut({
   }, [fetchQuote, settleQuoteError]);
 
   const run = useCallback(
-    async (quoted: BridgeOutQuoteResponse): Promise<string | undefined> => {
+    async (
+      quoted: BridgeOutQuoteResponse,
+      quotedKey: string
+    ): Promise<string | undefined> => {
       const fail = (message: string, requestId: string | null = null) =>
         setStep({ kind: "failed", message, requestId });
       if (!publicKey || !sendTransaction) {
@@ -322,6 +379,11 @@ export function useBridgeOut({
         verdict = { ok: false, reason: "preflight threw", retry: false };
       }
       if (!mountedRef.current) return;
+      if (keyRef.current !== quotedKey) {
+        setNotice("The details changed. Check them and send again.");
+        setStep({ kind: "form" });
+        return;
+      }
       if (!verdict.ok && verdict.retry) {
         setNotice("Could not verify this transfer yet. Please try again.");
         setStep({ kind: "form" });
@@ -333,11 +395,21 @@ export function useBridgeOut({
       }
 
       try {
-        await settleWithin(
+        const confirmed = await settleWithin(
           post(`${requestPath}/confirm`, {}).then((res) =>
-            readJSON<BridgeTransfer>(res, "Could not start the transfer")
+            readJSON<BridgeTransfer>(
+              res,
+              "Could not start the transfer",
+              isTransfer
+            )
           )
         );
+        if (
+          confirmed.requestId !== quoted.requestId ||
+          confirmed.state !== "quoted"
+        ) {
+          throw new Error("Could not start the transfer: wrong transfer.");
+        }
       } catch (e) {
         fail(`${errorText(e)} Your USDC stays in your wallet.`);
         return;
@@ -370,7 +442,8 @@ export function useBridgeOut({
         try {
           await readJSON<BridgeTransfer>(
             await post(`${requestPath}/submit`, { originTx: signature }),
-            "Could not record the transfer"
+            "Could not record the transfer",
+            isTransfer
           );
           return;
         } catch {
@@ -392,7 +465,7 @@ export function useBridgeOut({
       }
       const quoted = current.response;
       if (!navigator.locks) {
-        await run(quoted);
+        await run(quoted, current.key);
         return;
       }
       await navigator.locks.request(
@@ -403,7 +476,7 @@ export function useBridgeOut({
             setLockedElsewhere(lockName);
             return;
           }
-          const landing = await run(quoted);
+          const landing = await run(quoted, current.key);
           if (landing) await holdUntilSettled(landing);
         }
       );
