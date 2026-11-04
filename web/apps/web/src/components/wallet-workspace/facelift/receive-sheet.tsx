@@ -634,6 +634,7 @@ export function ReceiveSheet({
                       />
                       <span className="ml-3 flex size-6 shrink-0 items-center justify-center">
                         <InfoTooltip
+                          iconClassName="size-6"
                           tone="dark"
                           text="The asset you’ll receive after bridging. Transferred assets will be automatically converted to this asset."
                         />
