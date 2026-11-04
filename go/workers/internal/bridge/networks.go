@@ -136,12 +136,10 @@ type Token struct {
 }
 
 type Network struct {
-	Chain Chain
-	Name  string
-	// Short names the chain in a sentence, as in "the Ethereum network".
-	Short string
-	Icon  string
-	// QRIcon replaces Icon in the middle of the deposit QR.
+	Chain   Chain
+	Name    string
+	Short   string
+	Icon    string
 	QRIcon  string
 	ChainID int64
 	// MinUSD is the smallest deposit worth bridging; Ethereum gas makes

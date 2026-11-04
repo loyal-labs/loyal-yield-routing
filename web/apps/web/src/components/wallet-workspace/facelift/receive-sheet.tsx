@@ -106,8 +106,8 @@ function BadgedIcon({
   return (
     <span className="relative size-11 shrink-0">
       <AssetIcon file={file} label={label} />
-      <span className="absolute bottom-0 right-0 rounded-full border-2 border-card">
-        <AssetIcon file={badge} label={badgeLabel} size={12} />
+      <span className="absolute bottom-0 right-0 translate-x-0.5 translate-y-0.5 rounded-full border-2 border-card">
+        <AssetIcon file={badge} label={badgeLabel} size={16} />
       </span>
     </span>
   );
