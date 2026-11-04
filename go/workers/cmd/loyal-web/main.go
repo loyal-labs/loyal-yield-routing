@@ -259,6 +259,11 @@ func earn(ctx context.Context, registry *prometheus.Registry, rpcClient *chain.C
 	if key, ok := optionalCredential("Relay keyed quotes", "RELAY_API_KEY"); ok && key != "" {
 		e.Relay.APIKey = strings.TrimSpace(key)
 	}
+	if recipient, err := bridge.ParseRecipient(bridge.AddressEVM, strings.TrimSpace(os.Getenv("RELAY_APP_FEE_RECIPIENT"))); err != nil {
+		slog.Warn("bridge out quotes answer 503 until the recipient is set", "reason", fmt.Sprintf("RELAY_APP_FEE_RECIPIENT: %v", err))
+	} else {
+		e.Relay.AppFeeRecipient = recipient
+	}
 	if timescaleDB == nil {
 		degraded(timescaleRoutes, errors.New("no TIMESCALEDB_URL pool"))
 	}

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -110,8 +111,10 @@ func TestCheckOutQuoteRefusesWhatRelayMustNotChange(t *testing.T) {
 		},
 		"step kind is signature": func(q map[string]any) { setAt(q, "signature", "steps", 0, "kind") },
 		"minimumAmount above amount": func(q map[string]any) {
-			setAt(q, "24973145", "details", "currencyOut", "minimumAmount")
-			setAt(q, "24973145", "protocol", "v2", "orderData", "output", "payments", 0, "minimumAmount")
+			out, _ := new(big.Int).SetString(at(q, "details", "currencyOut", "amount").(string), 10)
+			above := out.Add(out, big.NewInt(1)).String()
+			setAt(q, above, "details", "currencyOut", "minimumAmount")
+			setAt(q, above, "protocol", "v2", "orderData", "output", "payments", 0, "minimumAmount")
 		},
 		"minimumAmount far below amount": func(q map[string]any) {
 			setAt(q, "1", "details", "currencyOut", "minimumAmount")
@@ -149,6 +152,18 @@ func TestCheckOutQuoteRefusesWhatRelayMustNotChange(t *testing.T) {
 		"unknown lookup table": func(q map[string]any) {
 			setAt(q, []any{elsewhere}, "steps", 0, "items", 0, "data", "addressLookupTableAddresses")
 		},
+		"fees.app removed":             func(q map[string]any) { delete(at(q, "fees").(map[string]any), "app") },
+		"fees.app zero":                func(q map[string]any) { setAt(q, "0", "fees", "app", "amount") },
+		"fees.app 39 bps":              func(q map[string]any) { setAt(q, "97500", "fees", "app", "amount") },
+		"fees.app 41 bps":              func(q map[string]any) { setAt(q, "102500", "fees", "app", "amount") },
+		"fees.app two units over":      func(q map[string]any) { setAt(q, "100002", "fees", "app", "amount") },
+		"fees.app amount not a number": func(q map[string]any) { setAt(q, "0x186a0", "fees", "app", "amount") },
+		"fees.app in USDT": func(q map[string]any) {
+			setAt(q, usdtMint, "fees", "app", "currency", "address")
+		},
+		"fees.app on another chain": func(q map[string]any) {
+			setAt(q, float64(8453), "fees", "app", "currency", "chainId")
+		},
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -170,7 +185,7 @@ func TestCheckOutQuoteServesTheRateItComputes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a Relay rate field must not decide the quote: %v", err)
 	}
-	if got.Rate != "0.998926" {
+	if got.Rate != "0.994926" {
 		t.Fatalf("rate %q is not out over in", got.Rate)
 	}
 }
@@ -182,7 +197,7 @@ func TestCheckOutQuoteUSDFieldsAreDisplayOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("recorded quote refused: %v", err)
 	}
-	if want.AmountInUSD != "24.995150" || want.AmountOutUSD != "24.968299" || want.NetworkFeeUSD != "0.000741" {
+	if want.AmountInUSD != "24.995375" || want.AmountOutUSD != "24.868544" || want.NetworkFeeUSD != "0.000921" {
 		t.Fatalf("recorded USD fields served as %q %q %q", want.AmountInUSD, want.AmountOutUSD, want.NetworkFeeUSD)
 	}
 	for _, tampered := range []any{"0", "99999999999999999999.5", "1e999", "NaN", "-5", ""} {
@@ -223,5 +238,41 @@ func TestQuoteOutRelayAuthFailureIsNotAUserRefusal(t *testing.T) {
 		if err == nil || errors.As(err, &refused) {
 			t.Fatalf("relay %d returned %v, want an unavailable error", status, err)
 		}
+	}
+}
+
+func TestQuoteOutAppFee(t *testing.T) {
+	req, base := solanaOutQuote(t)
+	raw, _ := json.Marshal(base)
+	const claim = "0x536a85f63ceca75b12ec588cf37ca371489dd4a3"
+	var bodies [][]byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, b)
+		w.Write(raw)
+	}))
+	defer srv.Close()
+	relay := &Relay{BaseURL: srv.URL, HTTP: srv.Client()}
+
+	if _, err := relay.QuoteOut(context.Background(), req); !errors.Is(err, ErrAppFeeUnset) {
+		t.Fatalf("unset recipient: got %v, want ErrAppFeeUnset", err)
+	}
+	if len(bodies) != 0 {
+		t.Fatalf("%d requests reached Relay with no fee recipient", len(bodies))
+	}
+
+	relay.AppFeeRecipient = claim
+	q, err := relay.QuoteOut(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sent struct {
+		AppFees []struct{ Recipient, Fee string } `json:"appFees"`
+	}
+	if err := json.Unmarshal(bodies[0], &sent); err != nil || len(sent.AppFees) != 1 || sent.AppFees[0].Recipient != claim || sent.AppFees[0].Fee != "40" {
+		t.Fatalf("quote body appFees = %s", bodies[0])
+	}
+	if q.AppFeeRaw.String() != "100000" {
+		t.Fatalf("app fee %s, want 100000", q.AppFeeRaw)
 	}
 }
