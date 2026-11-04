@@ -36,6 +36,8 @@ type Relay struct {
 	HTTP    *http.Client
 	APIKey  string
 	EVMRPC  map[Chain]string
+
+	AppFeeRecipient string
 }
 
 func NewRelay() *Relay {

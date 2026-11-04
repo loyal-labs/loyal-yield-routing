@@ -422,6 +422,12 @@ proxying the session routes to Next.
 the domain Next's prod session cookie carries. Unset, `loyal-web` logs one line
 and `POST /api/auth/privy/complete` keeps proxying to Next.
 
+`RELAY_APP_FEE_RECIPIENT` is plain config too: `loyal-web.service` sets it to
+the Loyal ops key that claims the 40 bps Relay app fee on every bridge out
+quote. Unset or not an EVM address, `loyal-web` logs one line and
+`POST /api/funding/bridge/out/quote` answers 503 `bridge_out_unavailable`
+without calling Relay or writing a row.
+
 ### Earn family grants
 
 At startup `loyal-web` checks each Earn family's grants once
