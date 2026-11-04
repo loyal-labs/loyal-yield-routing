@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -495,7 +496,18 @@ func earnMaxLoadRoute(ctx context.Context, d *Deps) (EarnMaxRoute, error) {
 	return route, nil
 }
 
-func earnMaxDecodeReport(request *string) (float64, bool) {
+func earnMaxDecodeReport(program, returnData, request *string) (float64, bool) {
+	// Reconciliation verifies these exact adaptor return bytes before marking a report landed.
+	if returnData != nil {
+		if program == nil || *program != "FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW" {
+			return 0, false
+		}
+		decoded, err := base64.StdEncoding.DecodeString(*returnData)
+		if err != nil || len(decoded) != 8 {
+			return 0, false
+		}
+		return float64(binary.LittleEndian.Uint64(decoded)), true
+	}
 	if request == nil {
 		return 0, false
 	}
@@ -522,22 +534,26 @@ func earnMaxDecodeReport(request *string) (float64, bool) {
 
 func earnMaxLoadNavSeries(ctx context.Context, d *Deps) ([]EarnMaxNavPoint, error) {
 	type report struct {
-		at      time.Time
-		request *string
+		at                           time.Time
+		program, returnData, request *string
 	}
 	reports, err := earnMaxQuery(ctx, d, `SELECT DISTINCT ON (date_bin('30 minutes', created_at, 'epoch'::timestamptz))
-       created_at AS at, expected_effects->'phase3'->'buildInput'->>'request' AS request
+       created_at AS at,
+       expected_effects #>> '{expectedEffects,returnData,programId}' AS program,
+       expected_effects #>> '{expectedEffects,returnData,dataBase64}' AS return_data,
+       expected_effects #>> '{phase3,buildInput,request}' AS request
      FROM loyal_yield.multiply_operations
      WHERE route_key = $1 AND action = 'REPORT_NAV' AND status = 'reconciled'
        AND created_at > now() - interval '24 hours'
      ORDER BY date_bin('30 minutes', created_at, 'epoch'::timestamptz), created_at DESC`,
 		func(rows pgx.Rows) (report, error) {
 			var r report
-			return r, rows.Scan(&r.at, &r.request)
+			err := rows.Scan(&r.at, &r.program, &r.returnData, &r.request)
+			return r, err
 		}, earnmax.RouteKey)
 	series := []EarnMaxNavPoint{}
 	for _, r := range reports {
-		if nav, ok := earnMaxDecodeReport(r.request); ok {
+		if nav, ok := earnMaxDecodeReport(r.program, r.returnData, r.request); ok {
 			series = append(series, EarnMaxNavPoint{At: readsISO(r.at), NavUsd: nav / 1e6})
 		}
 	}
