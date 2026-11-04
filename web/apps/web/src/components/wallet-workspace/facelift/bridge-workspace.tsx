@@ -556,7 +556,7 @@ export function BridgeWorkspace({
                       token.symbol
                     }`,
                   ],
-                  ["Max slippage", "1%"],
+                  ["Max slippage", `${quote.slippageBps / 100}%`],
                   ["Loyal fee", `${quote.loyalFeeBps / 100}%`],
                   [
                     "Network fee",

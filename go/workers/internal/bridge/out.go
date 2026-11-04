@@ -29,7 +29,7 @@ const (
 	relayDepositoryVault   = "7uTT8Xi5RWXzy7h9XL244GRgEycDYDhLjr3ZyNdXi8pZ"
 	relayLookupTable       = "Hm9fUgcn7qwDaiNTFiGh6pNtVATgnaRcmK6Bbx6EMZfP"
 	depositTokenSelector   = "0b9c60da27a3b413"
-	outSlippageBps         = 100
+	OutSlippageBps         = 100
 	outMinFloorBps         = 200
 	outHalfFloorPercent    = 50
 	outFeeAllowanceKeepPPM = 986000
@@ -203,7 +203,7 @@ func (r *Relay) QuoteOut(ctx context.Context, req OutRequest) (OutQuote, error) 
 		"destinationCurrency": tok.Address,
 		"amount":              req.AmountRaw.String(),
 		"tradeType":           "EXACT_INPUT",
-		"slippageTolerance":   strconv.Itoa(outSlippageBps),
+		"slippageTolerance":   strconv.Itoa(OutSlippageBps),
 		"appFees":             []map[string]string{{"recipient": r.AppFeeRecipient, "fee": strconv.Itoa(OutFeeBps)}},
 	})
 	if err != nil {
@@ -279,8 +279,8 @@ func CheckOutQuote(req OutRequest, raw []byte) (OutQuote, error) {
 	if new(big.Int).Mul(outMin, big.NewInt(10000)).Cmp(floor) < 0 {
 		return OutQuote{}, fmt.Errorf("quote: details.currencyOut.minimumAmount %s is more than %d bps below the output", outMin, outMinFloorBps)
 	}
-	if d.SlippageTolerance.Total != strconv.Itoa(outSlippageBps) {
-		return OutQuote{}, fmt.Errorf("quote: details.slippageTolerance.total %q is not %d", d.SlippageTolerance.Total, outSlippageBps)
+	if d.SlippageTolerance.Total != strconv.Itoa(OutSlippageBps) {
+		return OutQuote{}, fmt.Errorf("quote: details.slippageTolerance.total %q is not %d", d.SlippageTolerance.Total, OutSlippageBps)
 	}
 	app := rq.Fees.App
 	if app.Currency.ChainID != SolanaRelayChainID || app.Currency.Address != SolanaUSDCMint {

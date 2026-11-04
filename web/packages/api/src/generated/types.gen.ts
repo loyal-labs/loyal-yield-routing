@@ -259,6 +259,10 @@ export type BridgeOutQuoteResponse = {
      */
     rate: string;
     requestId: string;
+    /**
+     * The tolerance the quote was priced with, the same constant the guard checks
+     */
+    slippageBps: number;
 };
 
 export type BridgeQuoteRequest = {
