@@ -179,6 +179,8 @@ export function useBridgeOut({
   const keyRef = useRef(key);
   keyRef.current = key;
   const current = held && held.key === key ? held : null;
+  const quotedKeyRef = useRef<string | null>(null);
+  quotedKeyRef.current = current ? key : null;
   const onForm = step.kind === "form";
   const owner = publicKey?.toBase58() ?? "";
   const lockName = `loyal.bridge.out:${owner}`;
@@ -218,7 +220,7 @@ export function useBridgeOut({
   }, []);
 
   useEffect(() => {
-    if (!quotable) {
+    if (!quotable || (quotedKeyRef.current === key && retries === 0)) {
       setQuoting(false);
       setQuoteError(null);
       return;
