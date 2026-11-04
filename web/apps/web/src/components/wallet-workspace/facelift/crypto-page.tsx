@@ -2,6 +2,7 @@
 
 import { resolveLoyalClusterForSolanaEnv } from "@loyal-labs/actions";
 import { resolveSolanaEnv } from "@loyal-labs/solana-rpc";
+import { TOKEN_MINTS } from "@loyal-labs/wallet-core/constants";
 import { useUnshield } from "@loyal-labs/wallet-core/hooks";
 import type { WalletSigner } from "@loyal-labs/wallet-core/types";
 import { useWallet } from "@solana/wallet-adapter-react";
@@ -180,6 +181,9 @@ export function CryptoPage({
     useSendRecentRecipients(data.walletAddress);
 
   const [bridge, setBridge] = useState<BridgeAction | null>(null);
+  const bridgeUsdc = data.positions.find(
+    (position) => position.asset.mint === TOKEN_MINTS.USDC
+  );
   const [isSwapOpen, setIsSwapOpen] = useState(false);
   const [swapSelectSide, setSwapSelectSide] = useState<"from" | "to" | null>(
     null
@@ -476,8 +480,10 @@ export function CryptoPage({
               />
             ) : bridge ? (
               <BridgeWorkspace
+                balance={bridgeUsdc?.publicBalance ?? 0}
                 key={navigationNonce}
                 onBack={() => setBridge(null)}
+                price={bridgeUsdc?.priceUsd ?? 0}
               />
             ) : isSendOpen ? (
               <SendPane

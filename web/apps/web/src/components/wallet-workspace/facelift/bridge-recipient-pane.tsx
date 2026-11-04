@@ -1,5 +1,6 @@
 "use client";
 
+import type { BridgeRecipient } from "@loyal-labs/api";
 import { useRef, useState } from "react";
 
 import { ThemedIcon } from "./themed-icon";
@@ -24,10 +25,12 @@ export function shortBridgeAddress(address: string) {
 export function BridgeRecipientPane({
   network,
   isTron,
+  recents,
   onSelect,
 }: {
   network: string;
   isTron: boolean;
+  recents: BridgeRecipient[] | null;
   onSelect: (address: string) => void;
 }) {
   const [input, setInput] = useState("");
@@ -35,7 +38,6 @@ export function BridgeRecipientPane({
   const [pasteError, setPasteError] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const address = input.trim();
-  // shortcut: address format checks only; use authoritative validation before enabling transfers.
   const valid = isTron
     ? /^T[1-9A-HJ-NP-Za-km-z]{33}$/.test(address)
     : /^0x[\da-fA-F]{40}$/.test(address);
@@ -45,18 +47,6 @@ export function BridgeRecipientPane({
     (submitted ||
       /[^a-zA-Z0-9]/.test(address) ||
       address.length >= (isTron ? 34 : 42));
-  // Design fixtures, never read from or written to recipient history.
-  const recents = isTron
-    ? [
-        "T" + "1".repeat(29) + "UQUu",
-        "T" + "2".repeat(29) + "C3pk",
-        "T" + "3".repeat(29) + "Nhtj",
-      ]
-    : [
-        "0xad" + "0".repeat(34) + "7BCb",
-        "0x2e" + "0".repeat(34) + "C3b4",
-        "0x3f" + "0".repeat(34) + "9a12",
-      ];
 
   const updateInput = (value: string, pasted = false) => {
     setInput(value.replace(/[\r\n]/g, ""));
@@ -171,11 +161,25 @@ export function BridgeRecipientPane({
           </>
         ) : !address || invalid ? (
           <>
-            <p className="px-4 pt-3 pb-2 text-[16px] leading-5 text-muted-foreground">
-              Recently used
-            </p>
-            {recents.map((value, index) =>
-              row(value, `${[12, 4, 2][index]} sends`)
+            {recents?.length !== 0 && (
+              <p className="px-4 pt-3 pb-2 text-[16px] leading-5 text-muted-foreground">
+                Recently used
+              </p>
+            )}
+            {recents?.map(({ address: value, sends }) =>
+              row(value, `${sends} ${sends === 1 ? "send" : "sends"}`)
+            )}
+            {recents?.length === 0 && (
+              <div
+                className="flex items-center gap-3 px-4 py-6 text-[16px] leading-5 text-muted-foreground"
+                role="status"
+              >
+                <span
+                  aria-hidden="true"
+                  className="size-11 rounded-full border-2 border-dashed border-border"
+                />
+                No results found
+              </div>
             )}
           </>
         ) : (

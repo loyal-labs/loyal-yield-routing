@@ -78,11 +78,13 @@ export function ActionProcessingBody({
 }
 
 export function ActionSuccessBody({
+  explorerHref,
   label,
   onDone,
   signature,
   source,
 }: {
+  explorerHref?: string;
   label: string;
   onDone: () => void;
   signature: string | null;
@@ -128,7 +130,7 @@ export function ActionSuccessBody({
             className="t-hover flex h-12 items-center justify-center rounded-full bg-accent px-5 font-medium text-[16px] text-foreground leading-5 hover:bg-accent-active"
             onClick={() =>
               openTrackedLink(publicEnv, {
-                href: getExplorerTxUrl(signature),
+                href: explorerHref ?? getExplorerTxUrl(signature),
                 linkText: "View in Explorer",
                 source,
               })

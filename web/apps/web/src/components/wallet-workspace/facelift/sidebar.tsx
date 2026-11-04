@@ -28,6 +28,7 @@ import { useEarnForecastApy } from "@/hooks/use-earn-forecast-apy";
 import { useSignInModal } from "@/contexts/sign-in-modal-context";
 import { useCherryRuntime } from "@/features/cherry/client/runtime-context";
 import { useAuthCapability } from "@/lib/auth/capability";
+import { bridgeEnabled } from "@/features/bridge/enabled";
 import { referralsEnabled } from "@/features/referrals/enabled";
 import { captureBrowserLoadingMetricAfterPaint } from "@/features/observability/client";
 import {
@@ -367,8 +368,8 @@ export function FaceliftSidebar({
             <button
               className="t-hover flex min-w-0 flex-1 flex-col items-center gap-1 rounded-2xl py-2 enabled:hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40"
               key={action}
-              disabled={action === "bridge" && process.env.NODE_ENV !== "development"}
-              title={action === "bridge" && process.env.NODE_ENV !== "development" ? "Coming soon" : undefined}
+              disabled={action === "bridge" && !(process.env.NODE_ENV === "development" || bridgeEnabled())}
+              title={action === "bridge" && !(process.env.NODE_ENV === "development" || bridgeEnabled()) ? "Coming soon" : undefined}
               onClick={() => onAssetAction(action)}
               type="button"
             >
