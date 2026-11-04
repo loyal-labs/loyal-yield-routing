@@ -1,9 +1,6 @@
 "use client";
 
-import { TOKEN_MINTS } from "@loyal-labs/wallet-core/constants";
 import { useRef, useState } from "react";
-
-import { useWalletDesktopData } from "@/hooks/use-wallet-desktop-data";
 
 import {
   BRIDGE_AMOUNT_TEXT,
@@ -49,16 +46,18 @@ function dollars(value: number) {
 
 const networkLabel = (name: string) => name.replace(/\s*\(.*\)$/, "");
 
-export function BridgeWorkspace({ onBack }: { onBack: () => void }) {
+export function BridgeWorkspace({
+  onBack,
+  balance,
+  price,
+}: {
+  onBack: () => void;
+  balance: number;
+  price: number;
+}) {
   const desktop = useBridgeDesktop();
-  const wallet = useWalletDesktopData({});
   const { destinations, error: destinationsError, retry } =
     useBridgeDestinations();
-  const usdc = wallet.positions.find(
-    (position) => position.asset.mint === TOKEN_MINTS.USDC
-  );
-  const balance = usdc?.publicBalance ?? 0;
-  const price = usdc?.priceUsd ?? 0;
   const balanceRaw = toRaw(balance.toFixed(USDC_DECIMALS), USDC_DECIMALS);
   const [selection, setSelection] = useState<{
     chain: string | null;
@@ -527,7 +526,9 @@ export function BridgeWorkspace({ onBack }: { onBack: () => void }) {
                 </div>
                 <p className="text-[16px] leading-5 text-muted-foreground">
                   {quote
-                    ? `~$${quote.amountOutUsd}`
+                    ? quote.amountOutUsd
+                      ? `~${dollars(Number(quote.amountOutUsd))}`
+                      : " "
                     : hasAmount
                     ? " "
                     : "$0.00"}
@@ -559,7 +560,9 @@ export function BridgeWorkspace({ onBack }: { onBack: () => void }) {
                   ["Loyal fee", `${quote.loyalFeeBps / 100}%`],
                   [
                     "Network fee",
-                    asRow(quote.networkFeeUsd, (fee) => `$${fee}`),
+                    asRow(quote.networkFeeUsd, (fee) =>
+                      Number(fee) < 0.01 ? "<$0.01" : dollars(Number(fee))
+                    ),
                   ],
                 ]}
               />
