@@ -170,6 +170,13 @@ export function useBridgeOut({
   const [notice, setNotice] = useState<string | null>(null);
   const [retries, retryQuote] = useReducer((n: number) => n + 1, 0);
   const sendingRef = useRef(false);
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
   const amountRaw = toRaw(amountInput, USDC_DECIMALS);
   const insufficient = amountRaw > balanceRaw;
   const minRaw = token
@@ -301,6 +308,7 @@ export function useBridgeOut({
       } catch {
         verdict = { ok: false, reason: "preflight threw", retry: false };
       }
+      if (!mountedRef.current) return;
       if (!verdict.ok && verdict.retry) {
         setNotice("Could not verify this transfer yet. Please try again.");
         setStep({ kind: "form" });
