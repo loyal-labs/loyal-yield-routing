@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/solana-foundation/solana-go/v2"
 
@@ -19,6 +20,8 @@ import (
 const (
 	bridgeDestinationsPath = "/api/funding/bridge/destinations"
 	bridgeOutQuotePath     = "/api/funding/bridge/out/quote"
+	bridgeRecipientsPath   = "/api/funding/bridge/out/recipients"
+	bridgeRecentsLimit     = 5
 )
 
 type BridgeDestinationToken struct {
@@ -79,7 +82,23 @@ type BridgeOutQuoteResponse struct {
 	ETASeconds      *int64                 `json:"etaSeconds"`
 }
 
+type BridgeRecipient struct {
+	Address string       `json:"address"`
+	Chain   bridge.Chain `json:"chain" doc:"The chain of the latest send to this address"`
+	Sends   int          `json:"sends"`
+}
+
+type BridgeRecipientsResponse struct {
+	Recipients []BridgeRecipient `json:"recipients"`
+}
+
+type bridgeRecipientsInput struct {
+	SessionInput
+	Chain string `query:"chain" required:"false" doc:"Returns recipients of this chain's address kind"`
+}
+
 type bridgeDestinationsOutput struct{ Body BridgeDestinationsResponse }
+type bridgeRecipientsOutput struct{ Body BridgeRecipientsResponse }
 type bridgeOutQuoteOutput struct{ Body BridgeOutQuoteResponse }
 
 func (h earnRoutes) registerBridgeOut(api huma.API) {
@@ -98,6 +117,13 @@ func (h earnRoutes) registerBridgeOut(api huma.API) {
 		Responses:   errorResponses[routeError](api, 400, 401, 429, 503),
 	}, h.bridgeOutQuote)
 	documentJSONBody[BridgeOutQuoteRequest](api, bridgeOutQuotePath)
+	huma.Register(api, huma.Operation{
+		OperationID: "get-funding-bridge-out-recipients",
+		Method:      http.MethodGet,
+		Path:        bridgeRecipientsPath,
+		Summary:     "The signed-in wallet's most recent bridge-out recipients of a chain's address kind",
+		Responses:   errorResponses[routeError](api, 400, 401, 503),
+	}, h.bridgeOutRecipients)
 }
 
 func bridgeOutUnavailable(step string, err error) error {
@@ -204,4 +230,39 @@ ON CONFLICT (request_id) DO NOTHING`, q.RequestID, wallet.String(), recipient, s
 		return errors.New("request id already has a row")
 	}
 	return nil
+}
+
+func (h earnRoutes) bridgeOutRecipients(ctx context.Context, in *bridgeRecipientsInput) (*bridgeRecipientsOutput, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	wallet, err := h.evmDepositWallet(in.SessionInput)
+	if err != nil {
+		return nil, err
+	}
+	dest, ok := bridge.LookupDestination(bridge.Chain(in.Chain))
+	if !ok {
+		return nil, earnError(http.StatusBadRequest, "invalid_quote_request", "That chain is not offered.")
+	}
+	var sameKind []string
+	for _, d := range bridge.Destinations {
+		if d.Kind == dest.Kind {
+			sameKind = append(sameKind, string(d.Chain))
+		}
+	}
+	rows, err := h.YieldDB.Query(ctx, `SELECT counterparty, (array_agg(chain ORDER BY submitted_at DESC))[1], count(*)
+FROM loyal_yield.bridge_transfers
+WHERE solana_wallet = $1 AND direction = 'out' AND state IN ('submitted', 'filled') AND chain = ANY($2)
+GROUP BY counterparty ORDER BY max(submitted_at) DESC LIMIT $3`, wallet.String(), sameKind, bridgeRecentsLimit)
+	if err != nil {
+		return nil, bridgeOutUnavailable("bridge out recipients read", err)
+	}
+	recipients, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (BridgeRecipient, error) {
+		var r BridgeRecipient
+		err := row.Scan(&r.Address, &r.Chain, &r.Sends)
+		return r, err
+	})
+	if err != nil {
+		return nil, bridgeOutUnavailable("bridge out recipients read", err)
+	}
+	return &bridgeRecipientsOutput{Body: BridgeRecipientsResponse{Recipients: recipients}}, nil
 }
