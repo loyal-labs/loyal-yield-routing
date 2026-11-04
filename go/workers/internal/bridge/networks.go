@@ -57,7 +57,7 @@ var Assets = map[Asset]AssetInfo{
 	USDG:  {"USDG", "Global Dollar", true, "usdg.svg"},
 	DAI:   {"DAI", "Dai", true, ""},
 	USDe:  {"USDe", "Ethena USDe", true, ""},
-	USDS:  {"USDS", "USDS Stablecoin", true, ""},
+	USDS:  {"USDS", "USDS", true, "usds.png"},
 	FDUSD: {"FDUSD", "First Digital USD", true, ""},
 	RLUSD: {"RLUSD", "Ripple USD", true, ""},
 	USD1:  {"USD1", "World Liberty Financial USD", true, ""},
@@ -74,6 +74,12 @@ func init() {
 				panic(fmt.Sprintf("bridge: %s on %s has Since %q, which is not in RouteSets", t.Asset, n.Chain, t.Since))
 			}
 		}
+		if n.Short == "" {
+			panic(fmt.Sprintf("bridge: %s has no Short", n.Chain))
+		}
+	}
+	if Tron.Short == "" {
+		panic("bridge: tron has no Short")
 	}
 }
 
@@ -132,7 +138,9 @@ type Token struct {
 type Network struct {
 	Chain   Chain
 	Name    string
+	Short   string
 	Icon    string
+	QRIcon  string
 	ChainID int64
 	// MinUSD is the smallest deposit worth bridging; Ethereum gas makes
 	// small transfers cost more than they move.
@@ -179,7 +187,7 @@ func (n Network) Token(a Asset) (Token, bool) {
 // every DAI, USDe, USDS, FDUSD, RLUSD and USD1 use 18 decimals. A token is
 // never removed: a Privy account created with it keeps converting it.
 var Networks = []Network{
-	{Chain: Ethereum, Name: "Ethereum (ERC20)", Icon: "ethereum.png", ChainID: 1, MinUSD: 20, Tokens: []Token{
+	{Chain: Ethereum, Name: "Ethereum (ERC20)", Short: "Ethereum", Icon: "ethereum.png", QRIcon: "ethereum-qr.png", ChainID: 1, MinUSD: 20, Tokens: []Token{
 		{USDC, "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", 6, Legacy13},
 		{USDT, "0xdac17f958d2ee523a2206206994597c13d831ec7", 6, Legacy13},
 		{PYUSD, "0x6c3ea9036406852006290770bedfcaba0e23a0e8", 6, StablesV1},
@@ -191,7 +199,7 @@ var Networks = []Network{
 		{RLUSD, "0x8292bb45bf1ee4d140127049757c2e0ff06317ed", 18, StablesV2},
 		{USD1, "0x8d0d000ee44948fc98c9b98a4fa4921476f08b0d", 18, StablesV2},
 	}},
-	{Chain: BNB, Name: "BNB Smart Chain (BEP20)", Icon: "bnb.png", ChainID: 56, Tokens: []Token{
+	{Chain: BNB, Name: "BNB Smart Chain (BEP20)", Short: "BNB Smart Chain", Icon: "bnb.png", ChainID: 56, Tokens: []Token{
 		{USDC, "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d", 18, Legacy13},
 		{USDT, "0x55d398326f99059ff775485246999027b3197955", 18, Legacy13},
 		{USDe, "0x5d3a1ff2b6bab83b63cd9ad0787074081a52ef34", 18, StablesV1},
@@ -199,7 +207,7 @@ var Networks = []Network{
 		{FDUSD, "0xc5f0f7b66764f6ec8c8dff7ba683102295e16409", 18, StablesV2},
 		{USD1, "0x8d0d000ee44948fc98c9b98a4fa4921476f08b0d", 18, StablesV2},
 	}},
-	{Chain: Base, Name: "Base Mainnet", Icon: "base.png", ChainID: 8453, Tokens: []Token{
+	{Chain: Base, Name: "Base Mainnet", Short: "Base", Icon: "base.png", ChainID: 8453, Tokens: []Token{
 		{USDC, "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913", 6, Legacy13},
 		{USDT, "0xfde4c96c8593536e31f229ea8f37b2ada2699bb2", 6, Legacy13},
 		{USDS, "0x820c137fa70c8691f0e44dc420a5e53c168921dc", 18, StablesV2},
@@ -207,7 +215,7 @@ var Networks = []Network{
 		{USDe, "0x5d3a1ff2b6bab83b63cd9ad0787074081a52ef34", 18, StablesV2},
 		{RLUSD, "0x8d58c0c60b8d6b88fa98b291a646db34d0f98258", 18, StablesV2},
 	}},
-	{Chain: Arbitrum, Name: "Arbitrum One", Icon: "arbitrum.png", ChainID: 42161, Tokens: []Token{
+	{Chain: Arbitrum, Name: "Arbitrum One", Short: "Arbitrum", Icon: "arbitrum.png", ChainID: 42161, Tokens: []Token{
 		{USDC, "0xaf88d065e77c8cc2239327c5edb3a432268e5831", 6, Legacy13},
 		{USDT, "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9", 6, Legacy13},
 		{USDe, "0x5d3a1ff2b6bab83b63cd9ad0787074081a52ef34", 18, StablesV1},
@@ -216,29 +224,29 @@ var Networks = []Network{
 		{USDS, "0x6491c05a82219b8d1479057361ff1654749b876b", 18, StablesV2},
 		{DAI, "0xda10009cbd5d07dd0cecc66161fc93d7c9000da1", 18, StablesV2},
 	}},
-	{Chain: Optimism, Name: "OP Mainnet", ChainID: 10, Tokens: []Token{
+	{Chain: Optimism, Name: "OP Mainnet", Short: "Optimism", ChainID: 10, Tokens: []Token{
 		{USDC, "0x0b2c639c533813f4aa9d7837caf62653d097ff85", 6, StablesV1},
 		{USDT, "0x94b008aa00579c1307b0ef2c499ad98a8ce58e58", 6, StablesV1},
 		{USDT0, "0x01bff41798a0bcf287b996046ca68b395dbc1071", 6, StablesV2},
 		{DAI, "0xda10009cbd5d07dd0cecc66161fc93d7c9000da1", 18, StablesV2},
 	}},
-	{Chain: Polygon, Name: "Polygon PoS", Icon: "polygon.png", ChainID: 137, Tokens: []Token{
+	{Chain: Polygon, Name: "Polygon PoS", Short: "Polygon", Icon: "polygon.png", ChainID: 137, Tokens: []Token{
 		{USDC, "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359", 6, Legacy13},
 		{USDT, "0xc2132d05d31c914a87c6611c10748aeb04b58e8f", 6, Legacy13},
 		{DAI, "0x8f3cf7ad23cd3cadbd9735aff958023239c6a063", 18, StablesV2},
 	}},
-	{Chain: Monad, Name: "Monad", ChainID: 143, Tokens: []Token{
+	{Chain: Monad, Name: "Monad", Short: "Monad", ChainID: 143, Tokens: []Token{
 		{USDC, "0x754704bc059f8c67012fed69bc8a327a5aafb603", 6, StablesV1},
 		{USDT, "0xe7cd86e13ac4309349f30b3435a9d337750fc82d", 6, StablesV1},
 	}},
-	{Chain: Tempo, Name: "Tempo", ChainID: 4217, Tokens: []Token{
+	{Chain: Tempo, Name: "Tempo", Short: "Tempo", ChainID: 4217, Tokens: []Token{
 		{USDCe, "0x20c000000000000000000000b9537d11c60e8b50", 6, StablesV1},
 		{USDT, "0x20c00000000000000000000014f22ca97301eb73", 6, StablesV1},
 	}},
-	{Chain: Robinhood, Name: "Robinhood Chain", ChainID: 4663, Tokens: []Token{
+	{Chain: Robinhood, Name: "Robinhood Chain", Short: "Robinhood", ChainID: 4663, Tokens: []Token{
 		{USDG, "0x5fc5360d0400a0fd4f2af552add042d716f1d168", 6, StablesV1},
 	}},
-	{Chain: MegaETH, Name: "MegaETH", ChainID: 4326, Tokens: []Token{
+	{Chain: MegaETH, Name: "MegaETH", Short: "MegaETH", ChainID: 4326, Tokens: []Token{
 		{USDT, "0xb8ce59fc3717ada4c02eadf9682a9e934f625ebb", 6, StablesV1},
 	}},
 }

@@ -1,18 +1,17 @@
 "use client";
 
 import type { EvmDepositNetwork, EvmDepositToken } from "@loyal-labs/api";
-import { Search } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { copyTextToClipboard } from "./copy-text";
 import { useEscapeOverlay } from "./escape-owner";
 import { floorToCents } from "./floor-to-cents";
+import { InfoTooltip } from "./info-tooltip";
 import { SheetReveal } from "./sheet-reveal";
 import { SlidingTabs } from "./sliding-tabs";
 import { TextSwap } from "./text-swap";
 import { ThemedIcon } from "./themed-icon";
-import { InfoTooltip } from "./info-tooltip";
 import {
   fromRaw,
   type MoveSource,
@@ -24,7 +23,7 @@ import { useIsNarrowViewport } from "./use-is-narrow-viewport";
 const BASE = "/wallet-workspace/facelift";
 const TABS = ["Solana", "Other chains"] as const;
 type Tab = (typeof TABS)[number];
-type View = "receive" | "deposit-assets" | "chains";
+type View = "receive" | "chains" | "deposit-assets";
 const SEARCH_MIN_ITEMS = 10;
 
 // Bridge stays off (#641) unless this browser opts in with
@@ -37,7 +36,7 @@ function bridgeOptedIn() {
   }
 }
 
-type Selection = { asset: string; chain: string };
+type Selection = { asset: string; chain: string | null };
 
 const RECEIVE = {
   symbol: "USDC",
@@ -53,6 +52,11 @@ function minDeposit(minUsd: number, token: EvmDepositToken) {
   return token.stable
     ? `${minUsd.toFixed(2)} ${token.symbol}`
     : `$${minUsd.toFixed(2)}`;
+}
+
+function matches(query: string, ...texts: string[]) {
+  const needle = query.trim().toLowerCase();
+  return texts.some((text) => text.toLowerCase().includes(needle));
 }
 
 function AssetIcon({
@@ -96,79 +100,85 @@ function BadgedIcon({
 }: {
   file: string | null;
   label: string;
-  badge?: string | null;
-  badgeLabel?: string;
+  badge: string | null;
+  badgeLabel: string;
 }) {
   return (
-    <span className="relative flex size-11 shrink-0">
+    <span className="relative size-11 shrink-0">
       <AssetIcon file={file} label={label} />
-      {badgeLabel && (
-        <span className="absolute -bottom-0.5 -right-0.5 flex rounded-full bg-card p-0.5">
-          <AssetIcon file={badge ?? null} label={badgeLabel} size={16} />
-        </span>
-      )}
+      <span className="absolute bottom-0 right-0 translate-x-0.5 translate-y-0.5 rounded-full border-2 border-card">
+        <AssetIcon file={badge} label={badgeLabel} size={16} />
+      </span>
     </span>
   );
 }
 
-function EmptyAssetIcon() {
-  return (
-    <span className="flex size-11 shrink-0 items-center justify-center rounded-full bg-accent-selected text-tertiary">
-      <svg
-        aria-hidden="true"
-        fill="currentColor"
-        height="24"
-        viewBox="0 0 24 24"
-        width="24"
-      >
-        <circle cx="9" cy="9.5" opacity="0.6" r="4.5" />
-        <circle cx="14.5" cy="14.5" r="5" />
-      </svg>
-    </span>
-  );
-}
-
-function Chip({ children }: { children: ReactNode }) {
-  return (
-    <span className="ml-1.5 rounded-md bg-accent px-1.5 py-px text-[11px] font-normal leading-[14px] text-muted-foreground">
-      {children}
-    </span>
-  );
-}
-
-function SearchField({
-  placeholder,
+function RowText({
+  label,
   value,
-  onChange,
+  placeholder = false,
+  badge,
 }: {
-  placeholder: string;
+  label: string;
   value: string;
-  onChange: (value: string) => void;
+  placeholder?: boolean;
+  badge?: string;
 }) {
   return (
-    <div className="shrink-0 px-4 pb-2">
-      <div className="flex w-full items-center rounded-full bg-accent px-3">
-        <Search
-          className="mr-3 shrink-0 text-muted-foreground"
-          size={24}
-          strokeWidth={2}
-        />
-        <input
-          aria-label={placeholder}
-          className="min-w-0 flex-1 bg-transparent py-3 text-[16px] text-foreground leading-5 outline-none placeholder:text-muted-foreground"
-          onChange={(event) => onChange(event.target.value)}
-          placeholder={placeholder}
-          type="text"
-          value={value}
-        />
-      </div>
-    </div>
+    <span className="ml-3 flex min-w-0 flex-1 flex-col gap-1">
+      <span className="text-[13px] leading-4 text-muted-foreground">
+        {label}
+      </span>
+      <span
+        className={`flex items-center gap-1 text-[16px] font-medium leading-5 ${
+          placeholder ? "text-tertiary" : ""
+        }`}
+      >
+        {value}
+        {badge && (
+          <span className="rounded-md bg-accent px-1 py-px text-[11px] leading-[14px] tracking-[0.06px] text-muted-foreground">
+            {badge}
+          </span>
+        )}
+      </span>
+    </span>
   );
 }
 
-function matches(query: string, ...texts: string[]) {
-  const needle = query.trim().toLowerCase();
-  return texts.some((text) => text.toLowerCase().includes(needle));
+function BridgeRow({
+  label,
+  value,
+  icon,
+  onClick,
+  placeholder = false,
+  badge,
+}: {
+  label: string;
+  value: string;
+  icon: ReactNode;
+  onClick: () => void;
+  placeholder?: boolean;
+  badge?: string;
+}) {
+  return (
+    <button
+      className="t-hover flex h-[60px] w-full items-center rounded-2xl px-4 text-left hover:bg-accent max-[795px]:px-2"
+      onClick={onClick}
+      type="button"
+    >
+      {icon}
+      <RowText
+        label={label}
+        value={value}
+        placeholder={placeholder}
+        badge={badge}
+      />
+      <ThemedIcon
+        className="ml-3 size-6 shrink-0 text-muted-foreground"
+        src={`${BASE}/icon-chevron-right.svg`}
+      />
+    </button>
+  );
 }
 
 function Warning({
@@ -201,18 +211,16 @@ function Warning({
 function AddressCard({
   address,
   bridge,
-  heading,
-  emptyLabel = "No wallet connected",
   qrIcon,
-  pill,
+  depositSymbol,
+  emptyLabel = "No wallet connected",
   onCopy,
 }: {
   address: string | null;
   bridge: boolean;
-  heading?: string;
-  emptyLabel?: string;
   qrIcon: string | null;
-  pill?: ReactNode;
+  depositSymbol?: string;
+  emptyLabel?: string;
   onCopy: () => void;
 }) {
   return (
@@ -221,8 +229,7 @@ function AddressCard({
         bridge ? "w-full rounded-2xl" : "w-64 rounded-3xl"
       }`}
     >
-      {pill}
-      <div className={`px-8 pb-5 ${pill ? "pt-5 max-[795px]:pt-8" : "pt-8"}`}>
+      <div className="px-8 pt-8 pb-5">
         {address ? (
           <QRCodeSVG
             value={address}
@@ -246,62 +253,43 @@ function AddressCard({
           <div className="size-48 rounded-2xl bg-accent-selected" />
         )}
       </div>
-      {heading && (
-        <p className="pb-1 text-center font-semibold text-[16px] leading-5">
-          {heading}
+      {bridge && (
+        <p className="mb-1 text-center text-[16px] font-semibold leading-5">
+          Send {depositSymbol} to this address
         </p>
       )}
-      <p
-        className={`break-all pb-4 text-center font-mono text-[16px] leading-5 text-muted-foreground ${
-          bridge ? "w-64 max-[795px]:w-[236px]" : "w-full px-4"
+      <div
+        className={`flex w-full items-center pb-4 ${
+          bridge ? "gap-2 px-4" : "px-4"
         }`}
       >
-        {address ? (
-          <>
-            <span className="text-foreground">{address.slice(0, 4)}</span>
-            {address.slice(4, -4)}
-            <span className="text-foreground">{address.slice(-4)}</span>
-          </>
-        ) : (
-          emptyLabel
+        {bridge && <span aria-hidden="true" className="size-10 shrink-0" />}
+        <p className="min-w-0 flex-1 break-all text-center font-mono text-[16px] leading-5 text-muted-foreground">
+          {address ? (
+            <>
+              <span className="text-foreground">{address.slice(0, 4)}</span>
+              {address.slice(4, -4)}
+              <span className="text-foreground">{address.slice(-4)}</span>
+            </>
+          ) : (
+            emptyLabel
+          )}
+        </p>
+        {bridge && (
+          <button
+            aria-label="Copy bridge address"
+            className="t-hover flex size-10 shrink-0 items-center justify-center rounded-full hover:bg-accent"
+            onClick={onCopy}
+            type="button"
+          >
+            <ThemedIcon
+              className="size-6 text-tertiary"
+              src={`${BASE}/icon-copy.svg`}
+            />
+          </button>
         )}
-      </p>
-      {bridge && (
-        <button
-          aria-label="Copy bridge address"
-          className="t-hover absolute bottom-3.5 right-3 flex size-11 items-center justify-center rounded-full hover:bg-accent-selected"
-          onClick={onCopy}
-          type="button"
-        >
-          <ThemedIcon
-            className="size-6 text-tertiary"
-            src={`${BASE}/icon-copy.svg`}
-          />
-        </button>
-      )}
+      </div>
     </div>
-  );
-}
-
-const CELL =
-  "flex h-[60px] w-full items-center rounded-2xl px-4 text-left max-[795px]:px-2";
-
-function CellLabel({
-  label,
-  children,
-}: {
-  label: string;
-  children: ReactNode;
-}) {
-  return (
-    <span className="ml-3 flex min-w-0 flex-1 flex-col gap-1">
-      <span className="text-[13px] leading-4 text-muted-foreground">
-        {label}
-      </span>
-      <span className="flex items-center font-medium text-[16px] leading-5">
-        {children}
-      </span>
-    </span>
   );
 }
 
@@ -327,7 +315,6 @@ export function ReceiveSheet({
     setTabState({ wallet: walletAddress, tab: next });
   const [view, setView] = useState<View>("receive");
   const [selection, setSelection] = useState<Selection | null>(null);
-  const [listing, setListing] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [copied, setCopied] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -348,16 +335,17 @@ export function ReceiveSheet({
   );
   const narrow = useIsNarrowViewport();
   const title =
-    view === "deposit-assets"
-      ? "Select asset to deposit"
-      : view === "chains"
+    view === "chains"
       ? "Select chain"
+      : view === "deposit-assets"
+      ? "Select asset to deposit"
       : "Receive";
   const goTo = (next: View) => {
     setQuery("");
     setView(next);
   };
-  const goBack = () => goTo("receive");
+  const backToAsset = view === "chains" && !selection?.chain;
+  const goBack = () => goTo(backToAsset ? "deposit-assets" : "receive");
   useEscapeOverlay(isOpen, () => (view === "receive" ? onClose() : goBack()));
 
   useEffect(() => {
@@ -366,7 +354,6 @@ export function ReceiveSheet({
     setView("receive");
     setQuery("");
     setSelection(null);
-    setListing(null);
     setCopied(false);
     const previous =
       document.activeElement instanceof HTMLElement
@@ -389,8 +376,8 @@ export function ReceiveSheet({
       )
         return;
       const elements = [
-        ...panelRef.current.querySelectorAll<HTMLButtonElement>(
-          "button:not(:disabled)"
+        ...panelRef.current.querySelectorAll<HTMLElement>(
+          "button:not(:disabled), input:not(:disabled)"
         ),
       ];
       const first = elements[0],
@@ -423,18 +410,19 @@ export function ReceiveSheet({
       )
     ).values(),
   ];
-  const listedNetworks = listing
-    ? networks.filter((item) => tokenOn(item, listing))
+  const depositAsset = depositTokens.find(
+    (item) => item.asset === selection?.asset
+  );
+  const selectableNetworks = selection
+    ? networks.filter((item) => tokenOn(item, selection.asset))
     : [];
-  const assetResults = depositTokens.filter((item) =>
+  const filteredAssets = depositTokens.filter((item) =>
     matches(query, item.name, item.symbol)
   );
-  const chainResults = listedNetworks.filter((item) =>
+  const filteredChains = selectableNetworks.filter((item) =>
     matches(query, item.name)
   );
-  const network = selection
-    ? networks.find((item) => item.chain === selection.chain)
-    : undefined;
+  const network = networks.find((item) => item.chain === selection?.chain);
   const deposit =
     network && selection ? tokenOn(network, selection.asset) : undefined;
   const resolved = network && deposit;
@@ -464,7 +452,7 @@ export function ReceiveSheet({
         <header className="flex shrink-0 items-center p-2">
           {view !== "receive" && (
             <button
-              aria-label="Back"
+              aria-label={backToAsset ? "Back to select asset" : "Back to receive"}
               className="t-hover flex size-11 shrink-0 items-center justify-center rounded-full hover:bg-accent"
               onClick={goBack}
               type="button"
@@ -520,195 +508,203 @@ export function ReceiveSheet({
             </div>
             {bridge ? (
               <div className="min-h-0 flex-1 overflow-y-auto">
-                <div className="flex flex-col gap-2 p-2 max-[795px]:px-4">
-                  {live && routeError && (
-                    <Warning onRetry={retryRoute}>{routeError}</Warning>
-                  )}
-                  {moves.error && (
-                    <Warning onRetry={moves.reload}>{moves.error}</Warning>
-                  )}
-                  {moves.balances.map((item) => (
-                    <button
-                      className={`t-hover ${CELL} hover:bg-accent`}
-                      key={`${item.chain}:${item.asset}`}
-                      onClick={() => {
-                        if (!evm.info || !walletAddress) return;
-                        onMove({
-                          sender: evm.info.address,
-                          recipient: walletAddress,
-                          balances: moves.balances,
-                          start: item,
-                        });
-                      }}
-                      type="button"
-                    >
-                      <BadgedIcon
-                        file={item.icon}
-                        label={item.symbol}
-                        badge={item.chainIcon}
-                        badgeLabel={item.chainName}
-                      />
-                      <CellLabel label="Ready to move to Solana">
-                        {fromRaw(item.amountRaw, item.decimals)} {item.symbol}
-                        <Chip>{item.chainName}</Chip>
-                      </CellLabel>
-                      <ThemedIcon
-                        className="size-6 text-muted-foreground"
-                        src={`${BASE}/icon-chevron-right.svg`}
-                      />
-                    </button>
-                  ))}
-                  {moves.transfers.map((item) => (
-                    <div className={CELL} key={item.requestId}>
-                      <BadgedIcon
-                        file={item.icon}
-                        label={item.symbol}
-                        badge={item.chainIcon}
-                        badgeLabel={item.chainName}
-                      />
-                      <CellLabel label={item.status}>
-                        {item.amount} {item.symbol}
-                        <Chip>{item.chainName}</Chip>
-                      </CellLabel>
-                    </div>
-                  ))}
-                  {resolved && (
-                    <>
-                      <AddressCard
-                        address={bridgeAddress}
-                        bridge
-                        heading={`Send ${deposit.symbol} to this address`}
-                        emptyLabel={
-                          routeError
-                            ? "No deposit address yet"
-                            : "Loading address…"
+                {((live && routeError) || moves.error) && (
+                  <div className="flex flex-col gap-2 px-2 pt-2 max-[795px]:px-4">
+                    {live && routeError && (
+                      <Warning onRetry={retryRoute}>{routeError}</Warning>
+                    )}
+                    {moves.error && (
+                      <Warning onRetry={moves.reload}>{moves.error}</Warning>
+                    )}
+                  </div>
+                )}
+                {(moves.balances.length > 0 || moves.transfers.length > 0) && (
+                  <div className="px-2 pt-2">
+                    {moves.balances.map((item) => (
+                      <BridgeRow
+                        key={`${item.chain}:${item.asset}`}
+                        label="Ready to move to Solana"
+                        value={`${fromRaw(item.amountRaw, item.decimals)} ${item.symbol}`}
+                        badge={item.chainName}
+                        onClick={() => {
+                          if (!evm.info || !walletAddress) return;
+                          onMove({
+                            sender: evm.info.address,
+                            recipient: walletAddress,
+                            balances: moves.balances,
+                            start: item,
+                          });
+                        }}
+                        icon={
+                          <BadgedIcon
+                            file={item.icon}
+                            label={item.symbol}
+                            badge={item.chainIcon}
+                            badgeLabel={item.chainName}
+                          />
                         }
-                        qrIcon={narrow ? network.icon : deposit.icon}
-                        pill={
-                          <button
-                            className="t-hover mt-5 flex h-9 items-center gap-2 rounded-full bg-accent-selected pl-2 pr-3 text-[16px] leading-5 max-[795px]:hidden"
-                            onClick={() => {
-                              setListing(deposit.asset);
-                              goTo("chains");
-                            }}
-                            type="button"
-                          >
-                            <AssetIcon
-                              file={network.icon}
-                              label={network.name}
-                              size={24}
-                            />
-                            {network.name}
-                            <ThemedIcon
-                              className="size-4 text-muted-foreground"
-                              src={`${BASE}/icon-chevron-right.svg`}
-                            />
-                          </button>
-                        }
-                        onCopy={handleCopy}
                       />
-                      <Warning>
-                        {narrow
-                          ? `Send funds only via the ${network.name} network${
-                              tronRoute ? "" : " and not from an exchange"
-                            }.`
-                          : `Send funds to this address only via the ${network.name} network.`}
-                        {network.minUsd > 0 &&
-                          ` The minimum amount is $${network.minUsd} in the selected asset.`}{" "}
-                        Sending an unsupported token will result in permanent
-                        loss of funds.
-                      </Warning>
-                    </>
-                  )}
-                  <div className="relative max-[795px]:-mx-2">
+                    ))}
+                    {moves.transfers.map((item) => (
+                      <div
+                        className="flex h-[60px] w-full items-center rounded-2xl px-4 max-[795px]:px-2"
+                        key={item.requestId}
+                      >
+                        <BadgedIcon
+                          file={item.icon}
+                          label={item.symbol}
+                          badge={item.chainIcon}
+                          badgeLabel={item.chainName}
+                        />
+                        <RowText
+                          label={item.status}
+                          value={`${item.amount} ${item.symbol}`}
+                          badge={item.chainName}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div className="relative p-2">
+                  <div
+                    aria-hidden="true"
+                    className={`pointer-events-none absolute left-[45px] top-[63px] w-0.5 bg-foreground/20 max-[795px]:left-[37px] ${
+                      depositAsset ? "h-2.5" : "h-[18px]"
+                    }`}
+                  />
+                  {depositAsset && (
                     <div
                       aria-hidden="true"
-                      className="pointer-events-none absolute left-[37px] top-[54px] z-10 h-4 w-0.5 bg-foreground/20 max-[795px]:left-[29px]"
+                      className="pointer-events-none absolute left-[45px] top-[123px] h-2.5 w-0.5 bg-foreground/20 max-[795px]:left-[37px]"
                     />
-                    <button
-                      className={`t-hover ${CELL} hover:bg-accent`}
-                      onClick={() => goTo("deposit-assets")}
-                      type="button"
-                    >
-                      {deposit ? (
-                        <BadgedIcon
-                          file={deposit.icon}
-                          label={deposit.symbol}
-                          badge={network?.icon}
-                          badgeLabel={network?.name}
+                  )}
+                  <BridgeRow
+                    label="Asset to deposit"
+                    value={depositAsset?.symbol ?? "Select asset"}
+                    placeholder={!depositAsset}
+                    onClick={() => goTo("deposit-assets")}
+                    icon={
+                      depositAsset ? (
+                        <AssetIcon
+                          file={depositAsset.icon}
+                          label={depositAsset.symbol}
                         />
                       ) : (
-                        <EmptyAssetIcon />
-                      )}
-                      <CellLabel label="Asset to deposit">
-                        {deposit ? (
-                          <>
-                            {deposit.symbol}
-                            {network && <Chip>{network.name}</Chip>}
-                          </>
+                        <span className="flex size-11 items-center justify-center rounded-full bg-accent">
+                          <ThemedIcon
+                            className="size-6 text-tertiary"
+                            src={`${BASE}/receive/asset-placeholder.svg`}
+                          />
+                        </span>
+                      )
+                    }
+                  />
+                  {depositAsset && (
+                    <BridgeRow
+                      label="Sending from chain"
+                      value={network?.name ?? "Select chain"}
+                      placeholder={!network}
+                      onClick={() => goTo("chains")}
+                      icon={
+                        network ? (
+                          <AssetIcon file={network.icon} label={network.name} />
                         ) : (
-                          <span className="text-tertiary">Select asset</span>
-                        )}
-                      </CellLabel>
-                      <ThemedIcon
-                        className="size-6 text-muted-foreground"
-                        src={`${BASE}/icon-chevron-right.svg`}
-                      />
-                    </button>
-                    <div className={`${CELL} mt-1`}>
+                          <span className="flex size-11 items-center justify-center rounded-full bg-accent">
+                            <ThemedIcon
+                              className="size-6 text-tertiary"
+                              src={`${BASE}/receive/assets.svg`}
+                            />
+                          </span>
+                        )
+                      }
+                    />
+                  )}
+                  <div className={depositAsset ? "" : "mt-2"}>
+                    <div className="flex h-[60px] w-full items-center rounded-2xl px-4 max-[795px]:px-2">
                       <BadgedIcon
                         file={RECEIVE.icon}
                         label={RECEIVE.symbol}
                         badge={RECEIVE.chainIcon}
                         badgeLabel={RECEIVE.chain}
                       />
-                      <CellLabel label="Asset to receive">
-                        {RECEIVE.symbol}
-                        <Chip>{RECEIVE.chain}</Chip>
-                      </CellLabel>
-                      <span className="flex size-6 items-center justify-center">
-                        <InfoTooltip tone="dark" text="The asset you’ll receive after bridging. Transferred assets will be automatically converted to this asset." />
+                      <RowText
+                        label="Asset to receive"
+                        value={RECEIVE.symbol}
+                        badge={RECEIVE.chain}
+                      />
+                      <span className="ml-3 flex size-6 shrink-0 items-center justify-center">
+                        <InfoTooltip
+                          iconClassName="size-6"
+                          tone="dark"
+                          text="The asset you’ll receive after bridging. Transferred assets will be automatically converted to this asset."
+                        />
                       </span>
                     </div>
                   </div>
-                  {resolved &&
-                    (network.minUsd > 0 ||
+                </div>
+                {resolved && (
+                  <div className="flex flex-col gap-2 p-2 max-[795px]:px-4">
+                    <Warning>
+                      {narrow
+                        ? `Send funds only via the ${network.shortName} network${
+                            tronRoute ? "" : " and not from an exchange"
+                          }.`
+                        : `Send funds to this address only via the ${network.shortName} network.`}
+                      {network.minUsd > 0 &&
+                        ` The minimum amount is $${network.minUsd} in the selected asset.`}{" "}
+                      Sending an unsupported token will result in permanent loss
+                      of funds.
+                    </Warning>
+                    <AddressCard
+                      address={bridgeAddress}
+                      bridge
+                      qrIcon={network.qrIcon}
+                      depositSymbol={deposit.symbol}
+                      emptyLabel={
+                        routeError
+                          ? "No deposit address yet"
+                          : "Loading address…"
+                      }
+                      onCopy={handleCopy}
+                    />
+                    {(network.minUsd > 0 ||
                       deposit.feePercent ||
                       deposit.feeUsd ||
                       deposit.receiveUsdc) && (
-                    <dl className="rounded-2xl bg-accent py-1 text-[13px] leading-4">
-                      {network.minUsd > 0 && (
-                        <div className="flex h-9 items-center justify-between px-4">
-                          <dt className="text-muted-foreground">
-                            Minimum deposit amount
-                          </dt>
-                          <dd>{minDeposit(network.minUsd, deposit)}</dd>
-                        </div>
-                      )}
-                      {(deposit.feePercent || deposit.feeUsd) && (
-                        <div className="flex h-9 items-center justify-between px-4">
-                          <dt className="text-muted-foreground">Fee</dt>
-                          <dd>
-                            {deposit.feePercent
-                              ? `${Number(deposit.feePercent)}%`
-                              : `~$${Number(deposit.feeUsd).toFixed(2)}`}
-                          </dd>
-                        </div>
-                      )}
-                      {deposit.receiveUsdc && (
-                        <div className="flex h-9 items-center justify-between px-4">
-                          <dt className="text-muted-foreground">
-                            You receive about
-                          </dt>
-                          <dd>
-                            {floorToCents(Number(deposit.receiveUsdc))}{" "}
-                            {RECEIVE.symbol}
-                          </dd>
-                        </div>
-                      )}
-                    </dl>
-                  )}
-                </div>
+                      <dl className="rounded-2xl bg-accent py-1 text-[13px] leading-4">
+                        {network.minUsd > 0 && (
+                          <div className="flex justify-between px-4 py-2.5">
+                            <dt className="text-muted-foreground">
+                              Minimum deposit amount
+                            </dt>
+                            <dd>{minDeposit(network.minUsd, deposit)}</dd>
+                          </div>
+                        )}
+                        {(deposit.feePercent || deposit.feeUsd) && (
+                          <div className="flex justify-between px-4 py-2.5">
+                            <dt className="text-muted-foreground">Fee</dt>
+                            <dd>
+                              {deposit.feePercent
+                                ? `${Number(deposit.feePercent)}%`
+                                : `~$${Number(deposit.feeUsd).toFixed(2)}`}
+                            </dd>
+                          </div>
+                        )}
+                        {deposit.receiveUsdc && (
+                          <div className="flex justify-between px-4 py-2.5">
+                            <dt className="text-muted-foreground">
+                              You receive about
+                            </dt>
+                            <dd>
+                              {floorToCents(Number(deposit.receiveUsdc))}{" "}
+                              {RECEIVE.symbol}
+                            </dd>
+                          </div>
+                        )}
+                      </dl>
+                    )}
+                  </div>
+                )}
               </div>
             ) : (
               <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
@@ -741,21 +737,31 @@ export function ReceiveSheet({
           </>
         ) : (
           <>
-            {((view === "deposit-assets" &&
-              depositTokens.length >= SEARCH_MIN_ITEMS) ||
-              (view === "chains" &&
-                listedNetworks.length >= SEARCH_MIN_ITEMS)) && (
-              <SearchField
-                placeholder={
-                  view === "chains" ? "Search chains" : "Search assets"
-                }
-                value={query}
-                onChange={setQuery}
-              />
+            {(view === "chains" ? selectableNetworks : depositTokens).length >=
+              SEARCH_MIN_ITEMS && (
+              <div className="shrink-0 px-4 pb-2">
+                <div className="flex items-center rounded-full bg-accent px-3">
+                  <ThemedIcon
+                    className="mr-3 size-6 shrink-0 text-muted-foreground"
+                    src={`${BASE}/receive/search.svg`}
+                  />
+                  <input
+                    aria-label={
+                      view === "chains" ? "Search chains" : "Search assets"
+                    }
+                    className="min-w-0 flex-1 bg-transparent py-3 text-[16px] leading-5 outline-none placeholder:text-muted-foreground"
+                    onChange={(event) => setQuery(event.target.value)}
+                    placeholder={
+                      view === "chains" ? "Search chains" : "Search assets"
+                    }
+                    type="search"
+                    value={query}
+                  />
+                </div>
+              </div>
             )}
             <div className="min-h-0 flex-1 overflow-y-auto p-2">
-              {(view === "deposit-assets" || view === "chains") &&
-                networks.length === 0 &&
+              {networks.length === 0 &&
                 (evm.error ? (
                   <Warning onRetry={() => void evm.retry()}>
                     {evm.error}
@@ -767,71 +773,66 @@ export function ReceiveSheet({
                     </p>
                   )
                 ))}
-              {view === "deposit-assets" &&
-                assetResults.map((item) => (
-                  <button
-                    className="t-hover flex h-[60px] w-full items-center rounded-2xl px-4 text-left hover:bg-accent"
-                    key={item.asset}
-                    onClick={() => {
-                      setListing(item.asset);
-                      setCopied(false);
-                      goTo("chains");
-                    }}
-                    type="button"
-                  >
-                    <AssetIcon file={item.icon} label={item.symbol} />
-                    <span className="ml-3 flex flex-1 flex-col gap-0.5">
-                      <span className="font-medium text-[16px] leading-5 tracking-[-0.176px]">
-                        {item.name}
-                      </span>
-                      <span className="text-[13px] leading-4 text-muted-foreground">
-                        {item.symbol}
-                      </span>
-                    </span>
-                  </button>
-                ))}
-              {view === "chains" &&
-                listing &&
-                chainResults.map((item) => {
-                  const token = tokenOn(item, listing);
-                  return (
+              {view === "chains" && selection
+                ? filteredChains.map((item) => {
+                    const token = tokenOn(item, selection.asset);
+                    return (
+                      <button
+                        className="t-hover flex h-[60px] w-full items-center rounded-2xl px-4 text-left hover:bg-accent max-[795px]:px-2"
+                        key={item.chain}
+                        onClick={() => {
+                          setSelection({ ...selection, chain: item.chain });
+                          setCopied(false);
+                          goTo("receive");
+                        }}
+                        type="button"
+                      >
+                        <AssetIcon file={item.icon} label={item.name} />
+                        <span className="ml-3 flex flex-1 flex-col gap-0.5">
+                          <span className="font-medium text-[16px] leading-5 tracking-[-0.176px]">
+                            {item.name}
+                          </span>
+                          {token && item.minUsd > 0 && (
+                            <span className="text-[13px] leading-4 text-muted-foreground">
+                              Min deposit amount:{" "}
+                              {minDeposit(item.minUsd, token)}
+                            </span>
+                          )}
+                        </span>
+                      </button>
+                    );
+                  })
+                : filteredAssets.map((item) => (
                     <button
-                      className="t-hover flex h-[60px] w-full items-center rounded-2xl px-4 text-left hover:bg-accent"
-                      key={item.chain}
+                      className="t-hover flex h-[60px] w-full items-center rounded-2xl px-4 text-left hover:bg-accent max-[795px]:px-2"
+                      key={item.asset}
                       onClick={() => {
-                        setSelection({ asset: listing, chain: item.chain });
+                        setSelection({ asset: item.asset, chain: null });
                         setCopied(false);
-                        goTo("receive");
+                        goTo("chains");
                       }}
                       type="button"
                     >
-                      <AssetIcon file={item.icon} label={item.name} />
+                      <AssetIcon file={item.icon} label={item.symbol} />
                       <span className="ml-3 flex flex-1 flex-col gap-0.5">
-                        <span className="font-medium text-[16px] leading-5">
+                        <span className="font-medium text-[16px] leading-5 tracking-[-0.176px]">
                           {item.name}
                         </span>
-                        {token && item.minUsd > 0 && (
-                          <span className="text-[13px] leading-4 text-muted-foreground">
-                            Min deposit amount:{" "}
-                            {minDeposit(item.minUsd, token)}
-                          </span>
-                        )}
+                        <span className="text-[13px] leading-4 text-muted-foreground">
+                          {item.symbol}
+                        </span>
                       </span>
                     </button>
-                  );
-                })}
-              {query.trim() &&
-                (view === "chains" ? chainResults : assetResults).length ===
+                  ))}
+              {networks.length > 0 &&
+                (view === "chains" ? filteredChains : filteredAssets).length ===
                   0 && (
-                  <div className="flex h-[60px] items-center px-4">
-                    <span
-                      aria-hidden="true"
-                      className="size-11 shrink-0 rounded-full border-2 border-dashed border-border"
-                    />
-                    <p className="ml-3 text-[16px] leading-5 text-muted-foreground">
-                      No results found
-                    </p>
-                  </div>
+                  <p
+                    role="status"
+                    className="px-4 py-8 text-center text-[14px] leading-5 text-muted-foreground"
+                  >
+                    No {view === "chains" ? "chains" : "assets"} found
+                  </p>
                 )}
             </div>
           </>

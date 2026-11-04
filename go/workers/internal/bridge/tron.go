@@ -21,6 +21,7 @@ import (
 type DepositRoute struct {
 	Chain        Chain
 	Name         string
+	Short        string
 	Icon         string
 	RelayChainID int64
 	Asset        Asset
@@ -35,6 +36,7 @@ type DepositRoute struct {
 var Tron = DepositRoute{
 	Chain:        "tron",
 	Name:         "Tron (TRC20)",
+	Short:        "Tron",
 	Icon:         "tron.png",
 	RelayChainID: 728126428,
 	Asset:        USDT,
