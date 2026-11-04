@@ -25,7 +25,7 @@ export type OutToken = BridgeDestination["tokens"] extends
 export type OutStep =
   | { kind: "form" }
   | { kind: "sending" }
-  | { kind: "bridging"; requestId: string }
+  | { kind: "bridging"; requestId: string; unsubmittedBy: number | null }
   | { kind: "filled"; transfer: BridgeTransfer }
   | { kind: "failed"; message: string; requestId: string | null };
 
@@ -36,6 +36,9 @@ const QUOTE_DEBOUNCE_MS = 500;
 const QUOTE_MAX_AGE_MS = 30_000;
 const POLL_MS = 3000;
 const SUBMIT_ATTEMPTS = 3;
+const BLOCKHASH_WINDOW_MS = 120_000;
+const DID_NOT_FINISH =
+  "The transfer did not finish. Check your wallet before trying again.";
 
 class BridgeApiError extends Error {
   constructor(message: string, readonly code: string | null) {
@@ -329,11 +332,19 @@ export function useBridgeOut({
           setStep({ kind: "form" });
           return;
         }
-        fail("The transfer did not finish. Check your wallet before trying again.");
+        setStep({
+          kind: "bridging",
+          requestId: quoted.requestId,
+          unsubmittedBy: Date.now() + BLOCKHASH_WINDOW_MS,
+        });
         return;
       }
 
-      setStep({ kind: "bridging", requestId: quoted.requestId });
+      setStep({
+        kind: "bridging",
+        requestId: quoted.requestId,
+        unsubmittedBy: null,
+      });
       for (let attempt = 0; attempt < SUBMIT_ATTEMPTS; attempt++) {
         try {
           await readJSON<BridgeTransfer>(
@@ -377,6 +388,7 @@ export function useBridgeOut({
   }, [current, lockName, requote, run]);
 
   const bridgingId = step.kind === "bridging" ? step.requestId : null;
+  const unsubmittedBy = step.kind === "bridging" ? step.unsubmittedBy : null;
   useEffect(() => {
     if (!bridgingId) return;
     let live = true;
@@ -385,7 +397,16 @@ export function useBridgeOut({
         const transfer = (await readTransfers()).find(
           (t) => t.requestId === bridgingId
         );
-        if (!live || !transfer) return;
+        if (!live) return;
+        if (!transfer && unsubmittedBy !== null && Date.now() >= unsubmittedBy) {
+          setStep({
+            kind: "failed",
+            message: DID_NOT_FINISH,
+            requestId: bridgingId,
+          });
+          return;
+        }
+        if (!transfer) return;
         if (transfer.state === "filled") setStep({ kind: "filled", transfer });
         else if (transfer.state === "refunded" || transfer.state === "failed")
           setStep({
@@ -406,7 +427,7 @@ export function useBridgeOut({
       live = false;
       clearInterval(timer);
     };
-  }, [bridgingId]);
+  }, [bridgingId, unsubmittedBy]);
 
   return {
     amountRaw,
