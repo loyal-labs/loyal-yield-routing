@@ -15,6 +15,23 @@ import (
 
 const hardLTVDeleverReason = "hard_ltv_delever"
 
+func economicDownStep(s Snapshot, d Decision) bool {
+	if s.Trustful {
+		return false
+	}
+	if d.Reason == leverageDownPartialReason {
+		return true
+	}
+	if d.Reason != debtZeroReason {
+		return false
+	}
+	switch s.Target.Rule {
+	case ruleHardLTV, ruleTermMaturity, ruleOperatorExit, ruleWithdrawal:
+		return false
+	}
+	return true
+}
+
 const (
 	// stepDownMarker is the amount of every down step's decision but a
 	// release's (which carries its equity, stable): prepare sizes the repay
@@ -232,16 +249,43 @@ func planDownStep(s Snapshot, d Decision, st stepState, repayRaw uint64) (downSt
 	return downStepPlan{receipts, liquidity + st.collateralBalance}, nil
 }
 
-func prepareStepFromTickObservation(ctx context.Context, rpc *chain.Client, view *View, manifest RouteManifest, client *jupiter.Client, recordExit func(context.Context, ExitCost) (bool, error), decision Decision, observation Observation) (Observation, StepExecutionEvidence, error) {
+func prepareStepFromTickObservation(ctx context.Context, rpc *chain.Client, view *View, manifest RouteManifest, client *jupiter.Client, recordExit func(context.Context, ExitCost) (bool, error), decision Decision, observation Observation) (out Observation, result StepExecutionEvidence, resultErr error) {
 	kind := stepKind(decision)
 	if kind == notStep || rpc == nil || view == nil || observation.routeBatch == nil || decision.AmountRaw <= 0 {
 		return Observation{}, StepExecutionEvidence{}, fmt.Errorf("invalid step evidence request")
 	}
 	prepareStart, s, accounts, v := time.Now(), observation.Snapshot, observation.routeBatch.Accounts, manifest.vault
+	optionalDown := economicDownStep(s, decision)
+	if optionalDown && !s.Target.Down.active(s.ChainUnix) {
+		return Observation{}, StepExecutionEvidence{}, staleHold("down_move_approval_unavailable")
+	}
 	route, err := v.route(decision.StrategyKey)
 	if err != nil {
 		return Observation{}, StepExecutionEvidence{}, err
 	}
+	defer func() {
+		if resultErr == nil {
+			result = withStepSale(accounts, route, result)
+			if optionalDown {
+				price, err := ObserveNativeSOLBudgetPrice(ctx, rpc, view, s.Slot)
+				if err != nil {
+					resultErr = err
+					return
+				}
+				message, err := compileStepMessageForDelegate(v, result.Request, mustKey(backyardDelegate))
+				if err != nil {
+					resultErr = err
+					return
+				}
+				fee, err := (lanePricer{sol: price}).networkMicros(message)
+				if err != nil || fee <= 0 || fee > math.MaxInt64/2 {
+					resultErr = staleHold("down_move_fee_unpriced")
+					return
+				}
+				resultErr = guardDownStepCost(s.Target.Down, s.ChainUnix, result, fee*2)
+			}
+		}
+	}()
 	if observation.policies, err = observeInstalledPolicies(ctx, rpc, v, s.Slot); err != nil {
 		return Observation{}, StepExecutionEvidence{}, err
 	}

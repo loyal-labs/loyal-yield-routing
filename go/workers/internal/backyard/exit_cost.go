@@ -52,9 +52,10 @@ func newExitCost(c ExitCost) (ExitCost, error) {
 }
 
 func exitCostOf(lane string, source exitCostSource, soldRaw, markValueRaw, returnedRaw uint64, mark kamino.ScaledFraction, slot int64, at time.Time) (ExitCost, error) {
-	if markValueRaw == 0 || (returnedRaw >= markValueRaw && source != exitCostQuote) {
-		return ExitCost{}, fmt.Errorf("exit_cost_not_positive")
+	if markValueRaw == 0 {
+		return ExitCost{}, fmt.Errorf("exit_cost_mark_unavailable")
 	}
+	// One millionth of a basis point distinguishes a free exit from unpriced.
 	bps := big.NewInt(1)
 	if returnedRaw < markValueRaw {
 		bps.Mul(new(big.Int).SetUint64(markValueRaw-returnedRaw), new(big.Int).SetUint64(uint64(microBPSWhole)))
@@ -118,7 +119,7 @@ func unpricedExitLane(err error) (string, bool) {
 }
 
 func (c ExitCost) outlier(realized *ExitCost) bool {
-	return realized != nil && c.BPS > exitQuoteOutlierRatio*realized.BPS
+	return realized != nil && realized.BPS > 1 && c.BPS > exitQuoteOutlierRatio*realized.BPS
 }
 
 func (e exitCosts) quoteDue(b heldExitBasis, lastAttempt, now time.Time) bool {
@@ -317,6 +318,7 @@ type ExpectedSale struct {
 	MarkSF        kamino.ScaledFraction `json:"markSf"`
 	OutputAccount string                `json:"outputAccount"`
 	Proceeds      *saleProceedsMark     `json:"proceeds,omitempty"`
+	MaxRepayRaw   uint64                `json:"maxRepayRaw,omitempty"`
 }
 
 type saleProceedsMark struct {
@@ -361,18 +363,72 @@ func withStepSale(accounts []ConfirmedAccount, route RuntimeRoute, evidence Step
 	case r.Hastra != nil:
 		evidence.ExpectedEffects.Sale = collateralSale(accounts, route, r.Hastra.Action, r.Hastra.AmountRaw, evidence.ExpectedEffects)
 	}
+	if sale := evidence.ExpectedEffects.Sale; sale != nil && evidence.Request.Close != nil {
+		sale.MaxRepayRaw = evidence.Request.Close.AmountRaw
+	}
 	return evidence
 }
 
-func (s realizedSale) exitCost(at time.Time) (ExitCost, bool) {
-	returned := s.ReturnedRaw
-	if p := s.Proceeds; p != nil {
-		value, err := centralValue(s.ReturnedRaw, p.Decimals, p.PriceSF, p.USDCSF)
-		if err != nil {
-			return ExitCost{}, false
+func (s ExpectedSale) returnedRaw(v *Vault, expected ExpectedEffects, pre, post map[string]TransactionTokenBalance) (uint64, error) {
+	route, err := v.route(s.Lane)
+	if err != nil || s.SoldRaw == 0 || s.MarkValueRaw == 0 || littleInt(s.MarkSF[:]).Sign() <= 0 || len(expected.Accounts) != 2 ||
+		expected.Accounts[0].Address != route.CollateralCustody || expected.Accounts[0].Mint != route.Kamino.CollateralMint || expected.Accounts[1].Address != s.OutputAccount ||
+		(s.OutputAccount != route.DebtCustody && s.OutputAccount != v.cash) {
+		return 0, fmt.Errorf("invalid sale evidence")
+	}
+	output := expected.Accounts[1].Mint
+	if output != fleet.USDCMint && (output != route.Kamino.DebtMint || s.Proceeds == nil) || output == fleet.USDCMint && s.Proceeds != nil {
+		return 0, fmt.Errorf("invalid sale proceeds mark")
+	}
+	if p := s.Proceeds; p != nil && (p.Decimals > 18 || littleInt(p.PriceSF[:]).Sign() <= 0 || littleInt(p.USDCSF[:]).Sign() <= 0) {
+		return 0, fmt.Errorf("invalid sale proceeds price")
+	}
+	before, beforeOK := pre[s.OutputAccount]
+	after, afterOK := post[s.OutputAccount]
+	if !beforeOK || !afterOK {
+		return 0, fmt.Errorf("missing sale proceeds custody")
+	}
+	returned := new(big.Int).Sub(new(big.Int).SetUint64(after.Raw), new(big.Int).SetUint64(before.Raw))
+	if s.MaxRepayRaw != 0 {
+		if expected.Kind != effectsAtomicStep || s.OutputAccount != route.DebtCustody {
+			return 0, fmt.Errorf("sale repayment requires an atomic down step")
 		}
-		returned = uint64(value)
+		// This transaction only credits the debt reserve; its credit is the
+		// actual repayment, including KLend's clipping of a final payoff.
+		reserveBefore, preOK := pre[route.DebtLiquiditySupply]
+		reserveAfter, postOK := post[route.DebtLiquiditySupply]
+		if !preOK || !postOK || reserveAfter.Raw < reserveBefore.Raw || reserveAfter.Raw-reserveBefore.Raw > s.MaxRepayRaw {
+			return 0, fmt.Errorf("sale repayment receipt outside bounds")
+		}
+		for _, balance := range []TransactionTokenBalance{reserveBefore, reserveAfter} {
+			if balance.OwnerProgram != route.DebtTokenProgram || balance.Mint != route.Kamino.DebtMint || balance.Authority != route.Kamino.MarketAuthority {
+				return 0, fmt.Errorf("sale repayment custody mismatch")
+			}
+		}
+		returned.Add(returned, new(big.Int).SetUint64(reserveAfter.Raw-reserveBefore.Raw))
+	}
+	if returned.Sign() <= 0 || !returned.IsUint64() {
+		return 0, fmt.Errorf("invalid realized sale proceeds")
+	}
+	return returned.Uint64(), nil
+}
+
+func (s realizedSale) exitCost(at time.Time) (ExitCost, bool) {
+	returned, err := s.proceedsValue(s.ReturnedRaw)
+	if err != nil {
+		return ExitCost{}, false
 	}
 	cost, err := exitCostOf(s.Lane, exitCostRealized, s.SoldRaw, s.MarkValueRaw, returned, s.MarkSF, s.Slot, at)
 	return cost, err == nil
+}
+
+func (s ExpectedSale) proceedsValue(raw uint64) (uint64, error) {
+	if p := s.Proceeds; p != nil {
+		value, err := centralValue(raw, p.Decimals, p.PriceSF, p.USDCSF)
+		if err != nil {
+			return 0, err
+		}
+		return uint64(value), nil
+	}
+	return raw, nil
 }

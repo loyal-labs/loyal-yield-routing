@@ -30,20 +30,25 @@ type leverageDecision struct {
 	Cost          leverageStepCost
 	TermDays      float64
 	TermKnown     bool
+	Down          downApproval
 }
 
 func (d leverageDecision) held(reason string) leverageDecision {
 	d.Next, d.Reason = d.Current, reason
+	d.Down = downApproval{}
 	return d
 }
 
 func leverageSettled(s Snapshot, selector SelectorResult) bool {
+	// A reduction's retained cash must not prevent renewal of its permission.
+	cashReady := s.SquadsIdleRaw == 0 || !s.Trustful && s.LeverageTargetLevel > 0 &&
+		levelDownDue(s, LaneTarget{Level: economicHeldLevel(s, s.LeverageTargetLevel)})
 	return earnActiveLane(s.RouteLane) && s.HasPosition && s.PositionCollateralRaw > 0 &&
 		selector.Action == SelectorKeep && s.Nonterminal == "" && withdrawalShortfallRaw(s) == 0 &&
-		s.SquadsIdleRaw == 0 && s.VoltrStrategyIdleRaw == 0
+		cashReady && s.VoltrStrategyIdleRaw == 0
 }
 
-func decideLeverageTarget(s Snapshot, selector SelectorResult, markets []LaneEconomics, p SelectorPolicy, price leverageStepPricer) (leverageDecision, bool) {
+func decideLeverageTarget(s Snapshot, selector SelectorResult, markets []LaneEconomics, p SelectorPolicy, price leverageStepPricer, downPrice leverageDownPricer) (leverageDecision, bool) {
 	out := leverageDecision{Lane: s.RouteLane, RoomRaw: s.AdditionalDebtRoomRaw}
 	out.TermDays, out.TermKnown = termDays(s)
 	market := economicsOf(markets, s.RouteLane)
@@ -56,6 +61,11 @@ func decideLeverageTarget(s Snapshot, selector SelectorResult, markets []LaneEco
 		out.Current = min(s.LeverageTargetLevel, maxLevel)
 	}
 	currentSpread := market.NativeAPY + market.SupplyAPY - market.CurrentBorrowAPY
+	if !s.Trustful && levelDownDue(s, LaneTarget{Level: economicHeldLevel(s, out.Current)}) {
+		out.Next = out.Current
+		out.SpreadBPS = int64(currentSpread * 10_000)
+		return out.priceDownStep(s, *market, p, downPrice), true
+	}
 	spreadAt := func(level float64) (float64, bool) {
 		if level <= out.Current {
 			return currentSpread, finite(currentSpread) && market.CurrentBorrowAPY >= 0
@@ -70,6 +80,9 @@ func decideLeverageTarget(s Snapshot, selector SelectorResult, markets []LaneEco
 	out.SpreadBPS = int64(currentSpread * 10_000)
 	out.Reason = leverageReasonSpreadRule
 	if out.Next < out.Current {
+		if !s.Trustful {
+			return out.priceDownStep(s, *market, p, downPrice), true
+		}
 		return out, true
 	}
 	candidateSnapshot := s
@@ -156,7 +169,7 @@ func upStepGain(m LaneEconomics, u upStep) float64 {
 }
 
 func (d leverageDecision) level() laneLevel {
-	return laneLevel{Level: d.Next, UpApproved: d.Next > 1 && d.BorrowRaw >= leverageMinimumBorrowRaw}
+	return laneLevel{Level: d.Next, UpApproved: d.Next > 1 && d.BorrowRaw >= leverageMinimumBorrowRaw, Down: d.Down}
 }
 
 func (d leverageDecision) outage() bool {
@@ -171,7 +184,7 @@ func (d leverageDecision) storeChanges(s Snapshot) bool {
 	if d.outage() {
 		return false
 	}
-	return d.level() != laneLevel{Level: s.LeverageTargetLevel, UpApproved: s.LeverageUpApproved}
+	return d.level() != laneLevel{Level: s.LeverageTargetLevel, UpApproved: s.LeverageUpApproved, Down: s.LeverageDown}
 }
 
 func decideOverflowLevel(source Snapshot, markets []LaneEconomics, p SelectorPolicy, now time.Time) (string, laneLevel, bool) {

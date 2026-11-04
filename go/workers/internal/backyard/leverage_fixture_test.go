@@ -59,7 +59,7 @@ func targetedWith(s Snapshot, in targetInputs) Snapshot {
 		levels[lane] = level
 	}
 	if _, ok := levels[s.RouteLane]; !ok && s.LeverageTargetLevel > 0 {
-		levels[s.RouteLane] = laneLevel{Level: s.LeverageTargetLevel, UpApproved: s.LeverageUpApproved}
+		levels[s.RouteLane] = laneLevel{Level: s.LeverageTargetLevel, UpApproved: s.LeverageUpApproved, Down: s.LeverageDown}
 	}
 	in.Levels = levels
 	_, t := target([]Snapshot{s}, in)

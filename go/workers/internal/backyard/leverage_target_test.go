@@ -43,15 +43,17 @@ func TestDecideLeverageTargetStepsAtEachLevel(t *testing.T) {
 		{"1.5x stays 1-2 pt", 1.5, 0.10, math.Log1p(0.085), 1.5, "spread_rule"},
 		// Live levels reach 1.75x with the multi-cycle exit; option 1 exactly.
 		{"1.5x qualifying capped loan", 1.5, 0.12, math.Log1p(0.06), 1.75, "up_move_approved"},
-		{"1.5x down below 0", 1.5, 0.05, math.Log1p(0.06), 1, "spread_rule"},
+		{"1.5x debt-free when the saving pays", 1.5, 0.05, math.Log1p(0.15), 1, leverageDownApproved},
 		{"1.75x stays in the gap", 1.75, 0.10, math.Log1p(0.085), 1.75, "spread_rule"},
-		{"1.75x down below 1 pt", 1.75, 0.10, math.Log1p(0.095), 1.5, "spread_rule"},
+		{"1.75x positive carry avoids a sale", 1.75, 0.10, math.Log1p(0.095), 1.75, leverageDownNotWorthCost},
 		{"1.75x up one level", 1.75, 0.20, math.Log1p(0.01), 2, "up_move_approved"},
 	} {
 		s := leverageSnapshot(tc.level)
 		s.TotalVaultNAVRaw, s.StrategyNAVRaw = 1_000_000_000, 1_000_000_000
 		armFeeAuthorityFixture(t, &s)
-		got, ok := decideLeverageTarget(s, keep, []LaneEconomics{leverageMarket(s.RouteLane, tc.yield, tc.apr)}, p, twentyBPSStepCost)
+		got, ok := decideLeverageTarget(s, keep, []LaneEconomics{leverageMarket(s.RouteLane, tc.yield, tc.apr)}, p, twentyBPSStepCost, func(float64) (leverageReduction, error) {
+			return leverageReduction{RepaidMicros: 250_000_000, CollateralMicros: 250_500_000, Cost: leverageStepCost{TotalMicros: 500_000}}, nil
+		})
 		if !ok || got.Current != min(tc.level, laneMaxLevel(s.RouteLane)) || got.Next != tc.want || got.Reason != tc.wantReason {
 			t.Fatalf("%s: %+v ok=%t", tc.name, got, ok)
 		}
@@ -63,7 +65,7 @@ func TestDecideLeverageTargetStepsAtEachLevel(t *testing.T) {
 	small.TotalVaultNAVRaw, small.StrategyNAVRaw = 2_000_000, 2_000_000
 	armFeeAuthorityFixture(t, &small)
 	armLeverageCapacityFixture(&small)
-	got, _ := decideLeverageTarget(small, keep, []LaneEconomics{leverageMarket(small.RouteLane, 0.12, math.Log1p(0.06))}, p, twentyBPSStepCost)
+	got, _ := decideLeverageTarget(small, keep, []LaneEconomics{leverageMarket(small.RouteLane, 0.12, math.Log1p(0.06))}, p, twentyBPSStepCost, nil)
 	if got.Next != 1 || got.BorrowRaw != 0 {
 		t.Fatalf("sub-minimum loan authorized: %+v", got)
 	}
@@ -76,14 +78,14 @@ func TestLeverageDecisionRunsOnlyOnASettledLane(t *testing.T) {
 	markets := []LaneEconomics{leverageMarket(autoAUTOPYUSD.Lane, 0.12, math.Log1p(0.06))}
 	p := DefaultSelectorPolicy()
 	s := leverageSnapshot(1.5)
-	if _, ok := decideLeverageTarget(s, SelectorResult{Action: "KEEP"}, markets, p, twentyBPSStepCost); !ok {
+	if _, ok := decideLeverageTarget(s, SelectorResult{Action: "KEEP"}, markets, p, twentyBPSStepCost, nil); !ok {
 		t.Fatal("settled KEEP position gave no leverage decision")
 	}
 	// Custody beside the position is vault cash its next step takes: a
 	// step's residue, even 1 raw, freezes no level.
 	residue := s
 	residue.DebtIdleRaw, residue.CollateralIdleRaw, residue.MinimumCollateralDepositRaw = 1, 1, 1
-	if got, ok := decideLeverageTarget(residue, SelectorResult{Action: "KEEP"}, markets, p, twentyBPSStepCost); !ok || got.outage() {
+	if got, ok := decideLeverageTarget(residue, SelectorResult{Action: "KEEP"}, markets, p, twentyBPSStepCost, nil); !ok || got.outage() {
 		t.Fatalf("residue froze the level decision: %+v %v", got, ok)
 	}
 	for name, c := range map[string]struct {
@@ -98,7 +100,7 @@ func TestLeverageDecisionRunsOnlyOnASettledLane(t *testing.T) {
 	} {
 		c2 := s
 		c.mutate(&c2)
-		if _, ok := decideLeverageTarget(c2, c.result, markets, p, twentyBPSStepCost); ok {
+		if _, ok := decideLeverageTarget(c2, c.result, markets, p, twentyBPSStepCost, nil); ok {
 			t.Fatalf("%s: leverage decision ran", name)
 		}
 	}
@@ -121,22 +123,22 @@ func TestUnavailableSpreadNeverFlipsTheStoredTarget(t *testing.T) {
 	if _, ok := leverageSpread(full, 1.5, 1_000_000_000, nil); ok {
 		t.Fatal("fixture: spread(1.5x) should be unavailable")
 	}
-	if d, _ := decideLeverageTarget(s, keep, []LaneEconomics{full}, p, twentyBPSStepCost); d.Next != s.LeverageTargetLevel || d.BorrowRaw != 0 {
+	if d, _ := decideLeverageTarget(s, keep, []LaneEconomics{full}, p, twentyBPSStepCost, nil); d.Next != s.LeverageTargetLevel || d.BorrowRaw != 0 {
 		t.Fatalf("unavailable spread still decided: %+v", d)
 	}
 	// Stored 1.5x with a 2+ pt spread: the only change is the next step up.
-	d, ok := decideLeverageTarget(s, keep, []LaneEconomics{good}, p, twentyBPSStepCost)
+	d, ok := decideLeverageTarget(s, keep, []LaneEconomics{good}, p, twentyBPSStepCost, nil)
 	if !ok || (d.Next != 1.5 && d.Next != 1.75) || (d.Next == 1.5 && levelChanges(d, s.LeverageTargetLevel)) {
 		t.Fatalf("available again: %+v ok=%t changes=%t", d, ok, levelChanges(d, s.LeverageTargetLevel))
 	}
 	// A dip in gain below the up gate does not undo a stored target either:
 	// the rule steps from the stored level (down from 1.5x only below 0).
 	weak := leverageMarket(s.RouteLane, 0.10, math.Log1p(0.095))
-	if d, ok := decideLeverageTarget(s, keep, []LaneEconomics{weak}, p, twentyBPSStepCost); !ok || levelChanges(d, 1.5) {
+	if d, ok := decideLeverageTarget(s, keep, []LaneEconomics{weak}, p, twentyBPSStepCost, nil); !ok || levelChanges(d, 1.5) {
 		t.Fatalf("weak spread flipped the stored 1.5x: %+v", d)
 	}
 	neg := leverageMarket(s.RouteLane, 0.05, math.Log1p(0.06))
-	if d, ok := decideLeverageTarget(s, keep, []LaneEconomics{neg}, p, twentyBPSStepCost); !ok || d.Next != 1 || !levelChanges(d, 1.5) {
+	if d, ok := decideLeverageTarget(s, keep, []LaneEconomics{neg}, p, twentyBPSStepCost, nil); !ok || d.Next != 1 || !levelChanges(d, 1.5) {
 		t.Fatalf("negative spread did not step down: %+v", d)
 	}
 	if levelChanges(leverageDecision{Lane: autoAUTOPYUSD.Lane, Current: 1.75, Next: 1.75}, 1.75) {

@@ -23,7 +23,7 @@ func TestLeverageMovesDecideAtomicSteps(t *testing.T) {
 		partialDown := leverageSnapshot(1.75)
 		partialDown.RouteLane, partialDown.StrategyKey, partialDown.LeverageTargetLevel = lane, lane, 1.5
 		partialDown = targeted(partialDown)
-		// A stored 1x is held at 1.5x: an economic level never repays all.
+		// Earn MAX's 1x target clears debt; preparation requires an economic approval.
 		economic1x := leverageSnapshot(1.75)
 		economic1x.RouteLane, economic1x.StrategyKey, economic1x.LeverageTargetLevel = lane, lane, 1
 		economic1x = targeted(economic1x)
@@ -38,7 +38,7 @@ func TestLeverageMovesDecideAtomicSteps(t *testing.T) {
 			{hard, hardLTVDeleverReason, false},
 			{exit, debtZeroReason, true},
 			{partialDown, leverageDownPartialReason, false},
-			{economic1x, leverageDownPartialReason, false},
+			{economic1x, debtZeroReason, true},
 			{withdrawal, releaseReason, false},
 		} {
 			got := Decide(c.s)

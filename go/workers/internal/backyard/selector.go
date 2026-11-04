@@ -129,6 +129,8 @@ type SelectorPolicy struct {
 	MinimumBenefitRaw int64         `json:"minimumBenefitRaw"`
 	UncertaintyBPS    int64         `json:"uncertaintyBps"`
 	IdleBufferRaw     int64         `json:"idleBufferRaw"`
+	IdleBufferBPS     int64         `json:"idleBufferBps,omitempty"`
+	IdleBufferCapRaw  int64         `json:"idleBufferCapRaw,omitempty"`
 }
 
 const selectorHorizon = 30 * 24 * time.Hour
@@ -137,6 +139,9 @@ func DefaultSelectorPolicy() SelectorPolicy {
 	return SelectorPolicy{Horizon: selectorHorizon, Persistence: 30 * time.Minute, MaxSampleGap: 10 * time.Minute, MarketMaxAge: 90 * time.Second, NativeMaxAge: 2 * time.Hour, QuoteMaxAge: 30 * time.Second, MinimumBenefitRaw: 250_000, UncertaintyBPS: 10, IdleBufferRaw: 0}
 }
 func (p SelectorPolicy) validate() error {
+	if p.IdleBufferBPS < 0 || p.IdleBufferBPS > 10_000 || p.IdleBufferCapRaw < 0 || (p.IdleBufferBPS > 0 && p.IdleBufferCapRaw < p.IdleBufferRaw) {
+		return fmt.Errorf("invalid_selector_policy")
+	}
 	if p.Horizon <= 0 || p.Horizon > 365*24*time.Hour || p.Persistence <= 0 || p.MaxSampleGap <= 0 || p.MarketMaxAge <= 0 || p.NativeMaxAge <= 0 || p.QuoteMaxAge <= 0 || p.MinimumBenefitRaw < 0 || p.UncertaintyBPS < 0 || p.UncertaintyBPS > 10_000 || p.IdleBufferRaw < 0 {
 		return fmt.Errorf("invalid_selector_policy")
 	}
@@ -202,6 +207,7 @@ type AdvantageWindow struct {
 
 type SelectorState struct {
 	Advantages map[advantageKey]AdvantageWindow `json:"advantages,omitempty"`
+	Policy     *SelectorPolicy                  `json:"policy,omitempty"`
 }
 
 type advantageKey struct {
@@ -390,6 +396,10 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 	if err := p.validate(); err != nil || in.Now.IsZero() {
 		return hold("invalid_selector_policy")
 	}
+	// A new policy must earn its own observation window after an upgrade.
+	if previous.Policy == nil || *previous.Policy != p {
+		previous = SelectorState{}
+	}
 	if s.MonitorsArmed && !selectorFeeBaselineKnown(s) {
 		return hold("fee_hwm_baseline_unavailable")
 	}
@@ -403,7 +413,8 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 	if !s.Fresh || s.SquadsIdleRaw < 0 || s.TotalVaultNAVRaw > 1<<53 || s.TotalVaultNAVRaw < 0 || s.PositionCollateralValueRaw < 0 || s.PositionDebtValueRaw < 0 || s.CollateralIdleValueRaw < 0 {
 		return hold("invalid_holdings")
 	}
-	equity := s.TotalVaultNAVRaw - s.WithdrawalDemandRaw - p.IdleBufferRaw
+	buffer := p.idleBufferRaw(s.TotalVaultNAVRaw)
+	equity := s.TotalVaultNAVRaw - s.WithdrawalDemandRaw - buffer
 	if equity <= 0 {
 		return hold("no_investable_equity")
 	}
@@ -426,6 +437,7 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 	}
 	sort.Strings(lanes)
 	out.State.Advantages = map[advantageKey]AdvantageWindow{}
+	out.State.Policy = &p
 	sample := func(c CandidateForecast, move advantageKey, q MoveQuote) {
 		if c.BlockedReason == "fee_forecast_unavailable" {
 			delete(out.State.Advantages, move)
@@ -499,7 +511,7 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 			if q.RotateFrom != "" || q.MinimumIdleRaw == 0 || q.MinimumIdleRaw > math.MaxInt64 {
 				continue
 			}
-			quoteAmount := min(amount, max(int64(0), int64(q.MinimumIdleRaw)-p.IdleBufferRaw))
+			quoteAmount := min(amount, max(int64(0), int64(q.MinimumIdleRaw)-buffer))
 			if q.SourceLane == s.RouteLane && q.DestinationLane == lane && q.EquityRaw == quoteAmount && q.ObservationID == s.ObservationID && freshAt(in.Now, q.ObservedAt, p.QuoteMaxAge) && q.currentAtSlot(s.Slot) && q.CostRaw >= 0 && q.EvidenceID != "" {
 				if quote != nil {
 					return hold(duplicateMoveQuote)

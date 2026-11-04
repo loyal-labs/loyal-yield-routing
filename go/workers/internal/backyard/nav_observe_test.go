@@ -589,7 +589,8 @@ func TestIdleOnlyLaneWithoutObligationIsQuoted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("idle-only lane with no obligation held the vault: %v", err)
 	}
-	if o.Snapshot.StrategyNAVRaw != 33_998_010 || o.Snapshot.ExitLiabilityRaw != 2_000 || !slices.Contains(recorded, onreONycUSDC) {
-		t.Fatalf("idle-only lane NAV %d exit %d recorded %v, want 33998010, 2000 and an OnRe quote", o.Snapshot.StrategyNAVRaw, o.Snapshot.ExitLiabilityRaw, recorded)
+	// A formerly free AUTO exit cannot suppress its newly priced cost as an outlier.
+	if o.Snapshot.StrategyNAVRaw != 33_968_010 || o.Snapshot.ExitLiabilityRaw != 32_000 || !slices.Contains(recorded, onreONycUSDC) {
+		t.Fatalf("idle-only lane NAV %d exit %d recorded %v, want 33968010, 32000 and an OnRe quote", o.Snapshot.StrategyNAVRaw, o.Snapshot.ExitLiabilityRaw, recorded)
 	}
 }

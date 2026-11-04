@@ -13,7 +13,7 @@ chain.
 | The chain | one confirmed batch: every registry lane's obligation and custody, the reserves, Voltr | the view |
 | Withdrawal demand | Voltr's withdrawal receipts in the same batch | vault users |
 | The rates | the selector's latest result (`state.selector.result`): the lane the vault's cash enters (`ENTER`), on a quote current at the batch, or a held lane's tranche to rotate into another (`ROTATE`), sampled within `MaxSampleGap` of the batch | the selector sample |
-| A lane's level | `loyal_yield.backyard_lane_levels`: 1, 1.5, 1.75, 2, 2.5 or 3, never above the lane's cap, and whether the up step toward it is worth its cost at the last sample | the selector sample |
+| A lane's level | `loyal_yield.backyard_lane_levels`: 1, 1.5, 1.75, 2, 2.5 or 3, never above the lane's cap, up-step approval, and an expiring cost ceiling for optional Earn MAX reductions | the selector sample |
 | An operator exit | `loyal_yield.backyard_lane_exits`: lane X target debt 0, optionally equity 0 | `loyal-engine backyard exit-lane` |
 
 Nothing else about a move is stored: no unwind intent, tranche,
@@ -91,8 +91,12 @@ authority.
    above its band; up toward the stored level when the selector approved the
    step and the reserve has room.
 
-Only rules 1 to 3 ever set debt 0. A stored level of 1 is economic: the lane
-holds at 1.5.
+For Earn MAX, a stored level of 1 means zero borrowing, using the existing
+debt-zero step after economic approval. Looping retains its 1.5x economic
+floor. Hard LTV, maturity, operator exits and withdrawal funding take
+priority over optional reductions and do not require economic approval.
+While a reduction is unfinished, its residual USDC is not immediately
+converted back into collateral by the home-entry rule.
 
 ## Levels and caps
 
@@ -136,7 +140,8 @@ binary holds the whole vault on `invalid_lane_levels`, the brake included:
 `UPDATE loyal_yield.backyard_lane_levels SET level = 1.75 WHERE level > 1.75`. Lowering a cap delevers a lane
 held above it by rule 6 (Maple at 1.75x steps down to 1.5x).
 
-The selector scores every move over the same 30-day horizon, 30-minute
+Earn MAX scores optional moves over seven days; Looping retains 30 days.
+The selector uses 30-minute
 persistence, $0.25 minimum benefit and 10 bps uncertainty (on the vault's
 investable equity for cash, on the tranche for a rotation): cash entering a
 lane earns its fee-reserved gain against nothing;
@@ -163,6 +168,30 @@ the most (`forward_apy_not_best` labels the others). A selector destination
 nothing holds is refreshed beside the valued lanes; when Kamino refuses it,
 only that lane goes unviewed and the refusal never counts toward the
 vault's refresh latch.
+
+Earn MAX reserves incoming cash at 10% of NAV, with a $5,000 floor and
+$25,000 cap, never more than the vault owns. Both quote collection and
+selection subtract the same reserve. Withdrawals may spend it. Raising the
+target does not sell investments to refill the reserve.
+
+An optional Earn MAX reduction prices the entire remaining move, including
+collateral sold, interest saved, yield forgone, minimum swap proceeds and
+network fees for the bounded steps and their NAV reports. It needs positive
+net benefit after the minimum benefit and uncertainty margin for 30 minutes
+of samples no more than 10 minutes apart. Restarting the sampler resets an
+unfinished observation window. An active approval persists in the lane row
+with a cost-per-dollar ceiling and a 10-minute expiry. Each prepared step
+checks its actual wire's minimum proceeds and network allowance against that
+ceiling; a fresh approval for an ongoing reduction cannot widen it. Missing
+or malformed permission holds optional sales, without disabling mandatory
+exits. This bounds expense per dollar sold; it is not an absolute cumulative
+dollar budget. Full-size quotes that cannot be priced hold the optional move.
+
+Selector persistence carries the policy that produced its observations.
+Legacy observations or changed policy settings require a fresh persistence
+window. A normal restart with unchanged settings can retain valid history.
+A full borrowing reserve blocks new borrowing without resetting the existing
+position to 1x.
 
 ## Steps
 
@@ -205,6 +234,14 @@ credential directory like the other operator commands.
   `docs/backyard-one-writer.md`) removes the old keys once that binary is
   live.
 - Deploy with no Backyard operation in flight.
+- The Earn MAX loss controls require migration 0137 before the new binary:
+  it adds `down_approval`, empty for existing rows, and translates legacy
+  Earn MAX level 1 to level 1.5 to preserve its previous meaning. Stop the
+  old worker before that translation, after verifying no unfinished operation,
+  allocation or rotation and a KEEP selector result. Actual zero borrowing
+  then needs a fresh cost-approved decision. See `docs/earn-max-loss-controls.md`
+  for validation and cutover checks. This document does not establish that
+  the new binary or migration has been deployed.
 
 On the live book (`TestLiveStateRestartComputesTheCurrentState`, read at
 slot 455902661 on 2026-10-12): AUTO/AUTO/PYUSD and AUTO/AUTO/wYLDS both at

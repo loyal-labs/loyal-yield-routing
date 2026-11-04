@@ -1,0 +1,98 @@
+{
+  "captured_at": "2026-11-04",
+  "scope": "Sensitivity analysis, not a counterfactual chain replay. Withdrawal funding is confirmed worker restore volume, not the requested amount. The $5000 policy was introduced after the Oct 25 episode.",
+  "baseline_buffer_usdc": 5000,
+  "window_days": 12,
+  "carry_apy_low": 0.1019,
+  "carry_apy_high": 0.1631,
+  "exit_bps_low": 20,
+  "exit_bps_high": 65,
+  "episodes": [
+    {
+      "date": "2026-10-25",
+      "prior_day_nav_micros": 274940784317,
+      "funding_restored_micros": 200861556789,
+      "leverage_assumption": 2.5,
+      "signatures": [
+        "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"
+      ]
+    },
+    {
+      "date": "2026-11-04",
+      "prior_day_nav_micros": 277846104437,
+      "funding_restored_micros": 96352537529,
+      "leverage_assumption": 1.5,
+      "signatures": [
+        "1wJXgPMsyQiaV6ssRY3hgTgRHG9ysyRAsGsxBShqn68GrjHgAjXvyaB4uj64dS4iY6K8J57a3t3UV6HLRjxwPBJ",
+        "5YF6mvEiNmPAzNovq1u2aT35VvEJLvF8GNShPp76kwHGZEVFUm4xh6CggoG9W4ZuwFHypi6pF4zgCabP2puo1Azy"
+      ]
+    }
+  ],
+  "oct29_onyc": {
+    "sold_mark_usdc": 236562.96234109878,
+    "proceeds_usdc": 235414.464768,
+    "shortfall_usdc": 1148.4975730987808,
+    "adverse_spread": 0.0302,
+    "adverse_days_assumption": 1,
+    "signatures": [
+      "21Du9b3yB3Pdh5QpVr5t9mKWKExFmekh178dSXE4oTpnJehjFBzKUzXcpxYLLzbbftzRhGp3KxDvfueQvnsuX85y",
+      "39BHzwhDnP5TViAQA45ntAigpKmVnkNbtoc5GH3yxJHmFzhU4avEZfWE7nEY16aT1qEQppVmwAFzuExJiRFhucn8",
+      "3urj1bhCRf2S6E1dEN2QCsCLR2rTqAy2BBTJnDnHRZcZjThGbBRCHox3Mz4MPDERHDnYDt9T4UtdyCd4C7TjZPmP",
+      "trkgtiWC2imKTjLxu6ugua1GWLjDx2cspgDT35Sp34evr7HcVhqrynkrqN1jw8H94LZv2ApHzGD2kJnjmx3wWqe",
+      "4qDgd5dMfs1pKCpFVLtg5eNqoPgMc7cgyCrojYjkiSrXABwr3uSLnFh4yiz2ALK4fMrhHX4SMsjKrSuZKCnsvDmH"
+    ]
+  },
+  "nov4_sales": {
+    "sold_mark_usdc": 145491.380304,
+    "proceeds_usdc": 144848.829764
+  },
+  "daily_nav_micros": {
+    "2026-10-23": 274231352194,
+    "2026-10-24": 274940784317,
+    "2026-10-25": 274287467662,
+    "2026-10-26": 274025884935,
+    "2026-10-27": 275464062648,
+    "2026-10-28": 276677199427,
+    "2026-10-29": 276047430537,
+    "2026-10-30": 274346621112,
+    "2026-10-31": 275382621743,
+    "2026-11-01": 275491581602,
+    "2026-11-02": 277789829262,
+    "2026-11-03": 277846104437
+  },
+  "yield_scenario": {
+    "equity_usdc": 100000,
+    "native_apy": 0.1,
+    "normal_borrow_apy": 0.07,
+    "shock_borrow_apy": 0.13,
+    "round_trip_bps": 70,
+    "ltv_brake": 0.63
+  }
+}

@@ -1,0 +1,1094 @@
+{
+  "note": "Finalized Solana receipt projections captured 2026-11-04; 8 sales on Oct 29 and 1 on Nov 4. Oracle marks reconstructed from the latest earlier DB position snapshot (under 100 slots old), not exact transaction-slot marks. Shortfalls are versus those marks, not all fees.",
+  "sales": [
+    {
+      "time": "2026-10-29T21:26:23.238524+00:00",
+      "markSlot": 463031809,
+      "expected": {
+        "kind": "atomic-step",
+        "schema": "loyal-backyard-rwa-expected-effects/v1",
+        "accounts": [
+          {
+            "mint": "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "address": "AVX9wxDTk639eZ4KaiMA7LrLhXe7Lg6DaDDVRa1Q7Ji3",
+            "afterRaw": 0,
+            "authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+            "beforeRaw": 0,
+            "minimumAfterRaw": 0
+          },
+          {
+            "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "address": "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+            "afterRaw": 0,
+            "authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+            "beforeRaw": 0,
+            "minimumAfterRaw": 0
+          }
+        ],
+        "conserved": false,
+        "sale": {
+          "lane": "OnRe/ONyc/USDC",
+          "soldRaw": 24831495504625,
+          "markValueRaw": 28822360154,
+          "markSf": [
+            5,
+            8,
+            121,
+            55,
+            226,
+            76,
+            146,
+            18,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "outputAccount": "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+          "maxRepayRaw": 28571904323
+        }
+      },
+      "receipt": {
+        "Signature": "21Du9b3yB3Pdh5QpVr5t9mKWKExFmekh178dSXE4oTpnJehjFBzKUzXcpxYLLzbbftzRhGp3KxDvfueQvnsuX85y",
+        "Slot": 463031820,
+        "Finalized": true,
+        "PreTokenBalances": [
+          {
+            "Address": "AVX9wxDTk639eZ4KaiMA7LrLhXe7Lg6DaDDVRa1Q7Ji3",
+            "OwnerProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "Mint": "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5",
+            "Authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+            "Raw": 0
+          },
+          {
+            "Address": "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+            "OwnerProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "Mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+            "Authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+            "Raw": 0
+          },
+          {
+            "Address": "8BkQTZsT8ssKMU643De4iiV5Wf3pENdUFTsdtHPueKjB",
+            "OwnerProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "Mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+            "Authority": "FsvTiXTUFDc4aLbrov4PrvDTjXCWCniL1dxTUkZ1T2ss",
+            "Raw": 2577597111214
+          }
+        ],
+        "PostTokenBalances": [
+          {
+            "Address": "AVX9wxDTk639eZ4KaiMA7LrLhXe7Lg6DaDDVRa1Q7Ji3",
+            "OwnerProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "Mint": "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5",
+            "Authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+            "Raw": 0
+          },
+          {
+            "Address": "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+            "OwnerProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "Mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+            "Authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+            "Raw": 143577409
+          },
+          {
+            "Address": "8BkQTZsT8ssKMU643De4iiV5Wf3pENdUFTsdtHPueKjB",
+            "OwnerProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "Mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+            "Authority": "FsvTiXTUFDc4aLbrov4PrvDTjXCWCniL1dxTUkZ1T2ss",
+            "Raw": 2606169015537
+          }
+        ]
+      },
+      "returnedRaw": 28715481732,
+      "shortfallMicros": 106878422,
+      "costBPS": "37.081773255202506"
+    },
+    {
+      "time": "2026-10-29T21:26:49.747667+00:00",
+      "markSlot": 463031931,
+      "expected": {
+        "kind": "atomic-step",
+        "schema": "loyal-backyard-rwa-expected-effects/v1",
+        "accounts": [
+          {
+            "mint": "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "address": "AVX9wxDTk639eZ4KaiMA7LrLhXe7Lg6DaDDVRa1Q7Ji3",
+            "afterRaw": 0,
+            "authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+            "beforeRaw": 0,
+            "minimumAfterRaw": 0
+          },
+          {
+            "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "address": "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+            "afterRaw": 143577409,
+            "authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+            "beforeRaw": 143577409,
+            "minimumAfterRaw": 143577409
+          }
+        ],
+        "conserved": false,
+        "sale": {
+          "lane": "OnRe/ONyc/USDC",
+          "soldRaw": 39078737422794,
+          "markValueRaw": 45359388208,
+          "markSf": [
+            54,
+            101,
+            135,
+            55,
+            226,
+            76,
+            146,
+            18,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "outputAccount": "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+          "maxRepayRaw": 44956138314
+        }
+      },
+      "receipt": {
+        "Signature": "39BHzwhDnP5TViAQA45ntAigpKmVnkNbtoc5GH3yxJHmFzhU4avEZfWE7nEY16aT1qEQppVmwAFzuExJiRFhucn8",
+        "Slot": 463031954,
+        "Finalized": true,
+        "PreTokenBalances": [
+          {
+            "Address": "AVX9wxDTk639eZ4KaiMA7LrLhXe7Lg6DaDDVRa1Q7Ji3",
+            "OwnerProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "Mint": "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5",
+            "Authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+            "Raw": 0
+          },
+          {
+            "Address": "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+            "OwnerProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "Mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+            "Authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+            "Raw": 143577409
+          },
+          {
+            "Address": "8BkQTZsT8ssKMU643De4iiV5Wf3pENdUFTsdtHPueKjB",
+            "OwnerProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "Mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+            "Authority": "FsvTiXTUFDc4aLbrov4PrvDTjXCWCniL1dxTUkZ1T2ss",
+            "Raw": 2606169015537
+          }
+        ],
+        "PostTokenBalances": [
+          {
+            "Address": "AVX9wxDTk639eZ4KaiMA7LrLhXe7Lg6DaDDVRa1Q7Ji3",
+            "OwnerProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "Mint": "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5",
+            "Authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+            "Raw": 0
+          },
+          {
+            "Address": "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+            "OwnerProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "Mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+            "Authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+            "Raw": 369453443
+          },
+          {
+            "Address": "8BkQTZsT8ssKMU643De4iiV5Wf3pENdUFTsdtHPueKjB",
+            "OwnerProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "Mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+            "Authority": "FsvTiXTUFDc4aLbrov4PrvDTjXCWCniL1dxTUkZ1T2ss",
+            "Raw": 2651125153851
+          }
+        ]
+      },
+      "returnedRaw": 45182014348,
+      "shortfallMicros": 177373860,
+      "costBPS": "39.10411207197652"
+    },
+    {
+      "time": "2026-10-29T21:27:23.820693+00:00",
+      "markSlot": 463032091,
+      "expected": {
+        "kind": "atomic-step",
+        "schema": "loyal-backyard-rwa-expected-effects/v1",
+        "accounts": [
+          {
+            "mint": "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "address": "AVX9wxDTk639eZ4KaiMA7LrLhXe7Lg6DaDDVRa1Q7Ji3",
+            "afterRaw": 0,
+            "authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+            "beforeRaw": 0,
+            "minimumAfterRaw": 0
+          },
+          {
+            "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "address": "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+            "afterRaw": 369453443,
+            "authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+            "beforeRaw": 369453443,
+            "minimumAfterRaw": 369453443
+          }
+        ],
+        "conserved": false,
+        "sale": {
+          "lane": "OnRe/ONyc/USDC",
+          "soldRaw": 37624653177092,
+          "markValueRaw": 43673440882,
+          "markSf": [
+            222,
+            154,
+            7,
+            145,
+            0,
+            128,
+            146,
+            18,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "outputAccount": "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+          "maxRepayRaw": 43283916846
+        }
+      },
+      "receipt": {
+        "Signature": "3urj1bhCRf2S6E1dEN2QCsCLR2rTqAy2BBTJnDnHRZcZjThGbBRCHox3Mz4MPDERHDnYDt9T4UtdyCd4C7TjZPmP",
+        "Slot": 463032099,
+        "Finalized": true,
+        "PreTokenBalances": [
+          {
+            "Address": "AVX9wxDTk639eZ4KaiMA7LrLhXe7Lg6DaDDVRa1Q7Ji3",
+            "OwnerProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "Mint": "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5",
+            "Authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+            "Raw": 0
+          },
+          {
+            "Address": "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+            "OwnerProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "Mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+            "Authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+            "Raw": 369453443
+          },
+          {
+            "Address": "8BkQTZsT8ssKMU643De4iiV5Wf3pENdUFTsdtHPueKjB",
+            "OwnerProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "Mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+            "Authority": "FsvTiXTUFDc4aLbrov4PrvDTjXCWCniL1dxTUkZ1T2ss",
+            "Raw": 2620330415165
+          }
+        ],
+        "PostTokenBalances": [
+          {
+            "Address": "AVX9wxDTk639eZ4KaiMA7LrLhXe7Lg6DaDDVRa1Q7Ji3",
+            "OwnerProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "Mint": "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5",
+            "Authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+            "Raw": 0
+          },
+          {
+            "Address": "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+            "OwnerProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "Mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+            "Authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+            "Raw": 586960281
+          },
+          {
+            "Address": "8BkQTZsT8ssKMU643De4iiV5Wf3pENdUFTsdtHPueKjB",
+            "OwnerProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "Mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+            "Authority": "FsvTiXTUFDc4aLbrov4PrvDTjXCWCniL1dxTUkZ1T2ss",
+            "Raw": 2663614332011
+          }
+        ]
+      },
+      "returnedRaw": 43501423684,
+      "shortfallMicros": 172017198,
+      "costBPS": "39.387141308136535"
+    },
+    {
+      "time": "2026-10-29T21:28:15.796413+00:00",
+      "markSlot": 463032334,
+      "expected": {
+        "kind": "atomic-step",
+        "schema": "loyal-backyard-rwa-expected-effects/v1",
+        "accounts": [
+          {
+            "mint": "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "address": "AVX9wxDTk639eZ4KaiMA7LrLhXe7Lg6DaDDVRa1Q7Ji3",
+            "afterRaw": 0,
+            "authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+            "beforeRaw": 507803909426,
+            "minimumAfterRaw": 0
+          },
+          {
+            "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "address": "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+            "afterRaw": 0,
+            "authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+            "beforeRaw": 0,
+            "minimumAfterRaw": 0
+          }
+        ],
+        "conserved": false,
+        "sale": {
+          "lane": "OnRe/ONyc/USDC",
+          "soldRaw": 51313933613030,
+          "markValueRaw": 59563500441,
+          "markSf": [
+            206,
+            140,
+            252,
+            144,
+            0,
+            128,
+            146,
+            18,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "outputAccount": "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+          "maxRepayRaw": 58964640813
+        }
+      },
+      "receipt": {
+        "Signature": "trkgtiWC2imKTjLxu6ugua1GWLjDx2cspgDT35Sp34evr7HcVhqrynkrqN1jw8H94LZv2ApHzGD2kJnjmx3wWqe",
+        "Slot": 463032348,
+        "Finalized": true,
+        "PreTokenBalances": [
+          {
+            "Address": "AVX9wxDTk639eZ4KaiMA7LrLhXe7Lg6DaDDVRa1Q7Ji3",
+            "OwnerProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "Mint": "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5",
+            "Authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+            "Raw": 507803909426
+          },
+          {
+            "Address": "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+            "OwnerProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "Mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+            "Authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+            "Raw": 0
+          },
+          {
+            "Address": "8BkQTZsT8ssKMU643De4iiV5Wf3pENdUFTsdtHPueKjB",
+            "OwnerProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "Mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+            "Authority": "FsvTiXTUFDc4aLbrov4PrvDTjXCWCniL1dxTUkZ1T2ss",
+            "Raw": 1330821516838
+          }
+        ],
+        "PostTokenBalances": [
+          {
+            "Address": "AVX9wxDTk639eZ4KaiMA7LrLhXe7Lg6DaDDVRa1Q7Ji3",
+            "OwnerProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "Mint": "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5",
+            "Authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+            "Raw": 0
+          },
+          {
+            "Address": "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+            "OwnerProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "Mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+            "Authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+            "Raw": 291033188
+          },
+          {
+            "Address": "8BkQTZsT8ssKMU643De4iiV5Wf3pENdUFTsdtHPueKjB",
+            "OwnerProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "Mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+            "Authority": "FsvTiXTUFDc4aLbrov4PrvDTjXCWCniL1dxTUkZ1T2ss",
+            "Raw": 1389786157651
+          }
+        ]
+      },
+      "returnedRaw": 59255674001,
+      "shortfallMicros": 307826440,
+      "costBPS": "51.68038106976496"
+    },
+    {
+      "time": "2026-10-29T21:28:42.437636+00:00",
+      "markSlot": 463032456,
+      "expected": {
+        "kind": "atomic-step",
+        "schema": "loyal-backyard-rwa-expected-effects/v1",
+        "accounts": [
+          {
+            "mint": "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "address": "AVX9wxDTk639eZ4KaiMA7LrLhXe7Lg6DaDDVRa1Q7Ji3",
+            "afterRaw": 0,
+            "authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+            "beforeRaw": 0,
+            "minimumAfterRaw": 0
+          },
+          {
+            "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "address": "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+            "afterRaw": 291033188,
+            "authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+            "beforeRaw": 291033188,
+            "minimumAfterRaw": 291033188
+          }
+        ],
+        "conserved": false,
+        "sale": {
+          "lane": "OnRe/ONyc/USDC",
+          "soldRaw": 50953442475694,
+          "markValueRaw": 59144272654,
+          "markSf": [
+            111,
+            125,
+            148,
+            78,
+            234,
+            111,
+            146,
+            18,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "outputAccount": "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+          "maxRepayRaw": 58466070462
+        }
+      },
+      "receipt": {
+        "Signature": "4qDgd5dMfs1pKCpFVLtg5eNqoPgMc7cgyCrojYjkiSrXABwr3uSLnFh4yiz2ALK4fMrhHX4SMsjKrSuZKCnsvDmH",
+        "Slot": 463032465,
+        "Finalized": true,
+        "PreTokenBalances": [
+          {
+            "Address": "AVX9wxDTk639eZ4KaiMA7LrLhXe7Lg6DaDDVRa1Q7Ji3",
+            "OwnerProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "Mint": "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5",
+            "Authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+            "Raw": 0
+          },
+          {
+            "Address": "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+            "OwnerProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "Mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+            "Authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+            "Raw": 291033188
+          },
+          {
+            "Address": "8BkQTZsT8ssKMU643De4iiV5Wf3pENdUFTsdtHPueKjB",
+            "OwnerProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "Mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+            "Authority": "FsvTiXTUFDc4aLbrov4PrvDTjXCWCniL1dxTUkZ1T2ss",
+            "Raw": 1390075874574
+          }
+        ],
+        "PostTokenBalances": [
+          {
+            "Address": "AVX9wxDTk639eZ4KaiMA7LrLhXe7Lg6DaDDVRa1Q7Ji3",
+            "OwnerProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "Mint": "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5",
+            "Authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+            "Raw": 0
+          },
+          {
+            "Address": "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+            "OwnerProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "Mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+            "Authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+            "Raw": 584833729
+          },
+          {
+            "Address": "8BkQTZsT8ssKMU643De4iiV5Wf3pENdUFTsdtHPueKjB",
+            "OwnerProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "Mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+            "Authority": "FsvTiXTUFDc4aLbrov4PrvDTjXCWCniL1dxTUkZ1T2ss",
+            "Raw": 1448541945036
+          }
+        ]
+      },
+      "returnedRaw": 58759871003,
+      "shortfallMicros": 384401651,
+      "costBPS": "64.99389283871999"
+    },
+    {
+      "time": "2026-10-29T22:09:38.21278+00:00",
+      "markSlot": 463043936,
+      "expected": {
+        "kind": "atomic-step",
+        "schema": "loyal-backyard-rwa-expected-effects/v1",
+        "accounts": [
+          {
+            "mint": "GNE6oDS6jHrfaV3GQVVCCp37fDnT7PiPuewMKBj2bqNm",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "address": "9tDh95ofQ7B83bHAou1XJGJNnfRTs3hLfX8uyKW6u97G",
+            "afterRaw": 0,
+            "authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+            "beforeRaw": 0,
+            "minimumAfterRaw": 0
+          },
+          {
+            "mint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+            "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+            "address": "J4YFQzxhQ3pht2RRYes5yv1spPYBqvHzxn4zMX7iriHn",
+            "afterRaw": 0,
+            "authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+            "beforeRaw": 0,
+            "minimumAfterRaw": 0
+          }
+        ],
+        "conserved": false,
+        "sale": {
+          "lane": "AUTO/AUTO/PYUSD",
+          "soldRaw": 12052131852,
+          "markValueRaw": 12407972645,
+          "markSf": [
+            82,
+            246,
+            4,
+            123,
+            88,
+            239,
+            120,
+            16,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "outputAccount": "J4YFQzxhQ3pht2RRYes5yv1spPYBqvHzxn4zMX7iriHn",
+          "maxRepayRaw": 12334223319,
+          "proceeds": {
+            "priceSf": [
+              179,
+              84,
+              144,
+              66,
+              214,
+              114,
+              254,
+              15,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "usdcSf": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              16,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "decimals": 6
+          }
+        }
+      },
+      "receipt": {
+        "Signature": "cqFj5hamSfWAAjZqhRMBj7JRqvrE88zjupZdMWRZXkniBnvtTNyTTaXAeyDZC483ALG7FHMC7Fu3DKocFpqDTEs",
+        "Slot": 463043944,
+        "Finalized": true,
+        "PreTokenBalances": [
+          {
+            "Address": "9tDh95ofQ7B83bHAou1XJGJNnfRTs3hLfX8uyKW6u97G",
+            "OwnerProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "Mint": "GNE6oDS6jHrfaV3GQVVCCp37fDnT7PiPuewMKBj2bqNm",
+            "Authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+            "Raw": 0
+          },
+          {
+            "Address": "J4YFQzxhQ3pht2RRYes5yv1spPYBqvHzxn4zMX7iriHn",
+            "OwnerProgram": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+            "Mint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+            "Authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+            "Raw": 0
+          },
+          {
+            "Address": "FZPPq1U7BqpqAnV7naHThsdumZiUWJY4Q4784HQ8a3KM",
+            "OwnerProgram": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+            "Mint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+            "Authority": "2eyLWowHqsWNuRavNc5g6e8NZiypgJTHEvW2hMum3BNS",
+            "Raw": 30903400332
+          }
+        ],
+        "PostTokenBalances": [
+          {
+            "Address": "9tDh95ofQ7B83bHAou1XJGJNnfRTs3hLfX8uyKW6u97G",
+            "OwnerProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "Mint": "GNE6oDS6jHrfaV3GQVVCCp37fDnT7PiPuewMKBj2bqNm",
+            "Authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+            "Raw": 0
+          },
+          {
+            "Address": "J4YFQzxhQ3pht2RRYes5yv1spPYBqvHzxn4zMX7iriHn",
+            "OwnerProgram": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+            "Mint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+            "Authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+            "Raw": 61981022
+          },
+          {
+            "Address": "FZPPq1U7BqpqAnV7naHThsdumZiUWJY4Q4784HQ8a3KM",
+            "OwnerProgram": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+            "Mint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+            "Authority": "2eyLWowHqsWNuRavNc5g6e8NZiypgJTHEvW2hMum3BNS",
+            "Raw": 43237623651
+          }
+        ]
+      },
+      "returnedRaw": 12396204341,
+      "shortfallMicros": 16463542,
+      "costBPS": "13.268519391748447"
+    },
+    {
+      "time": "2026-10-29T22:10:03.485703+00:00",
+      "markSlot": 463044056,
+      "expected": {
+        "kind": "atomic-step",
+        "schema": "loyal-backyard-rwa-expected-effects/v1",
+        "accounts": [
+          {
+            "mint": "GNE6oDS6jHrfaV3GQVVCCp37fDnT7PiPuewMKBj2bqNm",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "address": "9tDh95ofQ7B83bHAou1XJGJNnfRTs3hLfX8uyKW6u97G",
+            "afterRaw": 0,
+            "authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+            "beforeRaw": 0,
+            "minimumAfterRaw": 0
+          },
+          {
+            "mint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+            "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+            "address": "J4YFQzxhQ3pht2RRYes5yv1spPYBqvHzxn4zMX7iriHn",
+            "afterRaw": 0,
+            "authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+            "beforeRaw": 61981022,
+            "minimumAfterRaw": 0
+          }
+        ],
+        "conserved": false,
+        "sale": {
+          "lane": "AUTO/AUTO/PYUSD",
+          "soldRaw": 15973926813,
+          "markValueRaw": 16448136994,
+          "markSf": [
+            252,
+            101,
+            27,
+            148,
+            144,
+            152,
+            121,
+            16,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "outputAccount": "J4YFQzxhQ3pht2RRYes5yv1spPYBqvHzxn4zMX7iriHn",
+          "maxRepayRaw": 16408953899,
+          "proceeds": {
+            "priceSf": [
+              148,
+              220,
+              169,
+              87,
+              36,
+              220,
+              254,
+              15,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "usdcSf": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              16,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "decimals": 6
+          }
+        }
+      },
+      "receipt": {
+        "Signature": "AhwUmxDbFF8Fo2vuTk6tuhCihD1NhoRtVZYLeVZg7jrN8vVUXat3aspg2aE8EgJi4Q1tKs3JXQzyGhYDBD2Skv8",
+        "Slot": 463044064,
+        "Finalized": true,
+        "PreTokenBalances": [
+          {
+            "Address": "9tDh95ofQ7B83bHAou1XJGJNnfRTs3hLfX8uyKW6u97G",
+            "OwnerProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "Mint": "GNE6oDS6jHrfaV3GQVVCCp37fDnT7PiPuewMKBj2bqNm",
+            "Authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+            "Raw": 0
+          },
+          {
+            "Address": "J4YFQzxhQ3pht2RRYes5yv1spPYBqvHzxn4zMX7iriHn",
+            "OwnerProgram": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+            "Mint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+            "Authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+            "Raw": 61981022
+          },
+          {
+            "Address": "FZPPq1U7BqpqAnV7naHThsdumZiUWJY4Q4784HQ8a3KM",
+            "OwnerProgram": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+            "Mint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+            "Authority": "2eyLWowHqsWNuRavNc5g6e8NZiypgJTHEvW2hMum3BNS",
+            "Raw": 43237623651
+          }
+        ],
+        "PostTokenBalances": [
+          {
+            "Address": "9tDh95ofQ7B83bHAou1XJGJNnfRTs3hLfX8uyKW6u97G",
+            "OwnerProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "Mint": "GNE6oDS6jHrfaV3GQVVCCp37fDnT7PiPuewMKBj2bqNm",
+            "Authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+            "Raw": 0
+          },
+          {
+            "Address": "J4YFQzxhQ3pht2RRYes5yv1spPYBqvHzxn4zMX7iriHn",
+            "OwnerProgram": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+            "Mint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+            "Authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+            "Raw": 82145593
+          },
+          {
+            "Address": "FZPPq1U7BqpqAnV7naHThsdumZiUWJY4Q4784HQ8a3KM",
+            "OwnerProgram": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+            "Mint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+            "Authority": "2eyLWowHqsWNuRavNc5g6e8NZiypgJTHEvW2hMum3BNS",
+            "Raw": 59646577550
+          }
+        ]
+      },
+      "returnedRaw": 16429118470,
+      "shortfallMicros": 23591364,
+      "costBPS": "14.342879377264897"
+    },
+    {
+      "time": "2026-10-29T22:10:28.678805+00:00",
+      "markSlot": 463044173,
+      "expected": {
+        "kind": "atomic-step",
+        "schema": "loyal-backyard-rwa-expected-effects/v1",
+        "accounts": [
+          {
+            "mint": "GNE6oDS6jHrfaV3GQVVCCp37fDnT7PiPuewMKBj2bqNm",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "address": "9tDh95ofQ7B83bHAou1XJGJNnfRTs3hLfX8uyKW6u97G",
+            "afterRaw": 0,
+            "authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+            "beforeRaw": 0,
+            "minimumAfterRaw": 0
+          },
+          {
+            "mint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+            "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+            "address": "J4YFQzxhQ3pht2RRYes5yv1spPYBqvHzxn4zMX7iriHn",
+            "afterRaw": 0,
+            "authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+            "beforeRaw": 82145593,
+            "minimumAfterRaw": 0
+          }
+        ],
+        "conserved": false,
+        "sale": {
+          "lane": "AUTO/AUTO/PYUSD",
+          "soldRaw": 10678007862,
+          "markValueRaw": 10995000678,
+          "markSf": [
+            161,
+            34,
+            153,
+            147,
+            144,
+            152,
+            121,
+            16,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "outputAccount": "J4YFQzxhQ3pht2RRYes5yv1spPYBqvHzxn4zMX7iriHn",
+          "maxRepayRaw": 11008989226,
+          "proceeds": {
+            "priceSf": [
+              148,
+              215,
+              39,
+              88,
+              36,
+              220,
+              254,
+              15,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "usdcSf": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              16,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "decimals": 6
+          }
+        }
+      },
+      "receipt": {
+        "Signature": "15VgcqLr3CpCbftGUBC8BUeC1vKGj2iQcEMjuk788CKTo7dPDSvwkrdAWVkERKiAW7PCqQpuWAxRVPPm5TiobQ4",
+        "Slot": 463044180,
+        "Finalized": true,
+        "PreTokenBalances": [
+          {
+            "Address": "9tDh95ofQ7B83bHAou1XJGJNnfRTs3hLfX8uyKW6u97G",
+            "OwnerProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "Mint": "GNE6oDS6jHrfaV3GQVVCCp37fDnT7PiPuewMKBj2bqNm",
+            "Authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+            "Raw": 0
+          },
+          {
+            "Address": "J4YFQzxhQ3pht2RRYes5yv1spPYBqvHzxn4zMX7iriHn",
+            "OwnerProgram": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+            "Mint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+            "Authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+            "Raw": 82145593
+          },
+          {
+            "Address": "FZPPq1U7BqpqAnV7naHThsdumZiUWJY4Q4784HQ8a3KM",
+            "OwnerProgram": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+            "Mint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+            "Authority": "2eyLWowHqsWNuRavNc5g6e8NZiypgJTHEvW2hMum3BNS",
+            "Raw": 59646577550
+          }
+        ],
+        "PostTokenBalances": [
+          {
+            "Address": "9tDh95ofQ7B83bHAou1XJGJNnfRTs3hLfX8uyKW6u97G",
+            "OwnerProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "Mint": "GNE6oDS6jHrfaV3GQVVCCp37fDnT7PiPuewMKBj2bqNm",
+            "Authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+            "Raw": 0
+          },
+          {
+            "Address": "J4YFQzxhQ3pht2RRYes5yv1spPYBqvHzxn4zMX7iriHn",
+            "OwnerProgram": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+            "Mint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+            "Authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+            "Raw": 54908762
+          },
+          {
+            "Address": "FZPPq1U7BqpqAnV7naHThsdumZiUWJY4Q4784HQ8a3KM",
+            "OwnerProgram": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+            "Mint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+            "Authority": "2eyLWowHqsWNuRavNc5g6e8NZiypgJTHEvW2hMum3BNS",
+            "Raw": 70655566776
+          }
+        ]
+      },
+      "returnedRaw": 10981752395,
+      "shortfallMicros": 16304916,
+      "costBPS": "14.829391268982501"
+    },
+    {
+      "time": "2026-11-04T07:00:09.532138+00:00",
+      "markSlot": 465210107,
+      "expected": {
+        "kind": "atomic-step",
+        "schema": "loyal-backyard-rwa-expected-effects/v1",
+        "accounts": [
+          {
+            "mint": "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "address": "AVX9wxDTk639eZ4KaiMA7LrLhXe7Lg6DaDDVRa1Q7Ji3",
+            "afterRaw": 82992578808490,
+            "authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+            "beforeRaw": 0,
+            "minimumAfterRaw": 82992578808490
+          },
+          {
+            "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "address": "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+            "afterRaw": 0,
+            "authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+            "beforeRaw": 0,
+            "minimumAfterRaw": 0
+          }
+        ],
+        "conserved": false,
+        "sale": {
+          "lane": "OnRe/ONyc/USDC",
+          "soldRaw": 42140626244812,
+          "markValueRaw": 48996570307,
+          "markSf": [
+            238,
+            253,
+            245,
+            121,
+            245,
+            98,
+            154,
+            18,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "outputAccount": "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+          "maxRepayRaw": 48538671557
+        }
+      },
+      "receipt": {
+        "Signature": "5LDDWycv7CkJPxJN9aKSbYxyDDJ9xS4bte5FHTXnKw4oNwrcEG3Yr2gf6Bu37bH1sK3Ama9BGMgQMe5wUNidkLv5",
+        "Slot": 465210115,
+        "Finalized": true,
+        "PreTokenBalances": [
+          {
+            "Address": "AVX9wxDTk639eZ4KaiMA7LrLhXe7Lg6DaDDVRa1Q7Ji3",
+            "OwnerProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "Mint": "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5",
+            "Authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+            "Raw": 0
+          },
+          {
+            "Address": "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+            "OwnerProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "Mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+            "Authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+            "Raw": 0
+          },
+          {
+            "Address": "8BkQTZsT8ssKMU643De4iiV5Wf3pENdUFTsdtHPueKjB",
+            "OwnerProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "Mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+            "Authority": "FsvTiXTUFDc4aLbrov4PrvDTjXCWCniL1dxTUkZ1T2ss",
+            "Raw": 3961005188163
+          }
+        ],
+        "PostTokenBalances": [
+          {
+            "Address": "AVX9wxDTk639eZ4KaiMA7LrLhXe7Lg6DaDDVRa1Q7Ji3",
+            "OwnerProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "Mint": "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5",
+            "Authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+            "Raw": 82992578808490
+          },
+          {
+            "Address": "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+            "OwnerProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "Mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+            "Authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+            "Raw": 243912923
+          },
+          {
+            "Address": "8BkQTZsT8ssKMU643De4iiV5Wf3pENdUFTsdtHPueKjB",
+            "OwnerProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "Mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+            "Authority": "FsvTiXTUFDc4aLbrov4PrvDTjXCWCniL1dxTUkZ1T2ss",
+            "Raw": 4009543859720
+          }
+        ]
+      },
+      "returnedRaw": 48782584480,
+      "shortfallMicros": 213985827,
+      "costBPS": "43.673634008171526"
+    }
+  ]
+}

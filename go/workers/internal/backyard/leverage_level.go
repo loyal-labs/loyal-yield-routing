@@ -58,6 +58,13 @@ func heldLevel(lane string, stored float64) float64 {
 	return min(stored, laneMaxLevel(lane))
 }
 
+func economicHeldLevel(s Snapshot, stored float64) float64 {
+	if !s.Trustful && stored == 1 {
+		return 1
+	}
+	return heldLevel(s.RouteLane, stored)
+}
+
 func currentLeverageBand(s Snapshot) float64 {
 	if s.PositionDebtRaw <= 0 {
 		return 1

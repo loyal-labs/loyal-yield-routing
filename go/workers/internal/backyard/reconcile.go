@@ -301,10 +301,11 @@ func ReconcileConfirmedTransaction(v *Vault, expected ExpectedEffects, receipt C
 		evidenceBody["returnData"] = expected.ReturnData
 	}
 	if sale := expected.Sale; sale != nil {
-		pre, post := preByAddress[sale.OutputAccount], postByAddress[sale.OutputAccount]
-		if post.Raw > pre.Raw {
-			evidenceBody["sale"] = realizedSale{ExpectedSale: *sale, ReturnedRaw: post.Raw - pre.Raw, Slot: receipt.Slot}
+		returned, err := sale.returnedRaw(v, expected, preByAddress, postByAddress)
+		if err != nil {
+			return Reconciliation{}, nil, err
 		}
+		evidenceBody["sale"] = realizedSale{ExpectedSale: *sale, ReturnedRaw: returned, Slot: receipt.Slot}
 	}
 	evidence, err := json.Marshal(evidenceBody)
 	if err != nil {

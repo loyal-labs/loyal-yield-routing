@@ -1,0 +1,198 @@
+# Earn MAX loss controls — November 4, 2026
+
+Status: implemented and verified locally on main `38e8dd309`. No production
+migration, deployment, signing, commit or push was performed. The changes
+reduce avoidable trading expense; they cannot guarantee positive returns.
+
+## What caused the losses
+
+The October 29 rate response sold collateral repeatedly as the desired
+leverage fell from 2.5x toward 1x. Five ONyc sales returned $235,414.46 against
+$236,562.96 of nearby oracle marks: $1,148.50 of immediate expense. At an
+unchanged 3.02 percentage-point adverse spread, retaining that much debt costs
+about $19.46 per day. The sale expense equals roughly 59 days of that carry.
+That comparison explains why a temporary rate dip need not justify selling;
+it does not establish that holding indefinitely is safe or cheaper.
+
+Three code behaviors compounded this:
+
+- Atomic sales repaid debt in the same transaction, but cost reconciliation
+  looked at the final cash increase. It missed proceeds sent straight to
+  the lender and left the learned exit cost stale.
+- Optional reductions followed spread thresholds without requiring their
+  expected interest savings to repay execution costs. Cash left by a step
+  could then be bought back into collateral before the reduction finished.
+- An economic target of 1x still meant a 1.5x position. It did not remove
+  borrowing exposure.
+
+Large withdrawals separately forced sales. The November 4 funding episode
+sold $145,491.38 of marked collateral for $642.55 less than its marks. The
+October 25 withdrawal was about 73% of the pool. The fixed $5,000 reserve
+was introduced on October 26, after that first episode; it cannot explain
+the October 25 loss as an already-active protection that failed. The reserve
+is retained from incoming cash and can be exhausted by withdrawals.
+
+The retained [receipt projections](../go/workers/internal/backyard/testdata/earn-max-sales-2026-10-29.json)
+contain five October 29 ONyc sales, three AUTO sales, and the November 4
+atomic ONyc sale. Marks come from adjacent observations within 100 slots,
+not invented historical swap quotes. AUTO proceeds are valued in PYUSD,
+using the saved token prices. The [scenario inputs](evidence/earn-max-policy-2026-11-04.json)
+retain transaction signatures and the aggregate withdrawal observations.
+
+## Implemented behavior
+
+| Control | Local behavior |
+|---|---|
+| Learn the full sale cost | Reconstruct proceeds from the cash change plus the actual debt-reserve credit. Validate custody identities and the maximum repayment. A favorable sale clears an old expensive observation without making all future quotes outliers. Legacy operations lacking sale metadata still reconcile. |
+| Avoid costly optional reductions | Quote the entire remaining reduction and compare seven days of interest saved with yield forgone, sale expense, network fees, $0.25 minimum benefit and 10 bps uncertainty on debt retired. Require 30 minutes of qualifying samples, with no gap over 10 minutes. |
+| Recheck before each sale | Store an approval with a 10-minute expiry and an expense ceiling per dollar of collateral. Check the prepared transaction's minimum swap proceeds and fee allowance. Fresh approval of the same unfinished reduction cannot increase its active ceiling. |
+| Preserve mandatory exits | Hard LTV, term maturity, operator exits and withdrawal funding retain priority. Missing, expired or malformed economic approval blocks optional sales, not these exits. |
+| Stop buyback churn | Leave residual USDC alone while the stored debt reduction remains unfinished. That cash does not prevent repricing and renewing an expired reduction approval. This does not yet use it directly to repay debt. |
+| Hold more withdrawal cash | Earn MAX reserves 10% of NAV, with a $5,000 floor and $25,000 cap, limited to available assets. Quote sizing and selection use the same amount; withdrawals can spend it. No forced sales refill it. |
+| Price a shorter holding period | Earn MAX optional entry, rotation and leverage decisions use seven days instead of 30. Looping retains its existing horizon. |
+| Make 1x literal | Earn MAX's economic 1x target uses the existing full-debt repayment path after approval. Looping retains its existing 1.5x economic floor. |
+
+The expense ceiling is a ratio applied to every sale, not an absolute
+cumulative dollar budget. A remaining reduction that cannot be quoted in
+full is held conservatively. Existing positive-cost quote outlier rules are
+otherwise unchanged. Historical operation rows and NAV are not rewritten.
+
+Deployment must preserve the existing book. A full borrowing reserve blocks
+new borrowing; it does not itself require closing existing loans or selling
+collateral. Migration 0137 translates legacy Earn MAX level 1 to level 1.5,
+preserving its old meaning without authorizing a new borrow. A later move
+to actual 1x needs a fresh economic decision. Selector observation windows
+are now bound to the policy that produced them: legacy windows or a changed
+horizon/reserve policy restart the persistence period instead of allowing
+an immediate trade. A normal restart with the same policy can retain valid
+observations and must still recover already-signed transactions.
+
+## Why these candidate settings
+
+The reproducible [comparison](evidence/earn-max-policy-2026-11-04.md) evaluates
+fixed and percentage reserves, lower leverage, and paced sales. Run
+`python3 scripts/earn-max-policy-comparison.py` to regenerate it; its assertions
+check the model's key invariants.
+
+If a $25,000 reserve had been available before both recorded withdrawals and
+replenished by inflows between them, it could have avoided $160–520 of sale
+expense, against $64–99 of foregone yield over 12 days. Those are conditional
+estimates. An unfunded reserve saves nothing, and an extra sale to fill it
+has its own cost. Neither $25,000 nor $50,000 covers the large recorded
+withdrawals completely. Ten percent scales the reserve down as the vault
+shrinks; the cap limits cash drag as it grows. These values are candidates,
+not statistically established optima.
+
+Seven days makes optional trades earn back their expense sooner. The leverage
+comparison shows why borrowing more can improve long-held returns while
+worsening short-held returns after entry and exit costs. It does not justify
+a universal 1x setting: every optional reduction still needs its own priced
+benefit. Existing risk brakes remain authoritative.
+
+## Rodion's proposals: concrete next experiments
+
+**Slower large withdrawals and smaller sales.** First compare one sale with
+several freshly quoted smaller sales inside the existing 600-second waiting
+period. Use the required cash shortfall after available cash, each route's
+executable minimum output, extra network fees, and the remaining deadline.
+Keep progress in the existing operation journal; re-read holdings and demand
+before every step, and stop once the shortfall is covered. Hard-risk debt
+repayment must not wait for a better price.
+
+The comparison must measure liquidity replenishment between pieces. In the
+included constant-product example, ten consecutive pieces with no refill
+cost exactly as much as one sale before fees. With replenishment they cost
+less. An actual 0.1–0.2% execution loss on the November 4 volume would save
+$351.57–497.06 before waiting costs, but there is no retained quote sequence
+proving that execution was available. Slippage tolerance alone cannot promise
+that result: an already-discounted quote plus 0.1% tolerance can still lose
+more than 0.1% against the collateral mark.
+
+Before implementing pacing, capture size/depth quotes over a full withdrawal
+window, test cancellation and partial completion through the real transaction
+compiler and persistence/signing validation, and select a deadline fallback
+from actual quotes. Extending the user's wait beyond 600 seconds additionally
+needs withdrawal-contract compatibility and an explicit product policy.
+Neither pacing nor a longer wait is enabled by this patch.
+
+**Diversification.** Evaluate a 50% maximum exposure to one independent
+collateral/provider group, beginning with new inflows. Assess shared borrower
+reserves, collateral risks and exit pools: two borrowing loops using the same
+collateral are not independent protection. Require executable exit capacity
+for the expected withdrawal size in each proposed destination. If there is no
+second suitable destination, keep excess cash rather than manufacture a
+costly rotation to hit a percentage. Compare net return and joint withdrawal
+stress before choosing the limit. No concentration cap or automatic
+diversifying trades are enabled here.
+
+## Withdrawal-cost fairness proposal
+
+Do not add a flat withdrawal charge based on these examples. NAV already
+includes an exit-cost allowance, so charging the full realized sale expense
+again can charge users twice. First trace how burning shares releases that
+allowance and reconcile the withdrawing user's entitlement with the
+remaining holders' NAV.
+
+The candidate rule is to quote a maximum incremental withdrawal expense
+after crediting the allowance already borne by those shares, then settle
+against actual receipts and return unused allowance. A withdrawal funded
+entirely from cash incurs no incremental market-sale charge. Preserve a
+separate treatment of the existing 40 bps issuance fee. Contract support,
+attribution across overlapping withdrawals, partial fills and user-visible
+consent need verification before changing fees. No withdrawal fee is changed.
+
+## Validation and activation
+
+Local validation passed:
+
+- Existing Backyard tests before changes, then the updated package suite.
+- Nine retained sale receipts, clipped final debt repayment, custody
+  substitution rejection, and legacy operation compatibility.
+- Cost/payback and persistence cases, expired/malformed approvals, quote
+  deterioration, cash reserve boundaries, true 1x, and mandatory exits.
+- Upgrade continuity: legacy 1x preserves its previous 1.5x meaning; full
+  borrowing pools do not liquidate existing positions; old-policy evidence
+  cannot immediately approve a new-policy trade; recorded live restart and
+  signed-operation recovery cases continue to pass.
+- The real transaction compiler and persist/sign validation with a generated
+  test delegate. This is an offline wire test, not live chain simulation.
+- Migration 0137 and approval write/read/revocation against a fresh temporary
+  Postgres instance, stopped after the test; the existing foreign-inflow
+  atomicity test also passed there.
+- `scripts/verify-workers-v2.sh`: formatting, Go/TypeScript boundary check,
+  `go vet ./...`, `go test -count=1 ./...`, and worker binary compilation.
+- The scenario generator's assertions and `git diff --check`.
+
+The subsequent [live read-only preflight](evidence/earn-max-live-preflight-2026-11-04.md)
+confirmed HOLD/KEEP with the main borrowing pools full, preserved existing
+targets, and simulated three representative debt repayments successfully.
+The initial repayment rechecks were blocked by Jupiter rate limits. A paced
+follow-up then cleared both main loans completely in simulation and passed
+the real compiler and persisted-wire validation with a generated test key.
+The smaller AUTO/wYLDS loan's full multi-step unwind remains untested.
+Observed cash was about $872 against a proposed
+$17,535 reserve, so the larger reserve still needs incoming funds.
+
+Production activation is a separate step, following `deploy/hetzner/README.md`.
+Before cutover, confirm no operation, allocation or rotation is unfinished
+and that the selector has returned to KEEP. Stop the old worker and recheck
+the journal before applying migration 0137 with `loyal-migrate`, then install
+the new binary. The old worker must not write another legacy 1x target between
+translation and cutover. Do not discard a signed transaction or clear an
+unfinished rotation to make this check pass.
+
+Compare fresh holdings, withdrawal demand, translated targets and the next
+decision before enabling execution. The release must not initiate a new
+sell/rebuy sequence because the worker restarted or new borrowing is full.
+An existing withdrawal or risk emergency remains a legitimate reason to act.
+Existing rows start without downward approval, and true 1x needs a new
+cost-approved decision. A larger configured reserve is not proof of funded
+cash: compare observed idle cash with the computed target.
+
+At rollout, verify the deployed binary, record the first selector result,
+then inspect each first executed step and its reconciled sale cost. Stop and
+report on the first failed/held operation or worker restart; later steps are
+unverified until observed. Do not bypass a hold to force the canary through.
+Before any rollback, review the 1x meaning and pending operations: older code
+does not enforce the new reduction approval. No rollout or live transaction
+was performed as part of this local change.

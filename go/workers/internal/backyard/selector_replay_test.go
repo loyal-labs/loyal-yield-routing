@@ -147,7 +147,7 @@ func TestSelectorReplayLiveBook(t *testing.T) {
 			d, ok := decideLeverageTarget(lane, result, markets, p, func(uint64) (leverageStepCost, error) {
 				priced = true
 				return leverageStepCost{}, costOutage(stageInputs, staleHold("replay"))
-			})
+			}, nil)
 			got := laneDecision{next: d.Next, reason: d.Reason, borrowRaw: d.BorrowRaw, level: d.level()}
 			t.Logf("approved=%v %s: %.2fx->%.2fx spread=%d bps reason=%s store=%v", approved, lane.RouteLane, d.Current, d.Next, d.SpreadBPS, d.Reason, d.storeChanges(lane))
 			if !ok || !priced || got != want[approved][lane.RouteLane] {
@@ -208,7 +208,7 @@ func TestSelectorReplayLiveStepCost(t *testing.T) {
 	markets := replayMarkets(t, o.routeBatch.Accounts, c.Now)
 	below := lane
 	below.LTVBPS, below.LeverageDesiredRaw[2], below.LeverageDesiredRaw[3] = leverageLevelLTVBPS(1.5), borrow, borrow
-	d, ok := decideLeverageTarget(below, SelectorResult{Action: "KEEP"}, markets, DefaultSelectorPolicy(), productionLeverageStepPricer(context.Background(), rpc, view, client, m, o, below))
+	d, ok := decideLeverageTarget(below, SelectorResult{Action: "KEEP"}, markets, DefaultSelectorPolicy(), productionLeverageStepPricer(context.Background(), rpc, view, client, m, o, below), nil)
 	t.Log(d.logLine())
 	if !ok || d.Reason != "up_move_approved" || d.Next != 1.75 || d.BorrowRaw != borrow || d.Cost.TotalMicros != got.TotalMicros ||
 		d.GainRaw < replayOldLiveStepGain || d.GainRaw-replayOldLiveStepGain > 1.01*float64(old.TotalMicros-got.TotalMicros) {
