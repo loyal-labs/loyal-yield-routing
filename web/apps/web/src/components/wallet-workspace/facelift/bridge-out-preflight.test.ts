@@ -200,7 +200,10 @@ test("a busy batch endpoint is a retryable refusal and a forbidden one is not", 
     ],
   } as never;
   const verdictFor = async (status: number) => {
-    globalThis.fetch = (async () => new Response("", { status })) as typeof fetch;
+    globalThis.fetch = Object.assign(
+      async () => new Response("", { status }),
+      { preconnect: realFetch.preconnect }
+    );
     try {
       return await runBridgeOutPreflight({
         connection,
