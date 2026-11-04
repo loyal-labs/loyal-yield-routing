@@ -487,7 +487,7 @@ export function BridgeWorkspace({
                       setAmount(
                         String(
                           inDollars
-                            ? Number((balance * price).toFixed(2))
+                            ? Math.floor(balance * price * 100) / 100
                             : balance
                         )
                       )
