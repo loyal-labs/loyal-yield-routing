@@ -71,6 +71,9 @@ type BridgeOutQuoteResponse struct {
 	AmountOutRaw    string                 `json:"amountOutRaw"`
 	AmountOutMinRaw string                 `json:"amountOutMinRaw"`
 	Rate            string                 `json:"rate" doc:"Output over input, computed by the server"`
+	AmountInUSD     string                 `json:"amountInUsd" doc:"Display only, passed through from Relay"`
+	AmountOutUSD    string                 `json:"amountOutUsd" doc:"Display only, passed through from Relay"`
+	NetworkFeeUSD   string                 `json:"networkFeeUsd" doc:"Display only, passed through from Relay"`
 	ETASeconds      *int64                 `json:"etaSeconds"`
 }
 
@@ -171,6 +174,9 @@ func (h earnRoutes) bridgeOutQuote(ctx context.Context, in *bridgeQuoteInput) (*
 		AmountOutRaw:    q.AmountOutRaw.String(),
 		AmountOutMinRaw: q.AmountOutMinRaw.String(),
 		Rate:            q.Rate,
+		AmountInUSD:     q.AmountInUSD,
+		AmountOutUSD:    q.AmountOutUSD,
+		NetworkFeeUSD:   q.NetworkFeeUSD,
 		ETASeconds:      q.ETASeconds,
 	}}
 	for _, ix := range q.Instructions {

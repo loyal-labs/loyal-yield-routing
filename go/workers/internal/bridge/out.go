@@ -66,6 +66,9 @@ type OutQuote struct {
 	AmountOutRaw    *big.Int
 	AmountOutMinRaw *big.Int
 	Rate            string
+	AmountInUSD     string
+	AmountOutUSD    string
+	NetworkFeeUSD   string
 	ETASeconds      *int64
 }
 
@@ -102,6 +105,9 @@ type relayOutQuote struct {
 			} `json:"data"`
 		} `json:"items"`
 	} `json:"steps"`
+	Fees struct {
+		Gas relayCurrencyAmount `json:"gas"`
+	} `json:"fees"`
 	Details struct {
 		Sender            string              `json:"sender"`
 		Recipient         string              `json:"recipient"`
@@ -345,6 +351,9 @@ func CheckOutQuote(req OutRequest, raw []byte) (OutQuote, error) {
 		AmountOutRaw:    out,
 		AmountOutMinRaw: outMin,
 		Rate:            outRate(in, out, tok.Decimals),
+		AmountInUSD:     plainDecimalOrEmpty(d.CurrencyIn.AmountUSD),
+		AmountOutUSD:    plainDecimalOrEmpty(d.CurrencyOut.AmountUSD),
+		NetworkFeeUSD:   plainDecimalOrEmpty(rq.Fees.Gas.AmountUSD),
 	}
 	if d.TimeEstimate != nil && *d.TimeEstimate >= 0 {
 		eta := int64(math.Ceil(*d.TimeEstimate))
@@ -409,6 +418,13 @@ func sameAddress(kind AddressKind, a, b string) bool {
 		return strings.EqualFold(a, b)
 	}
 	return a == b
+}
+
+func plainDecimalOrEmpty(s string) string {
+	if plainDecimal.MatchString(s) {
+		return s
+	}
+	return ""
 }
 
 func tenPow(n int64) *big.Int { return new(big.Int).Exp(big.NewInt(10), big.NewInt(n), nil) }

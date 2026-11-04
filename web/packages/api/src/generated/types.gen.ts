@@ -232,11 +232,23 @@ export type BridgeOutQuoteRequest = {
 };
 
 export type BridgeOutQuoteResponse = {
+    /**
+     * Display only, passed through from Relay
+     */
+    amountInUsd: string;
     amountOutMinRaw: string;
     amountOutRaw: string;
+    /**
+     * Display only, passed through from Relay
+     */
+    amountOutUsd: string;
     etaSeconds: number | null;
     instructions: Array<BridgeOutInstruction> | null;
     lookupTables: Array<string> | null;
+    /**
+     * Display only, passed through from Relay
+     */
+    networkFeeUsd: string;
     /**
      * Output over input, computed by the server
      */

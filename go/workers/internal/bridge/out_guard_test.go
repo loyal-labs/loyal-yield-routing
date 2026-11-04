@@ -1,10 +1,14 @@
 package bridge
 
 import (
+	"context"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"math/big"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/solana-foundation/solana-go/v2"
@@ -168,5 +172,56 @@ func TestCheckOutQuoteServesTheRateItComputes(t *testing.T) {
 	}
 	if got.Rate != "0.998926" {
 		t.Fatalf("rate %q is not out over in", got.Rate)
+	}
+}
+
+func TestCheckOutQuoteUSDFieldsAreDisplayOnly(t *testing.T) {
+	req, recorded := solanaOutQuote(t)
+	rawRecorded, _ := json.Marshal(recorded)
+	want, err := CheckOutQuote(req, rawRecorded)
+	if err != nil {
+		t.Fatalf("recorded quote refused: %v", err)
+	}
+	if want.AmountInUSD != "24.995150" || want.AmountOutUSD != "24.968299" || want.NetworkFeeUSD != "0.000741" {
+		t.Fatalf("recorded USD fields served as %q %q %q", want.AmountInUSD, want.AmountOutUSD, want.NetworkFeeUSD)
+	}
+	for _, tampered := range []any{"0", "99999999999999999999.5", "1e999", "NaN", "-5", ""} {
+		_, q := solanaOutQuote(t)
+		setAt(q, tampered, "details", "currencyIn", "amountUsd")
+		setAt(q, tampered, "details", "currencyOut", "amountUsd")
+		setAt(q, tampered, "fees", "gas", "amountUsd")
+		setAt(q, tampered, "details", "rate")
+		raw, _ := json.Marshal(q)
+		got, err := CheckOutQuote(req, raw)
+		if err != nil {
+			t.Fatalf("USD %q decided the quote: %v", tampered, err)
+		}
+		if got.RequestID != want.RequestID || got.AmountInRaw.Cmp(want.AmountInRaw) != 0 || got.AmountOutRaw.Cmp(want.AmountOutRaw) != 0 || got.AmountOutMinRaw.Cmp(want.AmountOutMinRaw) != 0 || got.Rate != want.Rate {
+			t.Fatalf("USD %q changed the decision: %+v vs %+v", tampered, got, want)
+		}
+		if plainDecimal.MatchString(tampered.(string)) {
+			if got.AmountOutUSD != tampered {
+				t.Fatalf("decimal %q not passed through, got %q", tampered, got.AmountOutUSD)
+			}
+		} else if got.AmountInUSD != "" || got.AmountOutUSD != "" || got.NetworkFeeUSD != "" {
+			t.Fatalf("non-decimal %q served as %q %q %q, want empty", tampered, got.AmountInUSD, got.AmountOutUSD, got.NetworkFeeUSD)
+		}
+	}
+}
+
+func TestQuoteOutRelayAuthFailureIsNotAUserRefusal(t *testing.T) {
+	req, _ := solanaOutQuote(t)
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(status)
+			w.Write([]byte(`{"errorCode":"UNAUTHORIZED"}`))
+		}))
+		relay := &Relay{BaseURL: srv.URL, HTTP: srv.Client()}
+		_, err := relay.QuoteOut(context.Background(), req)
+		srv.Close()
+		var refused *QuoteRefused
+		if err == nil || errors.As(err, &refused) {
+			t.Fatalf("relay %d returned %v, want an unavailable error", status, err)
+		}
 	}
 }
