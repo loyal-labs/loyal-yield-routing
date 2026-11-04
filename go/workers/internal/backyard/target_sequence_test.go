@@ -274,9 +274,12 @@ func TestTargetLevelOneSevenFiveStepsUpOnceApproved(t *testing.T) {
 	if l := b.lane(onreONycUSDC); l.debt == 0 || ltvOf(l) > 3334 {
 		t.Fatalf("1.5 down step left debt %d LTV %d", l.debt, ltvOf(l))
 	}
-	// Level 1 is economic: it holds at 1.5, not at debt 0.
+	// Earn MAX's 1x target retains the investment and clears its debt.
 	b.in.Levels[onreONycUSDC] = laneLevel{Level: 1}
-	wantSteps(t, b.walk(t, 5), "HOLD:"+string(holdAtTarget))
+	wantSteps(t, b.walk(t, 5), "DELEVER_ROUTE_STEP:"+debtZeroReason, "HOLD:"+string(holdAtTarget))
+	if l := b.lane(onreONycUSDC); l.debt != 0 || l.coll <= 0 {
+		t.Fatal("1x did not retain unborrowed collateral")
+	}
 }
 
 func TestTargetHardLTVStepsDownOrHoldsNoRoom(t *testing.T) {

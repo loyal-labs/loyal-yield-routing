@@ -45,6 +45,16 @@ The inventory behind it was taken from main @4d3fbf97 plus loyal-app main @2ac3d
 
 ### User intent (written only by the app route that records the choice)
 
+Backyard's `backyard_lane_levels.down_approval` (0137) is selector-owned
+operational intent, not a chain balance or a restored global spending cap.
+It stores an expiring cost-per-dollar permission for optional Earn MAX debt
+reductions. Every step still reads fresh chain state and prices its wire;
+hard-risk and withdrawal exits bypass this economic permission. Apply 0137
+with the old worker stopped, before the binary that reads it: it also maps
+legacy Earn MAX level 1 to 1.5, preserving the old target's meaning. Selector
+history carries the policy it was observed under; changed settings require
+fresh persistence. See `../earn-max-loss-controls.md` for cutover prerequisites.
+
 | Fact | Table | Change |
 |---|---|---|
 | Autodeposit on/off and wallet floor | `balance_sweep_targets.desired_active`, `wallet_balance_floor_raw` | split from the chain columns (`chain_status`, accounts, signatures), which are read from the chain or projected by the observer; the app writes `chain_status` at `earn-autodeposit-repository.server.ts:2167,2624` today |

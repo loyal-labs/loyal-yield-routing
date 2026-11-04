@@ -48,13 +48,14 @@ const (
 )
 
 type LaneTarget struct {
-	Rule       targetRule `json:"rule"`
-	Level      float64    `json:"level,omitempty"`
-	UpApproved bool       `json:"upApproved,omitempty"`
-	KeepAlive  bool       `json:"keepAlive,omitempty"`
-	EquityZero bool       `json:"equityZero,omitempty"`
-	Outbound   bool       `json:"outbound,omitempty"`
-	ReleaseRaw int64      `json:"releaseRaw,omitempty"`
+	Rule       targetRule   `json:"rule"`
+	Level      float64      `json:"level,omitempty"`
+	UpApproved bool         `json:"upApproved,omitempty"`
+	Down       downApproval `json:"down,omitzero"`
+	KeepAlive  bool         `json:"keepAlive,omitempty"`
+	EquityZero bool         `json:"equityZero,omitempty"`
+	Outbound   bool         `json:"outbound,omitempty"`
+	ReleaseRaw int64        `json:"releaseRaw,omitempty"`
 	// RepayRaw (debt) then WithdrawRaw (collateral receipts) are a
 	// rotation's release from the lane: the USDC stays in the Squads account
 	// for the cash rule to enter.
@@ -112,7 +113,7 @@ type targetTick struct {
 func (k targetTick) outbound() bool { return k.shortfall > 0 }
 
 func storedTarget(l targetLane) LaneTarget {
-	return LaneTarget{Rule: ruleHold, Level: heldLevel(l.s.RouteLane, l.level.Level), UpApproved: l.level.UpApproved && l.level.Level > 1}
+	return LaneTarget{Rule: ruleHold, Level: economicHeldLevel(l.s, l.level.Level), UpApproved: l.level.UpApproved && l.level.Level > 1, Down: l.level.Down}
 }
 
 var targetRules = [...]func(targetTick) (int, LaneTarget, bool){
@@ -257,6 +258,9 @@ func homeEntryTarget(k targetTick) (int, LaneTarget, bool) {
 	if home := homeLane(k.lanes); home >= 0 && k.vault.SquadsIdleRaw > 0 && selectorDestination(k.in) == "" &&
 		sharedUSDCDebt(k.lanes[home].s.RouteLane) && k.lanes[home].s.PositionDebtRaw > 0 {
 		t := storedTarget(k.lanes[home])
+		if levelDownDue(k.lanes[home].s, t) {
+			return 0, LaneTarget{}, false
+		}
 		t.Rule = ruleEntry
 		return home, t, true
 	}
@@ -440,6 +444,9 @@ func rotationLeft(r *SelectorResult, vault Snapshot, lanes []Snapshot) bool {
 }
 
 func levelDownDue(s Snapshot, t LaneTarget) bool {
+	if t.Level == levelDebtZero {
+		return s.HasPosition && s.PositionDebtRaw > 0
+	}
 	band := leverageLevelLTVBPS(t.Level)
 	return t.Level >= levelFloor && s.HasPosition && s.PositionDebtRaw > 0 && s.LTVBPS > band+leverageUpNearBPS && stepDebtToLTVRaw(s, band) > 0
 }

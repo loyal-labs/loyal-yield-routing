@@ -169,6 +169,7 @@ type Snapshot struct {
 	BorrowUtilizationBlocked         bool
 	LeverageTargetLevel              float64
 	LeverageUpApproved               bool
+	LeverageDown                     downApproval `json:",omitzero"`
 	BorrowCapacityKnown              bool
 	AdditionalDebtRoomRaw            uint64
 	LeverageBorrowRaw                [len(leverageLadder)]uint64

@@ -54,7 +54,7 @@ func TestRealizedAUTOSpreadApprovesTheStepsTo1_75x(t *testing.T) {
 		return m
 	}
 	s, m := oct10WindowSnapshot(t, 3_300_000_000)
-	got, ok := decideLeverageTarget(s, SelectorResult{Action: "KEEP"}, []LaneEconomics{realized(m, 0.0288)}, DefaultSelectorPolicy(), measuredStepCost(0))
+	got, ok := decideLeverageTarget(s, SelectorResult{Action: "KEEP"}, []LaneEconomics{realized(m, 0.0288)}, DefaultSelectorPolicy(), measuredStepCost(0), nil)
 	if !ok || got.Next != 1.75 || got.Reason != "up_move_approved" || got.BorrowRaw != s.LeverageDesiredRaw[1] || got.GainRaw <= 0 {
 		t.Fatalf("1.01x -> 1.5x at 2.88 pts: %+v ok=%t", got, ok)
 	}
@@ -66,17 +66,17 @@ func TestRealizedAUTOSpreadApprovesTheStepsTo1_75x(t *testing.T) {
 	armLeverageCapacityFixture(&at15)
 	at15.LeverageUpApproved = false
 	at15.BorrowUtilizationHeadroomRaw = 3_300_000_000
-	got, ok = decideLeverageTarget(at15, SelectorResult{Action: "KEEP"}, []LaneEconomics{realized(m, 0.0288)}, DefaultSelectorPolicy(), measuredStepCost(0))
+	got, ok = decideLeverageTarget(at15, SelectorResult{Action: "KEEP"}, []LaneEconomics{realized(m, 0.0288)}, DefaultSelectorPolicy(), measuredStepCost(0), nil)
 	if !ok || got.Next != 1.75 || got.Reason != "up_move_approved" || got.BorrowRaw != at15.LeverageDesiredRaw[2] || got.GainRaw <= 0 {
 		t.Fatalf("1.5x -> 1.75x at 2.88 pts: %+v ok=%t", got, ok)
 	}
 	// Under the 1.75x step's 2 pt rule: no approval, whatever the cost.
-	got, ok = decideLeverageTarget(at15, SelectorResult{Action: "KEEP"}, []LaneEconomics{realized(m, 0.015)}, DefaultSelectorPolicy(), measuredStepCost(0))
+	got, ok = decideLeverageTarget(at15, SelectorResult{Action: "KEEP"}, []LaneEconomics{realized(m, 0.015)}, DefaultSelectorPolicy(), measuredStepCost(0), nil)
 	if !ok || got.BorrowRaw != 0 || got.Reason != "spread_rule" {
 		t.Fatalf("a spread under the rule was approved: %+v ok=%t", got, ok)
 	}
 	// A quote outage: the cost is unknown, never zero.
-	got, ok = decideLeverageTarget(s, SelectorResult{Action: "KEEP"}, []LaneEconomics{realized(m, 0.0288)}, DefaultSelectorPolicy(), quoteOutage)
+	got, ok = decideLeverageTarget(s, SelectorResult{Action: "KEEP"}, []LaneEconomics{realized(m, 0.0288)}, DefaultSelectorPolicy(), quoteOutage, nil)
 	if !ok || got.BorrowRaw != 0 || got.Reason != "leverage_cost_unavailable" || got.Next != got.Current {
 		t.Fatalf("an unpriced step was decided: %+v ok=%t", got, ok)
 	}
@@ -86,7 +86,7 @@ func TestLeverageUpApprovesTheStepAndBorrowsTheRoom(t *testing.T) {
 	t.Parallel()
 	const room = 3_300_000_000
 	s, m := oct10WindowSnapshot(t, room)
-	got, ok := decideLeverageTarget(s, SelectorResult{Action: "KEEP"}, []LaneEconomics{m}, DefaultSelectorPolicy(), measuredStepCost(0))
+	got, ok := decideLeverageTarget(s, SelectorResult{Action: "KEEP"}, []LaneEconomics{m}, DefaultSelectorPolicy(), measuredStepCost(0), nil)
 	if !ok || got.Next != 1.75 || got.Reason != "up_move_approved" || got.BorrowRaw != s.LeverageDesiredRaw[1] || got.GainRaw <= 0 || !got.level().UpApproved {
 		t.Fatalf("a profitable step got no approval: %+v ok=%t", got, ok)
 	}
@@ -105,7 +105,7 @@ func TestLeverageUpApprovesTheStepAndBorrowsTheRoom(t *testing.T) {
 	// The reserve fills: the approval stands (it was priced at the limit
 	// rate) and the step holds for room.
 	full, _ := oct10WindowSnapshot(t, 0)
-	again, _ := decideLeverageTarget(full, SelectorResult{Action: "KEEP"}, []LaneEconomics{m}, DefaultSelectorPolicy(), measuredStepCost(0))
+	again, _ := decideLeverageTarget(full, SelectorResult{Action: "KEEP"}, []LaneEconomics{m}, DefaultSelectorPolicy(), measuredStepCost(0), nil)
 	if again.BorrowRaw != got.BorrowRaw || again.Reason != "up_move_approved" || again.RoomRaw != 0 {
 		t.Fatalf("a full reserve withdrew the approval: %+v", again)
 	}

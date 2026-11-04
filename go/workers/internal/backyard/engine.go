@@ -209,6 +209,7 @@ type selectorSampler struct {
 	levWatch                           *leverageWatch
 	levDecisionLog                     *leverageDecisionLog
 	apyThrottle                        *currentAPYThrottle
+	downWindows                        map[string]leverageDownWindow
 }
 
 func newSelectorSampler(e *Engine, worker *Worker, state *vaultState) *selectorSampler {
@@ -245,9 +246,17 @@ func (p *selectorSampler) sample(ctx, feedCtx context.Context, markets []LaneEco
 		}, logf)
 	}
 	for _, lane := range observed.lanes {
-		decision, ok := decideLeverageTarget(lane, result, markets, worker.manifest.vault.selectorPolicy(), productionLeverageStepPricer(feedCtx, rpc, view, e.runtime.Jupiter, worker.manifest, observed, lane))
+		policy := worker.manifest.vault.selectorPolicy()
+		decision, ok := decideLeverageTarget(lane, result, markets, policy, productionLeverageStepPricer(feedCtx, rpc, view, e.runtime.Jupiter, worker.manifest, observed, lane),
+			productionLeverageDownPricer(feedCtx, rpc, view, e.runtime.Jupiter, worker.manifest, observed, lane))
 		if !ok {
+			delete(p.downWindows, lane.RouteLane)
 			continue
+		}
+		if decision.Reason == leverageDownApproved && decision.Next == decision.Current && lane.LeverageDown.active(lane.ChainUnix) {
+			decision.Down.MaxCostBPS = min(decision.Down.MaxCostBPS, lane.LeverageDown.MaxCostBPS)
+		} else {
+			decision = p.persistDown(decision, policy, time.Now().UTC())
 		}
 		if p.levDecisionLog.due(time.Now(), decision) {
 			_, _ = fmt.Fprintln(e.out, decision.logLine())

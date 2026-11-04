@@ -2,6 +2,7 @@ package backyard
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
@@ -18,6 +19,9 @@ type Vault struct {
 	AdminPerformanceFeeBPS        int64
 	IssuanceFeeBPS                int64
 	IdleBufferRaw                 int64
+	IdleBufferBPS                 int64
+	IdleBufferCapRaw              int64
+	EconomicHorizon               time.Duration
 
 	squads, cash                               string
 	protocol, idleAuth, idleATA, lpMint        string
@@ -30,7 +34,8 @@ type Vault struct {
 
 var rwa = newVault(Vault{Name: "rwa", VoltrVault: "HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA",
 	Strategy: "DCpR24Eb6xCWxDyaZvCBTkadkxCB2vkqJN1EfYNWtLxY", Adaptor: fsj27Program, SquadsIndex: 0,
-	RouteKey: "rwa-multiply:ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh", AdminPerformanceFeeBPS: 0, IssuanceFeeBPS: 40, IdleBufferRaw: 5_000_000_000})
+	RouteKey: "rwa-multiply:ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh", AdminPerformanceFeeBPS: 0, IssuanceFeeBPS: 40,
+	IdleBufferRaw: 5_000_000_000, IdleBufferBPS: 1000, IdleBufferCapRaw: 25_000_000_000, EconomicHorizon: 7 * 24 * time.Hour})
 
 var looping = newVault(Vault{Name: "looping", VoltrVault: "GrHZD15bMiUwrVPsmBwz8GRoQeDZN6wNEQVdW8k8SxV1",
 	Strategy: "GUCvzfn1hqThWp5uQNF7CqoxC1XckCPTjsRGKVXHPxu1", Adaptor: voltr.TrustfulProgramID.String(), SquadsIndex: 2,
@@ -41,6 +46,10 @@ var vaults = []*Vault{rwa, looping}
 func (v *Vault) selectorPolicy() SelectorPolicy {
 	p := DefaultSelectorPolicy()
 	p.IdleBufferRaw = v.IdleBufferRaw
+	p.IdleBufferBPS, p.IdleBufferCapRaw = v.IdleBufferBPS, v.IdleBufferCapRaw
+	if v.EconomicHorizon > 0 {
+		p.Horizon = v.EconomicHorizon
+	}
 	return p
 }
 

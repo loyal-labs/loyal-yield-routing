@@ -31,11 +31,12 @@ func collectSelectorQuotes(ctx context.Context, rpc *chain.Client, view *View, c
 		seen[market.Lane] = market
 	}
 	s := o.Snapshot
+	buffer := policy.idleBufferRaw(s.TotalVaultNAVRaw)
 	onlyLane, onlySource := "", ""
 	if request != nil {
 		onlyLane, onlySource = request.Lane, request.SourceLane
 	}
-	if s.TotalVaultNAVRaw <= policy.IdleBufferRaw {
+	if s.TotalVaultNAVRaw <= buffer {
 		return out, nil, staleHold(selectorLiveSnapshotUnavailable)
 	}
 	if !s.Fresh || s.ObservationID == "" || s.Slot <= 0 || s.Nonterminal != "" || s.HasAmbiguousSubmission || s.ManualReason != "" ||
@@ -44,7 +45,7 @@ func collectSelectorQuotes(ctx context.Context, rpc *chain.Client, view *View, c
 	}
 	idle := uint64(s.VoltrIdleRaw-s.WithdrawalDemandRaw) + uint64(s.SquadsIdleRaw)
 	cashBlocked := ""
-	if idle <= uint64(policy.IdleBufferRaw) {
+	if idle <= uint64(buffer) {
 		cashBlocked = "selector_move_has_no_entry_cash"
 	} else if onlySource != "" {
 		cashBlocked = "operator_canary_rotation_only"
@@ -86,7 +87,7 @@ func collectSelectorQuotes(ctx context.Context, rpc *chain.Client, view *View, c
 			out[i].EntryCapacity = Capacity{Known: true}
 			out[i].EntryBlockedReason = cashBlocked
 		} else {
-			jobs = append(jobs, job{i: i, maximum: canary(min(strategyTwoBridgeLegCapRaw, uint64(s.TotalVaultNAVRaw-policy.IdleBufferRaw), idle-uint64(policy.IdleBufferRaw)))})
+			jobs = append(jobs, job{i: i, maximum: canary(min(strategyTwoBridgeLegCapRaw, uint64(s.TotalVaultNAVRaw-buffer), idle-uint64(buffer)))})
 		}
 		held := s.heldLanes()
 		for k := range o.lanes {

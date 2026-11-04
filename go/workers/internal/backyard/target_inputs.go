@@ -10,8 +10,9 @@ import (
 )
 
 type laneLevel struct {
-	Level      float64 `json:"level"`
-	UpApproved bool    `json:"upApproved,omitempty"`
+	Level      float64      `json:"level"`
+	UpApproved bool         `json:"upApproved,omitempty"`
+	Down       downApproval `json:"down,omitzero"`
 }
 
 type laneExit struct {
@@ -42,7 +43,7 @@ func decodeTargetInputs(levels, exits, entry, costs []byte) (targetInputs, error
 	for lane, level := range in.Levels {
 		if !earnHeldLane(lane) {
 			delete(in.Levels, lane)
-		} else if !validLevel(level.Level) {
+		} else if !validLevel(level.Level) || !level.Down.valid() {
 			return in, staleHold("invalid_lane_levels")
 		}
 	}
@@ -64,18 +65,22 @@ func decodeTargetInputs(levels, exits, entry, costs []byte) (targetInputs, error
 	return in, nil
 }
 
-const targetInputsSQL = `COALESCE((SELECT jsonb_object_agg(lane, jsonb_build_object('level', level, 'upApproved', up_approved)) FROM loyal_yield.backyard_lane_levels WHERE route_key = $1), '{}'::jsonb),
+const targetInputsSQL = `COALESCE((SELECT jsonb_object_agg(lane, jsonb_build_object('level', level, 'upApproved', up_approved, 'down', down_approval)) FROM loyal_yield.backyard_lane_levels WHERE route_key = $1), '{}'::jsonb),
 	COALESCE((SELECT jsonb_object_agg(lane, jsonb_build_object('equityZero', equity_zero)) FROM loyal_yield.backyard_lane_exits WHERE route_key = $1), '{}'::jsonb),
 	` + exitCostsSQL
 
 func (d *Database) RecordLaneLevel(ctx context.Context, routeKey, lane string, level laneLevel) error {
-	if !earnActiveLane(lane) || !validLevel(level.Level) || (level.UpApproved && level.Level <= 1) {
+	if !earnActiveLane(lane) || !validLevel(level.Level) || (level.UpApproved && level.Level <= 1) || !level.Down.valid() || (level.UpApproved && level.Down.MaxCostBPS != 0) {
 		return fmt.Errorf("invalid_lane_level")
 	}
-	_, err := d.pool.Exec(ctx, `INSERT INTO loyal_yield.backyard_lane_levels (route_key, lane, level, up_approved, decided_at)
-		VALUES ($1, $2, $3, $4, clock_timestamp())
-		ON CONFLICT (route_key, lane) DO UPDATE SET level = EXCLUDED.level, up_approved = EXCLUDED.up_approved, decided_at = EXCLUDED.decided_at`,
-		routeKey, lane, level.Level, level.UpApproved)
+	approval, err := json.Marshal(level.Down)
+	if err != nil {
+		return err
+	}
+	_, err = d.pool.Exec(ctx, `INSERT INTO loyal_yield.backyard_lane_levels (route_key, lane, level, up_approved, down_approval, decided_at)
+		VALUES ($1, $2, $3, $4, $5::jsonb, clock_timestamp())
+		ON CONFLICT (route_key, lane) DO UPDATE SET level = EXCLUDED.level, up_approved = EXCLUDED.up_approved, down_approval = EXCLUDED.down_approval, decided_at = EXCLUDED.decided_at`,
+		routeKey, lane, level.Level, level.UpApproved, string(approval))
 	return err
 }
 

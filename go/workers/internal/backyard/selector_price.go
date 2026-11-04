@@ -319,7 +319,7 @@ func (p lanePricer) priceMove(ctx context.Context, o Observation, source *Snapsh
 	rate := prices.debtBorrowFeeSF
 	debtLeft, depositLeft := room, depositRoom-min(deposited, depositRoom)
 	collateralValue, debtValue := float64(depositValue), 0.0
-	years := DefaultSelectorPolicy().Horizon.Hours() / (365.25 * 24)
+	years := p.manifest.vault.selectorPolicy().Horizon.Hours() / (365.25 * 24)
 	feeTerms := s.MonitorsArmed && approvedVoltrFeeTerms(s)
 	var borrows, borrowFees []uint64
 	var stepCosts []leverageStepCost
@@ -519,7 +519,7 @@ func (p lanePricer) settleHeld(ctx context.Context, o Observation, s Snapshot, m
 	if !s.MonitorsArmed || !approvedVoltrFeeTerms(s) {
 		return out, nil
 	}
-	years := DefaultSelectorPolicy().Horizon.Hours() / (365.25 * 24)
+	years := p.manifest.vault.selectorPolicy().Horizon.Hours() / (365.25 * 24)
 	collateral, debt := float64(s.PositionCollateralValueRaw), float64(s.PositionDebtValueRaw)
 	var taken uint64
 	roomLeft := s.AdditionalDebtRoomRaw

@@ -232,6 +232,7 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 		views[i].Snapshot.StageAllowance = allowance
 		level := runtime.inputs.Levels[views[i].Snapshot.RouteLane]
 		views[i].Snapshot.LeverageTargetLevel, views[i].Snapshot.LeverageUpApproved = level.Level, level.UpApproved && level.Level > 1
+		views[i].Snapshot.LeverageDown = level.Down
 		snapshots[i] = views[i].Snapshot
 	}
 	index, laneTarget := target(snapshots, runtime.inputs)

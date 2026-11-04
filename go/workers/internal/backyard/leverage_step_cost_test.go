@@ -58,7 +58,7 @@ func TestLeverageCostOutageCarriesTheApproval(t *testing.T) {
 	const room = 3_300_000_000
 	s, m := oct10WindowSnapshot(t, room)
 	m.NativeAPY = m.CurrentBorrowAPY + 0.0288
-	approved, _ := decideLeverageTarget(s, SelectorResult{Action: "KEEP"}, []LaneEconomics{m}, DefaultSelectorPolicy(), measuredStepCost(0))
+	approved, _ := decideLeverageTarget(s, SelectorResult{Action: "KEEP"}, []LaneEconomics{m}, DefaultSelectorPolicy(), measuredStepCost(0), nil)
 	if approved.BorrowRaw == 0 {
 		t.Fatalf("fixture not approved: %+v", approved)
 	}
@@ -66,7 +66,7 @@ func TestLeverageCostOutageCarriesTheApproval(t *testing.T) {
 	outage := func(uint64) (leverageStepCost, error) {
 		return leverageStepCost{}, costOutage(stageExitQuote, fmt.Errorf("Jupiter https://api.example/?api-key=secret: %w", context.DeadlineExceeded))
 	}
-	got, ok := decideLeverageTarget(s, SelectorResult{Action: "KEEP"}, []LaneEconomics{m}, DefaultSelectorPolicy(), outage)
+	got, ok := decideLeverageTarget(s, SelectorResult{Action: "KEEP"}, []LaneEconomics{m}, DefaultSelectorPolicy(), outage, nil)
 	if !ok || got.Reason != "leverage_cost_unavailable(deadline)" || !got.outage() || got.storeChanges(s) {
 		t.Fatalf("an outage overwrote the approval: %+v", got)
 	}
@@ -76,7 +76,7 @@ func TestLeverageCostOutageCarriesTheApproval(t *testing.T) {
 	quoteFailed := func(uint64) (leverageStepCost, error) {
 		return leverageStepCost{}, costOutage(stageEntryQuote, errors.New("route dialect changed"))
 	}
-	if got, _ := decideLeverageTarget(s, SelectorResult{Action: "KEEP"}, []LaneEconomics{m}, DefaultSelectorPolicy(), quoteFailed); got.Reason != "leverage_cost_unavailable(entry_quote)" || got.storeChanges(s) {
+	if got, _ := decideLeverageTarget(s, SelectorResult{Action: "KEEP"}, []LaneEconomics{m}, DefaultSelectorPolicy(), quoteFailed, nil); got.Reason != "leverage_cost_unavailable(entry_quote)" || got.storeChanges(s) {
 		t.Fatalf("entry quote outage: %+v", got)
 	}
 	if d := Decide(targeted(s)); d.Action != OpenRouteStep || d.Reason != leverageUpReason || d.AmountRaw != room {
@@ -86,7 +86,7 @@ func TestLeverageCostOutageCarriesTheApproval(t *testing.T) {
 	// approval is revoked.
 	weak := m
 	weak.NativeAPY = m.CurrentBorrowAPY + 0.005
-	got, _ = decideLeverageTarget(s, SelectorResult{Action: "KEEP"}, []LaneEconomics{weak}, DefaultSelectorPolicy(), measuredStepCost(0))
+	got, _ = decideLeverageTarget(s, SelectorResult{Action: "KEEP"}, []LaneEconomics{weak}, DefaultSelectorPolicy(), measuredStepCost(0), nil)
 	if got.outage() || got.BorrowRaw != 0 || !got.storeChanges(s) || got.Reason != "spread_rule" {
 		t.Fatalf("a spread_rule refusal kept the approval: %+v", got)
 	}
