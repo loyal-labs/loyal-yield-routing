@@ -245,6 +245,11 @@ export type BridgeOutQuoteResponse = {
     etaSeconds: number | null;
     instructions: Array<BridgeOutInstruction> | null;
     lookupTables: Array<string> | null;
+    loyalFeeBps: number;
+    /**
+     * Loyal's fee in raw USDC units, the amount the guard checked, taken from the amount received
+     */
+    loyalFeeRaw: string;
     /**
      * Display only, passed through from Relay
      */

@@ -30,6 +30,9 @@ Environment=LOYAL_WEB_UPSTREAM=https://app.askloyal.com
 # The session cookie's parent domain, the Next deployment's value (prod sets
 # Domain=askloyal.com). Unset, POST /api/auth/privy/complete proxies to Next.
 Environment=AUTH_COOKIE_PARENT_DOMAIN=askloyal.com
+# The EVM address that claims Loyal's Relay app fee on every bridge out quote
+# (Loyal ops key). Unset, POST /api/funding/bridge/out/quote answers 503.
+Environment=RELAY_APP_FEE_RECIPIENT=0x536a85f63ceca75b12ec588cf37ca371489dd4a3
 # LOYAL_WEB_APP_HOST is deliberately unset: the test host serves the
 # marketing site and /app from one hostname, so the app-host routing is
 # unused. Set it in a drop-in if the sites split onto separate hostnames.
