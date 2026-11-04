@@ -1,6 +1,7 @@
 package webapp
 
 import (
+	"cmp"
 	"context"
 	"encoding/hex"
 	"encoding/json"
@@ -214,14 +215,16 @@ type EvmDepositToken struct {
 }
 
 type EvmDepositNetwork struct {
-	Route   DepositRouteKind  `json:"route" enum:"evm,relay_deposit_address" doc:"How address is obtained: evm entries share the wallet's 0x deposit address; a relay_deposit_address entry's address is minted by POST /api/funding/tron-deposit-address"`
-	Address *string           `json:"address" doc:"This entry's deposit address; null until it exists"`
-	Chain   bridge.Chain      `json:"chain"`
-	Name    string            `json:"name"`
-	Icon    *string           `json:"icon" doc:"Image file in the receive sheet's assets; null while there is none"`
-	Assets  []bridge.Asset    `json:"assets"`
-	Tokens  []EvmDepositToken `json:"tokens"`
-	MinUSD  int               `json:"minUsd" doc:"Smallest deposit worth bridging in USD; 0 means none"`
+	Route     DepositRouteKind  `json:"route" enum:"evm,relay_deposit_address" doc:"How address is obtained: evm entries share the wallet's 0x deposit address; a relay_deposit_address entry's address is minted by POST /api/funding/tron-deposit-address"`
+	Address   *string           `json:"address" doc:"This entry's deposit address; null until it exists"`
+	Chain     bridge.Chain      `json:"chain"`
+	Name      string            `json:"name"`
+	ShortName string            `json:"shortName" doc:"The chain's name inside a sentence, as in the Ethereum network"`
+	Icon      *string           `json:"icon" doc:"Image file in the receive sheet's assets; null while there is none"`
+	QRIcon    *string           `json:"qrIcon" doc:"Image file for the middle of the deposit QR; null while there is none"`
+	Assets    []bridge.Asset    `json:"assets"`
+	Tokens    []EvmDepositToken `json:"tokens"`
+	MinUSD    int               `json:"minUsd" doc:"Smallest deposit worth bridging in USD; 0 means none"`
 }
 
 func iconFile(name string) *string {
@@ -268,7 +271,7 @@ func (h earnRoutes) evmDepositResponse(ctx context.Context, wallet solana.Public
 	out := EvmDepositAddressResponse{Address: address, Kind: kind, Networks: []EvmDepositNetwork{}, Minimums: map[string]int{}}
 	seen := map[bridge.Asset]bool{}
 	for _, network := range networks {
-		item := EvmDepositNetwork{Route: EVMRoute, Address: address, Chain: network.Chain, Name: network.Name, Icon: iconFile(network.Icon), MinUSD: network.MinUSD}
+		item := EvmDepositNetwork{Route: EVMRoute, Address: address, Chain: network.Chain, Name: network.Name, ShortName: network.Short, Icon: iconFile(network.Icon), QRIcon: iconFile(cmp.Or(network.QRIcon, network.Icon)), MinUSD: network.MinUSD}
 		out.Chains = append(out.Chains, network.Chain)
 		if network.MinUSD > 0 {
 			out.Minimums[string(network.Chain)] = network.MinUSD
@@ -302,7 +305,7 @@ func (h earnRoutes) evmDepositResponse(ctx context.Context, wallet solana.Public
 // with the shared 0x address; W1 and T1c ship in one deploy.
 func (h earnRoutes) tronDepositNetwork(ctx context.Context, wallet solana.PublicKey) EvmDepositNetwork {
 	route := bridge.Tron
-	item := EvmDepositNetwork{Route: RelayDepositAddressRoute, Chain: route.Chain, Name: route.Name, Icon: iconFile(route.Icon), MinUSD: route.MinUSD, Assets: []bridge.Asset{route.Asset}}
+	item := EvmDepositNetwork{Route: RelayDepositAddressRoute, Chain: route.Chain, Name: route.Name, ShortName: route.Short, Icon: iconFile(route.Icon), QRIcon: iconFile(route.Icon), MinUSD: route.MinUSD, Assets: []bridge.Asset{route.Asset}}
 	row, err := h.storedTronDepositAddress(ctx, wallet)
 	if err != nil {
 		slog.Warn("tron deposit address read failed", "wallet", wallet.String(), "err", err)

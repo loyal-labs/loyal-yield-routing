@@ -11,8 +11,7 @@ import {
   BalanceVisibilityProvider,
   HiddenBalanceFilterDefs,
 } from "@/components/wallet-workspace/facelift/balance-visibility";
-import { ReceiveSheet as LiveReceiveSheet } from "@/components/wallet-workspace/facelift/receive-sheet";
-import { BridgePreviewReceiveSheet } from "./bridge-preview-receive-sheet";
+import { ReceiveSheet } from "@/components/wallet-workspace/facelift/receive-sheet";
 import {
   type AssetAction,
   CryptoPage,
@@ -89,11 +88,6 @@ const InvitePage = dynamic(
     ),
   { loading: () => <WorkspacePaneSkeleton /> }
 );
-
-// Keep the backend-connected Receive flow intact until the bridge design is integrated.
-const ReceiveSheet = process.env.NODE_ENV === "development"
-  ? BridgePreviewReceiveSheet
-  : LiveReceiveSheet;
 
 const PAGE_STORAGE_KEY = "loyal:workspace-page";
 const EARN_MAX_VISIBLE = true;

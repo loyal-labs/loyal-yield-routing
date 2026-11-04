@@ -1540,9 +1540,17 @@ export type EvmDepositNetwork = {
     minUsd: number;
     name: string;
     /**
+     * Image file for the middle of the deposit QR; null while there is none
+     */
+    qrIcon: string | null;
+    /**
      * How address is obtained: evm entries share the wallet's 0x deposit address; a relay_deposit_address entry's address is minted by POST /api/funding/tron-deposit-address
      */
     route: 'evm' | 'relay_deposit_address';
+    /**
+     * The chain's name inside a sentence, as in the Ethereum network
+     */
+    shortName: string;
     tokens: Array<EvmDepositToken> | null;
 };
 

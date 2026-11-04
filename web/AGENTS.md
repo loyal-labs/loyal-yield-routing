@@ -781,20 +781,16 @@ on mobile, sharing the Settings animation. Empty wallets show the Receive CTA;
 zero-priced assets with a positive token balance must remain visible.
 
 Receive's Solana tab uses the authenticated wallet address and working copy/QR.
-Development uses `BridgePreviewReceiveSheet`; production keeps the existing
-backend-connected `ReceiveSheet` and its browser opt-in. The sidebar Bridge
-button is enabled in development and disabled in production until launch. Receive → Other chains is the sole entry
-to Bridge In: select a deposit asset, then its source chain, with a separate
-receive-asset selector. The sidebar Bridge action opens the Bridge Out main pane,
+The sidebar Bridge button is enabled in development and disabled in production until launch. Receive → Other chains, behind the `loyal.bridge` browser opt-in, is the sole entry
+to Bridge In: select a deposit asset, then its source chain; the asset to receive is fixed
+USDC on Solana. Its assets, chains, addresses, minimums and fees come from the server.
+The sidebar Bridge action opens the Bridge Out main pane,
 with send-asset, receive-asset → chain, and recipient selectors. It shares the
 Assets action page slide, form reveal, token icon swap, and text transitions
 with Send/Swap, including retained exits and reduced-motion behavior. Its balances,
 recent recipients, and quotes are design fixtures; Send now shows a preview
 notice and never sends. Recipient format checks are preview-only and changing
 the destination chain clears the recipient.
-Searchable selectors use supplied design fixtures. No
-bridge API, address provisioning, fee quote, or transaction is invoked. The
-bridge QR encodes a preview marker; mock copy controls show Preview only and do
-not put the example deposit address on the clipboard. Keep this boundary until
-backend integration is explicitly requested. See
+Bridge Out selectors use supplied design fixtures and invoke no bridge API, fee quote,
+or transaction. Keep this boundary until backend integration is explicitly requested. See
 `apps/web/docs/bridges-backend-handoff.md` for the integration boundaries.
