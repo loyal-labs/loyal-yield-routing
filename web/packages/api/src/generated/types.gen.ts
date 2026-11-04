@@ -235,6 +235,11 @@ export type BridgeOutQuoteResponse = {
     etaSeconds: number | null;
     instructions: Array<BridgeOutInstruction> | null;
     lookupTables: Array<string> | null;
+    /**
+     * Loyal's fee, taken from the amount received
+     */
+    loyalFeeBps: number;
+    loyalFeeUsd: string;
     networkFeeUsd: string;
     rate: string;
     requestId: string;

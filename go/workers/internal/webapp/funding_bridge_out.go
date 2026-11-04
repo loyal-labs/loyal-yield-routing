@@ -70,6 +70,8 @@ type BridgeOutQuoteResponse struct {
 	AmountInUSD     string                 `json:"amountInUsd"`
 	AmountOutUSD    string                 `json:"amountOutUsd"`
 	NetworkFeeUSD   string                 `json:"networkFeeUsd"`
+	LoyalFeeBps     int                    `json:"loyalFeeBps" doc:"Loyal's fee, taken from the amount received"`
+	LoyalFeeUSD     string                 `json:"loyalFeeUsd"`
 	ETASeconds      *int64                 `json:"etaSeconds"`
 }
 
@@ -172,6 +174,8 @@ ON CONFLICT (request_id) DO NOTHING`, q.RequestID, wallet.String(), recipient, s
 		AmountInUSD:     q.AmountInUSD,
 		AmountOutUSD:    q.AmountOutUSD,
 		NetworkFeeUSD:   q.NetworkFeeUSD,
+		LoyalFeeBps:     bridge.OutFeeBps,
+		LoyalFeeUSD:     q.AppFeeUSD,
 		ETASeconds:      q.ETASeconds,
 	}}
 	for _, ix := range q.Instructions {

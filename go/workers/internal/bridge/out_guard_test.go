@@ -1,10 +1,15 @@
 package bridge
 
 import (
+	"context"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"io"
 	"math/big"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/solana-foundation/solana-go/v2"
@@ -123,6 +128,18 @@ func TestCheckOutQuoteRefusesWhatRelayMustNotChange(t *testing.T) {
 		"unknown lookup table": func(q map[string]any) {
 			setAt(q, []any{elsewhere}, "steps", 0, "items", 0, "data", "addressLookupTableAddresses")
 		},
+		"fees.app removed":             func(q map[string]any) { delete(at(q, "fees").(map[string]any), "app") },
+		"fees.app zero":                func(q map[string]any) { setAt(q, "0", "fees", "app", "amount") },
+		"fees.app 39 bps":              func(q map[string]any) { setAt(q, "97500", "fees", "app", "amount") },
+		"fees.app 41 bps":              func(q map[string]any) { setAt(q, "102500", "fees", "app", "amount") },
+		"fees.app two units over":      func(q map[string]any) { setAt(q, "100002", "fees", "app", "amount") },
+		"fees.app amount not a number": func(q map[string]any) { setAt(q, "0x186a0", "fees", "app", "amount") },
+		"fees.app in USDT": func(q map[string]any) {
+			setAt(q, usdtMint, "fees", "app", "currency", "address")
+		},
+		"fees.app on another chain": func(q map[string]any) {
+			setAt(q, float64(8453), "fees", "app", "currency", "chainId")
+		},
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -133,5 +150,41 @@ func TestCheckOutQuoteRefusesWhatRelayMustNotChange(t *testing.T) {
 				t.Fatal("mutated quote accepted")
 			}
 		})
+	}
+}
+
+func TestQuoteOutAppFee(t *testing.T) {
+	req, base := solanaOutQuote(t)
+	raw, _ := json.Marshal(base)
+	const claim = "0x536a85f63ceca75b12ec588cf37ca371489dd4a3"
+	var bodies [][]byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, b)
+		w.Write(raw)
+	}))
+	defer srv.Close()
+	relay := &Relay{BaseURL: srv.URL, HTTP: srv.Client()}
+
+	if _, err := relay.QuoteOut(context.Background(), req); !errors.Is(err, ErrAppFeeUnset) {
+		t.Fatalf("unset recipient: got %v, want ErrAppFeeUnset", err)
+	}
+	if len(bodies) != 0 {
+		t.Fatalf("%d requests reached Relay with no fee recipient", len(bodies))
+	}
+
+	relay.AppFeeRecipient = claim
+	q, err := relay.QuoteOut(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sent struct {
+		AppFees []struct{ Recipient, Fee string } `json:"appFees"`
+	}
+	if err := json.Unmarshal(bodies[0], &sent); err != nil || len(sent.AppFees) != 1 || sent.AppFees[0].Recipient != claim || sent.AppFees[0].Fee != "40" {
+		t.Fatalf("quote body appFees = %s", bodies[0])
+	}
+	if q.AppFeeRaw.String() != "100000" {
+		t.Fatalf("app fee %s, want 100000", q.AppFeeRaw)
 	}
 }

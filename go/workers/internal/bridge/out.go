@@ -31,7 +31,10 @@ const (
 	depositTokenSelector   = "0b9c60da27a3b413"
 	outSlippageBps         = 100
 	outMinFloorBps         = 200
+	OutFeeBps              = 40
 )
+
+var ErrAppFeeUnset = errors.New("relay app fee recipient is not configured")
 
 type OutRequest struct {
 	Chain     Chain
@@ -64,6 +67,8 @@ type OutQuote struct {
 	AmountInUSD     string
 	AmountOutUSD    string
 	NetworkFeeUSD   string
+	AppFeeRaw       *big.Int
+	AppFeeUSD       string
 	ETASeconds      *int64
 }
 
@@ -96,6 +101,7 @@ type relayOutQuote struct {
 	} `json:"steps"`
 	Fees struct {
 		Gas relayCurrencyAmount `json:"gas"`
+		App relayCurrencyAmount `json:"app"`
 	} `json:"fees"`
 	Details struct {
 		Sender            string              `json:"sender"`
@@ -170,6 +176,9 @@ func (r *Relay) QuoteOut(ctx context.Context, req OutRequest) (OutQuote, error) 
 	if err != nil {
 		return OutQuote{}, err
 	}
+	if r.AppFeeRecipient == "" {
+		return OutQuote{}, ErrAppFeeUnset
+	}
 	body, err := json.Marshal(map[string]any{
 		"user":                req.Sender.String(),
 		"recipient":           req.Recipient,
@@ -181,6 +190,7 @@ func (r *Relay) QuoteOut(ctx context.Context, req OutRequest) (OutQuote, error) 
 		"amount":              req.AmountRaw.String(),
 		"tradeType":           "EXACT_INPUT",
 		"slippageTolerance":   strconv.Itoa(outSlippageBps),
+		"appFees":             []map[string]string{{"recipient": r.AppFeeRecipient, "fee": strconv.Itoa(OutFeeBps)}},
 	})
 	if err != nil {
 		return OutQuote{}, err
@@ -254,6 +264,14 @@ func CheckOutQuote(req OutRequest, raw []byte) (OutQuote, error) {
 	}
 	if d.SlippageTolerance.Total != strconv.Itoa(outSlippageBps) {
 		return OutQuote{}, fmt.Errorf("quote: details.slippageTolerance.total %q is not %d", d.SlippageTolerance.Total, outSlippageBps)
+	}
+	app := rq.Fees.App
+	if app.Currency.ChainID != SolanaRelayChainID || app.Currency.Address != SolanaUSDCMint {
+		return OutQuote{}, fmt.Errorf("quote: fees.app is not in Solana USDC")
+	}
+	appFee, ok := parseAmount(app.Amount)
+	if !ok || !withinOneUnit(appFee, in, OutFeeBps) {
+		return OutQuote{}, fmt.Errorf("quote: fees.app.amount %q is not %d bps of the requested amount", app.Amount, OutFeeBps)
 	}
 
 	mint := solana.MustPublicKeyFromBase58(SolanaUSDCMint)
@@ -336,6 +354,8 @@ func CheckOutQuote(req OutRequest, raw []byte) (OutQuote, error) {
 		AmountInUSD:     plainDecimalOrEmpty(d.CurrencyIn.AmountUSD),
 		AmountOutUSD:    plainDecimalOrEmpty(d.CurrencyOut.AmountUSD),
 		NetworkFeeUSD:   plainDecimalOrEmpty(rq.Fees.Gas.AmountUSD),
+		AppFeeRaw:       appFee,
+		AppFeeUSD:       plainDecimalOrEmpty(app.AmountUSD),
 	}
 	if d.TimeEstimate != nil && *d.TimeEstimate >= 0 {
 		eta := int64(math.Ceil(*d.TimeEstimate))
@@ -380,6 +400,12 @@ func checkOutOrder(rq relayOutQuote, req OutRequest, dest Destination, tok Desti
 		return fmt.Errorf("output minimumAmount %q differs from the quote's", payment.MinimumAmount)
 	}
 	return nil
+}
+
+func withinOneUnit(fee, amount *big.Int, bps int64) bool {
+	diff := new(big.Int).Mul(fee, big.NewInt(10000))
+	diff.Sub(diff, new(big.Int).Mul(amount, big.NewInt(bps)))
+	return diff.CmpAbs(big.NewInt(10000)) <= 0
 }
 
 func sameAddress(kind AddressKind, a, b string) bool {
