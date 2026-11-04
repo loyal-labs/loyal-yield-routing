@@ -234,6 +234,9 @@ export function useBridgeOut({
   const [lockedElsewhere, setLockedElsewhere] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [retries, retryQuote] = useReducer((n: number) => n + 1, 0);
+  const [landing, setLanding] = useState<"reading" | "landing" | "clear">(
+    "reading"
+  );
   const sendingRef = useRef(false);
   const mountedRef = useRef(true);
   useEffect(() => {
@@ -323,6 +326,32 @@ export function useBridgeOut({
   }, [fetchQuote, key, quotable, retries, settleQuoteError]);
 
   useEffect(() => setNotice(null), [key]);
+
+  const settled = landing === "clear";
+  const holding = lockedElsewhere === lockName || landing === "landing";
+  useEffect(() => {
+    if (settled) return;
+    let live = true;
+    const read = async () => {
+      try {
+        const rows = await readTransfers();
+        if (live)
+          setLanding(
+            rows.some((t) => t.state === "quoted" || t.state === "submitted")
+              ? "landing"
+              : "clear"
+          );
+      } catch {
+        return;
+      }
+    };
+    const timer = setInterval(() => void read(), POLL_MS);
+    void read();
+    return () => {
+      live = false;
+      clearInterval(timer);
+    };
+  }, [settled]);
 
   useEffect(() => {
     if (lockedElsewhere !== lockName) return;
@@ -456,7 +485,7 @@ export function useBridgeOut({
   );
 
   const send = useCallback(async () => {
-    if (!current || sendingRef.current) return;
+    if (!current || !settled || sendingRef.current) return;
     sendingRef.current = true;
     try {
       if (Date.now() - current.quotedAt >= QUOTE_MAX_AGE_MS) {
@@ -483,7 +512,7 @@ export function useBridgeOut({
     } finally {
       sendingRef.current = false;
     }
-  }, [current, lockName, requote, run]);
+  }, [current, lockName, requote, run, settled]);
 
   const bridgingId = step.kind === "bridging" ? step.requestId : null;
   const unsubmittedBy = step.kind === "bridging" ? step.unsubmittedBy : null;
@@ -532,11 +561,11 @@ export function useBridgeOut({
     insufficient,
     belowMinimum,
     quote: current?.response ?? null,
-    ready: Boolean(current && !quoting),
-    elsewhere: lockedElsewhere === lockName,
+    ready: Boolean(current && !quoting && settled),
+    elsewhere: holding,
     quoting,
     quoteError: quotable ? quoteError : null,
-    notice: lockedElsewhere === lockName ? STILL_LANDING : notice,
+    notice: holding ? STILL_LANDING : notice,
     step,
     send,
     retry: requote,
