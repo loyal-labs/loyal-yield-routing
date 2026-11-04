@@ -5,6 +5,7 @@ export type Get = {
   "/api/earn/stats": Types.EarnPublicStats;
   "/api/funding/bridge/balances": Types.BridgeBalancesResponse;
   "/api/funding/bridge/destinations": Types.BridgeDestinationsResponse;
+  "/api/funding/bridge/out/recipients": Types.BridgeRecipientsResponse;
   "/api/funding/bridge/transfers": Types.BridgeTransfersResponse;
   "/api/funding/evm-deposit-address": Types.EvmDepositAddressResponse;
   "/api/mobile/dapps": Types.MobileTrustedDappsResponse;
