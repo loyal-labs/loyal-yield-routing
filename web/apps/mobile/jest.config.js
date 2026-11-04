@@ -1,5 +1,7 @@
 module.exports = {
   preset: "ts-jest",
+  // ts-jest holds a TypeScript program per worker, about 1.1 GB each.
+  maxWorkers: 2,
   testEnvironment: "node",
   moduleNameMapper: {
     "^@/(.*)$": "<rootDir>/src/$1",
