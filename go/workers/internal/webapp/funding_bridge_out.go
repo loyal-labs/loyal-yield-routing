@@ -79,6 +79,7 @@ type BridgeOutQuoteResponse struct {
 	NetworkFeeUSD   string                 `json:"networkFeeUsd" doc:"Display only, passed through from Relay"`
 	LoyalFeeRaw     string                 `json:"loyalFeeRaw" doc:"Loyal's fee in raw USDC units, the amount the guard checked, taken from the amount received"`
 	LoyalFeeBps     int                    `json:"loyalFeeBps"`
+	SlippageBps     int                    `json:"slippageBps" doc:"The tolerance the quote was priced with, the same constant the guard checks"`
 	ETASeconds      *int64                 `json:"etaSeconds"`
 }
 
@@ -206,6 +207,7 @@ func (h earnRoutes) bridgeOutQuote(ctx context.Context, in *bridgeQuoteInput) (*
 		AmountOutUSD:    q.AmountOutUSD,
 		NetworkFeeUSD:   q.NetworkFeeUSD,
 		LoyalFeeBps:     bridge.OutFeeBps,
+		SlippageBps:     bridge.OutSlippageBps,
 		LoyalFeeRaw:     q.AppFeeRaw.String(),
 		ETASeconds:      q.ETASeconds,
 	}}

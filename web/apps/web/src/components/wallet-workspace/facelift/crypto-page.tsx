@@ -2,6 +2,7 @@
 
 import { resolveLoyalClusterForSolanaEnv } from "@loyal-labs/actions";
 import { resolveSolanaEnv } from "@loyal-labs/solana-rpc";
+import { TOKEN_MINTS } from "@loyal-labs/wallet-core/constants";
 import { useUnshield } from "@loyal-labs/wallet-core/hooks";
 import type { WalletSigner } from "@loyal-labs/wallet-core/types";
 import { useWallet } from "@solana/wallet-adapter-react";
@@ -21,6 +22,7 @@ import {
   type CryptoRowActions,
 } from "@/components/wallet-workspace/facelift/crypto-pane";
 import { deriveSwapTokens, selectSwapToken } from "@/components/wallet-sidebar/swap-tokens";
+import { bridgeEnabled } from "@/features/bridge/enabled";
 import { BridgeMove } from "./bridge-move";
 import { BridgeWorkspace } from "./bridge-workspace";
 import type { MoveSource } from "./use-bridge-move";
@@ -180,6 +182,9 @@ export function CryptoPage({
     useSendRecentRecipients(data.walletAddress);
 
   const [bridge, setBridge] = useState<BridgeAction | null>(null);
+  const bridgeUsdc = data.positions.find(
+    (position) => position.asset.mint === TOKEN_MINTS.USDC
+  );
   const [isSwapOpen, setIsSwapOpen] = useState(false);
   const [swapSelectSide, setSwapSelectSide] = useState<"from" | "to" | null>(
     null
@@ -295,6 +300,17 @@ export function CryptoPage({
     [closeSwap]
   );
   const closeUnshield = useCallback(() => setIsUnshieldOpen(false), []);
+
+  const showBridge =
+    process.env.NODE_ENV === "development" || bridgeEnabled();
+  const openBridge = useCallback(() => {
+    setIsDetailSheetOpen(false);
+    setBridge({ type: "bridge" });
+    setViewStack([]);
+    setSendSelect(null);
+    closeSwap();
+    closeUnshield();
+  }, [closeSwap, closeUnshield]);
 
   useAbandonActionsOnNavigate(navigationNonce, () => {
     setBridge(null);
@@ -476,8 +492,10 @@ export function CryptoPage({
               />
             ) : bridge ? (
               <BridgeWorkspace
+                balance={bridgeUsdc?.publicBalance ?? 0}
                 key={navigationNonce}
                 onBack={() => setBridge(null)}
+                price={bridgeUsdc?.priceUsd ?? 0}
               />
             ) : isSendOpen ? (
               <SendPane
@@ -540,6 +558,7 @@ export function CryptoPage({
               isEmpty={isWalletDataRevealed && !hasAssets}
               onReceive={onReceive}
               onBack={onBack}
+              onBridge={showBridge ? openBridge : undefined}
               onSend={() => openSend()}
               onSwap={() => openSwap()}
               onUnshield={

@@ -259,6 +259,10 @@ export type BridgeOutQuoteResponse = {
      */
     rate: string;
     requestId: string;
+    /**
+     * The tolerance the quote was priced with, the same constant the guard checks
+     */
+    slippageBps: number;
 };
 
 export type BridgeQuoteRequest = {
@@ -306,8 +310,10 @@ export type BridgeTransfer = {
     amountOutRaw: string;
     asset: string;
     chain: string;
+    confirmedAt: string | null;
     destinationTx: string | null;
     direction: 'in' | 'out';
+    inFlight: boolean;
     originTx: string | null;
     quotedAt: string;
     refundTx: string | null;

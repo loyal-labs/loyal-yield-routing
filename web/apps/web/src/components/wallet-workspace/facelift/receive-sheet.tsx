@@ -4,6 +4,8 @@ import type { EvmDepositNetwork, EvmDepositToken } from "@loyal-labs/api";
 import { QRCodeSVG } from "qrcode.react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
+import { bridgeEnabled } from "@/features/bridge/enabled";
+
 import { copyTextToClipboard } from "./copy-text";
 import { useEscapeOverlay } from "./escape-owner";
 import { floorToCents } from "./floor-to-cents";
@@ -25,16 +27,6 @@ const TABS = ["Solana", "Other chains"] as const;
 type Tab = (typeof TABS)[number];
 type View = "receive" | "chains" | "deposit-assets";
 const SEARCH_MIN_ITEMS = 10;
-
-// Bridge stays off (#641) unless this browser opts in with
-// localStorage["loyal.bridge"] = "1".
-function bridgeOptedIn() {
-  try {
-    return localStorage.getItem("loyal.bridge") === "1";
-  } catch {
-    return false;
-  }
-}
 
 type Selection = { asset: string; chain: string | null };
 
@@ -320,7 +312,7 @@ export function ReceiveSheet({
   const panelRef = useRef<HTMLDivElement>(null);
   const bridge = tab === "Other chains";
   const evm = useEvmDepositAddress(walletAddress);
-  const live = bridgeOptedIn() && evm.ready;
+  const live = bridgeEnabled() && evm.ready;
   useEffect(() => {
     if (isOpen && bridge && live) void evm.load();
   }, [bridge, evm, isOpen, live]);

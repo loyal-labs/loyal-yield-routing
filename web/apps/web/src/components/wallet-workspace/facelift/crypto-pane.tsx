@@ -292,6 +292,7 @@ export function CryptoPane({
   isEmpty,
   onReceive,
   onBack,
+  onBridge,
   onSend,
   onSwap,
   onUnshield,
@@ -306,6 +307,7 @@ export function CryptoPane({
   isEmpty: boolean;
   onReceive: () => void;
   onBack: () => void;
+  onBridge?: () => void;
   onSend: () => void;
   onSwap: () => void;
   onUnshield?: (mint?: string) => void;
@@ -314,6 +316,15 @@ export function CryptoPane({
   tokenRows: TokenRow[];
   stablecoinMints: ReadonlySet<string>;
 }) {
+  const dense = Boolean(onBridge) && Boolean(onUnshield);
+  const pill = `flex min-w-0 items-center justify-center rounded-full ${
+    dense ? "flex-auto gap-1.5 px-2 py-2.5" : "flex-1 gap-2 p-2.5"
+  }`;
+  const icon = "size-6 shrink-0";
+  const label = `whitespace-nowrap font-medium text-[16px] leading-5 ${
+    dense ? "" : "pr-2.5"
+  }`;
+
   const { isBalanceHidden } = useBalanceVisibility();
 
   return (
@@ -424,42 +435,57 @@ export function CryptoPane({
 
       <div className={`hidden w-full shrink-0 gap-2 bg-card px-4 pt-2 pb-4 ${isEmpty ? "" : "max-[795px]:flex"}`}>
         <button
-          className="flex min-w-0 flex-1 items-center justify-center gap-2 rounded-full bg-foreground p-2.5"
+          className={`${pill} bg-foreground`}
           onClick={onSwap}
           type="button"
         >
           <ThemedIcon
-            className="size-6 text-background"
+            className={`${icon} text-background`}
             src={`${ASSET_BASE}/icon-swap-repeat.svg`}
           />
-          <span className="whitespace-nowrap pr-2.5 font-medium text-[16px] text-background leading-5">
+          <span className={`${label} text-background`}>
             Swap
           </span>
         </button>
         <button
-          className="flex min-w-0 flex-1 items-center justify-center gap-2 rounded-full bg-secondary p-2.5"
+          className={`${pill} bg-secondary`}
           onClick={onSend}
           type="button"
         >
           <ThemedIcon
-            className="size-6 text-tertiary"
+            className={`${icon} text-tertiary`}
             src={`${ASSET_BASE}/icon-arrow-up-circle.svg`}
           />
-          <span className="whitespace-nowrap pr-2.5 font-medium text-[16px] text-foreground leading-5">
+          <span className={`${label} text-foreground`}>
             Send
           </span>
         </button>
+        {onBridge ? (
+          <button
+            className={`${pill} bg-secondary`}
+            onClick={onBridge}
+            type="button"
+          >
+            <ThemedIcon
+              className={`${icon} text-tertiary`}
+              src={`${ASSET_BASE}/sidebar/bridge.svg`}
+            />
+            <span className={`${label} text-foreground`}>
+              Bridge
+            </span>
+          </button>
+        ) : null}
         {onUnshield ? (
           <button
-            className="flex min-w-0 flex-1 items-center justify-center gap-2 rounded-full bg-secondary p-2.5"
+            className={`${pill} bg-secondary`}
             onClick={() => onUnshield()}
             type="button"
           >
             <ThemedIcon
-              className="size-6 text-tertiary"
+              className={`${icon} text-tertiary`}
               src={`${ASSET_BASE}/icon-withdraw-arrow.svg`}
             />
-            <span className="whitespace-nowrap pr-2.5 font-medium text-[16px] text-foreground leading-5">
+            <span className={`${label} text-foreground`}>
               Unshield
             </span>
           </button>

@@ -1,6 +1,6 @@
 # Bridge UI handoff
 
-Bridge In is live: `ReceiveSheet` renders the Figma V2 design on server data in every environment, behind the `loyal.bridge` browser opt-in. Bridge Out is still a preview that runs in development, uses fixtures, and never requests quotes, signs, or submits transfers. The sidebar Bridge action stays disabled in production.
+Bridge In is live: `ReceiveSheet` renders the Figma V2 design on server data in every environment, behind the `loyal.bridge` browser opt-in. Bridge Out runs on server data: chains and tokens from `/api/funding/bridge/destinations`, recently used recipients from `/api/funding/bridge/out/recipients`, and Relay quotes from `/api/funding/bridge/out/quote`. Send now simulates the deposit, confirms, prompts the wallet, submits the signature, and polls `/api/funding/bridge/transfers?direction=out`. On open it reads that route once and holds Send, with "Transfer in progress", while any out row is submitted or still quoted; the route returns a quoted out row only for 120 s after its confirm (`bridge.OutConfirmWindow`), so a reload cannot send a second time inside the blockhash window. The sidebar Bridge action is enabled in development or with the `loyal.bridge` browser opt-in, and disabled otherwise.
 
 ## Entry points
 
@@ -9,7 +9,7 @@ All component paths below are relative to `src/components/wallet-workspace/facel
 | Flow | Entry | Owning files |
 | --- | --- | --- |
 | Bridge In | Receive → Other chains → deposit asset → source chain; Asset to receive is a fixed USDC on Solana cell with a tooltip | `receive-sheet.tsx`, `use-evm-deposit-address.ts` |
-| Bridge Out | Sidebar Bridge → send asset → receive asset → destination chain → recipient | `bridge-workspace.tsx`, `bridge-recipient-pane.tsx`, `bridge-preview-data.ts` |
+| Bridge Out | Sidebar Bridge → send asset → receive asset → destination chain → recipient | `bridge-workspace.tsx`, `bridge-recipient-pane.tsx`, `use-bridge-out.ts` |
 | Navigation and motion | Shared Assets action stack, retained entry/exit, selector sheets, token/text changes | `crypto-page.tsx`, `shell.tsx`, `sidebar.tsx`, `token-icon-swap.tsx` |
 
 Bridge Out shares the existing `MiddlePaneSlide`, `PaneReveal`, `SheetReveal`, and `TextSwap` behaviors with Send/Swap. Token icon transitions were extracted unchanged from Swap for reuse. Search remains keyboard accessible and has no red focus ring.
@@ -17,8 +17,6 @@ Bridge Out shares the existing `MiddlePaneSlide`, `PaneReveal`, `SheetReveal`, a
 ## Backend integration boundaries
 
 - Bridge In takes its assets, chains, addresses, minimums and fees from `GET /api/funding/evm-deposit-address`, and a row whose amount the server omits stays hidden. There is no receive picker because every route lands as USDC on Solana, and no deposit time because deposit responses carry none.
-- Bridge Out: replace the preview token/network catalog with authoritative supported routes. The fixture lists do not establish that a token/chain combination is supported.
-- Bridge Out: replace the Figma balances, prices, amounts, fees, and recent recipients with real data. The displayed quote numbers are design fixtures, not transaction calculations. `Send now` currently shows a preview notice; add the authoritative quote/check/submit lifecycle and processing, success, and failure states before enabling transfers.
 - Recipient validation currently checks address format only. Replace it with the supported destination-chain validation. Keep recipient confirmation scoped to the selected chain: changing Ethereum to Arbitrum clears the address, quote visibility, and send-ready state even though both accept the same address format; switching back must not restore the old confirmation. Draft/error state resets with the chain too.
 - Treat production enablement as a separate release decision.
 
@@ -32,4 +30,4 @@ Bridge Out shares the existing `MiddlePaneSlide`, `PaneReveal`, `SheetReveal`, a
 
 Use the real Vite entrypoint, `web/apps/loyal`, with `NODE_ENV=development` and the normal local environment. The current review preview is [loyal-dev.arbatov.dev/app](https://loyal-dev.arbatov.dev/app).
 
-The browser smoke checks for Bridge Out cover the entry path, asset-first selectors, search/back navigation, address typing/paste/invalid/exact-match states, Ethereum ↔ Arbitrum reset, preview-only submission, desktop/mobile layout, keyboard focus, shared motion, reduced motion, and rapid close/reopen. Checks block transaction requests and use a fixture session; real wallet signing and transfers are not exercised. Local validation uses targeted lint and scoped TypeScript checks; no production build is required for this UI handoff.
+The browser smoke checks for Bridge Out cover the entry path, asset-first selectors, search/back navigation, address typing/paste/invalid/exact-match states, Ethereum ↔ Arbitrum reset, desktop/mobile layout, keyboard focus, shared motion, reduced motion, and rapid close/reopen. Checks block transaction requests and use a fixture session; real wallet signing and transfers are not exercised. Local validation uses targeted lint and scoped TypeScript checks; no production build is required for this UI handoff.

@@ -12,6 +12,7 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/solana-foundation/solana-go/v2"
 	"golang.org/x/sync/errgroup"
 
@@ -92,8 +93,10 @@ type BridgeTransfer struct {
 	DestinationTx *string              `json:"destinationTx"`
 	RefundTx      *string              `json:"refundTx"`
 	QuotedAt      time.Time            `json:"quotedAt"`
+	ConfirmedAt   *time.Time           `json:"confirmedAt"`
 	SubmittedAt   *time.Time           `json:"submittedAt"`
 	SettledAt     *time.Time           `json:"settledAt"`
+	InFlight      bool                 `json:"inFlight"`
 }
 
 type BridgeTransfersResponse struct {
@@ -348,23 +351,32 @@ func (h earnRoutes) bridgeTransfers(ctx context.Context, in *bridgeTransfersInpu
 	default:
 		return nil, earnError(http.StatusBadRequest, "invalid_direction", "direction must be in or out.")
 	}
-	rows, err := h.YieldDB.Query(ctx, bridgeTransferSelect+` WHERE solana_wallet = $1 AND state <> 'quoted' AND direction = $3 ORDER BY submitted_at DESC NULLS LAST LIMIT $2`, wallet.String(), bridgeTransferLimit, string(direction))
-	if err != nil {
-		return nil, bridgeUnavailable("bridge transfers read", err)
-	}
-	transfers, err := pgx.CollectRows(rows, scanBridgeTransfer)
+	transfers, err := listBridgeTransfers(ctx, h.YieldDB, wallet, direction)
 	if err != nil {
 		return nil, bridgeUnavailable("bridge transfers read", err)
 	}
 	return &bridgeTransfersOutput{Body: BridgeTransfersResponse{Transfers: transfers}}, nil
 }
 
-const bridgeTransferSelect = `SELECT request_id, chain, asset, amount_in_raw::text, amount_out_raw::text, direction, state, origin_tx, destination_tx, refund_tx, quoted_at, submitted_at, settled_at
+func listBridgeTransfers(ctx context.Context, db *pgxpool.Pool, wallet solana.PublicKey, direction bridge.Direction) ([]BridgeTransfer, error) {
+	rows, err := db.Query(ctx, bridgeTransferSelect+` WHERE solana_wallet = $1 AND direction = $3 AND (state <> 'quoted' OR `+bridgeOutQuotedInWindow+`)
+ORDER BY in_flight DESC, submitted_at DESC NULLS LAST LIMIT $2`, wallet.String(), bridgeTransferLimit, string(direction))
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, scanBridgeTransfer)
+}
+
+var (
+	bridgeOutQuotedInWindow = fmt.Sprintf(`(direction = 'out' AND confirmed_at > clock_timestamp() - make_interval(secs => %d))`, int(bridge.OutConfirmWindow.Seconds()))
+	bridgeOutInFlight       = fmt.Sprintf(`(direction = 'out' AND ((state = 'quoted' AND confirmed_at > clock_timestamp() - make_interval(secs => %d)) OR (state = 'submitted' AND submitted_at > clock_timestamp() - make_interval(secs => %d))))`, int(bridge.OutConfirmWindow.Seconds()), int(bridge.OutSubmittedWindow.Seconds()))
+	bridgeTransferSelect    = `SELECT request_id, chain, asset, amount_in_raw::text, amount_out_raw::text, direction, state, origin_tx, destination_tx, refund_tx, quoted_at, confirmed_at, submitted_at, settled_at, ` + bridgeOutInFlight + ` AS in_flight
 FROM loyal_yield.bridge_transfers`
+)
 
 func scanBridgeTransfer(row pgx.CollectableRow) (BridgeTransfer, error) {
 	var t BridgeTransfer
-	err := row.Scan(&t.RequestID, &t.Chain, &t.Asset, &t.AmountInRaw, &t.AmountOutRaw, &t.Direction, &t.State, &t.OriginTx, &t.DestinationTx, &t.RefundTx, &t.QuotedAt, &t.SubmittedAt, &t.SettledAt)
+	err := row.Scan(&t.RequestID, &t.Chain, &t.Asset, &t.AmountInRaw, &t.AmountOutRaw, &t.Direction, &t.State, &t.OriginTx, &t.DestinationTx, &t.RefundTx, &t.QuotedAt, &t.ConfirmedAt, &t.SubmittedAt, &t.SettledAt, &t.InFlight)
 	return t, err
 }
 
