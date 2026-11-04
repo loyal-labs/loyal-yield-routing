@@ -272,6 +272,19 @@ export type BridgeQuoteResponse = {
     requestId: string;
 };
 
+export type BridgeRecipient = {
+    address: string;
+    /**
+     * The chain of the latest send to this address
+     */
+    chain: string;
+    sends: number;
+};
+
+export type BridgeRecipientsResponse = {
+    recipients: Array<BridgeRecipient> | null;
+};
+
 export type BridgeSponsorRefusalRequest = {
     /**
      * Privy's error text, logged for the operator
@@ -2313,6 +2326,49 @@ export type PostFundingBridgeOutQuoteResponses = {
 };
 
 export type PostFundingBridgeOutQuoteResponse = PostFundingBridgeOutQuoteResponses[keyof PostFundingBridgeOutQuoteResponses];
+
+export type GetFundingBridgeOutRecipientsData = {
+    body?: never;
+    headers?: {
+        Authorization?: string;
+        Cookie?: string;
+        'X-Forwarded-Host'?: string;
+    };
+    path?: never;
+    query?: {
+        /**
+         * Returns recipients of this chain's address kind
+         */
+        chain?: string;
+    };
+    url: '/api/funding/bridge/out/recipients';
+};
+
+export type GetFundingBridgeOutRecipientsErrors = {
+    /**
+     * Bad Request
+     */
+    400: RouteError;
+    /**
+     * Unauthorized
+     */
+    401: RouteError;
+    /**
+     * Service Unavailable
+     */
+    503: RouteError;
+};
+
+export type GetFundingBridgeOutRecipientsError = GetFundingBridgeOutRecipientsErrors[keyof GetFundingBridgeOutRecipientsErrors];
+
+export type GetFundingBridgeOutRecipientsResponses = {
+    /**
+     * OK
+     */
+    200: BridgeRecipientsResponse;
+};
+
+export type GetFundingBridgeOutRecipientsResponse = GetFundingBridgeOutRecipientsResponses[keyof GetFundingBridgeOutRecipientsResponses];
 
 export type PostFundingBridgeQuoteData = {
     body?: BridgeQuoteRequest;
