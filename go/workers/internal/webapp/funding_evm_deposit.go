@@ -2,7 +2,6 @@ package webapp
 
 import (
 	"context"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,7 +17,6 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/jackc/pgx/v5"
 	"github.com/solana-foundation/solana-go/v2"
-	"golang.org/x/crypto/sha3"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/bridge"
 )
@@ -242,22 +240,9 @@ type EvmDepositAddressResponse struct {
 	Minimums      map[string]int       `json:"minimums"`
 }
 
-func checksumAddress(address string) string {
-	hash := sha3.NewLegacyKeccak256()
-	hash.Write([]byte(strings.ToLower(address[2:])))
-	digest := hex.EncodeToString(hash.Sum(nil))
-	out := []byte("0x" + strings.ToLower(address[2:]))
-	for i := 2; i < len(out); i++ {
-		if out[i] >= 'a' && digest[i-2] >= '8' {
-			out[i] -= 'a' - 'A'
-		}
-	}
-	return string(out)
-}
-
 func (h earnRoutes) evmDepositResponse(ctx context.Context, wallet solana.PublicKey, kind EvmDepositKind, address *string, set bridge.RouteSet) (*evmDepositOutput, error) {
 	if address != nil {
-		cased := checksumAddress(*address)
+		cased := bridge.ChecksumAddress(*address)
 		address = &cased
 	}
 	networks := set.Networks()

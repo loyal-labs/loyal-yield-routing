@@ -91,6 +91,16 @@ var Destinations = []Destination{
 	{Chain: MegaETH, RelayChainID: 4326, Name: "MegaETH", Icon: "", Kind: AddressEVM, ExplorerTx: "https://megaeth.blockscout.com/tx/", Tokens: []DestinationToken{
 		{USDT, "0xb8ce59fc3717ada4c02eadf9682a9e934f625ebb", 6},
 	}},
+	{Chain: Avalanche, PopularRank: 6, RelayChainID: 43114, Name: "Avalanche C-Chain", Icon: "avalanche.png", Kind: AddressEVM, ExplorerTx: "https://snowtrace.io/tx/", Tokens: []DestinationToken{
+		{USDC, "0xb97ef9ef8734c71904d8002f8b6bc66dd9c48a6e", 6},
+		{USDT, "0x9702230a8ea53601f5cd2dc00fdbc13d4df4a8c7", 6},
+	}},
+	{Chain: Plasma, RelayChainID: 9745, Name: "Plasma", Icon: "", Kind: AddressEVM, ExplorerTx: "https://plasmascan.to/tx/", Tokens: []DestinationToken{
+		{USDT0, "0xb8ce59fc3717ada4c02eadf9682a9e934f625ebb", 6},
+	}},
+	{Chain: HyperCore, RelayChainID: 1337, Name: "Hyperliquid (HyperCore)", Icon: "", Kind: AddressEVM, ExplorerTx: "https://app.hyperliquid.xyz/explorer/tx/", Tokens: []DestinationToken{
+		{USDC, "0x00000000000000000000000000000000", 8},
+	}},
 	{Chain: "tron", PopularRank: 4, RelayChainID: 728126428, Name: "Tron (TRC20)", Icon: "tron.png", Kind: AddressTron, ExplorerTx: "https://tronscan.org/#/transaction/", Tokens: []DestinationToken{
 		{USDT, "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t", 6},
 	}},
