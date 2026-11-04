@@ -29,7 +29,11 @@ export type OutStep =
   | { kind: "filled"; transfer: BridgeTransfer }
   | { kind: "failed"; message: string; requestId: string | null };
 
-export type OutQuoteError = { code: string | null; message: string };
+export type OutQuoteError = {
+  code: string | null;
+  message: string;
+  retryable: boolean;
+};
 
 const USDC_DECIMALS = 6;
 const QUOTE_DEBOUNCE_MS = 500;
@@ -41,7 +45,11 @@ const DID_NOT_FINISH =
   "The transfer did not finish. Check your wallet before trying again.";
 
 class BridgeApiError extends Error {
-  constructor(message: string, readonly code: string | null) {
+  constructor(
+    message: string,
+    readonly code: string | null,
+    readonly status: number
+  ) {
     super(message);
   }
 }
@@ -56,7 +64,8 @@ async function readJSON<T>(res: Response, fallback: string): Promise<T> {
     body && typeof body === "object" && "error" in body ? body.error : null;
   throw new BridgeApiError(
     detail?.message || `${fallback} (${res.status}).`,
-    detail?.code ?? null
+    detail?.code ?? null,
+    res.status
   );
 }
 
@@ -225,6 +234,8 @@ export function useBridgeOut({
     setQuoteError({
       code: e instanceof BridgeApiError ? e.code : null,
       message: errorText(e),
+      retryable:
+        e instanceof BridgeApiError && (e.status === 429 || e.status === 503),
     });
   }, []);
 
@@ -449,6 +460,7 @@ export function useBridgeOut({
     notice,
     step,
     send,
+    retry: requote,
   };
 }
 

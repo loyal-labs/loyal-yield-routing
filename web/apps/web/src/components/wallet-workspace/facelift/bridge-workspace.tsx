@@ -388,6 +388,8 @@ export function BridgeWorkspace({
     ? { tone: "blocked", label: "Insufficient balance" }
     : !recipient
     ? { tone: "blocked", label: "Enter recipient" }
+    : out.quoteError?.retryable
+    ? { tone: "ready", label: "Try again" }
     : out.belowMinimum || out.quoteError
     ? {
         tone: "blocked",
@@ -582,7 +584,8 @@ export function BridgeWorkspace({
             <BridgeCta
               label={cta.label}
               onClick={() => {
-                if (cta.tone === "ready") void out.send();
+                if (out.quoteError?.retryable) void out.retry();
+                else if (cta.tone === "ready") void out.send();
                 else if (!hasAmount || out.insufficient || out.belowMinimum)
                   amountRef.current?.focus();
                 else if (!recipient || recipientRejected)

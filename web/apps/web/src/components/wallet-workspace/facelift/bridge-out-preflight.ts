@@ -326,6 +326,15 @@ function slotted(result: unknown, what: string): Slotted<unknown> {
   return r;
 }
 
+class BatchHttpError extends Error {
+  constructor(readonly status: number) {
+    super(`batch refused with HTTP ${status}`);
+  }
+}
+
+const isBusy = (e: unknown) =>
+  e instanceof BatchHttpError && (e.status === 429 || e.status >= 500);
+
 async function readAndSimulate(
   endpoint: string,
   tx: VersionedTransaction,
@@ -361,7 +370,7 @@ async function readAndSimulate(
       },
     ]),
   });
-  if (!res.ok) throw new Error(`batch refused with HTTP ${res.status}`);
+  if (!res.ok) throw new BatchHttpError(res.status);
   const body: unknown = await res.json();
   if (!Array.isArray(body) || body.length !== 2) {
     throw new Error("batch refused: not one answer per call");
@@ -473,7 +482,7 @@ export async function runBridgeOutPreflight(input: {
     return {
       ok: false,
       reason: `preflight failed: ${e instanceof Error ? e.message : String(e)}`,
-      retry: false,
+      retry: isBusy(e),
     };
   } finally {
     clearTimeout(timer);

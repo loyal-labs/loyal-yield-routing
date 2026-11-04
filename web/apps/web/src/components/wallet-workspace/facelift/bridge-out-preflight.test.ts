@@ -5,6 +5,7 @@ import {
   type AccountState,
   judge,
   MAX_OWNER_LAMPORT_FALL,
+  runBridgeOutPreflight,
   type Simulated,
   type Snapshot,
 } from "./bridge-out-preflight";
@@ -18,6 +19,7 @@ const USDT = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB";
 const TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 const USER_ATA = "8SoPTUZ4tcSXHJ3M4WMV6sMCAiAb26S2H51h34Pb24Ce";
 const VAULT_ATA = "4nvJ5zWdVspxJiNZzB127U6amPH98SFFkBx2JZrAduia";
+const SYSTEM_PROGRAM_ID = "11111111111111111111111111111111";
 const STRANGER = "7uTT8Xi5RWXzy7h9XL244GRgEycDYDhLjr3ZyNdXi8pZ";
 
 const MINT_AT = 0;
@@ -183,4 +185,39 @@ test("a missing post entry refuses", () => {
   const { pre, post } = load();
   post.delete(VAULT_ATA);
   refused(run(pre, post), /post state/);
+});
+
+test("a busy batch endpoint is a retryable refusal and a forbidden one is not", async () => {
+  const realFetch = globalThis.fetch;
+  const connection = {
+    rpcEndpoint: "http://rpc.test",
+    getLatestBlockhash: async () => ({ blockhash: "11111111111111111111111111111111" }),
+  } as never;
+  const quote = {
+    lookupTables: [],
+    instructions: [
+      { programId: SYSTEM_PROGRAM_ID, keys: [], data: "00" },
+    ],
+  } as never;
+  const verdictFor = async (status: number) => {
+    globalThis.fetch = (async () => new Response("", { status })) as typeof fetch;
+    try {
+      return await runBridgeOutPreflight({
+        connection,
+        owner: new PublicKey(OWNER),
+        quote,
+        amountRaw: AMOUNT,
+      });
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  };
+  for (const status of [429, 503]) {
+    const v = await verdictFor(status);
+    expect(v.ok).toBe(false);
+    if (!v.ok) expect(v.retry).toBe(true);
+  }
+  const forbidden = await verdictFor(403);
+  expect(forbidden.ok).toBe(false);
+  if (!forbidden.ok) expect(forbidden.retry).toBe(false);
 });
