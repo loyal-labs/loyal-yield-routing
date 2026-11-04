@@ -439,7 +439,7 @@ async function simulateAndJudge(
 
     const postAccounts = sim.value.accounts;
     if (
-      !postAccounts ||
+      !Array.isArray(postAccounts) ||
       postAccounts.length !== addresses.length ||
       pre.value.length !== addresses.length
     ) {

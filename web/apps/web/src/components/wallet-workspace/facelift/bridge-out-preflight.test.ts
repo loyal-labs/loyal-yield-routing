@@ -518,6 +518,16 @@ const wireRows: [string, (r: Reply) => void, RegExp, boolean?][] = [
     /no post state/,
   ],
   [
+    "post accounts as an object that carries the right length",
+    (r) => {
+      const list = r[1].result.value.accounts;
+      r[1].result.value.accounts = Object.assign({}, list, {
+        length: list.length,
+      });
+    },
+    /no post state/,
+  ],
+  [
     "account data with a third element",
     (r) => {
       r[0].result.value[1].data.push("x");
