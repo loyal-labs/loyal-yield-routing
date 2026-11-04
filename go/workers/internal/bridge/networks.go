@@ -23,6 +23,11 @@ const (
 	MegaETH   Chain = "megaeth"
 )
 
+const (
+	Avalanche Chain = "avalanche"
+	Plasma    Chain = "plasma"
+)
+
 type Asset string
 
 const (

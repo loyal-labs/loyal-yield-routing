@@ -161,7 +161,7 @@ jobs:
         run: |
           export GOTOOLCHAIN=local GOENV=off
           export GOMODCACHE="$WORKERS_V2_CACHE_DIR/gomod" GOCACHE="$WORKERS_V2_CACHE_DIR/gobuild"
-          tests="TestTrackerStoresEachHashFromTheStatusThatCarriedIt TestForeignInflowStoreCommitsEvidenceAndCursorTogether TestExitLiabilityUsesConfirmedReportAtEachMark TestEvmDepositRelaySignedRefusesEmbeddedWalletWhenPrivyLookupIsEmpty TestEvmDepositConcurrentPostsMakeOnePrivyCreate"
+          tests="TestBridgeOutQuoteIsNotServedWithoutItsRow TestTrackerStoresEachHashFromTheStatusThatCarriedIt TestForeignInflowStoreCommitsEvidenceAndCursorTogether TestExitLiabilityUsesConfirmedReportAtEachMark TestEvmDepositRelaySignedRefusesEmbeddedWalletWhenPrivyLookupIsEmpty TestEvmDepositConcurrentPostsMakeOnePrivyCreate"
           log="$RUNNER_TEMP/dbtests.log"
           go test -count=1 -v -run "^($(echo $tests | tr ' ' '|'))\$" ./internal/bridge ./internal/backyard ./internal/earnmax ./internal/webapp | tee "$log"
           ! grep -- '--- SKIP' "$log"

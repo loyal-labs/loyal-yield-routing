@@ -90,7 +90,7 @@ func TestTrackerStoresEachHashFromTheStatusThatCarriedIt(t *testing.T) {
 	for _, c := range cases {
 		polls[c.requestID] = &atomic.Int32{}
 		if _, err := pool.Exec(ctx, `INSERT INTO loyal_yield.bridge_transfers
-(request_id, solana_wallet, evm_address, chain, asset, amount_in_raw, amount_out_raw, state, submitted_at)
+(request_id, solana_wallet, counterparty, chain, asset, amount_in_raw, amount_out_raw, state, submitted_at)
 VALUES ($1, 'wallet', '0x0000000000000000000000000000000000000001', 'base', 'usdc', 1000000, 990000, 'submitted', now())`, c.requestID); err != nil {
 			t.Fatal(err)
 		}
@@ -210,7 +210,7 @@ func TestTrackerAdoptsQuotedTransfersRelaySaw(t *testing.T) {
 	const clientSubmit = `UPDATE loyal_yield.bridge_transfers SET state = 'submitted', origin_tx = $2, submitted_at = now() WHERE request_id = $1 AND state = 'quoted'`
 	quote := func(requestID, age string) {
 		if _, err := pool.Exec(ctx, `INSERT INTO loyal_yield.bridge_transfers
-(request_id, solana_wallet, evm_address, chain, asset, amount_in_raw, amount_out_raw, quoted_at, confirmed_at)
+(request_id, solana_wallet, counterparty, chain, asset, amount_in_raw, amount_out_raw, quoted_at, confirmed_at)
 VALUES ($1, 'wallet', '0x0000000000000000000000000000000000000001', 'base', 'usdc', 1000000, 990000, now() - $2::interval, now() - $2::interval)`, requestID, age); err != nil {
 			t.Fatal(err)
 		}
@@ -300,7 +300,7 @@ func TestTrackerAdvancesOpenRowsWhileRelaySitsOnAConfirmedQuote(t *testing.T) {
 	ctx, pool := trackerDB(t)
 	const fillHash = "4TgCELNYYxzv2uLxk7wKjaP77SB3fDCyq31EPsLHMQWTSiBmZ5QmSEYzCgdVSgYumZk45CCUMHmvVziAR1bTBmFx"
 	if _, err := pool.Exec(ctx, `INSERT INTO loyal_yield.bridge_transfers
-(request_id, solana_wallet, evm_address, chain, asset, amount_in_raw, amount_out_raw, state, submitted_at, confirmed_at)
+(request_id, solana_wallet, counterparty, chain, asset, amount_in_raw, amount_out_raw, state, submitted_at, confirmed_at)
 VALUES ('0xopen', 'wallet', '0x0000000000000000000000000000000000000001', 'base', 'usdc', 1000000, 990000, 'submitted', now(), NULL),
        ('0xslow', 'wallet', '0x0000000000000000000000000000000000000001', 'base', 'usdc', 1000000, 990000, 'quoted', NULL, now())`); err != nil {
 		t.Fatal(err)
@@ -332,7 +332,7 @@ func TestTrackerPrunesOnlyQuotesNobodyConfirmedPastADay(t *testing.T) {
 	ctx, pool := trackerDB(t)
 	row := func(requestID, state, age string, confirmed bool) {
 		if _, err := pool.Exec(ctx, `INSERT INTO loyal_yield.bridge_transfers
-(request_id, solana_wallet, evm_address, chain, asset, amount_in_raw, amount_out_raw, state, quoted_at, confirmed_at, submitted_at)
+(request_id, solana_wallet, counterparty, chain, asset, amount_in_raw, amount_out_raw, state, quoted_at, confirmed_at, submitted_at)
 VALUES ($1, 'wallet', '0x0000000000000000000000000000000000000001', 'base', 'usdc', 1000000, 990000, $2, now() - $3::interval,
         CASE WHEN $4 THEN now() - $3::interval END, CASE WHEN $2 <> 'quoted' THEN now() - $3::interval END)`, requestID, state, age, confirmed); err != nil {
 			t.Fatal(err)

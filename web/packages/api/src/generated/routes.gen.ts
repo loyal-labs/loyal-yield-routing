@@ -4,6 +4,7 @@ export type Get = {
   "/api/earn-max/apy": Types.EarnMaxApy;
   "/api/earn/stats": Types.EarnPublicStats;
   "/api/funding/bridge/balances": Types.BridgeBalancesResponse;
+  "/api/funding/bridge/destinations": Types.BridgeDestinationsResponse;
   "/api/funding/bridge/transfers": Types.BridgeTransfersResponse;
   "/api/funding/evm-deposit-address": Types.EvmDepositAddressResponse;
   "/api/mobile/dapps": Types.MobileTrustedDappsResponse;
@@ -26,6 +27,7 @@ export type Get = {
 
 export type Post = {
   "/api/auth/privy/complete": Types.PrivyCompleteResponse;
+  "/api/funding/bridge/out/quote": Types.BridgeOutQuoteResponse;
   "/api/funding/bridge/quote": Types.BridgeQuoteResponse;
   "/api/funding/bridge/transfers/{requestId}/confirm": Types.BridgeTransfer;
   "/api/funding/bridge/transfers/{requestId}/sponsor-refusal": Types.BridgeTransfer;

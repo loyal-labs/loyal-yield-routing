@@ -173,6 +173,89 @@ export type BridgeCall = {
     value: string;
 };
 
+export type BridgeDestination = {
+    addressKind: 'evm' | 'tron';
+    chain: string;
+    /**
+     * Transaction URL prefix; append the hash
+     */
+    explorerTx: string;
+    icon: string;
+    name: string;
+    /**
+     * 1 is first among the popular chains; 0 is not popular
+     */
+    popularRank: number;
+    tokens: Array<BridgeDestinationToken> | null;
+};
+
+export type BridgeDestinationToken = {
+    address: string;
+    asset: string;
+    decimals: number;
+    icon: string;
+    /**
+     * Smallest whole-USDC amount this token is quoted for; 0 is no minimum
+     */
+    minUsdc: number;
+    name: string;
+    symbol: string;
+};
+
+export type BridgeDestinationsResponse = {
+    destinations: Array<BridgeDestination> | null;
+};
+
+export type BridgeOutInstruction = {
+    /**
+     * Hex
+     */
+    data: string;
+    keys: Array<BridgeOutKey> | null;
+    programId: string;
+};
+
+export type BridgeOutKey = {
+    isSigner: boolean;
+    isWritable: boolean;
+    pubkey: string;
+};
+
+export type BridgeOutQuoteRequest = {
+    /**
+     * Solana USDC to send, in 6-decimal units
+     */
+    amountRaw: string;
+    asset: string;
+    chain: string;
+    recipient: string;
+};
+
+export type BridgeOutQuoteResponse = {
+    /**
+     * Display only, passed through from Relay
+     */
+    amountInUsd: string;
+    amountOutMinRaw: string;
+    amountOutRaw: string;
+    /**
+     * Display only, passed through from Relay
+     */
+    amountOutUsd: string;
+    etaSeconds: number | null;
+    instructions: Array<BridgeOutInstruction> | null;
+    lookupTables: Array<string> | null;
+    /**
+     * Display only, passed through from Relay
+     */
+    networkFeeUsd: string;
+    /**
+     * Output over input, computed by the server
+     */
+    rate: string;
+    requestId: string;
+};
+
 export type BridgeQuoteRequest = {
     amountRaw: string;
     asset: string;
@@ -206,6 +289,7 @@ export type BridgeTransfer = {
     asset: string;
     chain: string;
     destinationTx: string | null;
+    direction: 'in' | 'out';
     originTx: string | null;
     quotedAt: string;
     refundTx: string | null;
@@ -2154,6 +2238,82 @@ export type GetFundingBridgeBalancesResponses = {
 
 export type GetFundingBridgeBalancesResponse = GetFundingBridgeBalancesResponses[keyof GetFundingBridgeBalancesResponses];
 
+export type GetFundingBridgeDestinationsData = {
+    body?: never;
+    headers?: {
+        Authorization?: string;
+        Cookie?: string;
+        'X-Forwarded-Host'?: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/funding/bridge/destinations';
+};
+
+export type GetFundingBridgeDestinationsErrors = {
+    /**
+     * Unauthorized
+     */
+    401: RouteError;
+    /**
+     * Service Unavailable
+     */
+    503: RouteError;
+};
+
+export type GetFundingBridgeDestinationsError = GetFundingBridgeDestinationsErrors[keyof GetFundingBridgeDestinationsErrors];
+
+export type GetFundingBridgeDestinationsResponses = {
+    /**
+     * OK
+     */
+    200: BridgeDestinationsResponse;
+};
+
+export type GetFundingBridgeDestinationsResponse = GetFundingBridgeDestinationsResponses[keyof GetFundingBridgeDestinationsResponses];
+
+export type PostFundingBridgeOutQuoteData = {
+    body?: BridgeOutQuoteRequest;
+    headers?: {
+        Authorization?: string;
+        Cookie?: string;
+        'X-Forwarded-Host'?: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/funding/bridge/out/quote';
+};
+
+export type PostFundingBridgeOutQuoteErrors = {
+    /**
+     * Bad Request
+     */
+    400: RouteError;
+    /**
+     * Unauthorized
+     */
+    401: RouteError;
+    /**
+     * Too Many Requests
+     */
+    429: RouteError;
+    /**
+     * Service Unavailable
+     */
+    503: RouteError;
+};
+
+export type PostFundingBridgeOutQuoteError = PostFundingBridgeOutQuoteErrors[keyof PostFundingBridgeOutQuoteErrors];
+
+export type PostFundingBridgeOutQuoteResponses = {
+    /**
+     * OK
+     */
+    200: BridgeOutQuoteResponse;
+};
+
+export type PostFundingBridgeOutQuoteResponse = PostFundingBridgeOutQuoteResponses[keyof PostFundingBridgeOutQuoteResponses];
+
 export type PostFundingBridgeQuoteData = {
     body?: BridgeQuoteRequest;
     headers?: {
@@ -2208,11 +2368,20 @@ export type GetFundingBridgeTransfersData = {
         'X-Forwarded-Host'?: string;
     };
     path?: never;
-    query?: never;
+    query?: {
+        /**
+         * in (the default) or out
+         */
+        direction?: string;
+    };
     url: '/api/funding/bridge/transfers';
 };
 
 export type GetFundingBridgeTransfersErrors = {
+    /**
+     * Bad Request
+     */
+    400: RouteError;
     /**
      * Unauthorized
      */

@@ -1,5 +1,12 @@
 package bridge
 
+type Direction string
+
+const (
+	DirectionIn  Direction = "in"
+	DirectionOut Direction = "out"
+)
+
 type TransferState string
 
 const (
