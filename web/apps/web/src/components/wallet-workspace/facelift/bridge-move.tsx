@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { type ReactNode, useRef, useState } from "react";
 
 import {
   ActionErrorBody,
@@ -68,6 +68,65 @@ function ExplorerButton({ href, source }: { href: string; source: string }) {
     >
       View in Explorer
     </button>
+  );
+}
+
+export type BridgeStatus =
+  | { kind: "bridging"; icons: ReactNode; requestId: string }
+  | { kind: "filled"; signature: string | null; explorerHref?: string }
+  | { kind: "failed"; message: string; requestId: string | null };
+
+export function BridgeStatusBody({
+  status,
+  source,
+  onBack,
+}: {
+  status: BridgeStatus;
+  source: string;
+  onBack: () => void;
+}) {
+  if (status.kind === "bridging")
+    return (
+      <ActionProcessingBody icons={status.icons} label="Bridging...">
+        <div className="flex flex-col items-center gap-3">
+          <ExplorerButton
+            href={relayExplorer(status.requestId)}
+            source={`${source}_processing`}
+          />
+          <button
+            className="t-hover flex h-12 items-center justify-center rounded-full bg-foreground px-5 font-medium text-[16px] text-background leading-5 hover:-translate-y-0.5 hover:bg-foreground/90 active:translate-y-0"
+            onClick={onBack}
+            type="button"
+          >
+            Done
+          </button>
+        </div>
+      </ActionProcessingBody>
+    );
+  if (status.kind === "filled")
+    return (
+      <ActionSuccessBody
+        explorerHref={status.explorerHref}
+        label="Swapped"
+        onDone={onBack}
+        signature={status.signature}
+        source={`${source}_success`}
+      />
+    );
+  return (
+    <ActionErrorBody
+      backLabel="Done"
+      explorer={
+        status.requestId ? (
+          <ExplorerButton
+            href={relayExplorer(status.requestId)}
+            source={`${source}_failed`}
+          />
+        ) : null
+      }
+      message={status.message}
+      onBack={onBack}
+    />
   );
 }
 
@@ -249,52 +308,32 @@ export function BridgeMove({
   const screen =
     step.kind === "form" || step.kind === "sending" ? (
       form
-    ) : step.kind === "bridging" ? (
-      <ActionProcessingBody
-        icons={
-          <>
-            <span className="-mr-4 flex">
-              <BridgeIcon file={balance.icon ?? PLACEHOLDER} size={64} />
-            </span>
-            <BridgeIcon file={balance.chainIcon ?? PLACEHOLDER} size={64} />
-          </>
-        }
-        label="Bridging..."
-      >
-        <div className="flex flex-col items-center gap-3">
-          <ExplorerButton
-            href={relayExplorer(step.quote.requestId)}
-            source="bridge_move_processing"
-          />
-          <button
-            className="t-hover flex h-12 items-center justify-center rounded-full bg-foreground px-5 font-medium text-[16px] text-background leading-5 hover:-translate-y-0.5 hover:bg-foreground/90 active:translate-y-0"
-            onClick={onBack}
-            type="button"
-          >
-            Done
-          </button>
-        </div>
-      </ActionProcessingBody>
-    ) : step.kind === "filled" ? (
-      <ActionSuccessBody
-        label="Swapped"
-        onDone={onBack}
-        signature={step.transfer.destinationTx}
-        source="bridge_move_success"
-      />
     ) : (
-      <ActionErrorBody
-        backLabel="Done"
-        explorer={
-          step.requestId ? (
-            <ExplorerButton
-              href={relayExplorer(step.requestId)}
-              source="bridge_move_failed"
-            />
-          ) : null
-        }
-        message={step.message}
+      <BridgeStatusBody
         onBack={onBack}
+        source="bridge_move"
+        status={
+          step.kind === "bridging"
+            ? {
+                kind: "bridging",
+                icons: (
+                  <>
+                    <span className="-mr-4 flex">
+                      <BridgeIcon file={balance.icon ?? PLACEHOLDER} size={64} />
+                    </span>
+                    <BridgeIcon file={balance.chainIcon ?? PLACEHOLDER} size={64} />
+                  </>
+                ),
+                requestId: step.quote.requestId,
+              }
+            : step.kind === "filled"
+            ? { kind: "filled", signature: step.transfer.destinationTx }
+            : {
+                kind: "failed",
+                message: step.message,
+                requestId: step.requestId,
+              }
+        }
       />
     );
 
