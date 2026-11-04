@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -64,13 +65,19 @@ type Claim struct {
 
 type Cancel struct{ Flow }
 
+type Transfer struct {
+	Flow
+	Amount *USDCRaw
+}
+
 type Missing struct{ Flow }
 
-func (e Deposit) flow() Flow { return e.Flow }
-func (e Request) flow() Flow { return e.Flow }
-func (e Claim) flow() Flow   { return e.Flow }
-func (e Cancel) flow() Flow  { return e.Flow }
-func (e Missing) flow() Flow { return e.Flow }
+func (e Deposit) flow() Flow  { return e.Flow }
+func (e Request) flow() Flow  { return e.Flow }
+func (e Claim) flow() Flow    { return e.Flow }
+func (e Cancel) flow() Flow   { return e.Flow }
+func (e Transfer) flow() Flow { return e.Flow }
+func (e Missing) flow() Flow  { return e.Flow }
 
 type historyKey struct {
 	signature solana.Signature
@@ -91,23 +98,27 @@ func (h History) Complete() bool {
 }
 
 func (r *Reader) History(ctx context.Context, a Authority, atLeast uint64) (History, error) {
-	signatures, err := retryTransient(ctx, func() ([]chain.Signed, error) {
-		return r.chain.History(ctx, a.key, historyLimit, solana.Signature{}, rpc.CommitmentConfirmed, atLeast)
-	})
-	if err != nil {
-		return History{}, err
-	}
-	landed := make([]chain.Signed, 0, len(signatures))
-	for _, s := range signatures {
-		if !s.Failed {
-			landed = append(landed, s)
-		}
-	}
-	var history History
 	user, err := voltr.UserAccounts(Vault, LPMint, a.key)
 	if err != nil {
 		return History{}, err
 	}
+	// Incoming share transfers reference the token account, not its owner.
+	var pages [2][]chain.Signed
+	reads, readCtx := errgroup.WithContext(ctx)
+	for i, address := range []solana.PublicKey{a.key, user.LPATA} {
+		reads.Go(func() error {
+			var err error
+			pages[i], err = retryTransient(readCtx, func() ([]chain.Signed, error) {
+				return r.chain.History(readCtx, address, historyLimit, solana.Signature{}, rpc.CommitmentConfirmed, atLeast)
+			})
+			return err
+		})
+	}
+	if err := reads.Wait(); err != nil {
+		return History{}, err
+	}
+	landed, complete := mergeHistory(pages[:])
+	var history History
 
 	r.historyMu.Lock()
 	cached := r.history[a.key]
@@ -115,7 +126,13 @@ func (r *Reader) History(ctx context.Context, a Authority, atLeast uint64) (Hist
 	var missing []chain.Signed
 	for _, s := range landed {
 		key := historyKey{s.Signature, s.Slot}
-		if entries, ok := cached[key]; ok {
+		entries, ok := cached[key]
+		for _, entry := range entries {
+			if transfer, isTransfer := entry.(Transfer); isTransfer && transfer.Amount == nil {
+				ok = false
+			}
+		}
+		if ok {
 			decoded[key] = entries
 		} else {
 			missing = append(missing, s)
@@ -151,6 +168,16 @@ func (r *Reader) History(ctx context.Context, a Authority, atLeast uint64) (Hist
 			if err != nil {
 				return fmt.Errorf("transaction %s: %w", s.Signature, err)
 			}
+			if len(entries) == 0 {
+				if transfer, ok := shareTransfer(execution, s.Signature, *at, a.key, user.LPATA); ok {
+					entries = append(entries, transfer)
+				}
+			}
+			for i, entry := range entries {
+				if transfer, ok := entry.(Transfer); ok {
+					entries[i] = r.valueTransfer(groupCtx, transfer)
+				}
+			}
 			mu.Lock()
 			decoded[historyKey{s.Signature, s.Slot}] = entries
 			mu.Unlock()
@@ -176,10 +203,57 @@ func (r *Reader) History(ctx context.Context, a Authority, atLeast uint64) (Hist
 		}
 		history.Entries = append(history.Entries, entries...)
 	}
-	if len(signatures) >= historyLimit {
+	if !complete {
 		history.Entries = append(history.Entries, Missing{})
 	}
 	return history, nil
+}
+
+func mergeHistory(pages [][]chain.Signed) ([]chain.Signed, bool) {
+	complete := true
+	seen := map[solana.Signature]chain.Signed{}
+	ranks := make([]map[solana.Signature]int, len(pages))
+	var landed []chain.Signed
+	for i, page := range pages {
+		complete = complete && len(page) < historyLimit
+		ranks[i] = map[solana.Signature]int{}
+		for rank, s := range page {
+			ranks[i][s.Signature] = rank
+			if prior, ok := seen[s.Signature]; ok {
+				complete = complete && prior.Slot == s.Slot && prior.Failed == s.Failed
+				continue
+			}
+			seen[s.Signature] = s
+			if !s.Failed {
+				landed = append(landed, s)
+			}
+		}
+	}
+	sort.SliceStable(landed, func(i, j int) bool { return landed[i].Slot > landed[j].Slot })
+	for start := 0; start < len(landed); {
+		end := start + 1
+		for end < len(landed) && landed[end].Slot == landed[start].Slot {
+			end++
+		}
+		group := landed[start:end]
+		ordered := false
+		for _, rank := range ranks {
+			all := true
+			for _, s := range group {
+				_, ok := rank[s.Signature]
+				all = all && ok
+			}
+			if all {
+				sort.SliceStable(group, func(i, j int) bool { return rank[group[i].Signature] < rank[group[j].Signature] })
+				ordered = true
+				break
+			}
+		}
+		// Do not invent ordering between unrelated transactions in the same slot.
+		complete = complete && ordered
+		start = end
+	}
+	return landed, complete
 }
 
 type call struct {
