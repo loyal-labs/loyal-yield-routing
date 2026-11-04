@@ -11,11 +11,23 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/mr-tron/base58"
 )
 
 const maxRelayBody = 1 << 20
 
 var EVMTxHash = regexp.MustCompile(`^0x[0-9a-f]{64}$`)
+
+// A Solana signature is case-sensitive, so only an inbound hash is lowercased.
+func OriginTx(d Direction, s string) (string, bool) {
+	if d == DirectionOut {
+		raw, err := base58.Decode(s)
+		return s, err == nil && len(raw) == 64
+	}
+	s = strings.ToLower(s)
+	return s, EVMTxHash.MatchString(s)
+}
 
 // EVMRPC holds one RPC URL per origin chain, used to simulate swap deposits;
 // a chain without one gets no swap quotes.
@@ -80,9 +92,9 @@ type Status struct {
 	FailReason string
 }
 
-func (s Status) originTx() string {
+func (s Status) originTx(d Direction) string {
 	for _, hash := range s.InTxHashes {
-		if hash = strings.ToLower(hash); EVMTxHash.MatchString(hash) {
+		if hash, ok := OriginTx(d, hash); ok {
 			return hash
 		}
 	}
@@ -138,7 +150,15 @@ func (r *Relay) do(req *http.Request) ([]byte, error) {
 		if len(msg) > 300 {
 			msg = msg[:300]
 		}
-		return nil, fmt.Errorf("http %d: %s", res.StatusCode, msg)
+		return nil, &HTTPError{Status: res.StatusCode, Body: raw, text: msg}
 	}
 	return raw, nil
 }
+
+type HTTPError struct {
+	Status int
+	Body   []byte
+	text   string
+}
+
+func (e *HTTPError) Error() string { return fmt.Sprintf("http %d: %s", e.Status, e.text) }

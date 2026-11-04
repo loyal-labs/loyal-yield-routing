@@ -1,0 +1,185 @@
+package webapp
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"math/big"
+	"net/http"
+	"time"
+
+	"github.com/danielgtaylor/huma/v2"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/bridge"
+)
+
+const (
+	bridgeDestinationsPath = "/api/funding/bridge/destinations"
+	bridgeOutQuotePath     = "/api/funding/bridge/out/quote"
+)
+
+type BridgeDestinationToken struct {
+	Asset    bridge.Asset `json:"asset"`
+	Symbol   string       `json:"symbol"`
+	Name     string       `json:"name"`
+	Icon     string       `json:"icon"`
+	Address  string       `json:"address"`
+	Decimals uint8        `json:"decimals"`
+}
+
+type BridgeDestination struct {
+	Chain       bridge.Chain             `json:"chain"`
+	Name        string                   `json:"name"`
+	Icon        string                   `json:"icon"`
+	AddressKind bridge.AddressKind       `json:"addressKind" enum:"evm,tron"`
+	ExplorerTx  string                   `json:"explorerTx" doc:"Transaction URL prefix; append the hash"`
+	PopularRank int                      `json:"popularRank" doc:"1 is first among the popular chains; 0 is not popular"`
+	Tokens      []BridgeDestinationToken `json:"tokens"`
+}
+
+type BridgeDestinationsResponse struct {
+	Destinations []BridgeDestination `json:"destinations"`
+}
+
+type BridgeOutQuoteRequest struct {
+	Chain     bridge.Chain `json:"chain"`
+	Asset     bridge.Asset `json:"asset"`
+	AmountRaw string       `json:"amountRaw" doc:"Solana USDC to send, in 6-decimal units"`
+	Recipient string       `json:"recipient"`
+}
+
+type BridgeOutKey struct {
+	Pubkey     string `json:"pubkey"`
+	IsSigner   bool   `json:"isSigner"`
+	IsWritable bool   `json:"isWritable"`
+}
+
+type BridgeOutInstruction struct {
+	ProgramID string         `json:"programId"`
+	Keys      []BridgeOutKey `json:"keys"`
+	Data      string         `json:"data" doc:"Hex"`
+}
+
+type BridgeOutQuoteResponse struct {
+	RequestID       string                 `json:"requestId"`
+	Instructions    []BridgeOutInstruction `json:"instructions"`
+	LookupTables    []string               `json:"lookupTables"`
+	AmountOutRaw    string                 `json:"amountOutRaw"`
+	AmountOutMinRaw string                 `json:"amountOutMinRaw"`
+	Rate            string                 `json:"rate"`
+	AmountInUSD     string                 `json:"amountInUsd"`
+	AmountOutUSD    string                 `json:"amountOutUsd"`
+	NetworkFeeUSD   string                 `json:"networkFeeUsd"`
+	ETASeconds      *int64                 `json:"etaSeconds"`
+}
+
+type bridgeDestinationsOutput struct{ Body BridgeDestinationsResponse }
+type bridgeOutQuoteOutput struct{ Body BridgeOutQuoteResponse }
+
+func (h earnRoutes) registerBridgeOut(api huma.API) {
+	huma.Register(api, huma.Operation{
+		OperationID: "get-funding-bridge-destinations",
+		Method:      http.MethodGet,
+		Path:        bridgeDestinationsPath,
+		Summary:     "The chains and stablecoins the signed-in wallet's Solana USDC can be sent to",
+		Responses:   errorResponses[routeError](api, 401, 503),
+	}, h.bridgeDestinations)
+	huma.Register(api, huma.Operation{
+		OperationID: "post-funding-bridge-out-quote",
+		Method:      http.MethodPost,
+		Path:        bridgeOutQuotePath,
+		Summary:     "Quote Solana USDC from the signed-in wallet to a stablecoin on another chain, with the deposit instruction to sign",
+		Responses:   errorResponses[routeError](api, 400, 401, 429, 503),
+	}, h.bridgeOutQuote)
+	documentJSONBody[BridgeOutQuoteRequest](api, bridgeOutQuotePath)
+}
+
+func bridgeOutUnavailable(step string, err error) error {
+	return earnUnavailable(step, err, "bridge_out_unavailable", "Sending USDC to another chain is unavailable. Please try again.")
+}
+
+func (h earnRoutes) bridgeDestinations(ctx context.Context, in *sessionRequest) (*bridgeDestinationsOutput, error) {
+	if _, err := h.evmDepositWallet(in.SessionInput); err != nil {
+		return nil, err
+	}
+	out := &bridgeDestinationsOutput{Body: BridgeDestinationsResponse{Destinations: make([]BridgeDestination, 0, len(bridge.Destinations))}}
+	for _, d := range bridge.Destinations {
+		dest := BridgeDestination{Chain: d.Chain, Name: d.Name, Icon: d.Icon, AddressKind: d.Kind, ExplorerTx: d.ExplorerTx, PopularRank: d.PopularRank, Tokens: make([]BridgeDestinationToken, 0, len(d.Tokens))}
+		for _, t := range d.Tokens {
+			info := bridge.Assets[t.Asset]
+			dest.Tokens = append(dest.Tokens, BridgeDestinationToken{Asset: t.Asset, Symbol: info.Symbol, Name: info.Name, Icon: info.Icon, Address: t.Address, Decimals: t.Decimals})
+		}
+		out.Body.Destinations = append(out.Body.Destinations, dest)
+	}
+	return out, nil
+}
+
+func (h earnRoutes) bridgeOutQuote(ctx context.Context, in *bridgeQuoteInput) (*bridgeOutQuoteOutput, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	wallet, err := h.evmDepositWallet(in.SessionInput)
+	if err != nil {
+		return nil, err
+	}
+	var body BridgeOutQuoteRequest
+	if json.Unmarshal(in.Raw.data, &body) != nil {
+		return nil, earnError(http.StatusBadRequest, "invalid_body", "chain, asset, amountRaw and recipient required.")
+	}
+	amount, ok := new(big.Int).SetString(body.AmountRaw, 10)
+	if !ok || amount.Sign() <= 0 || !amount.IsUint64() {
+		return nil, earnError(http.StatusBadRequest, "invalid_body", "amountRaw must be a positive decimal integer.")
+	}
+	dest, ok := bridge.LookupDestination(body.Chain)
+	if !ok {
+		return nil, earnError(http.StatusBadRequest, "invalid_quote_request", "That chain is not offered.")
+	}
+	if _, ok := dest.Token(body.Asset); !ok {
+		return nil, earnError(http.StatusBadRequest, "invalid_quote_request", "That asset is not offered on this chain.")
+	}
+	recipient, err := bridge.ParseRecipient(dest.Kind, body.Recipient)
+	if err != nil {
+		return nil, earnError(http.StatusBadRequest, "invalid_recipient", "That is not a valid address on "+dest.Name+".")
+	}
+	if !h.bridgeQuotes.get(limiterKey{"bridge-out-quote", "wallet", wallet.String()}, bridgeQuoteBudget, time.Now()).Allow() {
+		return nil, earnError(http.StatusTooManyRequests, "rate_limited", "Too many quotes. Please wait a minute.")
+	}
+	q, err := h.Relay.QuoteOut(ctx, bridge.OutRequest{Chain: body.Chain, Asset: body.Asset, AmountRaw: amount, Sender: wallet, Recipient: recipient})
+	var refusedRequest *bridge.RequestError
+	var refused *bridge.QuoteRefused
+	switch {
+	case errors.As(err, &refusedRequest):
+		return nil, earnError(http.StatusBadRequest, "invalid_quote_request", refusedRequest.Error())
+	case errors.As(err, &refused):
+		message := "Relay cannot quote this transfer."
+		if refused.Code != "" {
+			message += " (" + refused.Code + ")"
+		}
+		return nil, earnError(http.StatusBadRequest, "bridge_quote_refused", message)
+	case err != nil:
+		return nil, bridgeOutUnavailable("relay out quote", err)
+	}
+	if _, err := h.YieldDB.Exec(ctx, `INSERT INTO loyal_yield.bridge_transfers (request_id, solana_wallet, counterparty, direction, chain, asset, amount_in_raw, amount_out_raw)
+VALUES ($1, $2, $3, 'out', $4, $5, $6::text::numeric, $7::text::numeric)
+ON CONFLICT (request_id) DO NOTHING`, q.RequestID, wallet.String(), recipient, string(body.Chain), string(body.Asset), q.AmountInRaw.String(), q.AmountOutRaw.String()); err != nil {
+		return nil, bridgeOutUnavailable("bridge out transfer insert", err)
+	}
+	out := &bridgeOutQuoteOutput{Body: BridgeOutQuoteResponse{
+		RequestID:       q.RequestID,
+		LookupTables:    append([]string{}, q.LookupTables...),
+		AmountOutRaw:    q.AmountOutRaw.String(),
+		AmountOutMinRaw: q.AmountOutMinRaw.String(),
+		Rate:            q.Rate,
+		AmountInUSD:     q.AmountInUSD,
+		AmountOutUSD:    q.AmountOutUSD,
+		NetworkFeeUSD:   q.NetworkFeeUSD,
+		ETASeconds:      q.ETASeconds,
+	}}
+	for _, ix := range q.Instructions {
+		keys := make([]BridgeOutKey, len(ix.Keys))
+		for i, k := range ix.Keys {
+			keys[i] = BridgeOutKey{Pubkey: k.Pubkey, IsSigner: k.IsSigner, IsWritable: k.IsWritable}
+		}
+		out.Body.Instructions = append(out.Body.Instructions, BridgeOutInstruction{ProgramID: ix.ProgramID, Keys: keys, Data: ix.Data})
+	}
+	return out, nil
+}

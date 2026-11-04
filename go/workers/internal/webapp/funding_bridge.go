@@ -8,7 +8,6 @@ import (
 	"math/big"
 	"net/http"
 	"net/url"
-	"strings"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -87,6 +86,7 @@ type BridgeTransfer struct {
 	Asset         bridge.Asset         `json:"asset"`
 	AmountInRaw   string               `json:"amountInRaw"`
 	AmountOutRaw  string               `json:"amountOutRaw"`
+	Direction     bridge.Direction     `json:"direction" enum:"in,out"`
 	State         bridge.TransferState `json:"state" enum:"quoted,submitted,filled,refunded,failed"`
 	OriginTx      *string              `json:"originTx"`
 	DestinationTx *string              `json:"destinationTx"`
@@ -108,6 +108,11 @@ type bridgeTransfersOutput struct{ Body BridgeTransfersResponse }
 type bridgeQuoteInput struct {
 	SessionInput
 	Raw rawJSON
+}
+
+type bridgeTransfersInput struct {
+	SessionInput
+	Direction string `query:"direction" required:"false" doc:"in (the default) or out"`
 }
 
 type bridgeConfirmInput struct {
@@ -157,9 +162,10 @@ func (h earnRoutes) registerBridge(api huma.API) {
 		Method:      http.MethodGet,
 		Path:        bridgeTransfersPath,
 		Summary:     "The signed-in wallet's latest bridges and their state",
-		Responses:   errorResponses[routeError](api, 401, 503),
+		Responses:   errorResponses[routeError](api, 400, 401, 503),
 	}, h.bridgeTransfers)
 	h.registerBridgeRefusal(api)
+	h.registerBridgeOut(api)
 }
 
 func bridgeUnavailable(step string, err error) error {
@@ -249,7 +255,7 @@ func (h earnRoutes) bridgeQuote(ctx context.Context, in *bridgeQuoteInput) (*bri
 	case err != nil:
 		return nil, bridgeUnavailable("relay quote", err)
 	}
-	if _, err := h.YieldDB.Exec(ctx, `INSERT INTO loyal_yield.bridge_transfers (request_id, solana_wallet, evm_address, chain, asset, amount_in_raw, amount_out_raw)
+	if _, err := h.YieldDB.Exec(ctx, `INSERT INTO loyal_yield.bridge_transfers (request_id, solana_wallet, counterparty, chain, asset, amount_in_raw, amount_out_raw)
 VALUES ($1, $2, $3, $4, $5, $6::text::numeric, $7::text::numeric)
 ON CONFLICT (request_id) DO NOTHING`, q.RequestID, wallet.String(), from, string(body.Chain), string(body.Asset), q.AmountInRaw.String(), q.AmountOutRaw.String()); err != nil {
 		return nil, bridgeUnavailable("bridge transfer insert", err)
@@ -300,8 +306,8 @@ func (h earnRoutes) bridgeSubmit(ctx context.Context, in *bridgeSubmitInput) (*b
 		return nil, err
 	}
 	var body BridgeSubmitRequest
-	if json.Unmarshal(in.Raw.data, &body) != nil || !bridge.EVMTxHash.MatchString(strings.ToLower(body.OriginTx)) {
-		return nil, earnError(http.StatusBadRequest, "invalid_body", "originTx must be a 0x transaction hash.")
+	if json.Unmarshal(in.Raw.data, &body) != nil {
+		return nil, earnError(http.StatusBadRequest, "invalid_body", "originTx required.")
 	}
 	t, err := h.bridgeTransfer(ctx, wallet, in.RequestID)
 	if err != nil {
@@ -310,10 +316,14 @@ func (h earnRoutes) bridgeSubmit(ctx context.Context, in *bridgeSubmitInput) (*b
 	if t == nil {
 		return nil, earnError(http.StatusNotFound, "bridge_transfer_missing", "No such transfer for this wallet.")
 	}
+	originTx, ok := bridge.OriginTx(t.Direction, body.OriginTx)
+	if !ok {
+		return nil, earnError(http.StatusBadRequest, "invalid_body", "originTx must be the transaction hash of the send.")
+	}
 	if next := t.State.Submit(); next != t.State {
 		if _, err := h.YieldDB.Exec(ctx, `UPDATE loyal_yield.bridge_transfers
 SET state = $3, origin_tx = $4, submitted_at = clock_timestamp(), updated_at = clock_timestamp()
-WHERE request_id = $1 AND solana_wallet = $2 AND state = $5`, t.RequestID, wallet.String(), string(next), strings.ToLower(body.OriginTx), string(t.State)); err != nil {
+WHERE request_id = $1 AND solana_wallet = $2 AND state = $5`, t.RequestID, wallet.String(), string(next), originTx, string(t.State)); err != nil {
 			return nil, bridgeUnavailable("bridge transfer submit", err)
 		}
 		if t, err = h.bridgeTransfer(ctx, wallet, in.RequestID); err != nil || t == nil {
@@ -323,14 +333,22 @@ WHERE request_id = $1 AND solana_wallet = $2 AND state = $5`, t.RequestID, walle
 	return &bridgeTransferOutput{Body: *t}, nil
 }
 
-func (h earnRoutes) bridgeTransfers(ctx context.Context, in *sessionRequest) (*bridgeTransfersOutput, error) {
+func (h earnRoutes) bridgeTransfers(ctx context.Context, in *bridgeTransfersInput) (*bridgeTransfersOutput, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	wallet, err := h.evmDepositWallet(in.SessionInput)
 	if err != nil {
 		return nil, err
 	}
-	rows, err := h.YieldDB.Query(ctx, bridgeTransferSelect+` WHERE solana_wallet = $1 AND state <> 'quoted' ORDER BY submitted_at DESC NULLS LAST LIMIT $2`, wallet.String(), bridgeTransferLimit)
+	direction := bridge.Direction(in.Direction)
+	switch direction {
+	case "":
+		direction = bridge.DirectionIn
+	case bridge.DirectionIn, bridge.DirectionOut:
+	default:
+		return nil, earnError(http.StatusBadRequest, "invalid_direction", "direction must be in or out.")
+	}
+	rows, err := h.YieldDB.Query(ctx, bridgeTransferSelect+` WHERE solana_wallet = $1 AND state <> 'quoted' AND direction = $3 ORDER BY submitted_at DESC NULLS LAST LIMIT $2`, wallet.String(), bridgeTransferLimit, string(direction))
 	if err != nil {
 		return nil, bridgeUnavailable("bridge transfers read", err)
 	}
@@ -341,12 +359,12 @@ func (h earnRoutes) bridgeTransfers(ctx context.Context, in *sessionRequest) (*b
 	return &bridgeTransfersOutput{Body: BridgeTransfersResponse{Transfers: transfers}}, nil
 }
 
-const bridgeTransferSelect = `SELECT request_id, chain, asset, amount_in_raw::text, amount_out_raw::text, state, origin_tx, destination_tx, refund_tx, quoted_at, submitted_at, settled_at
+const bridgeTransferSelect = `SELECT request_id, chain, asset, amount_in_raw::text, amount_out_raw::text, direction, state, origin_tx, destination_tx, refund_tx, quoted_at, submitted_at, settled_at
 FROM loyal_yield.bridge_transfers`
 
 func scanBridgeTransfer(row pgx.CollectableRow) (BridgeTransfer, error) {
 	var t BridgeTransfer
-	err := row.Scan(&t.RequestID, &t.Chain, &t.Asset, &t.AmountInRaw, &t.AmountOutRaw, &t.State, &t.OriginTx, &t.DestinationTx, &t.RefundTx, &t.QuotedAt, &t.SubmittedAt, &t.SettledAt)
+	err := row.Scan(&t.RequestID, &t.Chain, &t.Asset, &t.AmountInRaw, &t.AmountOutRaw, &t.Direction, &t.State, &t.OriginTx, &t.DestinationTx, &t.RefundTx, &t.QuotedAt, &t.SubmittedAt, &t.SettledAt)
 	return t, err
 }
 
