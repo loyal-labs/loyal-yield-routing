@@ -260,6 +260,7 @@ export function useBridgeOut({
     "reading"
   );
   const sendingRef = useRef(false);
+  const rejectedRef = useRef(new Set<string>());
   const mountedRef = useRef(true);
   useEffect(() => {
     mountedRef.current = true;
@@ -361,7 +362,9 @@ export function useBridgeOut({
         const rows = await readTransfers();
         if (live)
           setLanding(
-            rows.some((t) => t.inFlight)
+            rows.some(
+              (t) => t.inFlight && !rejectedRef.current.has(t.requestId)
+            )
               ? "landing"
               : "clear"
           );
@@ -433,7 +436,10 @@ export function useBridgeOut({
       }
       const inFlight = verdict.ok
         ? await readTransfers().then(
-            (rows) => rows.some((t) => t.inFlight),
+            (rows) =>
+              rows.some(
+                (t) => t.inFlight && !rejectedRef.current.has(t.requestId)
+              ),
             () => true
           )
         : false;
@@ -494,6 +500,7 @@ export function useBridgeOut({
         );
       } catch (e) {
         if (isRejected(e)) {
+          rejectedRef.current.add(quoted.requestId);
           setStep({ kind: "form" });
           return;
         }
