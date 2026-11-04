@@ -41,6 +41,7 @@ const QUOTE_MAX_AGE_MS = 30_000;
 const POLL_MS = 3000;
 const SUBMIT_ATTEMPTS = 3;
 const BLOCKHASH_WINDOW_MS = 120_000;
+const READ_TIMEOUT_MS = 10_000;
 const STILL_LANDING =
   "A transfer from this wallet may still be landing. Check your wallet and wait before sending again.";
 const DID_NOT_FINISH =
@@ -67,11 +68,31 @@ const isListOrNull = (v: unknown) => v === null || Array.isArray(v);
 
 const TRANSFER_STATES = ["quoted", "submitted", "filled", "refunded", "failed"];
 
+const TRANSFER_TEXT = [
+  "requestId",
+  "chain",
+  "asset",
+  "amountInRaw",
+  "amountOutRaw",
+  "quotedAt",
+] as const;
+
+const TRANSFER_TEXT_OR_NULL = [
+  "originTx",
+  "destinationTx",
+  "refundTx",
+  "confirmedAt",
+  "submittedAt",
+  "settledAt",
+] as const;
+
 const isTransfer: Shape<BridgeTransfer> = (b): b is BridgeTransfer =>
   isRecord(b) &&
-  isText(b.requestId) &&
+  TRANSFER_TEXT.every((k) => isText(b[k])) &&
+  TRANSFER_TEXT_OR_NULL.every((k) => b[k] === null || isText(b[k])) &&
   TRANSFER_STATES.includes(b.state as string) &&
-  (b.direction === "in" || b.direction === "out");
+  (b.direction === "in" || b.direction === "out") &&
+  typeof b.inFlight === "boolean";
 
 const isQuote: Shape<BridgeOutQuoteResponse> = (
   b
@@ -133,11 +154,12 @@ const post = (path: string, body: unknown, signal?: AbortSignal) =>
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-const readTransfers = async () =>
+const readTransfers = async (ms = READ_TIMEOUT_MS) =>
   (
     await readJSON<BridgeTransfersResponse>(
       await fetch("/api/funding/bridge/transfers?direction=out", {
         credentials: "include",
+        signal: AbortSignal.timeout(ms),
       }),
       "Could not read the bridge",
       isTransfers
@@ -256,6 +278,8 @@ export function useBridgeOut({
   const keyRef = useRef(key);
   keyRef.current = key;
   const current = held && held.key === key ? held : null;
+  const currentIdRef = useRef<string | null>(null);
+  currentIdRef.current = current?.response.requestId ?? null;
   const quotedKeyRef = useRef<string | null>(null);
   quotedKeyRef.current = current ? key : null;
   const onForm = step.kind === "form";
@@ -337,7 +361,7 @@ export function useBridgeOut({
         const rows = await readTransfers();
         if (live)
           setLanding(
-            rows.some((t) => t.state === "quoted" || t.state === "submitted")
+            rows.some((t) => t.inFlight)
               ? "landing"
               : "clear"
           );
@@ -407,6 +431,12 @@ export function useBridgeOut({
       } catch {
         verdict = { ok: false, reason: "preflight threw", retry: false };
       }
+      const inFlight = verdict.ok
+        ? await readTransfers().then(
+            (rows) => rows.some((t) => t.inFlight),
+            () => true
+          )
+        : false;
       if (!mountedRef.current) return;
       if (keyRef.current !== quotedKey) {
         setNotice("The details changed. Check them and send again.");
@@ -422,6 +452,11 @@ export function useBridgeOut({
         fail("This transfer could not be checked. Your USDC stays in your wallet.");
         return;
       }
+      if (inFlight) {
+        setLanding("landing");
+        setStep({ kind: "form" });
+        return;
+      }
 
       try {
         const confirmed = await settleWithin(
@@ -435,12 +470,20 @@ export function useBridgeOut({
         );
         if (
           confirmed.requestId !== quoted.requestId ||
+          confirmed.direction !== "out" ||
           confirmed.state !== "quoted"
         ) {
           throw new Error("Could not start the transfer: wrong transfer.");
         }
       } catch (e) {
         fail(`${errorText(e)} Your USDC stays in your wallet.`);
+        return;
+      }
+
+      if (!mountedRef.current) return;
+      if (currentIdRef.current !== quoted.requestId) {
+        setNotice("The details changed. Check them and send again.");
+        setStep({ kind: "form" });
         return;
       }
 
@@ -574,10 +617,14 @@ export function useBridgeOut({
 
 async function holdUntilSettled(requestId: string) {
   const until = Date.now() + BLOCKHASH_WINDOW_MS;
-  while (Date.now() < until) {
+  for (;;) {
     await new Promise((r) => setTimeout(r, POLL_MS));
+    const left = until - Date.now();
+    if (left <= 0) return;
     try {
-      const row = (await readTransfers()).find((t) => t.requestId === requestId);
+      const row = (await readTransfers(Math.min(READ_TIMEOUT_MS, left))).find(
+        (t) => t.requestId === requestId
+      );
       if (row && ["filled", "refunded", "failed"].includes(row.state)) return;
     } catch {
       continue;
