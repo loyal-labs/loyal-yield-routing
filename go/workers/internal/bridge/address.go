@@ -26,23 +26,24 @@ func parseEVMRecipient(s string) (string, error) {
 		return "", fmt.Errorf("not a 0x address of 20 bytes")
 	}
 	lower := strings.ToLower(s)
-	if s != lower && s[2:] != eip55(lower[2:]) {
+	if s != lower && s != ChecksumAddress(lower) {
 		return "", fmt.Errorf("EIP-55 checksum does not match")
 	}
 	return lower, nil
 }
 
-func eip55(lowerHex string) string {
+func ChecksumAddress(address string) string {
+	lower := strings.ToLower(address[2:])
 	hash := sha3.NewLegacyKeccak256()
-	hash.Write([]byte(lowerHex))
+	hash.Write([]byte(lower))
 	sum := hex.EncodeToString(hash.Sum(nil))
-	out := []byte(lowerHex)
+	out := []byte(lower)
 	for i, c := range out {
 		if c >= 'a' && c <= 'f' && sum[i] >= '8' {
 			out[i] = c - 'a' + 'A'
 		}
 	}
-	return string(out)
+	return "0x" + string(out)
 }
 
 func parseTronRecipient(s string) (string, error) {
