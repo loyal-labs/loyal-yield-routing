@@ -22,6 +22,7 @@ import {
   type CryptoRowActions,
 } from "@/components/wallet-workspace/facelift/crypto-pane";
 import { deriveSwapTokens, selectSwapToken } from "@/components/wallet-sidebar/swap-tokens";
+import { bridgeEnabled } from "@/features/bridge/enabled";
 import { BridgeMove } from "./bridge-move";
 import { BridgeWorkspace } from "./bridge-workspace";
 import type { MoveSource } from "./use-bridge-move";
@@ -300,6 +301,17 @@ export function CryptoPage({
   );
   const closeUnshield = useCallback(() => setIsUnshieldOpen(false), []);
 
+  const showBridge =
+    process.env.NODE_ENV === "development" || bridgeEnabled();
+  const openBridge = useCallback(() => {
+    setIsDetailSheetOpen(false);
+    setBridge({ type: "bridge" });
+    setViewStack([]);
+    setSendSelect(null);
+    closeSwap();
+    closeUnshield();
+  }, [closeSwap, closeUnshield]);
+
   useAbandonActionsOnNavigate(navigationNonce, () => {
     setBridge(null);
     setViewStack([]);
@@ -546,6 +558,7 @@ export function CryptoPage({
               isEmpty={isWalletDataRevealed && !hasAssets}
               onReceive={onReceive}
               onBack={onBack}
+              onBridge={showBridge ? openBridge : undefined}
               onSend={() => openSend()}
               onSwap={() => openSwap()}
               onUnshield={

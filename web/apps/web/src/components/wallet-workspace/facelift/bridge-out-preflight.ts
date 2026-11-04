@@ -295,15 +295,87 @@ async function resolveLookupTables(
   );
 }
 
-function state(a: {
+type WireAccount = {
   lamports: number;
-  owner: PublicKey | string;
-  data: Uint8Array;
-}): AccountState {
+  owner: string;
+  data: [string, string];
+};
+
+type Slotted<T> = { context: { slot: number }; value: T };
+
+type SimulationValue = {
+  err: unknown;
+  accounts: (WireAccount | null)[] | null;
+};
+
+function toState(a: WireAccount | null): AccountState | null {
+  return a
+    ? {
+        lamports: a.lamports,
+        owner: a.owner,
+        data: Buffer.from(a.data[0], "base64"),
+      }
+    : null;
+}
+
+function slotted(result: unknown, what: string): Slotted<unknown> {
+  const r = result as Slotted<unknown> | null;
+  if (typeof r?.context?.slot !== "number" || r.value === undefined) {
+    throw new Error(`${what} came back malformed`);
+  }
+  return r;
+}
+
+async function readAndSimulate(
+  endpoint: string,
+  tx: VersionedTransaction,
+  writable: PublicKey[],
+  addresses: string[]
+): Promise<{ pre: Slotted<(WireAccount | null)[]>; sim: Slotted<SimulationValue> }> {
+  const res = await fetch(endpoint, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify([
+      {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "getMultipleAccounts",
+        params: [
+          writable.map((k) => k.toBase58()),
+          { commitment: "confirmed", encoding: "base64" },
+        ],
+      },
+      {
+        jsonrpc: "2.0",
+        id: 2,
+        method: "simulateTransaction",
+        params: [
+          Buffer.from(tx.serialize()).toString("base64"),
+          {
+            encoding: "base64",
+            commitment: "confirmed",
+            sigVerify: false,
+            accounts: { encoding: "base64", addresses },
+          },
+        ],
+      },
+    ]),
+  });
+  if (!res.ok) throw new Error(`batch refused with HTTP ${res.status}`);
+  const body: unknown = await res.json();
+  if (!Array.isArray(body) || body.length !== 2) {
+    throw new Error("batch refused: not one answer per call");
+  }
+  const answer = (id: number) => {
+    const item = body.find((x) => x?.id === id);
+    if (!item || item.error || item.result === undefined) {
+      throw new Error(`batch call ${id} failed`);
+    }
+    return item.result;
+  };
   return {
-    lamports: a.lamports,
-    owner: typeof a.owner === "string" ? a.owner : a.owner.toBase58(),
-    data: a.data,
+    pre: slotted(answer(1), "pre state") as Slotted<(WireAccount | null)[]>,
+    sim: slotted(answer(2), "simulation") as Slotted<SimulationValue>,
   };
 }
 
@@ -322,22 +394,23 @@ async function simulateAndJudge(
   const writable = writableSet(tx, lookupTables);
   const addresses = writable.map((k) => k.toBase58());
 
-  // Pre state and simulation are two RPC calls. They are judged only when the
-  // slot is the same, so no other transaction can sit between the two states.
+  // Judged only when both answers share a slot, so no other transaction can
+  // sit between the two states.
   for (let attempt = 0; attempt < MAX_SLOT_ATTEMPTS; attempt++) {
-    const pre = await connection.getMultipleAccountsInfoAndContext(writable, {
-      commitment: "confirmed",
-    });
-    const sim = await connection.simulateTransaction(tx, {
-      sigVerify: false,
-      commitment: "confirmed",
-      minContextSlot: pre.context.slot,
-      accounts: { addresses, encoding: "base64" },
-    });
+    const { pre, sim } = await readAndSimulate(
+      connection.rpcEndpoint,
+      tx,
+      writable,
+      addresses
+    );
     if (sim.context.slot !== pre.context.slot) continue;
 
     const postAccounts = sim.value.accounts;
-    if (!postAccounts || postAccounts.length !== addresses.length) {
+    if (
+      !postAccounts ||
+      postAccounts.length !== addresses.length ||
+      pre.value.length !== addresses.length
+    ) {
       return {
         ok: false,
         reason: "simulation returned no post state",
@@ -347,19 +420,8 @@ async function simulateAndJudge(
     const preMap = new Map<string, AccountState | null>();
     const postMap = new Map<string, AccountState | null>();
     addresses.forEach((address, i) => {
-      const before = pre.value[i];
-      const after = postAccounts[i];
-      preMap.set(address, before ? state(before) : null);
-      postMap.set(
-        address,
-        after
-          ? state({
-              lamports: after.lamports,
-              owner: after.owner.toString(),
-              data: Buffer.from(after.data[0], "base64"),
-            })
-          : null
-      );
+      preMap.set(address, toState(pre.value[i] ?? null));
+      postMap.set(address, toState(postAccounts[i] ?? null));
     });
     const verdict = judge(
       preMap,

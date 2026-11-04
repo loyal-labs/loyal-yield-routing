@@ -292,6 +292,7 @@ export function CryptoPane({
   isEmpty,
   onReceive,
   onBack,
+  onBridge,
   onSend,
   onSwap,
   onUnshield,
@@ -306,6 +307,7 @@ export function CryptoPane({
   isEmpty: boolean;
   onReceive: () => void;
   onBack: () => void;
+  onBridge?: () => void;
   onSend: () => void;
   onSwap: () => void;
   onUnshield?: (mint?: string) => void;
@@ -449,6 +451,21 @@ export function CryptoPane({
             Send
           </span>
         </button>
+        {onBridge ? (
+          <button
+            className="flex min-w-0 flex-1 items-center justify-center gap-2 rounded-full bg-secondary p-2.5"
+            onClick={onBridge}
+            type="button"
+          >
+            <ThemedIcon
+              className="size-6 text-tertiary"
+              src={`${ASSET_BASE}/sidebar/bridge.svg`}
+            />
+            <span className="whitespace-nowrap pr-2.5 font-medium text-[16px] text-foreground leading-5">
+              Bridge
+            </span>
+          </button>
+        ) : null}
         {onUnshield ? (
           <button
             className="flex min-w-0 flex-1 items-center justify-center gap-2 rounded-full bg-secondary p-2.5"
