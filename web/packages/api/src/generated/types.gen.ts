@@ -194,6 +194,10 @@ export type BridgeDestinationToken = {
     asset: string;
     decimals: number;
     icon: string;
+    /**
+     * Smallest whole-USDC amount this token is quoted for; 0 is no minimum
+     */
+    minUsdc: number;
     name: string;
     symbol: string;
 };
@@ -228,14 +232,14 @@ export type BridgeOutQuoteRequest = {
 };
 
 export type BridgeOutQuoteResponse = {
-    amountInUsd: string;
     amountOutMinRaw: string;
     amountOutRaw: string;
-    amountOutUsd: string;
     etaSeconds: number | null;
     instructions: Array<BridgeOutInstruction> | null;
     lookupTables: Array<string> | null;
-    networkFeeUsd: string;
+    /**
+     * Output over input, computed by the server
+     */
     rate: string;
     requestId: string;
 };

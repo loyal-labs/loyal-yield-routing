@@ -31,6 +31,11 @@ const (
 	depositTokenSelector   = "0b9c60da27a3b413"
 	outSlippageBps         = 100
 	outMinFloorBps         = 200
+	outHalfFloorPercent    = 50
+	outFeeAllowanceKeepPPM = 986000
+	outAllowanceUSD        = 4
+	usdcDecimals           = 6
+	SolanaRelayName        = "solana"
 )
 
 type OutRequest struct {
@@ -61,10 +66,13 @@ type OutQuote struct {
 	AmountOutRaw    *big.Int
 	AmountOutMinRaw *big.Int
 	Rate            string
-	AmountInUSD     string
-	AmountOutUSD    string
-	NetworkFeeUSD   string
 	ETASeconds      *int64
+}
+
+type OutBelowMinimum struct{ MinUSDC uint64 }
+
+func (e *OutBelowMinimum) Error() string {
+	return fmt.Sprintf("below the %d USDC minimum for this destination", e.MinUSDC)
 }
 
 type QuoteRefused struct{ Code string }
@@ -94,13 +102,9 @@ type relayOutQuote struct {
 			} `json:"data"`
 		} `json:"items"`
 	} `json:"steps"`
-	Fees struct {
-		Gas relayCurrencyAmount `json:"gas"`
-	} `json:"fees"`
 	Details struct {
 		Sender            string              `json:"sender"`
 		Recipient         string              `json:"recipient"`
-		Rate              string              `json:"rate"`
 		TimeEstimate      *float64            `json:"timeEstimate"`
 		CurrencyIn        relayCurrencyAmount `json:"currencyIn"`
 		CurrencyOut       relayCurrencyAmount `json:"currencyOut"`
@@ -126,6 +130,8 @@ type relayOutQuote struct {
 					} `json:"refunds"`
 				} `json:"inputs"`
 				Output struct {
+					ChainID  string            `json:"chainId"`
+					Calls    []json.RawMessage `json:"calls"`
 					Payments []struct {
 						Recipient     string `json:"recipient"`
 						Currency      string `json:"currency"`
@@ -154,6 +160,9 @@ func resolveOut(req OutRequest) (Destination, DestinationToken, error) {
 	}
 	if req.AmountRaw == nil || req.AmountRaw.Sign() <= 0 || !req.AmountRaw.IsUint64() {
 		return Destination{}, DestinationToken{}, &RequestError{"amount must be positive and fit 64 bits"}
+	}
+	if min := dest.MinUSDC[req.Asset]; min > 0 && req.AmountRaw.Cmp(new(big.Int).Mul(new(big.Int).SetUint64(min), tenPow(usdcDecimals))) < 0 {
+		return Destination{}, DestinationToken{}, &OutBelowMinimum{MinUSDC: min}
 	}
 	if req.Sender.IsZero() {
 		return Destination{}, DestinationToken{}, &RequestError{"empty sender"}
@@ -192,7 +201,7 @@ func (r *Relay) QuoteOut(ctx context.Context, req OutRequest) (OutQuote, error) 
 	hreq.Header.Set("Content-Type", "application/json")
 	raw, err := r.do(hreq)
 	var failed *HTTPError
-	if errors.As(err, &failed) && failed.Status >= 400 && failed.Status < 500 && failed.Status != http.StatusTooManyRequests {
+	if errors.As(err, &failed) && failed.Status >= 400 && failed.Status < 500 && failed.Status != http.StatusTooManyRequests && failed.Status != http.StatusUnauthorized && failed.Status != http.StatusForbidden {
 		var body struct {
 			ErrorCode string `json:"errorCode"`
 		}
@@ -243,6 +252,9 @@ func CheckOutQuote(req OutRequest, raw []byte) (OutQuote, error) {
 	out, ok := parseAmount(d.CurrencyOut.Amount)
 	if !ok || out.Sign() <= 0 {
 		return OutQuote{}, fmt.Errorf("quote: details.currencyOut.amount %q is not positive", d.CurrencyOut.Amount)
+	}
+	if floor := outFloor(in, tok.Decimals); out.Cmp(floor) < 0 {
+		return OutQuote{}, fmt.Errorf("quote: details.currencyOut.amount %s is below the floor %s for %s in", out, floor, in)
 	}
 	outMin, ok := parseAmount(d.CurrencyOut.MinimumAmount)
 	if !ok || outMin.Sign() <= 0 || outMin.Cmp(out) > 0 {
@@ -332,10 +344,7 @@ func CheckOutQuote(req OutRequest, raw []byte) (OutQuote, error) {
 		AmountInRaw:     in,
 		AmountOutRaw:    out,
 		AmountOutMinRaw: outMin,
-		Rate:            plainDecimalOrEmpty(d.Rate),
-		AmountInUSD:     plainDecimalOrEmpty(d.CurrencyIn.AmountUSD),
-		AmountOutUSD:    plainDecimalOrEmpty(d.CurrencyOut.AmountUSD),
-		NetworkFeeUSD:   plainDecimalOrEmpty(rq.Fees.Gas.AmountUSD),
+		Rate:            outRate(in, out, tok.Decimals),
 	}
 	if d.TimeEstimate != nil && *d.TimeEstimate >= 0 {
 		eta := int64(math.Ceil(*d.TimeEstimate))
@@ -369,6 +378,19 @@ func checkOutOrder(rq relayOutQuote, req OutRequest, dest Destination, tok Desti
 	if len(input.Refunds) == 0 || input.Refunds[0].Recipient != req.Sender.String() || input.Refunds[0].Currency != SolanaUSDCMint {
 		return fmt.Errorf("first refund is not the user's USDC on Solana")
 	}
+	for i, refund := range input.Refunds {
+		toUser := refund.ChainID == SolanaRelayName && refund.Recipient == req.Sender.String()
+		toRecipient := refund.ChainID == dest.RelayName && sameAddress(dest.Kind, refund.Recipient, req.Recipient)
+		if !toUser && !toRecipient {
+			return fmt.Errorf("refund %d on %s to %s is neither the user's wallet nor the requested recipient", i, refund.ChainID, refund.Recipient)
+		}
+	}
+	if p.OrderData.Output.ChainID != dest.RelayName {
+		return fmt.Errorf("output chain %q is not %s", p.OrderData.Output.ChainID, dest.RelayName)
+	}
+	if len(p.OrderData.Output.Calls) != 0 {
+		return fmt.Errorf("output runs %d calls, want none", len(p.OrderData.Output.Calls))
+	}
 	if len(p.OrderData.Output.Payments) != 1 {
 		return fmt.Errorf("%d output payments, want 1", len(p.OrderData.Output.Payments))
 	}
@@ -389,9 +411,23 @@ func sameAddress(kind AddressKind, a, b string) bool {
 	return a == b
 }
 
-func plainDecimalOrEmpty(s string) string {
-	if plainDecimal.MatchString(s) {
-		return s
+func tenPow(n int64) *big.Int { return new(big.Int).Exp(big.NewInt(10), big.NewInt(n), nil) }
+
+func scaleUSDC(in *big.Int, decimals uint8) *big.Int {
+	return new(big.Int).Div(new(big.Int).Mul(in, tenPow(int64(decimals))), tenPow(usdcDecimals))
+}
+
+func outFloor(in *big.Int, decimals uint8) *big.Int {
+	scaled := scaleUSDC(in, decimals)
+	half := new(big.Int).Div(new(big.Int).Mul(scaled, big.NewInt(outHalfFloorPercent)), big.NewInt(100))
+	afterFees := new(big.Int).Div(new(big.Int).Mul(scaled, big.NewInt(outFeeAllowanceKeepPPM)), big.NewInt(1_000_000))
+	afterFees.Sub(afterFees, new(big.Int).Mul(big.NewInt(outAllowanceUSD), tenPow(int64(decimals))))
+	if afterFees.Cmp(half) > 0 {
+		return afterFees
 	}
-	return ""
+	return half
+}
+
+func outRate(in, out *big.Int, decimals uint8) string {
+	return new(big.Rat).SetFrac(new(big.Int).Mul(out, tenPow(usdcDecimals)), new(big.Int).Mul(in, tenPow(int64(decimals)))).FloatString(6)
 }

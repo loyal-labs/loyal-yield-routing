@@ -113,6 +113,28 @@ func TestCheckOutQuoteRefusesWhatRelayMustNotChange(t *testing.T) {
 			setAt(q, "1", "details", "currencyOut", "minimumAmount")
 			setAt(q, "1", "protocol", "v2", "orderData", "output", "payments", 0, "minimumAmount")
 		},
+		"output pays 1 raw unit for 25 USDC": func(q map[string]any) {
+			setAt(q, "1", "details", "currencyOut", "amount")
+			setAt(q, "1", "details", "currencyOut", "minimumAmount")
+			setAt(q, "1", "protocol", "v2", "orderData", "output", "payments", 0, "minimumAmount")
+		},
+		"output is half of the input less one": func(q map[string]any) {
+			setAt(q, "12499999", "details", "currencyOut", "amount")
+			setAt(q, "12499999", "details", "currencyOut", "minimumAmount")
+			setAt(q, "12499999", "protocol", "v2", "orderData", "output", "payments", 0, "minimumAmount")
+		},
+		"order output is on another chain": func(q map[string]any) {
+			setAt(q, "ethereum", "protocol", "v2", "orderData", "output", "chainId")
+		},
+		"order output runs a call": func(q map[string]any) {
+			setAt(q, []any{map[string]any{"to": "0x1111111111111111111111111111111111111111", "data": "0x", "value": "0"}}, "protocol", "v2", "orderData", "output", "calls")
+		},
+		"second refund goes to someone else": func(q map[string]any) {
+			setAt(q, "0x1111111111111111111111111111111111111111", "protocol", "v2", "orderData", "inputs", 0, "refunds", 1, "recipient")
+		},
+		"second refund is on another chain": func(q map[string]any) {
+			setAt(q, "ethereum", "protocol", "v2", "orderData", "inputs", 0, "refunds", 1, "chainId")
+		},
 		"order refunds someone else": func(q map[string]any) {
 			setAt(q, elsewhere, "protocol", "v2", "orderData", "inputs", 0, "refunds", 0, "recipient")
 		},
@@ -133,5 +155,18 @@ func TestCheckOutQuoteRefusesWhatRelayMustNotChange(t *testing.T) {
 				t.Fatal("mutated quote accepted")
 			}
 		})
+	}
+}
+
+func TestCheckOutQuoteServesTheRateItComputes(t *testing.T) {
+	req, q := solanaOutQuote(t)
+	setAt(q, "5.0", "details", "rate")
+	raw, _ := json.Marshal(q)
+	got, err := CheckOutQuote(req, raw)
+	if err != nil {
+		t.Fatalf("a Relay rate field must not decide the quote: %v", err)
+	}
+	if got.Rate != "0.998926" {
+		t.Fatalf("rate %q is not out over in", got.Rate)
 	}
 }

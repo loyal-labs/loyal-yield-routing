@@ -4,11 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math/big"
 	"net/http"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/solana-foundation/solana-go/v2"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/bridge"
 )
@@ -25,6 +28,7 @@ type BridgeDestinationToken struct {
 	Icon     string       `json:"icon"`
 	Address  string       `json:"address"`
 	Decimals uint8        `json:"decimals"`
+	MinUSDC  uint64       `json:"minUsdc" doc:"Smallest whole-USDC amount this token is quoted for; 0 is no minimum"`
 }
 
 type BridgeDestination struct {
@@ -66,10 +70,7 @@ type BridgeOutQuoteResponse struct {
 	LookupTables    []string               `json:"lookupTables"`
 	AmountOutRaw    string                 `json:"amountOutRaw"`
 	AmountOutMinRaw string                 `json:"amountOutMinRaw"`
-	Rate            string                 `json:"rate"`
-	AmountInUSD     string                 `json:"amountInUsd"`
-	AmountOutUSD    string                 `json:"amountOutUsd"`
-	NetworkFeeUSD   string                 `json:"networkFeeUsd"`
+	Rate            string                 `json:"rate" doc:"Output over input, computed by the server"`
 	ETASeconds      *int64                 `json:"etaSeconds"`
 }
 
@@ -107,7 +108,7 @@ func (h earnRoutes) bridgeDestinations(ctx context.Context, in *sessionRequest) 
 		dest := BridgeDestination{Chain: d.Chain, Name: d.Name, Icon: d.Icon, AddressKind: d.Kind, ExplorerTx: d.ExplorerTx, PopularRank: d.PopularRank, Tokens: make([]BridgeDestinationToken, 0, len(d.Tokens))}
 		for _, t := range d.Tokens {
 			info := bridge.Assets[t.Asset]
-			dest.Tokens = append(dest.Tokens, BridgeDestinationToken{Asset: t.Asset, Symbol: info.Symbol, Name: info.Name, Icon: info.Icon, Address: t.Address, Decimals: t.Decimals})
+			dest.Tokens = append(dest.Tokens, BridgeDestinationToken{Asset: t.Asset, Symbol: info.Symbol, Name: info.Name, Icon: info.Icon, Address: t.Address, Decimals: t.Decimals, MinUSDC: d.MinUSDC[t.Asset]})
 		}
 		out.Body.Destinations = append(out.Body.Destinations, dest)
 	}
@@ -146,7 +147,10 @@ func (h earnRoutes) bridgeOutQuote(ctx context.Context, in *bridgeQuoteInput) (*
 	q, err := h.Relay.QuoteOut(ctx, bridge.OutRequest{Chain: body.Chain, Asset: body.Asset, AmountRaw: amount, Sender: wallet, Recipient: recipient})
 	var refusedRequest *bridge.RequestError
 	var refused *bridge.QuoteRefused
+	var belowMinimum *bridge.OutBelowMinimum
 	switch {
+	case errors.As(err, &belowMinimum):
+		return nil, earnError(http.StatusBadRequest, "bridge_below_minimum", fmt.Sprintf("The smallest amount to send there is %d USDC.", belowMinimum.MinUSDC))
 	case errors.As(err, &refusedRequest):
 		return nil, earnError(http.StatusBadRequest, "invalid_quote_request", refusedRequest.Error())
 	case errors.As(err, &refused):
@@ -158,9 +162,7 @@ func (h earnRoutes) bridgeOutQuote(ctx context.Context, in *bridgeQuoteInput) (*
 	case err != nil:
 		return nil, bridgeOutUnavailable("relay out quote", err)
 	}
-	if _, err := h.YieldDB.Exec(ctx, `INSERT INTO loyal_yield.bridge_transfers (request_id, solana_wallet, counterparty, direction, chain, asset, amount_in_raw, amount_out_raw)
-VALUES ($1, $2, $3, 'out', $4, $5, $6::text::numeric, $7::text::numeric)
-ON CONFLICT (request_id) DO NOTHING`, q.RequestID, wallet.String(), recipient, string(body.Chain), string(body.Asset), q.AmountInRaw.String(), q.AmountOutRaw.String()); err != nil {
+	if err := insertBridgeOut(ctx, h.YieldDB, wallet, recipient, body.Chain, body.Asset, q); err != nil {
 		return nil, bridgeOutUnavailable("bridge out transfer insert", err)
 	}
 	out := &bridgeOutQuoteOutput{Body: BridgeOutQuoteResponse{
@@ -169,9 +171,6 @@ ON CONFLICT (request_id) DO NOTHING`, q.RequestID, wallet.String(), recipient, s
 		AmountOutRaw:    q.AmountOutRaw.String(),
 		AmountOutMinRaw: q.AmountOutMinRaw.String(),
 		Rate:            q.Rate,
-		AmountInUSD:     q.AmountInUSD,
-		AmountOutUSD:    q.AmountOutUSD,
-		NetworkFeeUSD:   q.NetworkFeeUSD,
 		ETASeconds:      q.ETASeconds,
 	}}
 	for _, ix := range q.Instructions {
@@ -182,4 +181,17 @@ ON CONFLICT (request_id) DO NOTHING`, q.RequestID, wallet.String(), recipient, s
 		out.Body.Instructions = append(out.Body.Instructions, BridgeOutInstruction{ProgramID: ix.ProgramID, Keys: keys, Data: ix.Data})
 	}
 	return out, nil
+}
+
+func insertBridgeOut(ctx context.Context, db *pgxpool.Pool, wallet solana.PublicKey, recipient string, chain bridge.Chain, asset bridge.Asset, q bridge.OutQuote) error {
+	tag, err := db.Exec(ctx, `INSERT INTO loyal_yield.bridge_transfers (request_id, solana_wallet, counterparty, direction, chain, asset, amount_in_raw, amount_out_raw)
+VALUES ($1, $2, $3, 'out', $4, $5, $6::text::numeric, $7::text::numeric)
+ON CONFLICT (request_id) DO NOTHING`, q.RequestID, wallet.String(), recipient, string(chain), string(asset), q.AmountInRaw.String(), q.AmountOutRaw.String())
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return errors.New("request id already has a row")
+	}
+	return nil
 }
