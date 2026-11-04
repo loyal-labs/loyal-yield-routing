@@ -36,7 +36,6 @@ const QUOTE_DEBOUNCE_MS = 500;
 const QUOTE_MAX_AGE_MS = 30_000;
 const POLL_MS = 3000;
 const SUBMIT_ATTEMPTS = 3;
-const SLOT_SKEW_REASON = "simulation and pre state never shared a slot";
 
 class BridgeApiError extends Error {
   constructor(message: string, readonly code: string | null) {
@@ -297,9 +296,9 @@ export function useBridgeOut({
           amountRaw,
         });
       } catch {
-        verdict = { ok: false, reason: "preflight threw" };
+        verdict = { ok: false, reason: "preflight threw", retry: false };
       }
-      if (!verdict.ok && verdict.reason === SLOT_SKEW_REASON) {
+      if (!verdict.ok && verdict.retry) {
         setNotice("Could not verify this transfer yet. Please try again.");
         setStep({ kind: "form" });
         return;

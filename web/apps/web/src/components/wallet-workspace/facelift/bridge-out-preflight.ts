@@ -25,7 +25,7 @@ export type Verdict =
 
 export type PreflightVerdict =
   | { ok: true; feeLamports: bigint; transaction: VersionedTransaction }
-  | { ok: false; reason: string };
+  | { ok: false; reason: string; retry: boolean };
 
 type Quote = Pick<BridgeOutQuoteResponse, "instructions" | "lookupTables">;
 
@@ -338,7 +338,11 @@ async function simulateAndJudge(
 
     const postAccounts = sim.value.accounts;
     if (!postAccounts || postAccounts.length !== addresses.length) {
-      return { ok: false, reason: "simulation returned no post state" };
+      return {
+        ok: false,
+        reason: "simulation returned no post state",
+        retry: false,
+      };
     }
     const preMap = new Map<string, AccountState | null>();
     const postMap = new Map<string, AccountState | null>();
@@ -363,9 +367,15 @@ async function simulateAndJudge(
       owner.toBase58(),
       amountRaw
     );
-    return verdict.ok ? { ...verdict, transaction: tx } : verdict;
+    return verdict.ok
+      ? { ...verdict, transaction: tx }
+      : { ok: false, reason: verdict.reason, retry: false };
   }
-  return { ok: false, reason: "simulation and pre state never shared a slot" };
+  return {
+    ok: false,
+    reason: "simulation and pre state never shared a slot",
+    retry: true,
+  };
 }
 
 /**
@@ -382,7 +392,8 @@ export async function runBridgeOutPreflight(input: {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<PreflightVerdict>((resolve) => {
     timer = setTimeout(
-      () => resolve({ ok: false, reason: "preflight timed out" }),
+      () =>
+        resolve({ ok: false, reason: "preflight timed out", retry: false }),
       PREFLIGHT_TIMEOUT_MS
     );
   });
@@ -400,6 +411,7 @@ export async function runBridgeOutPreflight(input: {
     return {
       ok: false,
       reason: `preflight failed: ${e instanceof Error ? e.message : String(e)}`,
+      retry: false,
     };
   } finally {
     clearTimeout(timer);
