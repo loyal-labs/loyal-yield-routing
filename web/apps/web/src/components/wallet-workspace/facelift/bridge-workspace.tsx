@@ -538,7 +538,7 @@ export function BridgeWorkspace({
             <BridgeRecipientRow
               active={picker === "recipient"}
               network={network}
-              onClear={() => setRecipient("")}
+              onClear={sending ? undefined : () => setRecipient("")}
               onOpen={sending ? undefined : () => openPicker("recipient")}
               recipient={recipient}
             />
