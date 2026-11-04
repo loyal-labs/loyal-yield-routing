@@ -40,7 +40,10 @@ const (
 	OutFeeBps              = 40
 )
 
-const OutConfirmWindow = 120 * time.Second
+const (
+	OutConfirmWindow   = 120 * time.Second
+	OutSubmittedWindow = 10 * time.Minute
+)
 
 var ErrAppFeeUnset = errors.New("relay app fee recipient is not configured")
 

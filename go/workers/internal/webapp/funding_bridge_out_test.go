@@ -100,3 +100,45 @@ func TestBridgeTransfersServeConfirmedQuotedOutRowsInsideTheWindow(t *testing.T)
 		t.Fatalf("out rows served %+v, want only the quoted row confirmed inside the window", out)
 	}
 }
+
+func TestBridgeTransfersMarkInFlightFromServerWindows(t *testing.T) {
+	pool := bridgeOutTestDB(t)
+	ctx := context.Background()
+	wallet := solana.NewWallet().PublicKey()
+	const recipient = "0x98f566dc02faf8fd0f3ebb6aab48c40164207fc7"
+	const originTx = "5ZyJqhYV2VoF8mQp7hX1cC3uR9wTn4kLbPd6sEaGfNxM2vUiBtYrKjWz8oHqSeDcAgFnLpXmVtRu3yJbKh7NwQa9"
+	add := func(id, state, submittedAgo string) {
+		q := bridge.OutQuote{RequestID: id, AmountInRaw: big.NewInt(25_000_000), AmountOutRaw: big.NewInt(24_900_000)}
+		if err := insertBridgeOut(ctx, pool, wallet, recipient, bridge.Base, bridge.USDC, q); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.Exec(ctx, `UPDATE loyal_yield.bridge_transfers SET state = $2, origin_tx = $3, submitted_at = clock_timestamp() - $4::interval,
+settled_at = CASE WHEN $2 IN ('filled', 'refunded') THEN clock_timestamp() - $4::interval END WHERE request_id = $1`, id, state, originTx, submittedAgo); err != nil {
+			t.Fatal(err)
+		}
+	}
+	add("0xrecent", "submitted", "9 minutes")
+	add("0xstuck", "submitted", "11 minutes")
+	for i := range 25 {
+		add("0xdone"+strings.Repeat("a", i+1), "filled", "1 second")
+	}
+	out, err := listBridgeTransfers(ctx, pool, wallet, bridge.DirectionOut)
+	if err != nil {
+		t.Fatal(err)
+	}
+	flights := map[string]bool{}
+	for _, row := range out {
+		flights[row.RequestID] = row.InFlight
+	}
+	if len(out) == 0 || out[0].RequestID != "0xrecent" || !out[0].InFlight {
+		t.Fatalf("first of %d rows is %q, want the submitted row inside the window flagged inFlight ahead of 25 newer terminal rows", len(out), out[0].RequestID)
+	}
+	if inFlight, listed := flights["0xstuck"]; listed && inFlight {
+		t.Fatal("a submitted row older than the window is still inFlight")
+	}
+	for id, inFlight := range flights {
+		if id != "0xrecent" && inFlight {
+			t.Fatalf("%s flagged inFlight", id)
+		}
+	}
+}

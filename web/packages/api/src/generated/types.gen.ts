@@ -313,6 +313,7 @@ export type BridgeTransfer = {
     confirmedAt: string | null;
     destinationTx: string | null;
     direction: 'in' | 'out';
+    inFlight: boolean;
     originTx: string | null;
     quotedAt: string;
     refundTx: string | null;
