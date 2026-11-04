@@ -49,7 +49,7 @@ WHERE ` + openState + ` AND submitted_at <= now() - ` + trackWindow + `
   AND updated_at < submitted_at + ` + trackWindow + `
 RETURNING request_id, state, submitted_at`
 
-	confirmedQuotes = `SELECT request_id FROM loyal_yield.bridge_transfers
+	confirmedQuotes = `SELECT request_id, direction FROM loyal_yield.bridge_transfers
 WHERE state = 'quoted' AND confirmed_at > now() - ` + lostSubmitWindow + `
 ORDER BY confirmed_at DESC LIMIT $1`
 
@@ -68,7 +68,7 @@ WHERE chain = $1 AND expires_at > now() - ` + trackWindow + `
 ORDER BY address`
 
 	insertDetected = `INSERT INTO loyal_yield.bridge_transfers
-(request_id, solana_wallet, evm_address, deposit_address, chain, asset, amount_in_raw, amount_out_raw, state, origin_tx, submitted_at)
+(request_id, solana_wallet, counterparty, deposit_address, chain, asset, amount_in_raw, amount_out_raw, state, origin_tx, submitted_at)
 VALUES ($1, $2, $3, $3, $4, $5, $6::text::numeric, $7::text::numeric, $8, $9, $10)
 ON CONFLICT (request_id) DO NOTHING`
 )
@@ -189,7 +189,11 @@ func (t *Tracker) adoptLostSubmits(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	quoted, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	quoted, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (quotedTransfer, error) {
+		var q quotedTransfer
+		err := row.Scan(&q.requestID, &q.direction)
+		return q, err
+	})
 	if err != nil {
 		return err
 	}
@@ -198,24 +202,24 @@ func (t *Tracker) adoptLostSubmits(ctx context.Context) error {
 	var relayErrs atomic.Int32
 	var group errgroup.Group
 	group.SetLimit(trackParallel)
-	for _, requestID := range quoted {
+	for _, q := range quoted {
 		group.Go(func() error {
-			status, err := t.Relay.Status(ctx, requestID)
+			status, err := t.Relay.Status(ctx, q.requestID)
 			if err != nil {
 				relayErrs.Add(1)
 				return nil
 			}
-			originTx := status.originTx()
+			originTx := status.originTx(q.direction)
 			if originTx == "" {
 				return nil
 			}
-			tag, err := t.DB.Exec(ctx, adoptSubmit, requestID, originTx)
+			tag, err := t.DB.Exec(ctx, adoptSubmit, q.requestID, originTx)
 			if err != nil {
 				return err
 			}
 			if tag.RowsAffected() == 1 {
 				t.Facts.BridgeTransfersAdvanced(string(TransferSubmitted), 1)
-				slog.Info("bridge transfer adopted", "request_id", requestID, "origin_tx", originTx, "relay_status", status.State)
+				slog.Info("bridge transfer adopted", "request_id", q.requestID, "origin_tx", originTx, "relay_status", status.State)
 			}
 			return nil
 		})
@@ -236,6 +240,11 @@ func (t *Tracker) pruneAbandoned(ctx context.Context) error {
 		slog.Info("bridge abandoned quotes pruned", "rows", n)
 	}
 	return nil
+}
+
+type quotedTransfer struct {
+	requestID string
+	direction Direction
 }
 
 type openTransfer struct {
