@@ -1,6 +1,6 @@
 # Bridge UI handoff
 
-Bridge In is live: `ReceiveSheet` renders the Figma V2 design on server data in every environment, behind the `loyal.bridge` browser opt-in. Bridge Out runs on server data: chains and tokens from `/api/funding/bridge/destinations`, recently used recipients from `/api/funding/bridge/out/recipients`, and Relay quotes from `/api/funding/bridge/out/quote`. Send now simulates the deposit, confirms, prompts the wallet, submits the signature, and polls `/api/funding/bridge/transfers?direction=out`. The sidebar Bridge action is enabled in development or with the `loyal.bridge` browser opt-in, and disabled otherwise.
+Bridge In is live: `ReceiveSheet` renders the Figma V2 design on server data in every environment, behind the `loyal.bridge` browser opt-in. Bridge Out runs on server data: chains and tokens from `/api/funding/bridge/destinations`, recently used recipients from `/api/funding/bridge/out/recipients`, and Relay quotes from `/api/funding/bridge/out/quote`. Send now simulates the deposit, confirms, prompts the wallet, submits the signature, and polls `/api/funding/bridge/transfers?direction=out`. On open it reads that route once and holds Send, with "Transfer in progress", while any out row is submitted or still quoted; the route returns a quoted out row only for 120 s after its confirm (`bridge.OutConfirmWindow`), so a reload cannot send a second time inside the blockhash window. The sidebar Bridge action is enabled in development or with the `loyal.bridge` browser opt-in, and disabled otherwise.
 
 ## Entry points
 
