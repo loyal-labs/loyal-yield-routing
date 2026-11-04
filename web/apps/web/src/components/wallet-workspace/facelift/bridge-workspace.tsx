@@ -398,7 +398,7 @@ export function BridgeWorkspace({
     : sending
     ? { tone: "busy", label: "Sending…" }
     : out.elsewhere
-    ? { tone: "blocked", label: "Move in progress" }
+    ? { tone: "blocked", label: "Transfer in progress" }
     : !out.ready
     ? { tone: "busy", label: "Getting quote…" }
     : { tone: "ready", label: "Send now" };

@@ -41,6 +41,8 @@ const QUOTE_MAX_AGE_MS = 30_000;
 const POLL_MS = 3000;
 const SUBMIT_ATTEMPTS = 3;
 const BLOCKHASH_WINDOW_MS = 120_000;
+const STILL_LANDING =
+  "A transfer from this wallet may still be landing. Check your wallet and wait before sending again.";
 const DID_NOT_FINISH =
   "The transfer did not finish. Check your wallet before trying again.";
 
@@ -295,7 +297,7 @@ export function useBridgeOut({
   }, [fetchQuote, settleQuoteError]);
 
   const run = useCallback(
-    async (quoted: BridgeOutQuoteResponse) => {
+    async (quoted: BridgeOutQuoteResponse): Promise<string | undefined> => {
       const fail = (message: string, requestId: string | null = null) =>
         setStep({ kind: "failed", message, requestId });
       if (!publicKey || !sendTransaction) {
@@ -356,7 +358,7 @@ export function useBridgeOut({
           requestId: quoted.requestId,
           unsubmittedBy: Date.now() + BLOCKHASH_WINDOW_MS,
         });
-        return;
+        return quoted.requestId;
       }
 
       setStep({
@@ -397,8 +399,12 @@ export function useBridgeOut({
         lockName,
         { ifAvailable: true },
         async (lock: Lock | null) => {
-          if (lock) await run(quoted);
-          else setLockedElsewhere(lockName);
+          if (!lock) {
+            setLockedElsewhere(lockName);
+            return;
+          }
+          const landing = await run(quoted);
+          if (landing) await holdUntilSettled(landing);
         }
       );
     } finally {
@@ -457,11 +463,24 @@ export function useBridgeOut({
     elsewhere: lockedElsewhere === lockName,
     quoting,
     quoteError: quotable ? quoteError : null,
-    notice,
+    notice: lockedElsewhere === lockName ? STILL_LANDING : notice,
     step,
     send,
     retry: requote,
   };
+}
+
+async function holdUntilSettled(requestId: string) {
+  const until = Date.now() + BLOCKHASH_WINDOW_MS;
+  while (Date.now() < until) {
+    await new Promise((r) => setTimeout(r, POLL_MS));
+    try {
+      const row = (await readTransfers()).find((t) => t.requestId === requestId);
+      if (row && ["filled", "refunded", "failed"].includes(row.state)) return;
+    } catch {
+      continue;
+    }
+  }
 }
 
 function isRejected(e: unknown): boolean {
