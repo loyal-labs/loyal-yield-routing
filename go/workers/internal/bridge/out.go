@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/solana-foundation/solana-go/v2"
 )
@@ -38,6 +39,8 @@ const (
 	SolanaRelayName        = "solana"
 	OutFeeBps              = 40
 )
+
+const OutConfirmWindow = 120 * time.Second
 
 var ErrAppFeeUnset = errors.New("relay app fee recipient is not configured")
 

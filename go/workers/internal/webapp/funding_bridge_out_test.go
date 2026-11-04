@@ -74,3 +74,29 @@ func TestBridgeOutQuoteIsNotServedWithoutItsRow(t *testing.T) {
 		t.Fatal("a request id that already has a row was served again")
 	}
 }
+
+func TestBridgeTransfersServeConfirmedQuotedOutRowsInsideTheWindow(t *testing.T) {
+	pool := bridgeOutTestDB(t)
+	ctx := context.Background()
+	wallet := solana.NewWallet().PublicKey()
+	const recipient = "0x98f566dc02faf8fd0f3ebb6aab48c40164207fc7"
+	for id, confirmedAgo := range map[string]string{"0xinside": "5 seconds", "0xoutside": "300 seconds", "0xunstamped": ""} {
+		q := bridge.OutQuote{RequestID: id, AmountInRaw: big.NewInt(25_000_000), AmountOutRaw: big.NewInt(24_900_000)}
+		if err := insertBridgeOut(ctx, pool, wallet, recipient, bridge.Base, bridge.USDC, q); err != nil {
+			t.Fatal(err)
+		}
+		if confirmedAgo == "" {
+			continue
+		}
+		if _, err := pool.Exec(ctx, `UPDATE loyal_yield.bridge_transfers SET confirmed_at = clock_timestamp() - $2::interval WHERE request_id = $1`, id, confirmedAgo); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out, err := listBridgeTransfers(ctx, pool, wallet, bridge.DirectionOut)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 1 || out[0].RequestID != "0xinside" || out[0].ConfirmedAt == nil {
+		t.Fatalf("out rows served %+v, want only the quoted row confirmed inside the window", out)
+	}
+}

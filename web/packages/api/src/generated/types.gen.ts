@@ -310,6 +310,7 @@ export type BridgeTransfer = {
     amountOutRaw: string;
     asset: string;
     chain: string;
+    confirmedAt: string | null;
     destinationTx: string | null;
     direction: 'in' | 'out';
     originTx: string | null;
