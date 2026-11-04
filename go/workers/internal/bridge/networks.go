@@ -26,7 +26,6 @@ const (
 const (
 	Avalanche Chain = "avalanche"
 	Plasma    Chain = "plasma"
-	HyperCore Chain = "hypercore"
 )
 
 type Asset string
