@@ -550,16 +550,19 @@ The heartbeat needs `OBSERVABILITY_OTLP_ENDPOINT` and `OBSERVABILITY_INGESTION_A
 sends none. It reports environment `prod`, which the "Web telemetry heartbeat" alert
 accepts beside `production`.
 
-Install the units from `systemd/`, then two drop-ins on the template, in
-`/etc/systemd/system/loyal-web-cron@.service.d/`. `40-verified-release.conf` is
-`activate.sh`'s drop-in for `loyal-web.service` with the same `ExecStart=`
-(`activate.sh` does not write it for the template; repeat it after each web deploy
-until it does). `50-credentials.conf` is loyal-web's own credential lines:
+Install the units from `systemd/`, then create the directory
+`/etc/systemd/system/loyal-web-cron@.service.d/` and its `50-credentials.conf`, which is
+loyal-web's own credential lines:
 
 ```sh
 { echo '[Service]'; systemctl cat loyal-web.service | grep '^LoadCredentialEncrypted='; } \
   > /etc/systemd/system/loyal-web-cron@.service.d/50-credentials.conf
 ```
+
+Once that directory exists, every `activate.sh web` also writes
+`40-verified-release.conf` there, with `ExecStart=<release>/loyal-web cron %i`, and
+backs it up and rolls it back with loyal-web's own drop-in. A host without the directory
+is untouched.
 
 A run needs `WEB_APP_DATABASE_URL` (both jobs) and `WEB_SOLANA_RPC_URL` and
 `SMART_ACCOUNT_SPONSOR_PK` (reconcile), `WEB_YIELD_DATABASE_URL`, `TIMESCALEDB_URL`,

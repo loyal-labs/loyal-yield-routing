@@ -3,7 +3,7 @@ package webapp
 // The earn-state family serves the wallet-state reads and the position
 // reconciliation write:
 //
-//	GET  /api/smart-accounts/yield-optimization/earn-state
+//	GET, HEAD /api/smart-accounts/yield-optimization/earn-state
 //	GET  /api/smart-accounts/yield-optimization/position
 //	POST /api/smart-accounts/yield-optimization/position/reconcile
 //	POST /api/smart-accounts/yield-optimization/realtime/token
@@ -17,6 +17,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnprep"
@@ -73,13 +74,16 @@ func stateLoad(name string, failed *bool, load func() error) {
 }
 
 func (h earnRoutes) registerState(api huma.API) {
-	huma.Register(api, huma.Operation{
-		OperationID: "get-earn-state",
-		Method:      http.MethodGet,
-		Path:        "/api/smart-accounts/yield-optimization/earn-state",
-		Summary:     "Complete Earn state for the signed-in wallet",
-		Responses:   errorResponses[routeError](api, 401, 409, 503),
-	}, h.earnState)
+	for _, method := range []string{http.MethodGet, http.MethodHead} {
+		huma.Register(api, huma.Operation{
+			OperationID: strings.ToLower(method) + "-earn-state",
+			Method:      method,
+			Path:        "/api/smart-accounts/yield-optimization/earn-state",
+			Summary:     "Complete Earn state for the signed-in wallet",
+			Responses:   errorResponses[routeError](api, 401, 409, 503),
+			Hidden:      method == http.MethodHead,
+		}, h.earnState)
+	}
 	h.registerPosition(api)
 	h.registerReconcile(api)
 	h.registerRealtime(api)
