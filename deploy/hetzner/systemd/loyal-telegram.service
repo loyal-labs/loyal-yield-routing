@@ -1,10 +1,11 @@
 # Loyal Telegram bot (Go). Answers the @askloyal_tgbot webhook on
 # /telegram/webhook and /api/telegram/webhook and runs the helper-message
-# cleanup every minute. One replica only. It listens on loopback; the tunnel
+# cleanup every minute; the daily summaries run only with
+# LOYAL_TELEGRAM_SUMMARIES=on. One replica only. It listens on loopback; the tunnel
 # carries the webhook host to it.
 # Releases ship in /opt/loyal/releases/telegram/<sha>/loyal-telegram and are
 # switched through the 40-verified-release.conf drop-in, as on the other units.
-# Credentials come from the loyal-telegram credstore; all three are required.
+# Credentials come from the loyal-telegram credstore; R2 is optional.
 [Unit]
 Description=Loyal Telegram bot (Go)
 Documentation=https://github.com/loyal-labs/loyal-yield-routing/tree/main/deploy/hetzner
@@ -23,6 +24,10 @@ Environment=LOYAL_TELEGRAM_ADDRESS=127.0.0.1:10083
 LoadCredentialEncrypted=TELEGRAM_APP_DATABASE_URL:/etc/credstore.encrypted/loyal-telegram/TELEGRAM_APP_DATABASE_URL
 LoadCredentialEncrypted=TELEGRAM_BOT_TOKEN:/etc/credstore.encrypted/loyal-telegram/TELEGRAM_BOT_TOKEN
 LoadCredentialEncrypted=TELEGRAM_WEBHOOK_SECRET:/etc/credstore.encrypted/loyal-telegram/TELEGRAM_WEBHOOK_SECRET
+LoadCredentialEncrypted=MESSAGE_ENCRYPTION_KEY:/etc/credstore.encrypted/loyal-telegram/MESSAGE_ENCRYPTION_KEY
+LoadCredentialEncrypted=REDPILL_AI_API_KEY:/etc/credstore.encrypted/loyal-telegram/REDPILL_AI_API_KEY
+LoadCredentialEncrypted=R2_ACCESS_KEY_ID:/etc/credstore.encrypted/loyal-telegram/R2_ACCESS_KEY_ID
+LoadCredentialEncrypted=R2_SECRET_ACCESS_KEY:/etc/credstore.encrypted/loyal-telegram/R2_SECRET_ACCESS_KEY
 
 DynamicUser=yes
 User=loyal-telegram

@@ -181,7 +181,11 @@ func run(ctx context.Context, once bool) error {
 	cleanupCtx, stopCleanup := context.WithCancel(ctx)
 	var cleanup sync.WaitGroup
 	cleanup.Go(func() { bot.RunHelperCleanup(cleanupCtx) })
-	cleanup.Go(func() { bot.RunDailySummaries(cleanupCtx) })
+	if os.Getenv("LOYAL_TELEGRAM_SUMMARIES") == "on" {
+		cleanup.Go(func() { bot.RunDailySummaries(cleanupCtx) })
+	} else {
+		slog.Warn("daily summaries off", "reason", "LOYAL_TELEGRAM_SUMMARIES is not on")
+	}
 	defer func() {
 		stopCleanup()
 		cleanup.Wait()

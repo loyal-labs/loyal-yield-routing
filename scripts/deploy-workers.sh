@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-usage="usage: bun run deploy backyard|retail|observer|web|admin|stats [sha] [--migrations-applied] [--stopped] [--check-ci]"
+usage="usage: bun run deploy backyard|retail|observer|telegram|web|admin|stats [sha] [--migrations-applied] [--stopped] [--check-ci]"
 family=${1:-}
 [[ $# -gt 0 ]] && shift
 case $family in
   backyard | retail) binary_name=loyal-engine ;;
   observer) binary_name=loyal-observer ;;
+  telegram) binary_name=loyal-telegram ;;
   web) binary_name=loyal-web ;;
   admin) binary_name=loyal-admin ;;
   stats) binary_name=loyal-stats ;;

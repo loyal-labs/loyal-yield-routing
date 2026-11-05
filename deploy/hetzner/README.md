@@ -966,6 +966,28 @@ private. An unset name disables only the page or panel that needs it.
 The public-key names have no built-in default: unset, the Earn funding page
 shows that role as unconfigured.
 
+## Telegram (loyal-telegram)
+
+`loyal-telegram.service` answers the `@askloyal_tgbot` webhook. The tunnel
+carries only `https://tgbot.askloyal.com/api/telegram/webhook` to it on
+127.0.0.1:10083; every other path on that host is a 404. The first release went
+in by hand like `loyal-web`'s; after that `bun run deploy telegram [<sha>]`
+deploys and rolls back.
+
+Credentials live in `/etc/credstore.encrypted/loyal-telegram/<NAME>`:
+`TELEGRAM_APP_DATABASE_URL`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`
+(also the `secret_token` given to `setWebhook`), `MESSAGE_ENCRYPTION_KEY` (the
+1Password item "Master Key Encryption"; stored DMs decrypt only with it),
+`REDPILL_AI_API_KEY`, and optionally `R2_ACCESS_KEY_ID` and
+`R2_SECRET_ACCESS_KEY`. The host drop-in `loyal-telegram.service.d/60-env.conf`
+holds `LOYAL_TELEGRAM_R2_ENDPOINT`, `_BUCKET`, `_PREFIX`,
+`LOYAL_TELEGRAM_CDN_BASE_URL`, `LOYAL_TELEGRAM_PUBLIC_URL` and
+`TELEGRAM_SUMMARY_PEER_OVERRIDE_FROM`/`_TO`, copied from the Vercel `loyal-app`
+project. The daily community summaries run only with
+`LOYAL_TELEGRAM_SUMMARIES=on`; they have been off since Jul 29 2026 and stay off
+until the owner turns them on. Rollback is `setWebhook` back to
+`https://solana-telegram-transactions.vercel.app/api/telegram/webhook`.
+
 ## Stats (loyal-stats)
 
 `loyal-stats.service` runs `loyal-stats`, the public performance dashboard:

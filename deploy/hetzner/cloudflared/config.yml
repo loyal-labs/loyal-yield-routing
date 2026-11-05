@@ -1,13 +1,27 @@
 # Locally managed tunnel loyal-workers, set up as robinx-prod's: Cloudflare
-# serves next.askloyal.com, admin.askloyal.com, admin-next.askloyal.com,
-# stats.askloyal.com and stats-next.askloyal.com, and cloudflared carries them
-# to loyal-web, loyal-admin and loyal-stats on loopback. No httpHostHeader on admin:
+# serves app.askloyal.com, next.askloyal.com, admin.askloyal.com,
+# admin-next.askloyal.com, stats.askloyal.com, stats-next.askloyal.com and the
+# Telegram webhook on tgbot.askloyal.com, and cloudflared carries them to loyal-web,
+# loyal-admin, loyal-stats and loyal-telegram on loopback. app.askloyal.com's
+# /_next/ assets still come from the Vercel deployment. No httpHostHeader on admin:
 # its CSRF check compares Origin with Host.
 # The credentials file is the one `cloudflared tunnel create` wrote; it lives
 # only on the host (deploy/hetzner/README.md, "Web (loyal-web)").
 tunnel: 6db5af77-f25b-40de-85aa-89ff2151a053
 credentials-file: /etc/cloudflared/loyal-workers.json
 ingress:
+  - hostname: tgbot.askloyal.com
+    path: ^/api/telegram/webhook$
+    service: http://127.0.0.1:10083
+  - hostname: tgbot.askloyal.com
+    service: http_status:404
+  - hostname: app.askloyal.com
+    path: ^/_next/
+    service: https://backend.askloyal.com
+    originRequest:
+      httpHostHeader: backend.askloyal.com
+  - hostname: app.askloyal.com
+    service: http://127.0.0.1:10080
   - hostname: next.askloyal.com
     service: http://127.0.0.1:10080
   - hostname: admin.askloyal.com
