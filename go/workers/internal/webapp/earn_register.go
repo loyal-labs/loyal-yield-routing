@@ -34,6 +34,7 @@ var earnFamilies = []earnFamily{
 	earnTronDepositFamily,
 	earnBridgeFamily,
 	earnReferralsFamily,
+	earnOverviewFamily,
 }
 
 func registerEarn(api huma.API, h earnRoutes) {
