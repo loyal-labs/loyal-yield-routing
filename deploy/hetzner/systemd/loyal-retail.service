@@ -48,11 +48,12 @@ Environment=RETAIL_TIMESCALE_SCHEMA=kamino
 #   [Service]
 #   LoadCredentialEncrypted=RETAIL_PRIVY_APP_ID:/etc/credstore.encrypted/loyal-retail/RETAIL_PRIVY_APP_ID
 #   LoadCredentialEncrypted=RETAIL_PRIVY_APP_SECRET:/etc/credstore.encrypted/loyal-retail/RETAIL_PRIVY_APP_SECRET
-# The unmoved-funds scan (LoyalBridgeIncomingUnmoved and
-# LoyalBridgeIncomingScanStale) uses the same credentials, which must be the same
-# Privy app as loyal-web's PRIVY_APP_ID, and needs SELECT on
-# loyal_yield.evm_deposit_routes. Both absent means the reader and the scan are
-# off and all four alerts stay silent; one without the other fails startup.
+# The unmoved-funds scan (LoyalBridgeIncomingUnmoved, LoyalBridgeIncomingStranded,
+# LoyalBridgeIncomingScanStale and LoyalBridgeIncomingScanFailing) uses the same
+# credentials, which must be the same Privy app as loyal-web's PRIVY_APP_ID, and
+# needs SELECT on loyal_yield.evm_deposit_routes. Both absent means the reader
+# and the scan are off and all six alerts stay silent; one without the other
+# fails startup.
 # Tron deposit-address detection runs in the same process and needs
 # /etc/systemd/system/loyal-retail.service.d/relay-requests.conf:
 #   [Service]

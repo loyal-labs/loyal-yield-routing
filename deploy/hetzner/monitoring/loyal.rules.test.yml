@@ -1670,3 +1670,172 @@ tests:
         impact: Every replica alert above is blind, so a stopped subscription would go unnoticed.
         action: On loyal-db-primary run `systemctl status loyal-db-replica-metrics.service` and `journalctl -u loyal-db-replica-metrics`. Check node_exporter is scraped (LoyalMonitoringDown for job node).
         recovery: Verify the last-success timestamp advances every minute.
+- name: bridge_incoming_unmoved_survives_an_engine_restart_gap
+  interval: 1m
+  input_series:
+  - series: loyal_bridge_incoming_unmoved{address="0xbd03…8179",chain="ethereum",asset="usdt",under_min="false"}
+    values: '25x19 _x10 25x40'
+  alert_rule_test:
+  - eval_time: 25m
+    alertname: LoyalBridgeIncomingUnmoved
+  - eval_time: 32m
+    alertname: LoyalBridgeIncomingUnmoved
+    exp_alerts:
+    - exp_labels:
+        severity: page
+        address: 0xbd03…8179
+        chain: ethereum
+        asset: usdt
+      exp_annotations:
+        summary: 25 usdt left unmoved on 0xbd03…8179 (ethereum)
+        trigger: A relay_signed EVM wallet held at least 0.1 units of a token with no inbound transfer confirmed for its wallet in the last 30 minutes, and the balance stayed for 30 minutes.
+        impact: A user's funds sit on their EVM wallet and never reach their Solana balance until the user moves them or support does.
+        action: Read the retail engine's 'bridge incoming unmoved' log line for this address. The user must press Confirm on Assets to move it, or support moves or refunds it.
+        recovery: Confirm the next scan reads the address and its series is gone; a stale series does not prove recovery.
+- name: bridge_incoming_unmoved_pages_each_address_separately
+  interval: 1m
+  input_series:
+  - series: loyal_bridge_incoming_unmoved{address="0xaaaa…aaaa",chain="ethereum",asset="usdt",under_min="false"}
+    values: '25x60'
+  - series: loyal_bridge_incoming_unmoved{address="0xbbbb…bbbb",chain="base",asset="usdc",under_min="false"}
+    values: '_x20 7x40'
+  alert_rule_test:
+  - eval_time: 45m
+    alertname: LoyalBridgeIncomingUnmoved
+    exp_alerts:
+    - exp_labels:
+        severity: page
+        address: 0xaaaa…aaaa
+        chain: ethereum
+        asset: usdt
+      exp_annotations:
+        summary: 25 usdt left unmoved on 0xaaaa…aaaa (ethereum)
+        trigger: A relay_signed EVM wallet held at least 0.1 units of a token with no inbound transfer confirmed for its wallet in the last 30 minutes, and the balance stayed for 30 minutes.
+        impact: A user's funds sit on their EVM wallet and never reach their Solana balance until the user moves them or support does.
+        action: Read the retail engine's 'bridge incoming unmoved' log line for this address. The user must press Confirm on Assets to move it, or support moves or refunds it.
+        recovery: Confirm the next scan reads the address and its series is gone; a stale series does not prove recovery.
+  - eval_time: 55m
+    alertname: LoyalBridgeIncomingUnmoved
+    exp_alerts:
+    - exp_labels:
+        severity: page
+        address: 0xaaaa…aaaa
+        chain: ethereum
+        asset: usdt
+      exp_annotations:
+        summary: 25 usdt left unmoved on 0xaaaa…aaaa (ethereum)
+        trigger: A relay_signed EVM wallet held at least 0.1 units of a token with no inbound transfer confirmed for its wallet in the last 30 minutes, and the balance stayed for 30 minutes.
+        impact: A user's funds sit on their EVM wallet and never reach their Solana balance until the user moves them or support does.
+        action: Read the retail engine's 'bridge incoming unmoved' log line for this address. The user must press Confirm on Assets to move it, or support moves or refunds it.
+        recovery: Confirm the next scan reads the address and its series is gone; a stale series does not prove recovery.
+    - exp_labels:
+        severity: page
+        address: 0xbbbb…bbbb
+        chain: base
+        asset: usdc
+      exp_annotations:
+        summary: 7 usdc left unmoved on 0xbbbb…bbbb (base)
+        trigger: A relay_signed EVM wallet held at least 0.1 units of a token with no inbound transfer confirmed for its wallet in the last 30 minutes, and the balance stayed for 30 minutes.
+        impact: A user's funds sit on their EVM wallet and never reach their Solana balance until the user moves them or support does.
+        action: Read the retail engine's 'bridge incoming unmoved' log line for this address. The user must press Confirm on Assets to move it, or support moves or refunds it.
+        recovery: Confirm the next scan reads the address and its series is gone; a stale series does not prove recovery.
+- name: bridge_incoming_unmoved_resolves_once_the_balance_moves
+  interval: 1m
+  input_series:
+  - series: loyal_bridge_incoming_unmoved{address="0xbd03…8179",chain="ethereum",asset="usdt",under_min="false"}
+    values: '25x40 _x30'
+  alert_rule_test:
+  - eval_time: 45m
+    alertname: LoyalBridgeIncomingUnmoved
+    exp_alerts:
+    - exp_labels:
+        severity: page
+        address: 0xbd03…8179
+        chain: ethereum
+        asset: usdt
+      exp_annotations:
+        summary: 25 usdt left unmoved on 0xbd03…8179 (ethereum)
+        trigger: A relay_signed EVM wallet held at least 0.1 units of a token with no inbound transfer confirmed for its wallet in the last 30 minutes, and the balance stayed for 30 minutes.
+        impact: A user's funds sit on their EVM wallet and never reach their Solana balance until the user moves them or support does.
+        action: Read the retail engine's 'bridge incoming unmoved' log line for this address. The user must press Confirm on Assets to move it, or support moves or refunds it.
+        recovery: Confirm the next scan reads the address and its series is gone; a stale series does not prove recovery.
+  - eval_time: 58m
+    alertname: LoyalBridgeIncomingUnmoved
+- name: bridge_incoming_stranded_warns_for_a_balance_under_the_minimum
+  interval: 1m
+  input_series:
+  - series: loyal_bridge_incoming_unmoved{address="0xbd03…8179",chain="ethereum",asset="usdt",under_min="true"}
+    values: '5x60'
+  alert_rule_test:
+  - eval_time: 25m
+    alertname: LoyalBridgeIncomingStranded
+  - eval_time: 35m
+    alertname: LoyalBridgeIncomingUnmoved
+  - eval_time: 35m
+    alertname: LoyalBridgeIncomingStranded
+    exp_alerts:
+    - exp_labels:
+        severity: warning
+        address: 0xbd03…8179
+        chain: ethereum
+        asset: usdt
+      exp_annotations:
+        summary: 5 usdt on 0xbd03…8179 (ethereum) is under the chain minimum and cannot be moved
+        trigger: A relay_signed EVM wallet held at least 0.1 units of a token below its chain's minimum for 30 minutes with no inbound transfer confirmed for its wallet.
+        impact: The balance is too small for the Move screen to bridge, so it stays on the EVM wallet until support acts.
+        action: The UI cannot move an amount under the chain minimum. Support refunds it or the user tops it up to the minimum; read the 'bridge incoming unmoved' log line with under_min=true for the amount.
+        recovery: Confirm the next scan reads the address and its series is gone; a stale series does not prove recovery.
+- name: bridge_incoming_scan_stale_is_silent_on_a_fresh_rollout_and_pages_35m_after_the_last_success
+  interval: 1m
+  input_series:
+  - series: loyal_bridge_incoming_scan_last_success_timestamp_seconds
+    values: '0x9 600x60'
+  alert_rule_test:
+  - eval_time: 44m
+    alertname: LoyalBridgeIncomingScanStale
+  - eval_time: 49m
+    alertname: LoyalBridgeIncomingScanStale
+    exp_alerts:
+    - exp_labels:
+        severity: page
+      exp_annotations:
+        summary: The unmoved-funds scan has not completed for 35m
+        trigger: No scan read the relay_signed routes from the database for over 35 minutes (three scan intervals plus a tick of slack); condition persisted for 2 minutes.
+        impact: Funds left unmoved on a user's EVM wallet would go unnoticed.
+        action: Check the retail engine is running, that privy-gas-spend.conf credentials are installed on the retail unit and the role has SELECT on loyal_yield.evm_deposit_routes. Read the retail engine's 'bridge incoming scan failed' error.
+        recovery: Confirm the last-success timestamp advances every 10 minutes. A vanished series is not proof of recovery.
+- name: bridge_incoming_scan_stale_is_silent_while_the_seed_is_young
+  interval: 1m
+  input_series:
+  - series: loyal_bridge_incoming_scan_last_success_timestamp_seconds
+    values: '0x40'
+  alert_rule_test:
+  - eval_time: 36m
+    alertname: LoyalBridgeIncomingScanStale
+- name: bridge_incoming_scan_stale_is_silent_without_the_series
+  interval: 1m
+  input_series:
+  - series: loyal_privy_gas_spend_1h_usd
+    values: '0x300'
+  alert_rule_test:
+  - eval_time: 4h
+    alertname: LoyalBridgeIncomingScanStale
+- name: bridge_incoming_scan_failing_warns_after_an_hour
+  interval: 1m
+  input_series:
+  - series: loyal_bridge_incoming_scan_failed_addresses
+    values: '0x10 2x100'
+  alert_rule_test:
+  - eval_time: 65m
+    alertname: LoyalBridgeIncomingScanFailing
+  - eval_time: 75m
+    alertname: LoyalBridgeIncomingScanFailing
+    exp_alerts:
+    - exp_labels:
+        severity: warning
+      exp_annotations:
+        summary: The unmoved-funds scan could not read 2 relay_signed EVM wallets
+        trigger: The last scan failed to read at least one relay_signed EVM wallet from Privy; condition persisted for 1 hour.
+        impact: Funds left unmoved on those wallets go unnoticed while the reads fail, and their last known series stays as it was.
+        action: Read the retail engine's 'bridge incoming scan incomplete' warning for the error and Privy status. Check Privy rate limits and that the address still exists as an Ethereum wallet in the Privy app.
+        recovery: Confirm the failed-addresses gauge is back to 0 on the next scan.

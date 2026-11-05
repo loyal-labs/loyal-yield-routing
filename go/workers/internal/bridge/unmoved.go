@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"maps"
 	"math/big"
 	"net/url"
 	"slices"
@@ -20,8 +19,6 @@ import (
 const (
 	unmovedInterval = 10 * time.Minute
 	unmovedDeadline = 3 * time.Minute
-	unmovedAfter    = 30 * time.Minute
-	unmovedSlack    = time.Minute
 
 	relaySignedAddresses = `SELECT evm_address, array_agg(solana_wallet) FROM loyal_yield.evm_deposit_routes
 WHERE kind = 'relay_signed' GROUP BY evm_address ORDER BY evm_address`
@@ -32,12 +29,6 @@ WHERE direction = 'in' AND confirmed_at > now() - interval '30 minutes'`
 
 // PrivyGet is one GET against Privy's API; path starts at /v1.
 type PrivyGet func(ctx context.Context, path string, query url.Values, out any) error
-
-type unmovedKey struct {
-	address string
-	chain   Chain
-	asset   Asset
-}
 
 type unmovedRoute struct {
 	address string
@@ -50,17 +41,8 @@ type unmovedRead struct {
 	err      error
 }
 
-// unmovedWatch holds what a balance cannot say: when the loop first saw it,
-// and the Privy wallet id an address resolved to. A restart forgets both, so
-// until the first complete pass a balance counts as already old.
-type unmovedWatch struct {
-	walletIDs map[string]string
-	firstSeen map[unmovedKey]time.Time
-	scanned   bool
-}
-
 func (t *Tracker) unmovedEvery(ctx context.Context) {
-	watch := &unmovedWatch{walletIDs: map[string]string{}, firstSeen: map[unmovedKey]time.Time{}}
+	walletIDs := map[string]string{}
 	ticker := time.NewTicker(unmovedInterval)
 	defer ticker.Stop()
 	for {
@@ -70,7 +52,7 @@ func (t *Tracker) unmovedEvery(ctx context.Context) {
 		case <-ticker.C:
 		}
 		pass, cancel := context.WithTimeout(ctx, unmovedDeadline)
-		err := t.unmoved(pass, watch, time.Now(), unmovedAfter)
+		err := t.unmoved(pass, walletIDs)
 		cancel()
 		if err != nil && ctx.Err() == nil {
 			slog.Error("bridge incoming scan failed", "error", engine.ErrorText(err))
@@ -78,11 +60,9 @@ func (t *Tracker) unmovedEvery(ctx context.Context) {
 	}
 }
 
-// unmoved reports every token that has sat on a relay_signed wallet for after
-// with no inbound transfer confirmed by any Solana wallet sharing it in that
-// time. The balance is the state: a moved balance drops out of the next pass
-// by itself. The facts move only on a pass that read every address.
-func (t *Tracker) unmoved(ctx context.Context, w *unmovedWatch, now time.Time, after time.Duration) error {
+// unmoved leaves the series of an address whose read failed as they were. The
+// alert rules keep the 30-minute clock.
+func (t *Tracker) unmoved(ctx context.Context, walletIDs map[string]string) error {
 	rows, err := t.DB.Query(ctx, relaySignedAddresses)
 	if err != nil {
 		return err
@@ -99,20 +79,22 @@ func (t *Tracker) unmoved(ctx context.Context, w *unmovedWatch, now time.Time, a
 	for _, r := range routes {
 		live[r.address] = true
 	}
-	maps.DeleteFunc(w.walletIDs, func(address, _ string) bool { return !live[address] })
-	maps.DeleteFunc(w.firstSeen, func(key unmovedKey, _ time.Time) bool { return !live[key.address] })
-	if len(routes) == 0 {
-		t.Facts.BridgeIncomingScanned(0)
-		w.scanned = true
-		return nil
+	for address := range walletIDs {
+		if !live[address] {
+			t.Facts.BridgeIncomingHeld(maskAddress(address), nil)
+			delete(walletIDs, address)
+		}
 	}
-	rows, err = t.DB.Query(ctx, recentTransferWallets)
-	if err != nil {
-		return err
-	}
-	recent, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		return err
+	var recent []string
+	if len(routes) > 0 {
+		rows, err = t.DB.Query(ctx, recentTransferWallets)
+		if err != nil {
+			return err
+		}
+		recent, err = pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			return err
+		}
 	}
 
 	reads := make([]unmovedRead, len(routes))
@@ -120,18 +102,18 @@ func (t *Tracker) unmoved(ctx context.Context, w *unmovedWatch, now time.Time, a
 	group.SetLimit(trackParallel)
 	for i, r := range routes {
 		group.Go(func() error {
-			reads[i].walletID, reads[i].balances, reads[i].err = t.privyBalances(ctx, w.walletIDs[r.address], r.address)
+			reads[i] = t.privyBalances(ctx, walletIDs[r.address], r.address)
 			return nil
 		})
 	}
 	_ = group.Wait()
 
-	alerts, failed := 0, 0
+	failed := 0
 	var firstErr error
 	for i, r := range routes {
 		read := reads[i]
 		if read.walletID != "" {
-			w.walletIDs[r.address] = read.walletID
+			walletIDs[r.address] = read.walletID
 		}
 		if read.err != nil {
 			failed++
@@ -140,41 +122,27 @@ func (t *Tracker) unmoved(ctx context.Context, w *unmovedWatch, now time.Time, a
 			}
 			continue
 		}
-		inFlight := slices.ContainsFunc(r.wallets, func(wallet string) bool { return slices.Contains(recent, wallet) })
-		for _, b := range read.balances {
-			key := unmovedKey{r.address, b.Chain, b.Asset}
-			if b.AmountRaw.Cmp(tenPow(max(int64(b.Decimals)-1, 0))) < 0 {
-				delete(w.firstSeen, key)
-				continue
-			}
-			first, seen := w.firstSeen[key]
-			if !seen {
-				first = now
-				if !w.scanned {
-					first = now.Add(-after)
+		var held []engine.IncomingHeld
+		if !slices.ContainsFunc(r.wallets, func(wallet string) bool { return slices.Contains(recent, wallet) }) {
+			for _, b := range read.balances {
+				if b.AmountRaw.Cmp(tenPow(max(int64(b.Decimals)-1, 0))) < 0 {
+					continue
 				}
-				w.firstSeen[key] = first
+				held = append(held, engine.IncomingHeld{Chain: string(b.Chain), Asset: string(b.Asset), UnderMin: underMin(b), Units: units(b)})
+				slog.Warn("bridge incoming unmoved", "address", maskAddress(r.address), "chain", b.Chain, "asset", b.Asset,
+					"amount", decimalAmount(b), "under_min", underMin(b))
 			}
-			if inFlight || now.Sub(first) < after-unmovedSlack {
-				continue
-			}
-			alerts++
-			slog.Warn("bridge incoming unmoved", "address", maskAddress(r.address), "chain", b.Chain, "asset", b.Asset,
-				"amount", decimalAmount(b), "under_min", underMin(b))
 		}
+		t.Facts.BridgeIncomingHeld(maskAddress(r.address), held)
 	}
 	if failed > 0 {
 		slog.Warn("bridge incoming scan incomplete", "failed_addresses", failed, "addresses", len(routes), "error", engine.ErrorText(firstErr))
-		return nil
 	}
-	t.Facts.BridgeIncomingScanned(alerts)
-	w.scanned = true
+	t.Facts.BridgeIncomingScanned(failed)
 	return nil
 }
 
-// privyBalances returns the wallet id it used even when the balance read
-// failed, so the next pass does not look the address up again.
-func (t *Tracker) privyBalances(ctx context.Context, walletID, address string) (string, []Balance, error) {
+func (t *Tracker) privyBalances(ctx context.Context, walletID, address string) unmovedRead {
 	if walletID == "" {
 		var page struct {
 			Data []struct {
@@ -185,7 +153,7 @@ func (t *Tracker) privyBalances(ctx context.Context, walletID, address string) (
 		}
 		query := url.Values{"address": {address}, "chain_type": {"ethereum"}}
 		if err := t.Privy(ctx, "/v1/wallets", query, &page); err != nil {
-			return "", nil, err
+			return unmovedRead{err: err}
 		}
 		for _, wallet := range page.Data {
 			if wallet.ChainType == "ethereum" && wallet.ID != "" && strings.EqualFold(wallet.Address, address) {
@@ -194,7 +162,7 @@ func (t *Tracker) privyBalances(ctx context.Context, walletID, address string) (
 			}
 		}
 		if walletID == "" {
-			return "", nil, fmt.Errorf("privy has no ethereum wallet %s", maskAddress(address))
+			return unmovedRead{err: fmt.Errorf("privy has no ethereum wallet %s", maskAddress(address))}
 		}
 	}
 	queries := PrivyBalanceQueries()
@@ -202,12 +170,12 @@ func (t *Tracker) privyBalances(ctx context.Context, walletID, address string) (
 	for i, query := range queries {
 		var raw json.RawMessage
 		if err := t.Privy(ctx, "/v1/wallets/"+url.PathEscape(walletID)+"/balance", query, &raw); err != nil {
-			return walletID, nil, err
+			return unmovedRead{walletID: walletID, err: err}
 		}
 		pages[i] = raw
 	}
 	balances, err := ParsePrivyBalances(pages)
-	return walletID, balances, err
+	return unmovedRead{walletID: walletID, balances: balances, err: err}
 }
 
 func maskAddress(address string) string {
@@ -223,6 +191,11 @@ func decimalAmount(b Balance) string {
 		return amount
 	}
 	return strings.TrimSuffix(strings.TrimRight(amount, "0"), ".")
+}
+
+func units(b Balance) float64 {
+	v, _ := new(big.Rat).SetFrac(b.AmountRaw, tenPow(int64(b.Decimals))).Float64()
+	return v
 }
 
 func underMin(b Balance) bool {

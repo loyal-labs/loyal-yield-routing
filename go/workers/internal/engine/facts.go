@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"strconv"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -39,7 +40,8 @@ type Facts struct {
 	bridgeBatchFailed   *prometheus.CounterVec
 	bridgeDetected      *prometheus.GaugeVec
 	bridgeUnmoved       *prometheus.GaugeVec
-	bridgeScanned       *prometheus.GaugeVec
+	bridgeScanned       prometheus.Gauge
+	bridgeScanFailed    prometheus.Gauge
 }
 
 func NewFacts(registerer prometheus.Registerer) *Facts {
@@ -133,15 +135,18 @@ func NewFacts(registerer prometheus.Registerer) *Facts {
 			Name: "loyal_bridge_detection_last_success_timestamp_seconds", Help: "Last detection pass that read every batch and inserted every recordable request, by origin chain.",
 		}, []string{"chain"}),
 		bridgeUnmoved: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Name: "loyal_bridge_incoming_unmoved", Help: "Token balances on relay_signed EVM wallets that the last scan found nonzero for 30 minutes with no inbound transfer confirmed for their wallet. Moves only on a scan that read every wallet.",
-		}, nil),
-		bridgeScanned: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Name: "loyal_bridge_incoming_scan_last_success_timestamp_seconds", Help: "Last unmoved-funds scan that read every relay_signed wallet.",
-		}, nil),
+			Name: "loyal_bridge_incoming_unmoved", Help: "Token units the last read of a relay_signed EVM wallet found on it with no inbound transfer confirmed for its wallet in 30 minutes, by masked address, chain, asset and whether the amount is under the chain minimum. A series lives until a read of its address no longer finds the token.",
+		}, []string{"address", "chain", "asset", "under_min"}),
+		bridgeScanned: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "loyal_bridge_incoming_scan_last_success_timestamp_seconds", Help: "Last unmoved-funds scan whose database reads succeeded; the process start time until then.",
+		}),
+		bridgeScanFailed: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "loyal_bridge_incoming_scan_failed_addresses", Help: "relay_signed EVM wallets the last unmoved-funds scan could not read from Privy.",
+		}),
 	}
 	registerer.MustRegister(f.withdrawalAttention, f.withdrawalObserved, f.navReported, f.landed, f.failed, f.inflight, f.progress, f.lane, f.payer, f.oldestDue, f.fleetReplans, f.fleetSimulations, f.fleetMovable,
 		f.leverageRoom, f.leverageGap, f.leverageLanded, f.leverageReaction, f.leverageOutages, f.termDebtDays, f.stepNoRoom, f.hold, f.privyGasSpend, f.privyGasRead,
-		f.bridgePolled, f.bridgeAdvanced, f.bridgeSeen, f.bridgeRecorded, f.bridgeBatchFailed, f.bridgeDetected, f.bridgeUnmoved, f.bridgeScanned)
+		f.bridgePolled, f.bridgeAdvanced, f.bridgeSeen, f.bridgeRecorded, f.bridgeBatchFailed, f.bridgeDetected, f.bridgeUnmoved, f.bridgeScanned, f.bridgeScanFailed)
 	return f
 }
 
@@ -280,14 +285,26 @@ func (f *Facts) BridgeDetectionPassed(chain string) {
 	f.bridgeDetected.WithLabelValues(chain).Set(float64(time.Now().Unix()))
 }
 
-func (f *Facts) BridgeIncomingScanUnread() {
-	f.bridgeUnmoved.WithLabelValues().Set(0)
-	f.bridgeScanned.WithLabelValues().Set(0)
+type IncomingHeld struct {
+	Chain, Asset string
+	UnderMin     bool
+	Units        float64
 }
 
-func (f *Facts) BridgeIncomingScanned(unmoved int) {
-	f.bridgeUnmoved.WithLabelValues().Set(float64(unmoved))
-	f.bridgeScanned.WithLabelValues().Set(float64(time.Now().Unix()))
+func (f *Facts) BridgeIncomingHeld(address string, held []IncomingHeld) {
+	f.bridgeUnmoved.DeletePartialMatch(prometheus.Labels{"address": address})
+	for _, h := range held {
+		f.bridgeUnmoved.WithLabelValues(address, h.Chain, h.Asset, strconv.FormatBool(h.UnderMin)).Set(h.Units)
+	}
+}
+
+func (f *Facts) BridgeIncomingScanStarted() {
+	f.bridgeScanned.Set(float64(time.Now().Unix()))
+}
+
+func (f *Facts) BridgeIncomingScanned(failed int) {
+	f.bridgeScanned.Set(float64(time.Now().Unix()))
+	f.bridgeScanFailed.Set(float64(failed))
 }
 
 func (f *Facts) AutodepositOldestDueAge(seconds float64) { f.oldestDue.Set(seconds) }

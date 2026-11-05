@@ -66,16 +66,20 @@ row born `filled` counts here and not in `loyal_bridge_transfers_advanced_total`
 The unmoved-funds scan runs beside it in the same process, every 10 minutes
 after a first wait of 10, with the Privy credentials of the gas-spend reader
 (the same Privy app as loyal-web's `PRIVY_APP_ID`). It reads the balance of every
-`relay_signed` address in `loyal_yield.evm_deposit_routes` and logs
-`bridge incoming unmoved` (masked address, chain, asset, amount, `under_min`)
-for each token of at least 0.1 units that has sat there 30 minutes, minus a
-minute of tick slack, with no inbound `bridge_transfers` row confirmed for any
-of the address's wallets in the last 30 minutes. A balance first seen on the
-process's first complete pass counts as already 30 minutes old. A pass that
-fails to read any address logs `bridge incoming scan incomplete` and moves no
-metric. A complete pass sets `loyal_bridge_incoming_unmoved` (tokens logged
-that pass) and `loyal_bridge_incoming_scan_last_success_timestamp_seconds`. It
-writes no table.
+`relay_signed` address in `loyal_yield.evm_deposit_routes` and reports what the
+address holds now: each token of at least 0.1 units, unless an inbound
+`bridge_transfers` row confirmed in the last 30 minutes for any of the
+address's wallets, logs `bridge incoming unmoved` (masked address, chain, asset,
+amount, `under_min`) and sets `loyal_bridge_incoming_unmoved{address, chain,
+asset, under_min}` to its amount in token units. An address that read cleanly
+keeps exactly those series, so a moved balance loses its own; an address whose
+read failed keeps the series it had, and a route that is gone loses them. The
+engine keeps no clock: the 30 minutes live in the `LoyalBridgeIncomingUnmoved`
+and `LoyalBridgeIncomingStranded` rules. A pass whose database reads succeed
+sets `loyal_bridge_incoming_scan_last_success_timestamp_seconds` (the process
+start time until the first pass) and `loyal_bridge_incoming_scan_failed_addresses`
+(addresses Privy could not be read for, also logged as `bridge incoming scan
+incomplete`). It writes no table.
 `RETAIL_CROSS_MINT_ENABLED=true` opts the planner/controller into fresh cross-mint
 work; it defaults off. Existing signed recovery and custody continuation stay
 available with rollout off. Source database controls are checked independently.
