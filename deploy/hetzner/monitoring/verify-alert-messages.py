@@ -41,6 +41,14 @@ for inhibit in config["inhibit_rules"]:
     assert any(matches(inhibit["source_matchers"], source) and matches(inhibit["target_matchers"], target)
                and all(source.get(label) == target.get(label) for label in inhibit["equal"])
                for source in fixture_alerts for target in fixture_alerts), f"inhibit rule matches no fixture alert pair: {inhibit}"
+def group_by(labels):
+    for child in config["route"]["routes"]:
+        if matches(child["matchers"], labels):
+            return child.get("group_by", config["route"]["group_by"])
+    return config["route"]["group_by"]
+for alert in fixture_alerts:
+    if "address" in alert:
+        assert {"alertname", "address", "chain", "asset"} <= set(group_by(alert)), f"alerts labelled by address must not share a Telegram message: {alert['alertname']}"
 message = next(r for r in config["receivers"] if r["name"] == "telegram")["telegram_configs"][0]["message"]
 assert "GeneratorURL" not in message and "ExternalURL" not in message
 alerts = []

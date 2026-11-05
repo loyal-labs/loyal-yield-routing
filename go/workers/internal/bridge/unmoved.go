@@ -17,8 +17,9 @@ import (
 )
 
 const (
-	unmovedInterval = 10 * time.Minute
-	unmovedDeadline = 3 * time.Minute
+	unmovedInterval  = 10 * time.Minute
+	unmovedFirstWait = 2 * time.Minute
+	unmovedDeadline  = 3 * time.Minute
 
 	relaySignedAddresses = `SELECT evm_address, array_agg(solana_wallet) FROM loyal_yield.evm_deposit_routes
 WHERE kind = 'relay_signed' GROUP BY evm_address ORDER BY evm_address`
@@ -43,14 +44,15 @@ type unmovedRead struct {
 
 func (t *Tracker) unmovedEvery(ctx context.Context) {
 	walletIDs := map[string]string{}
-	ticker := time.NewTicker(unmovedInterval)
-	defer ticker.Stop()
+	timer := time.NewTimer(unmovedFirstWait)
+	defer timer.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-timer.C:
 		}
+		timer.Reset(unmovedInterval)
 		pass, cancel := context.WithTimeout(ctx, unmovedDeadline)
 		err := t.unmoved(pass, walletIDs)
 		cancel()
@@ -81,7 +83,7 @@ func (t *Tracker) unmoved(ctx context.Context, walletIDs map[string]string) erro
 	}
 	for address := range walletIDs {
 		if !live[address] {
-			t.Facts.BridgeIncomingHeld(strings.ToLower(address), nil)
+			t.Facts.BridgeIncomingRouteGone(strings.ToLower(address))
 			delete(walletIDs, address)
 		}
 	}
