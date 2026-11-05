@@ -375,7 +375,7 @@ func (c Crons) processJoyCandidate(ctx context.Context, candidate joyCandidate, 
 			outcome.Status = "quiet"
 			return outcome, nil
 		}
-		c.h.Push.send(ctx, candidate.wallet, joyPushPayload(decision.push))
+		c.h.CampaignPush.send(ctx, candidate.wallet, joyPushPayload(decision.push))
 	}
 	amount := decision.push.amountUSD
 	outcome.AmountUSD, outcome.Campaign, outcome.Status = &amount, decision.push.campaign, "pushed"
@@ -394,8 +394,8 @@ func (c Crons) EarnYieldJoy(ctx context.Context, dryRun bool) (EarnYieldJoySumma
 	if dryRun {
 		return summary, task(ctx)
 	}
-	if c.h.Push == nil {
-		return summary, errors.New("the wallet push sender is off (LOYAL_AUTODEPOSIT_PUSH, PUSH_DEBUG_SECRET or the push send grants): a run would spend the one-time campaigns without sending")
+	if c.h.CampaignPush == nil {
+		return summary, errors.New("the wallet push sender is off (the push send grants): a run would spend the one-time campaigns without sending")
 	}
 	acquired, err := withRunLock(ctx, c.h.appDB, "earn-yield-joy", task)
 	if err == nil && !acquired {

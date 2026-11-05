@@ -39,7 +39,7 @@ var earnMixpanelCohortFamily = earnFamily{
 	name:        "mixpanel cohort push",
 	yieldGrants: pushCampaignYieldGrants,
 	ready: func(h earnRoutes) bool {
-		return h.YieldDB != nil && h.Push != nil && h.MixpanelCohortSecret != ""
+		return h.YieldDB != nil && h.CampaignPush != nil && h.MixpanelCohortSecret != ""
 	},
 	register: earnRoutes.registerMixpanelCohort,
 }
@@ -48,7 +48,7 @@ var earnSweepNotifyFamily = earnFamily{
 	name:        "sweep notify push",
 	yieldGrants: pushCampaignYieldGrants,
 	ready: func(h earnRoutes) bool {
-		return h.YieldDB != nil && h.Push != nil && h.SweepNotifySecret != ""
+		return h.YieldDB != nil && h.CampaignPush != nil && h.SweepNotifySecret != ""
 	},
 	register: earnRoutes.registerSweepNotify,
 }
@@ -309,7 +309,7 @@ func (h earnRoutes) mixpanelCohort(ctx context.Context, in *mixpanelCohortInput)
 				case !claimed:
 					deduped.Add(1)
 				default:
-					h.Push.send(ctx, wallet, payload)
+					h.CampaignPush.send(ctx, wallet, payload)
 					sent.Add(1)
 				}
 			})
@@ -358,7 +358,7 @@ func (h earnRoutes) sweepNotify(ctx context.Context, in *sweepNotifyInput) (*swe
 	if !h.claimFailurePush(ctx, wallet, record["dedupeKey"]) {
 		return &sweepNotifyOutput{Body: sweepAck{Status: "deduped"}}, nil
 	}
-	h.Push.send(ctx, wallet, autodepositSweepFailedPush(amountRaw))
+	h.CampaignPush.send(ctx, wallet, autodepositSweepFailedPush(amountRaw))
 	return &sweepNotifyOutput{Body: sweepAck{Status: "accepted"}}, nil
 }
 

@@ -328,6 +328,7 @@ func run(ctx context.Context) error {
 	}
 	cfg.Earn = earn(ctx, registry, rpcClient, appDB, yieldDB, timescaleDB)
 	if cfg.Earn != nil {
+		cfg.Earn.CampaignPush = cfg.WalletPush
 		enableEarnPush(cfg.Earn, cfg.WalletPush)
 	}
 	if cfg.Earn != nil && cfg.Earn.OTLP != nil {

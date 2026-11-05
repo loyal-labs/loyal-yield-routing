@@ -51,7 +51,9 @@ func runCron(ctx context.Context, args []string) error {
 		return errors.New("cron needs a valid LOYAL_WEB_SOLANA_CLUSTER")
 	}
 	if checkGrants(ctx, appDB, yieldDB).PushSend {
-		enableEarnPush(webEarn, newWalletPush(appDB))
+		push := newWalletPush(appDB)
+		webEarn.CampaignPush = push
+		enableEarnPush(webEarn, push)
 	}
 	crons := webapp.NewCrons(appDB, *webEarn)
 	var summary any
