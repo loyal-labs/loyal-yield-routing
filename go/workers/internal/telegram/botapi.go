@@ -31,6 +31,7 @@ type APIError struct {
 	Method      string
 	Code        int
 	Description string
+	RetryAfter  int
 }
 
 func (e *APIError) Error() string {
@@ -65,6 +66,9 @@ func (a *BotAPI) call(ctx context.Context, method string, params, result any) er
 		Result      json.RawMessage `json:"result"`
 		ErrorCode   int             `json:"error_code"`
 		Description string          `json:"description"`
+		Parameters  struct {
+			RetryAfter int `json:"retry_after"`
+		} `json:"parameters"`
 	}
 	if err := json.Unmarshal(raw, &envelope); err != nil {
 		return fmt.Errorf("telegram %s: HTTP %d with an unreadable body", method, response.StatusCode)
@@ -74,7 +78,7 @@ func (a *BotAPI) call(ctx context.Context, method string, params, result any) er
 		if code == 0 {
 			code = response.StatusCode
 		}
-		return &APIError{Method: method, Code: code, Description: envelope.Description}
+		return &APIError{Method: method, Code: code, Description: envelope.Description, RetryAfter: envelope.Parameters.RetryAfter}
 	}
 	if result == nil {
 		return nil
@@ -97,6 +101,10 @@ func (a *BotAPI) SendMessage(ctx context.Context, chatID int64, text string) (in
 	}
 	err := a.call(ctx, "sendMessage", map[string]any{"chat_id": chatID, "text": text}, &sent)
 	return sent.MessageID, err
+}
+
+func (a *BotAPI) SendMessageDraft(ctx context.Context, chatID, draftID int64, text string, opts SendOptions) error {
+	return a.call(ctx, "sendMessageDraft", opts.apply(map[string]any{"chat_id": chatID, "draft_id": draftID, "text": text}), nil)
 }
 
 func (a *BotAPI) SetMessageReaction(ctx context.Context, chatID, messageID int64, emoji string) error {

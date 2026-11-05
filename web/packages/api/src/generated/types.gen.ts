@@ -348,6 +348,52 @@ export type BridgeTransfersResponse = {
     transfers: Array<BridgeTransfer> | null;
 };
 
+export type CampaignAck = {
+    action: string;
+    status: string;
+};
+
+export type CampaignError = {
+    code: number;
+    message: string;
+};
+
+export type CampaignRejected = {
+    action: string;
+    error: CampaignError;
+    status: string;
+};
+
+export type CapChallengeResponse = {
+    challenge: CapChallengeShape;
+    expires: number;
+    instrumentation: string;
+    token: string;
+};
+
+export type CapChallengeShape = {
+    c: number;
+    d: number;
+    s: number;
+};
+
+export type CapRedeemRequest = {
+    solutions: Array<number> | null;
+    token: string;
+    [key: string]: unknown;
+};
+
+export type CapRedeemResponse = {
+    expires: number;
+    success: boolean;
+    token: string;
+};
+
+export type CapRefusal = {
+    error: string;
+    success: boolean;
+};
+
 export type CrossMintDeleteReadinessRequest = {
     expectedGeneration?: string;
 };
@@ -2068,6 +2114,15 @@ export type SummaryTopic = {
     title: string;
 };
 
+export type SweepAck = {
+    status: string;
+};
+
+export type SweepRejected = {
+    error: string;
+    message?: string;
+};
+
 export type TronDepositAddressResponse = {
     address: string;
     expiresAt: string;
@@ -2080,6 +2135,55 @@ export type TronDepositAddressResponse = {
      * USDC on Solana a minimum deposit pays after Relay's fee and price, from the same quote; null until one has answered
      */
     receiveUsdc: string | null;
+};
+
+export type WalletAuthRefusal = {
+    error: WalletAuthRefusalDetail;
+};
+
+export type WalletAuthRefusalDetail = {
+    code: string;
+    details?: unknown;
+    message: string;
+};
+
+export type WalletAuthUser = {
+    authMethod: string;
+    displayAddress: string;
+    provider: string;
+    settingsPda: string;
+    smartAccountAddress: string;
+    subjectAddress: string;
+    walletAddress: string;
+};
+
+export type WalletChallengeRequest = {
+    captchaToken: string;
+    kind?: 'message' | 'siws' | 'transaction';
+    walletAddress?: string;
+    [key: string]: unknown;
+};
+
+export type WalletChallengeResponse = {
+    challengeToken: string;
+    expiresAt: string;
+    kind: string;
+    message?: string;
+    signInInput?: WalletSignInInput;
+    transaction?: string;
+};
+
+export type WalletCompleteRequest = {
+    challengeToken: string;
+    kind?: 'message' | 'siws' | 'transaction';
+    output?: unknown;
+    signature?: string;
+    signedTransaction?: string;
+    [key: string]: unknown;
+};
+
+export type WalletCompleteResponse = {
+    user: WalletAuthUser;
 };
 
 export type WalletPushError = {
@@ -2100,6 +2204,21 @@ export type WalletPushRequest = {
 export type WalletPushSent = {
     sentTo: number;
     success: boolean;
+};
+
+export type WalletSignInInput = {
+    address?: string;
+    chainId?: string;
+    domain?: string;
+    expirationTime?: string;
+    issuedAt?: string;
+    nonce?: string;
+    notBefore?: string;
+    requestId?: string;
+    resources?: Array<string>;
+    statement?: string;
+    uri?: string;
+    version?: string;
 };
 
 export type WireAddressLookupTable = {
@@ -2286,6 +2405,160 @@ export type PostAuthSessionRefreshResponses = {
 };
 
 export type PostAuthSessionRefreshResponse = PostAuthSessionRefreshResponses[keyof PostAuthSessionRefreshResponses];
+
+export type PostAuthWalletChallengeData = {
+    body?: WalletChallengeRequest;
+    headers?: {
+        Authorization?: string;
+        Cookie?: string;
+        'X-Forwarded-Host'?: string;
+        Origin?: string;
+        'X-Forwarded-Proto'?: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/auth/wallet/challenge';
+};
+
+export type PostAuthWalletChallengeErrors = {
+    /**
+     * Bad Request
+     */
+    400: WalletAuthRefusal;
+    /**
+     * Forbidden
+     */
+    403: WalletAuthRefusal;
+    /**
+     * Internal Server Error
+     */
+    500: WalletAuthRefusal;
+};
+
+export type PostAuthWalletChallengeError = PostAuthWalletChallengeErrors[keyof PostAuthWalletChallengeErrors];
+
+export type PostAuthWalletChallengeResponses = {
+    /**
+     * OK
+     */
+    200: WalletChallengeResponse;
+};
+
+export type PostAuthWalletChallengeResponse = PostAuthWalletChallengeResponses[keyof PostAuthWalletChallengeResponses];
+
+export type PostAuthWalletCompleteData = {
+    body?: WalletCompleteRequest;
+    headers?: {
+        Authorization?: string;
+        Cookie?: string;
+        'X-Forwarded-Host'?: string;
+        Origin?: string;
+        'X-Forwarded-Proto'?: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/auth/wallet/complete';
+};
+
+export type PostAuthWalletCompleteErrors = {
+    /**
+     * Bad Request
+     */
+    400: WalletAuthRefusal;
+    /**
+     * Unauthorized
+     */
+    401: WalletAuthRefusal;
+    /**
+     * Forbidden
+     */
+    403: WalletAuthRefusal;
+    /**
+     * Conflict
+     */
+    409: WalletAuthRefusal;
+    /**
+     * Internal Server Error
+     */
+    500: WalletAuthRefusal;
+    /**
+     * Bad Gateway
+     */
+    502: WalletAuthRefusal;
+    /**
+     * Service Unavailable
+     */
+    503: WalletAuthRefusal;
+};
+
+export type PostAuthWalletCompleteError = PostAuthWalletCompleteErrors[keyof PostAuthWalletCompleteErrors];
+
+export type PostAuthWalletCompleteResponses = {
+    /**
+     * OK
+     */
+    200: WalletCompleteResponse;
+};
+
+export type PostAuthWalletCompleteResponse = PostAuthWalletCompleteResponses[keyof PostAuthWalletCompleteResponses];
+
+export type PostCapChallengeData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/cap/challenge';
+};
+
+export type PostCapChallengeErrors = {
+    /**
+     * Internal Server Error
+     */
+    500: RouteError;
+};
+
+export type PostCapChallengeError = PostCapChallengeErrors[keyof PostCapChallengeErrors];
+
+export type PostCapChallengeResponses = {
+    /**
+     * OK
+     */
+    200: CapChallengeResponse;
+};
+
+export type PostCapChallengeResponse = PostCapChallengeResponses[keyof PostCapChallengeResponses];
+
+export type PostCapRedeemData = {
+    body?: CapRedeemRequest;
+    path?: never;
+    query?: never;
+    url: '/api/cap/redeem';
+};
+
+export type PostCapRedeemErrors = {
+    /**
+     * Bad Request
+     */
+    400: CapRefusal;
+    /**
+     * Forbidden
+     */
+    403: CapRefusal;
+    /**
+     * Internal Server Error
+     */
+    500: CapRefusal;
+};
+
+export type PostCapRedeemError = PostCapRedeemErrors[keyof PostCapRedeemErrors];
+
+export type PostCapRedeemResponses = {
+    /**
+     * OK
+     */
+    200: CapRedeemResponse;
+};
+
+export type PostCapRedeemResponse = PostCapRedeemResponses[keyof PostCapRedeemResponses];
 
 export type GetEarnMaxApyData = {
     body?: never;
@@ -3356,6 +3629,44 @@ export type PostWalletPushResponses = {
 };
 
 export type PostWalletPushResponse = PostWalletPushResponses[keyof PostWalletPushResponses];
+
+export type PostMixpanelCohortData = {
+    body?: {
+        [key: string]: unknown;
+    };
+    headers?: {
+        Authorization?: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/push/mixpanel-cohort';
+};
+
+export type PostMixpanelCohortErrors = {
+    /**
+     * Bad Request
+     */
+    400: CampaignRejected;
+    /**
+     * Unauthorized
+     */
+    401: CampaignRejected;
+    /**
+     * Internal Server Error
+     */
+    500: CampaignRejected;
+};
+
+export type PostMixpanelCohortError = PostMixpanelCohortErrors[keyof PostMixpanelCohortErrors];
+
+export type PostMixpanelCohortResponses = {
+    /**
+     * OK
+     */
+    200: CampaignAck;
+};
+
+export type PostMixpanelCohortResponse = PostMixpanelCohortResponses[keyof PostMixpanelCohortResponses];
 
 export type GetReferralsData = {
     body?: never;
@@ -4882,6 +5193,40 @@ export type GetSolanaWeekProgressResponses = {
 };
 
 export type GetSolanaWeekProgressResponse = GetSolanaWeekProgressResponses[keyof GetSolanaWeekProgressResponses];
+
+export type PostSweepNotifyData = {
+    body?: {
+        [key: string]: unknown;
+    };
+    headers?: {
+        Authorization?: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/solana-week/sweep-notify';
+};
+
+export type PostSweepNotifyErrors = {
+    /**
+     * Bad Request
+     */
+    400: SweepRejected;
+    /**
+     * Unauthorized
+     */
+    401: SweepRejected;
+};
+
+export type PostSweepNotifyError = PostSweepNotifyErrors[keyof PostSweepNotifyErrors];
+
+export type PostSweepNotifyResponses = {
+    /**
+     * OK
+     */
+    200: SweepAck;
+};
+
+export type PostSweepNotifyResponse = PostSweepNotifyResponses[keyof PostSweepNotifyResponses];
 
 export type GetSummariesData = {
     body?: never;
