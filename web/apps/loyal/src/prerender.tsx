@@ -1,4 +1,8 @@
-import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
+import {
+  createMemoryHistory,
+  rootRouteId,
+  RouterProvider,
+} from "@tanstack/react-router";
 import { GeistMono } from "geist/font/mono";
 import { GeistSans } from "geist/font/sans";
 import { prerender } from "react-dom/static";
@@ -13,20 +17,30 @@ export const bodyClass = `${GeistSans.variable} ${GeistMono.variable}`;
 export function htmlLang(path: string): string {
   const locale = LOCALES.find(
     (code) =>
-      code !== "en" && (path === `/${code}` || path.startsWith(`/${code}/`))
+      code !== "en" && (path === `/${code}` || path.startsWith(`/${code}/`)),
   );
   return LOCALE_TAGS[locale ?? "en"];
 }
 
-export async function render(href: string): Promise<string> {
+export async function render(
+  href: string,
+  statusCode: 200 | 404 = 200,
+): Promise<string> {
   const router = createAppRouter({
     history: createMemoryHistory({ initialEntries: [href] }),
     origin: SITE_URL,
   });
   await router.load();
   const { matches } = router.state;
+  const notFound =
+    matches.length > 0 &&
+    matches.every((match) => match.routeId === rootRouteId);
+  if (notFound !== (statusCode === 404))
+    throw new Error(
+      `${href}: expected status ${statusCode}, router answered ${notFound ? 404 : 200}`,
+    );
   const failed = matches.find(
-    (match) => match.status !== "success" || match.error
+    (match) => match.error || (!notFound && match.status !== "success"),
   );
   if (failed) throw new Error(`${href}: route ${failed.routeId} did not load`);
   if (matches.length === 0)

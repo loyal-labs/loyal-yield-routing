@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"math"
 	"net/http"
 	"strconv"
@@ -165,7 +166,8 @@ func (h earnRoutes) capRedeem(ctx context.Context, in *capRedeemInput) (*capRede
 	id, secret := randomHex(8), randomHex(15)
 	expires := time.Now().Add(capRedeemTokenTTL)
 	if _, err := h.putCaptchaKey(ctx, capTokenKeyPrefix+id+":"+sha256Hex(secret), expires); err != nil {
-		return nil, fmt.Errorf("store cap redeem token: %w", err)
+		slog.Error("store cap redeem token failed", "error", err)
+		return nil, &capRefusal{Reason: "internal_error", status: http.StatusInternalServerError}
 	}
 	return &capRedeemOutput{Body: CapRedeemResponse{Success: true, Token: id + ":" + secret, Expires: expires.UnixMilli()}}, nil
 }
