@@ -45,13 +45,13 @@ export function AuthSessionProvider({ children }: { children: ReactNode }) {
   const session = sessionState?.session ?? null;
   const subject = user?.subjectAddress ?? null;
   const [launch, setLaunch] = useState<{
-    subject: string;
+    subject: string | null;
     launched: boolean;
   } | null>(null);
   const launched = launch !== null && launch.subject === subject && launch.launched;
 
   useEffect(() => {
-    if (!subject) return;
+    if (!isHydrated) return;
     let cancelled = false;
     void authApiClient.getLaunched().then((answer) => {
       if (!cancelled) setLaunch({ subject, launched: answer });
@@ -59,7 +59,7 @@ export function AuthSessionProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [authApiClient, subject]);
+  }, [authApiClient, isHydrated, subject]);
 
   const readSession = useCallback(
     async (variant: "initial" | "return" | "refresh") => {
