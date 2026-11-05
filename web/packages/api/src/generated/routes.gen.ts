@@ -8,6 +8,7 @@ export type Get = {
   "/api/funding/bridge/out/recipients": Types.BridgeRecipientsResponse;
   "/api/funding/bridge/transfers": Types.BridgeTransfersResponse;
   "/api/funding/evm-deposit-address": Types.EvmDepositAddressResponse;
+  "/api/funding/launch": Types.LaunchResponse;
   "/api/mobile/dapps": Types.MobileTrustedDappsResponse;
   "/api/mobile/library": Types.MobileLibraryResponse;
   "/api/mobile/tokens/{mint}": Types.MobileTokenDetailResponse;
