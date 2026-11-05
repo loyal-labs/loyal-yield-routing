@@ -16,9 +16,11 @@ var signerReach = map[string]struct {
 	from  []string
 }{
 	"NewSigner":         {"internal/jwt", []string{"cmd/loyal-web/main.go"}},
-	"Mint":              {"internal/jwt", []string{"internal/webapp/earn_session.go", "internal/webapp/earn_privy.go", "internal/webapp/auth_session_routes.go"}},
+	"Mint":              {"internal/jwt", []string{"internal/webapp/earn_session.go", "internal/webapp/earn_privy.go", "internal/webapp/auth_session_routes.go", "internal/webapp/auth_wallet.go"}},
 	"NewRealtimeIssuer": {"internal/jwt", []string{"cmd/loyal-web/main.go"}},
 	"IssueRealtime":     {"internal/jwt", []string{"internal/webapp/state_realtime.go"}},
+	"NewHS256":          {"internal/jwt", []string{"internal/webapp/auth_wallet.go"}},
+	"SealHS256":         {"internal/jwt", []string{"internal/webapp/auth_wallet.go", "internal/webapp/cap_captcha.go"}},
 	"NewSponsor":        {"internal/earnprep", []string{"cmd/loyal-web/main.go"}},
 	"Cosign":            {"internal/earnprep", []string{"internal/webapp/earn_sponsor.go"}},
 }
@@ -69,7 +71,7 @@ func TestSigningStaysWithItsOps(t *testing.T) {
 				}
 				rule, guarded := signerReach[sel.Sel.Name]
 				if guarded && pkg != rule.owner && !slices.Contains(rule.from, file) {
-					t.Errorf("%s calls %s: only %s may reach the %s signer (the session mint and Privy complete sign JWTs; the sponsored smart account create cosigns); move the call there", file, sel.Sel.Name, strings.Join(rule.from, ", "), rule.owner)
+					t.Errorf("%s calls %s: only %s may reach the %s signer (the session mint, Privy complete, auth session and wallet sign-in sign JWTs; the sponsored smart account create cosigns); move the call there", file, sel.Sel.Name, strings.Join(rule.from, ", "), rule.owner)
 				}
 				return true
 			})

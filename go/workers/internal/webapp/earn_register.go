@@ -24,6 +24,7 @@ var earnFamilies = []earnFamily{
 	earnObservabilityFamily,
 	earnSessionFamily,
 	earnPrivyFamily,
+	earnWalletAuthFamily,
 	earnAuthSessionFamily,
 	earnDepositFamily,
 	earnWithdrawFamily,
