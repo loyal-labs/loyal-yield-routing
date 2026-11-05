@@ -7,7 +7,7 @@ Status as of 2026-11-05. The release plan, wiring plans, decision trail and Figm
 - EVM to Solana deposits in `loyal-web`. A user whose Solana wallet is a Privy embedded wallet gets the Privy auto-bridge deposit address. An external wallet (Phantom) gets a Privy embedded EVM wallet and signs a Relay bridge itself, gas sponsored by Privy, with no Privy policies. The route kinds are in `loyal_yield.evm_deposit_routes`.
 - Bridge Out, Tron deposits and the Move flow ship in the same web release. Out quotes carry Loyal's 40 bps as a Relay app fee.
 - Launched 2026-11-04 21:53 PST (#697). The web host drop-in `86-launch.conf` sets `LOYAL_TEST_WALLETS=*`, which opens Bridge, Other chains and referrals to every signed-in wallet. To roll back, remove the drop-in and restart `loyal-web`. The gate is `go/workers/internal/webapp/test_wallets.go`.
-- Relay deposits are `depositErc20(depositor,token,amount,id)`, selector `e8017952`, and `depositNative(depositor,id)`, selector `49290c1c`. The `id` is not the Relay request id. `go/workers/internal/bridge/quote.go:92` pins the selector and `checkDeposit` (`quote.go:334`) refuses any other calldata.
+- Relay deposits are `depositErc20(depositor,token,amount,id)`, selector `e8017952`, and `depositNative(depositor,id)`, selector `49290c1c`. The `id` is not the Relay request id. `go/workers/internal/bridge/quote.go:92` pins the selector and `checkDeposit` (`quote.go:337`) refuses any other calldata.
 - A Privy deposit account rejects a key-owned destination ("must be a 1-of-1 owned by the authenticated user"), so the auto-bridge can only be proved with a real signed-in user. This was observed on 2026-11-02 with a key-owned test wallet.
 
 ## Next step
