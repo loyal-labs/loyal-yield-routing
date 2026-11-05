@@ -17,5 +17,7 @@ func TestMain(m *testing.M) {
 	rwa.AdminPerformanceFeeBPS, rwa.IssuanceFeeBPS = 2000, 0
 	// Retained October 12 fixtures also predate the shorter payback horizon.
 	rwa.EconomicHorizon = selectorHorizon
+	// Historical lifecycle fixtures predate admission limits; new policy tests opt in.
+	rwa.DiversifyNewCash = false
 	os.Exit(m.Run())
 }

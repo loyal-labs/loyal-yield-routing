@@ -91,6 +91,32 @@ benefit. Existing risk brakes remain authoritative.
 
 ## Rodion's proposals: concrete next experiments
 
+The subsequent [read-only execution study](evidence/earn-max-execution-study-2026-11-04.md)
+captured 96 size/time quotes, simulated four small repayments, and compared
+diversification exits. Splitting and waiting had little benefit in that window;
+broader Maple routing produced much better quotes than its current filter.
+The study records the remaining execution checks before using that route.
+
+The [November 5 diversification follow-up](evidence/earn-max-diversification-2026-11-05.md)
+refreshes concentration and cash figures and validates a $1,000 Maple purchase
+and sale through Whirlpool using sequential unsigned simulation under existing
+policies. Full lending entry/exit and intended-size withdrawal stress remain
+unverified. It also distinguishes equity allocation from gross leveraged
+exposure; no limit or production routing change has been enabled.
+
+The subsequent [PRIME/Maple comparison](evidence/earn-max-prime-maple-comparison-2026-11-05.md)
+validates both small lending cycles without borrowing, including cash restoration
+to the vault, and compares larger quote pairs. PRIME has the higher observed
+native yield; Maple adds another provider group. PRIME remains a candidate even
+when its borrowing pool is full. The subsequent
+[large-withdrawal and liquidity-stress study](evidence/earn-max-withdrawal-stress-2026-11-05.md)
+passes six funded-position cases at $10,000/$50,000/$100,000, plus executed
+market-pressure tests. The stronger PRIME test still accepts a 0.423% worse
+fill within today's 0.5% tolerance; the stronger Maple pressure scenario could
+not obtain its quote and remains unproven. Evaluate a stricter executable price
+floor for ordinary unborrowed withdrawals before treating diversification as
+ready. The cash reserve takes priority over either allocation.
+
 **Slower large withdrawals and smaller sales.** First compare one sale with
 several freshly quoted smaller sales inside the existing 600-second waiting
 period. Use the required cash shortfall after available cash, each route's
@@ -124,6 +150,99 @@ second suitable destination, keep excess cash rather than manufacture a
 costly rotation to hit a percentage. Compare net return and joint withdrawal
 stress before choosing the limit. No concentration cap or automatic
 diversifying trades are enabled here.
+
+## Next implementation and release sequence — November 5
+
+Status: the 20 bps ordinary-withdrawal guard was merged in [PR #729](https://github.com/loyal-labs/loyal-yield-routing/pull/729) and deployed to Backyard
+on November 5 at 15:01 UTC, release `d27fbb4d1dfd450fdf584f231ff1e510d6ba917d`.
+[Pre-release verification](evidence/earn-max-withdrawal-guard-2026-11-05.md) includes
+funded position exits and atomic rejection of a stressed PRIME sale. Post-deploy
+checks preserved all four collateral positions and leverage targets, with no
+capital trades or restarts observed. Two temporary price-refresh read holds
+and one expired NAV report recovered automatically; six NAV reports reconciled.
+No live sale under the new 20 bps limit occurred during this observation.
+Paced withdrawals and diversification controls remain planned.
+
+### First release: stricter ordinary-withdrawal execution
+
+- Set a 20 bps maximum deterioration from an approved quote for new ordinary
+  withdrawal sales. Carry the withdrawal purpose and limit through quoting,
+  preparation, executable minimum-output validation and the operation record.
+  The implementation keeps the shared 50 bps default and records a stricter
+  per-operation limit for ordinary withdrawals, including their residual sales.
+- Preserve the existing bounded rules for liquidation prevention and other
+  urgent debt reduction. A withdrawal deadline must not silently reclassify an
+  ordinary sale as an emergency or widen its allowed slippage.
+- Use available withdrawal cash first. If a sale cannot satisfy its limit,
+  reobserve and obtain a usable route, or hold and alert. Record the reason and
+  outstanding shortfall. Preserve the current 600-second withdrawal contract;
+  the deadline itself is not permission to accept a worse price. Verify the
+  pending-withdrawal behavior before release so a hold is visible and recoverable.
+- Distinguish the quote-to-fill tolerance from total economic expense. A poor
+  initial quote can still lose money with 20 bps slippage. Withdrawal pacing and
+  repeated repricing need a separately preserved economic expense ceiling;
+  lowering slippage alone must not be described as a 0.2% maximum total loss.
+- Recover already-signed operations using their recorded wire and terms. Apply
+  the new rule to newly prepared operations; do not discard or re-sign an
+  ambiguous transaction to force it into the new policy.
+
+The release gate is a real-wire simulation of the new 20 bps policy: normal
+funded exits succeed, adverse fills below its minimum fail atomically, and a
+later acceptable quote can complete the remaining withdrawal. Validate the
+compiled wire/signing boundary, partial completion, deadline holds, restart
+recovery and the separate urgent-repayment path. Repeat the current-vault
+continuity check before activation: existing holdings and leverage targets
+remain stable when borrowing reserves are full. Release this protection before
+activating diversification; check the first held/failed operation as well as
+successful execution after cutover.
+
+### Second release: gradual diversification with funded cash reserves
+
+The initial candidate was verified locally on November 5; activation is pending.
+The [initial verification](evidence/earn-max-diversification-policy-2026-11-05.md)
+records the earlier 50% gross-cap policy, live HOLD replay and funded Maple/PRIME
+route simulations. The [revised candidate](evidence/earn-max-allocation-targets-2026-11-05.md)
+replaces that cap and adds small allocation targets. Its full worker checks
+passed, and a current-vault replay preserved the HOLD decision and all four
+stored leverage targets. Automatic rotations and overflow moves remain paused
+while new cash funds gradual diversification.
+
+- Reserve incoming cash using the existing policy: 10% of NAV, a $5,000 floor
+  and a $25,000 cap, subject to available assets. Confirm it is actually funded
+  before investing the remainder. Do not force sales to fill it on deployment.
+- Target 5% Maple, 5% PRIME and 90% OnRe/AUTO combined, measured in own capital
+  after subtracting the withdrawal reserve and pending withdrawals from NAV.
+  Count collateral minus debt in each bucket, plus loose collateral once per
+  mint. All PRIME lanes share one target; all AUTO lanes join OnRe in the 90%
+  bucket. These are admission targets: existing holdings are not sold to meet
+  them, and appreciation or grandfathered positions can leave a bucket above target.
+- Make both PRIME and Maple eligible for new allocations without borrowing.
+  PRIME retains its current routing; Maple needs the tested Whirlpool route.
+  Give qualifying below-target Maple/PRIME entries priority, then choose between
+  OnRe/AUTO by net benefit. Size each quote to remaining target room and recheck
+  before allocation and purchase. Keep the seven-day cost/benefit gate and its
+  30-minute persistence; apply its 10 bps uncertainty allowance to the new
+  investment amount. A small target does not authorize an unprofitable trade.
+  Unfilled target room may remain in cash when no entry qualifies.
+- Limit additional **gross** exposure to 100% of NAV per provider group,
+  counting AUTO and PRIME together. Gross exposure includes borrowed money;
+  this ceiling is separate from the 90/5/5 own-capital targets. Existing
+  oversized positions are grandfathered. The higher ceiling lets the main
+  allocations use borrowing while retaining a provider limit; it is a policy
+  choice, not a statistically proven optimum.
+- Verify the new-asset routes under the implemented withdrawal limit, then
+  stage activation using new inflows. A release must not trigger a sell-and-rebuy
+  cycle, reset existing positions to 1x, or treat unavailable new borrowing as
+  a reason to close an existing position.
+
+### Follow-on: price-aware smaller sales
+
+Implement pacing after its existing withdrawal-window experiment and recovery
+checks are complete. Select smaller sales only when freshly executable prices
+justify their extra fees; retain progress and the economic expense ceiling
+across pieces and repricing. Test actual liquidity replenishment before claiming
+that splitting improves cost. Extending the 600-second wait remains a separate
+product/contract change. No withdrawal-fee change is included in these releases.
 
 ## Withdrawal-cost fairness proposal
 

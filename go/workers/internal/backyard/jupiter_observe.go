@@ -57,6 +57,21 @@ func prepareJupiterFromTickObservation(ctx context.Context, rpc *chain.Client, m
 	}
 	evidence, err := prepareJupiterQuoteEvidence(ctx, rpc, client, manifest, observation.policies, decision, sourceRaw, destinationRaw, observation.Snapshot.Slot)
 	logStage("prepare_jupiter_quote", prepareStart)
+	if limit := observation.Snapshot.NewAllocation; err == nil && limit != nil &&
+		(decision.Action == SwapStableToCollateralStep || decision.Action == SwapDebtToCollateralStep) {
+		route, err := v.route(decision.StrategyKey)
+		if err != nil {
+			return observation, JupiterExecutionEvidence{}, err
+		}
+		prices, err := batchLanePrices(accounts, route)
+		if err != nil {
+			return observation, JupiterExecutionEvidence{}, err
+		}
+		value, err := prices.collateralMicros(evidence.Request.QuotedOutputRaw)
+		if err != nil || value < 0 || int64(value) > limit.ProviderRoomRaw || decision.AmountRaw > limit.EquityRoomRaw {
+			return observation, JupiterExecutionEvidence{}, staleHold("new_allocation_limit")
+		}
+	}
 	if route, routeErr := v.route(decision.StrategyKey); routeErr == nil {
 		evidence.ExpectedEffects.Sale = collateralSale(accounts, route, decision.Action, amount, evidence.ExpectedEffects)
 	}
@@ -111,7 +126,7 @@ func prepareJupiterQuoteEvidenceAt(ctx context.Context, v *Vault, rpc *chain.Cli
 	err = concurrentReads(ctx, func(ctx context.Context) error {
 		var quote jupiter.Quote
 		var err error
-		if quote, instruction, err = freshSwapForRoute(ctx, v, client, decision.StrategyKey, decision.Action, amount, maxAccounts); err != nil {
+		if quote, instruction, err = freshSwapForRoute(ctx, v, client, decision.StrategyKey, decision.Action, amount, maxAccounts, decision.MaxSlippageBPS); err != nil {
 			return confirmedObservationUnavailable(err)
 		}
 		key, _, err := jupiterPolicyLeg(v, decision.StrategyKey, decision.Action)
@@ -121,18 +136,18 @@ func prepareJupiterQuoteEvidenceAt(ctx context.Context, v *Vault, rpc *chain.Cli
 		if policy, err = policies.account(key); err != nil {
 			return err
 		}
-		out, minimum, err = validateJupiterQuoteForRoute(v, quote, decision.Action, amount, decision.StrategyKey)
+		out, minimum, err = validateJupiterQuoteForRoute(v, quote, decision.Action, amount, decision.StrategyKey, decision.MaxSlippageBPS)
 		if err != nil || destinationRaw > math.MaxUint64-minimum {
 			return fmt.Errorf("Jupiter destination threshold overflows")
 		}
-		if autoCollateralLane(decision.StrategyKey) {
+		if autoCollateralLane(decision.StrategyKey) || decision.MaxSlippageBPS != 0 {
 			floor, err := jupiterInstructionWireFloor(instruction)
 			if err != nil {
 				return confirmedObservationUnavailable(err)
 			}
 			minimum = min(minimum, floor)
 			if minimum == 0 {
-				return staleHold("jupiter_auto_wire_floor_zero")
+				return staleHold("jupiter_wire_floor_zero")
 			}
 		}
 		return nil
@@ -144,7 +159,7 @@ func prepareJupiterQuoteEvidenceAt(ctx context.Context, v *Vault, rpc *chain.Cli
 		return JupiterExecutionEvidence{}, err
 	}
 	minimumAfter := destinationRaw + minimum
-	request := JupiterSwapRequest{Action: decision.Action, AmountRaw: amount, QuotedOutputRaw: out, MinimumOutputRaw: minimum, Policy: policy, Instruction: instruction, RecentBlockhash: blockhash.Blockhash, LastValidBlockHeight: blockhash.LastValidBlockHeight, RouteLane: decision.StrategyKey}
+	request := JupiterSwapRequest{Action: decision.Action, AmountRaw: amount, QuotedOutputRaw: out, MinimumOutputRaw: minimum, Policy: policy, Instruction: instruction, RecentBlockhash: blockhash.Blockhash, LastValidBlockHeight: blockhash.LastValidBlockHeight, RouteLane: decision.StrategyKey, MaxSlippageBPS: decision.MaxSlippageBPS}
 	return JupiterExecutionEvidence{
 		Request: request,
 		ExpectedEffects: ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Kind: effectsCrossMintSwap, Conserved: false, Accounts: []ExpectedAccountEffect{

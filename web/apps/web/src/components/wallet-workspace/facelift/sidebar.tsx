@@ -595,21 +595,6 @@ export function FaceliftSidebar({
       </nav>
       )}
 
-        {isSignedOutNav || !launched ? null : (
-          <button
-            className={`t-hover flex min-h-[60px] w-full items-center rounded-2xl px-4 text-left ${
-              activePage === "invite" ? "bg-accent" : "hover:bg-accent"
-            }`}
-            onClick={() => onSelectPage("invite")}
-            type="button"
-          >
-            <span className="mr-3 flex size-11 shrink-0 items-center justify-center rounded-[11px] bg-accent">
-              <ThemedIcon className="size-6 text-foreground" src={`${ASSET_BASE}/icon-invite.svg`} />
-            </span>
-            <span className="py-2 font-medium text-[16px] text-foreground leading-5">Invite</span>
-          </button>
-        )}
-
         <button
           className="flex min-h-[60px] w-full cursor-default items-center rounded-2xl px-4 text-left"
           disabled
@@ -625,6 +610,18 @@ export function FaceliftSidebar({
         </button>
 
         <div className="w-full py-2">
+          {isSignedOutNav || !launched ? null : (
+            <button
+              className="t-hover flex min-h-11 w-full items-center rounded-2xl px-4 text-left text-muted-foreground hover:bg-accent"
+              onClick={() => onSelectPage("invite")}
+              type="button"
+            >
+              <span className="mr-3 flex size-11 shrink-0 items-center justify-center">
+                <ThemedIcon className="size-6 text-tertiary" src={`${ASSET_BASE}/icon-user-add.svg`} />
+              </span>
+              <span className="py-2 font-medium text-[16px] leading-5">Invite a friend</span>
+            </button>
+          )}
           <div className="[@media(max-height:899px)]:hidden">
             <SidebarResourceLinks />
           </div>

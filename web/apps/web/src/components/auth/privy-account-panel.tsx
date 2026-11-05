@@ -44,7 +44,7 @@ function usePrivyAppConfig(appId: string | undefined) {
  * key export, MFA. Every Privy action runs in Privy's own modal; after a
  * link/unlink the Loyal session is re-issued so `user.email` follows.
  */
-export function PrivyAccountPanel({ policyRow }: { policyRow?: ReactNode }) {
+export function PrivyAccountPanel({ accountRows }: { accountRows?: ReactNode }) {
   const { user: privyUser } = usePrivy();
   const privyAuth = usePrivyAuth();
   const { user, refreshSession } = useAuthSession();
@@ -101,7 +101,7 @@ export function PrivyAccountPanel({ policyRow }: { policyRow?: ReactNode }) {
             {privyAuth.error}
           </p>
         ) : null}
-        {policyRow}
+        {accountRows}
       </div>
     );
   }
@@ -165,7 +165,7 @@ export function PrivyAccountPanel({ policyRow }: { policyRow?: ReactNode }) {
         subtitle={email ? email.address : "For account updates and recovery."}
         title="Email"
       />
-      {policyRow}
+      {accountRows}
       {embedded ? (
         <Row
           action="chevron"

@@ -15,6 +15,8 @@ import {
 } from "@privy-io/react-auth";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { bridgeIconFile } from "./bridge-icons";
+
 type EvmDepositInfo = EvmDepositAddressResponse & { address: string };
 
 type DepositState = {
@@ -96,7 +98,18 @@ export function useEvmDepositAddress(walletAddress: string | null) {
   const { info, error, loading, tron, tronError, tronLoading } = current;
   const serverNetworks = current.networks;
   const networks = useMemo(
-    () => serverNetworks.map((network) => withTron(network, tron)),
+    () => serverNetworks.map((source) => {
+      const network = withTron(source, tron);
+      return {
+        ...network,
+        icon: bridgeIconFile(network.chain, network.icon),
+        qrIcon: network.qrIcon || bridgeIconFile(network.chain, network.icon),
+        tokens: network.tokens?.map((token) => ({
+          ...token,
+          icon: bridgeIconFile(token.asset, token.icon),
+        })) ?? null,
+      };
+    }),
     [serverNetworks, tron]
   );
 

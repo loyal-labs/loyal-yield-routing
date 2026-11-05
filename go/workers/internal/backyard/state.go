@@ -183,12 +183,13 @@ type Snapshot struct {
 	CapitalMutated                   bool
 	PostMutationNAVRequired          bool
 	LastReportAgeSeconds             int64
-	StageAllowance                   *StageAllowance `json:",omitempty"`
-	Target                           LaneTarget      `json:",omitempty"`
-	TargetInputs                     string          `json:",omitempty"`
-	ExitLiabilityRaw                 int64           `json:",omitempty"`
-	JournalExitAtReportRaw           int64           `json:",omitempty"`
-	ExitCostBPS                      microBPS        `json:",omitempty"`
+	StageAllowance                   *StageAllowance   `json:",omitempty"`
+	Target                           LaneTarget        `json:",omitempty"`
+	TargetInputs                     string            `json:",omitempty"`
+	NewAllocation                    *allocationLimits `json:",omitempty"`
+	ExitLiabilityRaw                 int64             `json:",omitempty"`
+	JournalExitAtReportRaw           int64             `json:",omitempty"`
+	ExitCostBPS                      microBPS          `json:",omitempty"`
 }
 
 func (o Observation) exitCosts() exitCosts {
@@ -234,6 +235,7 @@ type Decision struct {
 	Action         Action
 	Reason         string
 	AmountRaw      int64
+	MaxSlippageBPS uint16
 	IdempotencyKey string
 	StrategyKey    string
 }
@@ -246,7 +248,7 @@ func validateSelectorInitializerDecision(d Decision) error {
 }
 
 func (d Decision) Validate() error {
-	if d.Reason == "" || d.IdempotencyKey == "" || d.AmountRaw < 0 {
+	if d.Reason == "" || d.IdempotencyKey == "" || d.AmountRaw < 0 || d.MaxSlippageBPS > jupiterMaxSlippageBPS {
 		return fmt.Errorf("incomplete decision")
 	}
 	switch d.Action {

@@ -235,8 +235,10 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 		views[i].Snapshot.LeverageDown = level.Down
 		snapshots[i] = views[i].Snapshot
 	}
+	applyAllocationLimits(snapshots, v.selectorPolicy())
 	index, laneTarget := target(snapshots, runtime.inputs)
 	working := views[index]
+	working.Snapshot = snapshots[index]
 	working.Snapshot.Target = laneTarget
 	working.Snapshot.TargetInputs = targetSummary(snapshots, runtime.inputs)
 	observationID, err := targetObservationID(working.Snapshot.ObservationID, laneTarget, working.Snapshot.TargetInputs)

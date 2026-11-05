@@ -50,7 +50,7 @@ var earnLanes = laneCapsOnLadder([]earnLane{
 	// Maple: 88% max LTV, 90% liquidation (hard LTV 80%); 3x = 66.7%. Its
 	// USDC borrow pool is thin and its spread often under 2.5 pts, so the
 	// rule rarely takes it past 1.75x.
-	{route: mapleSyrupUSDCUSDCTemplate, policy: policyBasic, basicSwapLeg: basicSwapSyrup, jupiterDexes: "Manifest", initializer: true, maxLevel: 3},
+	{route: mapleSyrupUSDCUSDCTemplate, policy: policyBasic, basicSwapLeg: basicSwapSyrup, jupiterDexes: "Manifest,Whirlpool", initializer: true, maxLevel: 3},
 	// OnRe: 66% max LTV, 75% liquidation (hard LTV 63%, where a down step
 	// still has withdraw room); 2.5x = 60%. 3x (66.7%) sits over the hard
 	// LTV, so 2.5x is its ceiling.

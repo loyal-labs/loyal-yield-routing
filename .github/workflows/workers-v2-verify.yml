@@ -76,8 +76,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     # The Go tests that need Postgres skip when their env var is unset, and a
-    # skip on trunk hid breakage twice. One server, one database per test:
-    # each test creates and drops its own loyal_yield schema.
+    # skip on trunk hid breakage twice. Packages run serially because bridge
+    # and webapp tests create and drop the same loyal_yield schema.
     env:
       BRIDGE_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/bridge_test?sslmode=disable
       EARNMAX_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/earnmax_test?sslmode=disable
@@ -163,7 +163,7 @@ jobs:
           export GOMODCACHE="$WORKERS_V2_CACHE_DIR/gomod" GOCACHE="$WORKERS_V2_CACHE_DIR/gobuild"
           tests="TestBridgeOutQuoteIsNotServedWithoutItsRow TestTrackerStoresEachHashFromTheStatusThatCarriedIt TestForeignInflowStoreCommitsEvidenceAndCursorTogether TestExitLiabilityUsesConfirmedReportAtEachMark TestEvmDepositRelaySignedRefusesEmbeddedWalletWhenPrivyLookupIsEmpty TestEvmDepositConcurrentPostsMakeOnePrivyCreate"
           log="$RUNNER_TEMP/dbtests.log"
-          go test -count=1 -v -run "^($(echo $tests | tr ' ' '|'))\$" ./internal/bridge ./internal/backyard ./internal/earnmax ./internal/webapp | tee "$log"
+          go test -p 1 -count=1 -v -run "^($(echo $tests | tr ' ' '|'))\$" ./internal/bridge ./internal/backyard ./internal/earnmax ./internal/webapp | tee "$log"
           ! grep -- '--- SKIP' "$log"
           for t in $tests; do grep -q -- "--- PASS: $t " "$log"; done
       - name: Save Go module and build caches

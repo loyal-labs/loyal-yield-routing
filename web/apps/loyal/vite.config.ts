@@ -22,6 +22,15 @@ const preset = nextSpa({
 
 export default defineConfig(({ isSsrBuild }) => ({
   ...preset,
+  optimizeDeps: {
+    ...preset.optimizeDeps,
+    // Version linked wallet hooks with React so preview caches cannot mix runtimes.
+    include: ["@loyal-labs/wallet-core/hooks"],
+  },
+  server: {
+    ...preset.server,
+    headers: { "Cache-Control": "no-store" },
+  },
   build: {
     ...preset.build,
     copyPublicDir: !isSsrBuild,

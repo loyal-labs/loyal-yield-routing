@@ -46,8 +46,13 @@ func simulationRefused(err error) error {
 		return err
 	}
 	var failure *simulationFailure
-	if errors.As(err, &failure) && confirmedFailureReason(failure.raw, failure.logs) == squadsSpendingLimitReason {
-		return &PreSendHold{Reason: holdSpendingLimit, Details: map[string]string{"simulation": err.Error()}, cause: err}
+	if errors.As(err, &failure) {
+		switch confirmedFailureReason(failure.raw, failure.logs) {
+		case squadsSpendingLimitReason:
+			return &PreSendHold{Reason: holdSpendingLimit, Details: map[string]string{"simulation": err.Error()}, cause: err}
+		case jupiterSlippageReason:
+			return &PreSendHold{Reason: holdPriceLimit, Details: map[string]string{"simulation": err.Error()}, cause: err}
+		}
 	}
 	return &PreSendHold{Reason: holdChainRefused, Details: map[string]string{"simulation": err.Error()}, cause: err}
 }

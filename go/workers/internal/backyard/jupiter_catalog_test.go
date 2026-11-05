@@ -44,7 +44,7 @@ func TestCatalogJupiterInstructionsBuildThroughInstalledEdges(t *testing.T) {
 					changed := append([]byte(nil), data...)
 					changed[offset] ^= 1
 					mutant.Data = base64.StdEncoding.EncodeToString(changed)
-					if _, err := validateJupiterInstructionForRoute(rwa, mutant, action, request.AmountRaw, request.QuotedOutputRaw, request.MinimumOutputRaw, lane); err == nil {
+					if _, err := validateJupiterInstructionForRoute(rwa, mutant, action, request.AmountRaw, request.QuotedOutputRaw, request.MinimumOutputRaw, lane, 0); err == nil {
 						t.Fatal("accepted another amount or quote", offset)
 					}
 				}

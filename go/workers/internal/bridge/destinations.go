@@ -67,7 +67,7 @@ var Destinations = []Destination{
 		{USDG, "0x004b506865409877c9fa29bfb1eba929984b9bbc", 6},
 		{DAI, "0xda10009cbd5d07dd0cecc66161fc93d7c9000da1", 18},
 	}},
-	{Chain: Optimism, RelayChainID: 10, RelayName: "optimism", Name: "OP Mainnet", Icon: "", Kind: AddressEVM, ExplorerTx: "https://optimistic.etherscan.io/tx/", Tokens: []DestinationToken{
+	{Chain: Optimism, RelayChainID: 10, RelayName: "optimism", Name: "OP Mainnet", Icon: "optimism.png", Kind: AddressEVM, ExplorerTx: "https://optimistic.etherscan.io/tx/", Tokens: []DestinationToken{
 		{USDC, "0x0b2c639c533813f4aa9d7837caf62653d097ff85", 6},
 		{USDT, "0x94b008aa00579c1307b0ef2c499ad98a8ce58e58", 6},
 		{USDT0, "0x01bff41798a0bcf287b996046ca68b395dbc1071", 6},
@@ -78,25 +78,25 @@ var Destinations = []Destination{
 		{USDT, "0xc2132d05d31c914a87c6611c10748aeb04b58e8f", 6},
 		{DAI, "0x8f3cf7ad23cd3cadbd9735aff958023239c6a063", 18},
 	}},
-	{Chain: Monad, RelayChainID: 143, RelayName: "monad", Name: "Monad", Icon: "", Kind: AddressEVM, ExplorerTx: "https://monadvision.com/tx/", Tokens: []DestinationToken{
+	{Chain: Monad, RelayChainID: 143, RelayName: "monad", Name: "Monad", Icon: "monad.png", Kind: AddressEVM, ExplorerTx: "https://monadvision.com/tx/", Tokens: []DestinationToken{
 		{USDC, "0x754704bc059f8c67012fed69bc8a327a5aafb603", 6},
 		{USDT, "0xe7cd86e13ac4309349f30b3435a9d337750fc82d", 6},
 	}},
-	{Chain: Tempo, RelayChainID: 4217, RelayName: "tempo", Name: "Tempo", Icon: "", Kind: AddressEVM, ExplorerTx: "https://explore.tempo.xyz/tx/", Tokens: []DestinationToken{
+	{Chain: Tempo, RelayChainID: 4217, RelayName: "tempo", Name: "Tempo", Icon: "tempo.png", Kind: AddressEVM, ExplorerTx: "https://explore.tempo.xyz/tx/", Tokens: []DestinationToken{
 		{USDCe, "0x20c000000000000000000000b9537d11c60e8b50", 6},
 		{USDT, "0x20c00000000000000000000014f22ca97301eb73", 6},
 	}},
-	{Chain: Robinhood, RelayChainID: 4663, RelayName: "robinhood", Name: "Robinhood Chain", Icon: "", Kind: AddressEVM, ExplorerTx: "https://robin.etherscan.io/tx/", Tokens: []DestinationToken{
+	{Chain: Robinhood, RelayChainID: 4663, RelayName: "robinhood", Name: "Robinhood Chain", Icon: "robinhood.webp", Kind: AddressEVM, ExplorerTx: "https://robin.etherscan.io/tx/", Tokens: []DestinationToken{
 		{USDG, "0x5fc5360d0400a0fd4f2af552add042d716f1d168", 6},
 	}},
-	{Chain: MegaETH, RelayChainID: 4326, RelayName: "megaeth", Name: "MegaETH", Icon: "", Kind: AddressEVM, ExplorerTx: "https://megaeth.blockscout.com/tx/", Tokens: []DestinationToken{
+	{Chain: MegaETH, RelayChainID: 4326, RelayName: "megaeth", Name: "MegaETH", Icon: "megaeth.png", Kind: AddressEVM, ExplorerTx: "https://megaeth.blockscout.com/tx/", Tokens: []DestinationToken{
 		{USDT, "0xb8ce59fc3717ada4c02eadf9682a9e934f625ebb", 6},
 	}},
 	{Chain: Avalanche, PopularRank: 6, RelayChainID: 43114, RelayName: "avalanche", Name: "Avalanche C-Chain", Icon: "avalanche.png", Kind: AddressEVM, ExplorerTx: "https://snowtrace.io/tx/", Tokens: []DestinationToken{
 		{USDC, "0xb97ef9ef8734c71904d8002f8b6bc66dd9c48a6e", 6},
 		{USDT, "0x9702230a8ea53601f5cd2dc00fdbc13d4df4a8c7", 6},
 	}},
-	{Chain: Plasma, RelayChainID: 9745, RelayName: "plasma", Name: "Plasma", Icon: "", Kind: AddressEVM, ExplorerTx: "https://plasmascan.to/tx/", Tokens: []DestinationToken{
+	{Chain: Plasma, RelayChainID: 9745, RelayName: "plasma", Name: "Plasma", Icon: "plasma.png", Kind: AddressEVM, ExplorerTx: "https://plasmascan.to/tx/", Tokens: []DestinationToken{
 		{USDT0, "0xb8ce59fc3717ada4c02eadf9682a9e934f625ebb", 6},
 	}},
 	{Chain: "tron", PopularRank: 4, MinUSDC: map[Asset]uint64{USDT: 4}, RelayChainID: 728126428, RelayName: "tron", Name: "Tron (TRC20)", Icon: "tron.png", Kind: AddressTron, ExplorerTx: "https://tronscan.org/#/transaction/", Tokens: []DestinationToken{
