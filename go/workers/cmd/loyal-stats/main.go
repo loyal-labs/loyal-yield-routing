@@ -10,14 +10,17 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnstats"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/stats"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/webapp"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/webserve"
 )
 
@@ -34,6 +37,44 @@ func open(ctx context.Context, name string) (*pgxpool.Pool, error) {
 		return nil, fmt.Errorf("%s: %w", name, err)
 	}
 	return pool, nil
+}
+
+var snapshotAppGrants = []webapp.Grant{
+	webapp.TableGrant("public.app_users", "SELECT"),
+	webapp.TableGrant("public.loyal_stats_snapshots", "SELECT"),
+	webapp.TableGrant("public.loyal_stats_snapshots", "INSERT"),
+	webapp.TableGrant("public.loyal_stats_snapshots", "UPDATE"),
+}
+
+var snapshotYieldGrants = []webapp.Grant{
+	webapp.TableGrant("loyal_yield.user_yield_positions", "SELECT"),
+	webapp.TableGrant("loyal_yield.managed_vaults", "SELECT"),
+	webapp.TableGrant("loyal_yield.route_policies", "SELECT"),
+	webapp.TableGrant("loyal_yield.vault_reserve_positions_current", "SELECT"),
+	webapp.TableGrant("loyal_yield.vault_idle_token_balances_current", "SELECT"),
+	webapp.TableGrant("loyal_yield.user_yield_position_holding_events", "SELECT"),
+	webapp.TableGrant("loyal_yield.rebalance_decisions", "SELECT"),
+	webapp.TableGrant("loyal_yield.balance_sweep_policies", "SELECT"),
+	webapp.TableGrant("loyal_yield.balance_sweep_targets", "SELECT"),
+}
+
+func snapshotWriter(ctx context.Context, cfg stats.Config) (*earnstats.Refresher, error) {
+	slackURL, err := engine.OptionalCredential("STATS_SLACK_WEBHOOK_URL")
+	if err != nil {
+		return nil, err
+	}
+	for _, c := range []struct {
+		name   string
+		pool   *pgxpool.Pool
+		grants []webapp.Grant
+	}{{"App", cfg.App, snapshotAppGrants}, {"Yield", cfg.Yield, snapshotYieldGrants}} {
+		missing, err := webapp.MissingGrants(ctx, c.pool, c.grants)
+		if err != nil || len(missing) > 0 {
+			slog.Warn("stats snapshot writer disabled", "database", c.name, "missing", missing, "error", err)
+			return nil, nil
+		}
+	}
+	return earnstats.NewRefresher(cfg.App, cfg.Yield, slackURL), nil
 }
 
 func run(ctx context.Context) error {
@@ -53,6 +94,17 @@ func run(ctx context.Context) error {
 		return err
 	}
 	defer cfg.Yield.Close()
+	writer, err := snapshotWriter(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	var writing sync.WaitGroup
+	defer writing.Wait()
+	writerCtx, stopWriter := context.WithCancel(ctx)
+	defer stopWriter()
+	if writer != nil {
+		writing.Go(func() { writer.Run(writerCtx) })
+	}
 	server := &http.Server{
 		Addr:              cfg.Addr,
 		Handler:           stats.New(cfg),

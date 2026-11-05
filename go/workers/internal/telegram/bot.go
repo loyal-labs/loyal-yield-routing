@@ -30,6 +30,7 @@ type Config struct {
 	R2                 *r2.Config
 	LibraryUploadToken string
 	PublicBase         *url.URL
+	JupiterSearch      string
 }
 
 type Bot struct {
@@ -43,16 +44,34 @@ type Bot struct {
 	r2          *r2.Config
 	uploadToken []byte
 	publicBase  *url.URL
+
+	http          *http.Client
+	jupiterSearch string
 }
 
 func New(cfg Config) *Bot {
 	b := &Bot{db: cfg.DB, api: cfg.API, username: cfg.BotUsername, secret: []byte(cfg.WebhookSecret),
-		botID: cfg.BotID, r2: cfg.R2, uploadToken: []byte(cfg.LibraryUploadToken), publicBase: cfg.PublicBase}
+		botID: cfg.BotID, r2: cfg.R2, uploadToken: []byte(cfg.LibraryUploadToken), publicBase: cfg.PublicBase,
+		http: &http.Client{Timeout: 10 * time.Second}, jupiterSearch: cfg.JupiterSearch}
+	if b.jupiterSearch == "" {
+		b.jupiterSearch = jupiterTokenSearch
+	}
 	b.routes = map[Route]Handler{
-		RouteCommunityText:      b.communityText,
-		RouteCallbackOther:      b.answerCallback,
-		RouteBusinessConnection: b.businessConnection,
-		RouteMyChatMember:       b.myChatMember,
+		RouteCommandStart:                 b.start,
+		RouteCommandSettings:              b.settings,
+		RouteCommandCA:                    b.ca,
+		RouteCommandStats:                 b.stats,
+		RouteCommandActivateCommunity:     b.adminCommand(adminCommand{"/activate_community", activateCommunity}),
+		RouteCommandDeactivateCommunity:   b.adminCommand(adminCommand{"/deactivate_community", deactivateCommunity}),
+		RouteCommandHide:                  b.adminCommand(adminCommand{"/hide", setCommunityVisibility(false)}),
+		RouteCommandUnhide:                b.adminCommand(adminCommand{"/unhide", setCommunityVisibility(true)}),
+		RouteCommandNotifications:         b.notifications,
+		RouteCallbackNotificationSettings: b.notificationSettingsCallback,
+		RouteCallbackUserSettings:         b.userSettingsCallback,
+		RouteCommunityText:                b.communityText,
+		RouteCallbackOther:                b.answerCallback,
+		RouteBusinessConnection:           b.businessConnection,
+		RouteMyChatMember:                 b.myChatMember,
 	}
 	return b
 }

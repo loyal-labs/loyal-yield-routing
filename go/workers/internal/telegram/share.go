@@ -12,8 +12,6 @@ import (
 	"strings"
 )
 
-const miniAppLink = "https://t.me/askloyal_tgbot/app"
-
 func jsFalsy(v any) bool {
 	switch v := v.(type) {
 	case nil:
