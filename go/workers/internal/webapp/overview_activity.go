@@ -20,7 +20,6 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/solana-foundation/solana-go/v2"
 	"github.com/solana-foundation/solana-go/v2/rpc"
-	"golang.org/x/sync/errgroup"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
@@ -33,7 +32,6 @@ const (
 	overviewActivityTTL        = 15 * time.Second
 	overviewActivityMinBatch   = 30
 	overviewActivityPages      = 3
-	overviewActivityReads      = 10
 	overviewDustLamports       = 100_000
 	overviewDustTokenThreshold = 0.0001
 )
@@ -210,24 +208,13 @@ func (o *overviewRoutes) vaultActivity(ctx context.Context, vault solana.PublicK
 		if len(signatures) == 0 {
 			break
 		}
-		executions := make([]*chain.Execution, len(signatures))
-		reads, readCtx := errgroup.WithContext(ctx)
-		reads.SetLimit(overviewActivityReads)
+		hashes := make([]solana.Signature, len(signatures))
 		for i, signed := range signatures {
-			reads.Go(func() error {
-				execution, err := o.Chain.Execution(readCtx, signed.Signature, rpc.CommitmentConfirmed)
-				if errors.Is(err, chain.ErrNotFound) {
-					return nil
-				}
-				if err != nil {
-					return fmt.Errorf("read vault transaction: %w", err)
-				}
-				executions[i] = &execution
-				return nil
-			})
+			hashes[i] = signed.Signature
 		}
-		if err := reads.Wait(); err != nil {
-			return overviewActivityPage{}, err
+		executions, err := o.Chain.Executions(ctx, hashes, rpc.CommitmentConfirmed)
+		if err != nil {
+			return overviewActivityPage{}, fmt.Errorf("read vault transactions: %w", err)
 		}
 		for i, execution := range executions {
 			if execution == nil {
