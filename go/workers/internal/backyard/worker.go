@@ -77,6 +77,9 @@ func (p productionObserveState) observe(ctx context.Context) (Observation, error
 	}
 	if p.foreignInflows != nil {
 		if err := p.foreignInflows(ctx, &observation.Snapshot); err != nil {
+			if errors.Is(err, chain.ErrUnavailable) {
+				return Observation{}, confirmedObservationUnavailable(err)
+			}
 			return Observation{}, err
 		}
 	}
