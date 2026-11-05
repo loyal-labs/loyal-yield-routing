@@ -31,9 +31,13 @@ type Earn struct {
 	WalletAuth   *WalletAuth
 	Timescale    *pgxpool.Pool
 	Push         *WalletPush
+	CampaignPush *WalletPush
 	Granted      map[string]bool
 	Refusals     *SponsorRefusals
 	TestWallets  TestWallets
+
+	MixpanelCohortSecret string
+	SweepNotifySecret    string
 }
 
 type OTLP struct {
