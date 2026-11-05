@@ -3,6 +3,7 @@ package webapp
 import (
 	"context"
 	"log/slog"
+	"sync"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -62,9 +63,17 @@ func documentEarn(api huma.API) {
 
 func CheckEarnGrants(ctx context.Context, appDB, yieldDB *pgxpool.Pool) map[string]bool {
 	granted := map[string]bool{}
+	var mu sync.Mutex
+	var wg sync.WaitGroup
 	for _, family := range earnFamilies {
-		granted[family.name] = familyGranted(ctx, family.name, appDB, family.appGrants) && familyGranted(ctx, family.name, yieldDB, family.yieldGrants)
+		wg.Go(func() {
+			ok := familyGranted(ctx, family.name, appDB, family.appGrants) && familyGranted(ctx, family.name, yieldDB, family.yieldGrants)
+			mu.Lock()
+			granted[family.name] = ok
+			mu.Unlock()
+		})
 	}
+	wg.Wait()
 	return granted
 }
 
@@ -76,14 +85,5 @@ func familyGranted(ctx context.Context, family string, pool *pgxpool.Pool, want 
 		slog.Warn(family+" not served by Go: its database is not configured", "grants", want)
 		return false
 	}
-	missing, err := MissingGrants(ctx, pool, want)
-	switch {
-	case err != nil:
-		slog.Warn(family+" not served by Go: grant check failed", "error", err)
-	case len(missing) > 0:
-		slog.Warn(family+" not served by Go: role lacks grants", "missing", missing)
-	default:
-		return true
-	}
-	return false
+	return GrantsHeld(ctx, pool, family, want)
 }

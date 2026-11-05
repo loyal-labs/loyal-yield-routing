@@ -5,12 +5,15 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"math/rand/v2"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/solana-foundation/solana-go/v2"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnmax"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnprep"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
@@ -363,6 +366,28 @@ func legacyEarnMaxFail(status int, code, message string) error {
 	return huma.ErrorWithHeaders(earnError(status, code, message), http.Header{"Cache-Control": {perWalletCacheControl()}})
 }
 
+const (
+	legacyControlsAttempts = 3
+	legacyControlsBackoff  = 250 * time.Millisecond
+	legacyControlsJitter   = 125 * time.Millisecond
+)
+
+func (h earnMaxRoutes) legacyControls(ctx context.Context, principal Principal) error {
+	backoff := legacyControlsBackoff
+	for attempt := 1; ; attempt++ {
+		err := h.auth.controls(ctx, principal)
+		if !errors.Is(err, chain.ErrRateLimited) || attempt == legacyControlsAttempts {
+			return err
+		}
+		select {
+		case <-time.After(backoff + rand.N(legacyControlsJitter)):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		backoff *= 2
+	}
+}
+
 func (h earnMaxRoutes) legacyEarnMax(ctx context.Context, in *legacyEarnMaxRequest) (*legacyEarnMaxOutput, error) {
 	const unavailable = "Unable to update Earn MAX."
 	if in.Action != "summary" && in.Action != "activity" {
@@ -385,7 +410,7 @@ func (h earnMaxRoutes) legacyEarnMax(ctx context.Context, in *legacyEarnMaxReque
 	if ready {
 		smartAccount, _, err := squads.SmartAccountAddress(settings, 0)
 		if err == nil {
-			err = h.auth.controls(ctx, Principal{Wallet: wallet, Settings: settings, SmartAccount: smartAccount})
+			err = h.legacyControls(ctx, Principal{Wallet: wallet, Settings: settings, SmartAccount: smartAccount})
 		}
 		if errors.As(err, &refused) && refused.Failure == SmartAccountRequired {
 			return nil, legacyEarnMaxFail(http.StatusConflict, "smart_account_signer_mismatch", "The smart account settings are no longer controlled by this wallet.")
