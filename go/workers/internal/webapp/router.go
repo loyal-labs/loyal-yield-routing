@@ -109,7 +109,9 @@ func registerAPI(api huma.API, cfg Config) {
 		registerEarn(api, newEarnRoutes(cfg.Auth, cfg.AppDB, *cfg.Earn))
 	}
 	if cfg.CoinGeckoAPIKey != "" {
-		registerTokens(api, newTokenDetails(cfg.CoinGeckoAPIKey))
+		details := newTokenDetails(cfg.CoinGeckoAPIKey)
+		registerTokens(api, details)
+		registerWebTokens(api, newWebTokens(details))
 	}
 }
 
