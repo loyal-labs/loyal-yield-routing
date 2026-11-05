@@ -313,7 +313,7 @@ func buildSummaryPrograms() (summaryProgram, summaryProgram) {
 var qualityRules string
 
 type summaryGenerator struct {
-	llm         *summaryLLM
+	llm         *Redpill
 	model       string
 	maxAttempts int
 }

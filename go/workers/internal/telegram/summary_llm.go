@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 	"time"
 )
 
@@ -16,36 +15,18 @@ const (
 	summaryLLMTimeout = 2 * time.Minute
 )
 
-type summaryLLM struct {
-	base   string
-	key    string
-	client *http.Client
-}
-
-func newSummaryLLM(base, key string) *summaryLLM {
-	return &summaryLLM{base: strings.TrimRight(base, "/"), key: key, client: &http.Client{Timeout: summaryLLMTimeout}}
-}
-
 type summaryLLMStatus struct{ code int }
 
 func (e summaryLLMStatus) Error() string { return fmt.Sprintf("redpill: HTTP %d", e.code) }
 
-func (l *summaryLLM) complete(ctx context.Context, model, system, prompt string) (string, error) {
-	body, err := json.Marshal(map[string]any{
-		"model":       model,
-		"temperature": 0,
-		"stream":      false,
-		"messages": []map[string]string{
-			{"role": "system", "content": system},
-			{"role": "user", "content": prompt},
-		},
-	})
+func (r *Redpill) complete(ctx context.Context, model, system, prompt string) (string, error) {
+	body, err := json.Marshal(completionRequest{Model: model, Messages: []chatMessage{{Role: "system", Content: system}, {Role: "user", Content: prompt}}})
 	if err != nil {
 		return "", err
 	}
 	var last error
 	for try := 0; try < summaryLLMTries; try++ {
-		content, err := l.post(ctx, body)
+		content, err := r.post(ctx, body)
 		if err == nil {
 			return content, nil
 		}
@@ -60,14 +41,16 @@ func (l *summaryLLM) complete(ctx context.Context, model, system, prompt string)
 	return "", last
 }
 
-func (l *summaryLLM) post(ctx context.Context, body []byte) (string, error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, l.base+"/chat/completions", bytes.NewReader(body))
+func (r *Redpill) post(ctx context.Context, body []byte) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, summaryLLMTimeout)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, r.base+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
 		return "", fmt.Errorf("redpill: %w", err)
 	}
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Authorization", "Bearer "+l.key)
-	response, err := l.client.Do(request)
+	request.Header.Set("Authorization", "Bearer "+r.key)
+	response, err := r.client.Do(request)
 	if err != nil {
 		return "", fmt.Errorf("redpill: %w", err)
 	}

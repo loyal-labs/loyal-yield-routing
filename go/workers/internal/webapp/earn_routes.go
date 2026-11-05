@@ -28,11 +28,16 @@ type Earn struct {
 	Relay        *bridge.Relay
 	OTLP         *OTLP
 	Privy        *Privy
+	WalletAuth   *WalletAuth
 	Timescale    *pgxpool.Pool
 	Push         *WalletPush
+	CampaignPush *WalletPush
 	Granted      map[string]bool
 	Refusals     *SponsorRefusals
 	TestWallets  TestWallets
+
+	MixpanelCohortSecret string
+	SweepNotifySecret    string
 }
 
 type OTLP struct {

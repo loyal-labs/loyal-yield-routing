@@ -65,16 +65,11 @@ func publicBase() (*url.URL, error) {
 }
 
 func summaryConfig() (telegram.SummaryConfig, error) {
-	key, err := engine.OptionalCredential("REDPILL_AI_API_KEY")
-	if err != nil {
-		return telegram.SummaryConfig{}, err
-	}
 	cfg := telegram.SummaryConfig{
-		RedpillBase: envOr("LOYAL_TELEGRAM_REDPILL_API", "https://api.redpill.ai/v1"),
-		RedpillKey:  key,
 		Model:       envOr("AX_SUMMARY_MODEL_DEFAULT", envOr("SUMMARY_AX_MODEL", "z-ai/glm-4.7")),
 		MaxAttempts: 3,
 	}
+	var err error
 	if raw := os.Getenv("AX_SUMMARY_MAX_ATTEMPTS"); raw != "" {
 		if cfg.MaxAttempts, err = strconv.Atoi(raw); err != nil || cfg.MaxAttempts < 1 {
 			return cfg, errors.New("AX_SUMMARY_MAX_ATTEMPTS: want a positive integer")
@@ -98,6 +93,7 @@ func summaryConfig() (telegram.SummaryConfig, error) {
 func run(ctx context.Context, once bool) error {
 	address := envOr("LOYAL_TELEGRAM_ADDRESS", "127.0.0.1:10083")
 	apiBase := envOr("LOYAL_TELEGRAM_BOT_API", "https://api.telegram.org")
+	redpillBase := envOr("LOYAL_TELEGRAM_REDPILL_API", "https://api.redpill.ai/v1")
 	jupiterSearch := os.Getenv("LOYAL_TELEGRAM_JUPITER_SEARCH")
 	dsn, err := engine.Credential("TELEGRAM_APP_DATABASE_URL")
 	if err != nil {
@@ -113,6 +109,18 @@ func run(ctx context.Context, once bool) error {
 	}
 	if !webhookSecretFormat.MatchString(secret) {
 		return errors.New("TELEGRAM_WEBHOOK_SECRET: want 1-256 characters of A-Z, a-z, 0-9, _ and -")
+	}
+	redpillKey, err := engine.Credential("REDPILL_AI_API_KEY")
+	if err != nil {
+		return err
+	}
+	encryptionKey, err := engine.Credential("MESSAGE_ENCRYPTION_KEY")
+	if err != nil {
+		return err
+	}
+	messageCipher, err := telegram.NewMessageCipher(encryptionKey)
+	if err != nil {
+		return err
 	}
 	uploadToken, err := engine.OptionalCredential("LIBRARY_UPLOAD_TOKEN")
 	if err != nil {
@@ -147,6 +155,7 @@ func run(ctx context.Context, once bool) error {
 		DB: pool, API: api, BotUsername: me.Username, WebhookSecret: secret,
 		BotID: me.ID, R2: storage, LibraryUploadToken: uploadToken, PublicBase: base,
 		JupiterSearch: jupiterSearch, Summaries: summaries,
+		Redpill: telegram.NewRedpill(redpillBase, redpillKey), Cipher: messageCipher,
 	})
 	if once {
 		report, err := bot.RunSummaries(ctx, time.Now())
@@ -161,6 +170,11 @@ func run(ctx context.Context, once bool) error {
 		}
 		return nil
 	}
+	defer func() {
+		drainCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		bot.DrainDirectChats(drainCtx)
+	}()
 
 	server := &http.Server{
 		Addr:              address,
@@ -171,11 +185,7 @@ func run(ctx context.Context, once bool) error {
 	cleanupCtx, stopCleanup := context.WithCancel(ctx)
 	var cleanup sync.WaitGroup
 	cleanup.Go(func() { bot.RunHelperCleanup(cleanupCtx) })
-	if summaries.RedpillKey == "" {
-		slog.Warn("REDPILL_AI_API_KEY not set; daily summaries off")
-	} else {
-		cleanup.Go(func() { bot.RunDailySummaries(cleanupCtx) })
-	}
+	cleanup.Go(func() { bot.RunDailySummaries(cleanupCtx) })
 	defer func() {
 		stopCleanup()
 		cleanup.Wait()

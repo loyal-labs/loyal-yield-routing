@@ -67,10 +67,9 @@ func (r summaryRun) dayKey() string { return time.Time(r.DayStartUTC).Format("20
 type generationStatus string
 
 const (
-	generationCreated     generationStatus = "created"
-	generationExisting    generationStatus = "existing"
-	generationNotEnough   generationStatus = "not_enough_messages"
-	errSummaryUnavailable                  = "summary generation is not configured (REDPILL_AI_API_KEY)"
+	generationCreated   generationStatus = "created"
+	generationExisting  generationStatus = "existing"
+	generationNotEnough generationStatus = "not_enough_messages"
 )
 
 type generation struct {
@@ -156,9 +155,6 @@ func (b *Bot) generateOrGetSummary(ctx context.Context, communityID, chatTitle s
 	}
 	if transcript.Len() == 0 {
 		return generation{status: generationNotEnough}, nil
-	}
-	if b.summaries == nil {
-		return generation{}, errors.New(errSummaryUnavailable)
 	}
 	result, err := b.summaries.generate(ctx, summaryRequest{ChatTitle: chatTitle, DayKeyUTC: run.dayKey(), Participants: participants, Transcript: transcript.String()})
 	if err != nil {
