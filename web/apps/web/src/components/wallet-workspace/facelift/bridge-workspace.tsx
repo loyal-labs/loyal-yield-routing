@@ -32,7 +32,14 @@ import { fromRaw, toRaw } from "./use-bridge-move";
 
 const BASE = "/wallet-workspace/facelift";
 const PLACEHOLDER = "asset-placeholder.svg";
-const POPULAR_TABS = 5;
+const ASSET_ORDER = new Map(
+  ["usdt", "usdg", "pyusd", "usdc", "usds"].map((asset, index) => [asset, index])
+);
+const CHAIN_ORDER = new Map(
+  ["ethereum", "tron", "bsc", "base", "arbitrum", "polygon", "avalanche"].map(
+    (chain, index) => [chain, index]
+  )
+);
 const USDC_DECIMALS = 6;
 type Picker = "send" | "receive" | "chain" | "recipient";
 
@@ -68,6 +75,7 @@ export function BridgeWorkspace({
   const [editingAmount, setEditingAmount] = useState(false);
   const [inDollars, setInDollars] = useState(false);
   const [picker, setPicker] = useState<Picker | null>(null);
+  const [pendingAsset, setPendingAsset] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const panelRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLElement | null>(null);
@@ -126,6 +134,7 @@ export function BridgeWorkspace({
           ? document.activeElement
           : null;
     setSearch("");
+    if (next === "receive") setPendingAsset(null);
     setPicker(next);
   };
   const closePicker = () => {
@@ -137,34 +146,37 @@ export function BridgeWorkspace({
     view === "chain" ? openPicker("receive") : closePicker()
   );
   useEscapePage(!sending, onBack);
-  useBridgePickerFocus(panelRef, picker !== null, desktop);
+  useBridgePickerFocus(panelRef, picker !== null, desktop, view);
 
   const pickChain = (chain: string) => {
-    if (chain !== chainId) {
-      setSelection({ chain, asset: null });
-      setRecipient("");
-    }
-    openPicker("receive");
+    if (!pendingAsset) return;
+    if (chain !== chainId) setRecipient("");
+    setSelection({ chain, asset: pendingAsset });
+    closePicker();
   };
 
-  const tabs = popular.slice(0, POPULAR_TABS);
-  if (destination && !tabs.some((item) => item.chain === destination.chain))
-    tabs.splice(POPULAR_TABS - 1, 1, destination);
-  const chainQuery = search.trim().toLowerCase();
-  const chainMatches = (destinations ?? []).filter((item) =>
-    `${item.name} ${item.chain}`.toLowerCase().includes(chainQuery)
-  );
-  const chainRow = (item: NonNullable<typeof destination>, keyPrefix: string) => (
-    <BridgePickerRow
-      icon={item.icon || PLACEHOLDER}
-      key={`${keyPrefix}:${item.chain}`}
-      name={item.name}
-      onClick={() => pickChain(item.chain)}
-    />
-  );
-  const chainsAZ = [...(destinations ?? [])]
-    .sort((a, b) => a.name.localeCompare(b.name))
-    .filter((item) => chainMatches.includes(item));
+  const query = search.trim().toLowerCase();
+  const assetMatches = [
+    ...new Map(
+      (destinations ?? []).flatMap((item) =>
+        (item.tokens ?? []).map((asset) => [asset.asset, asset] as const)
+      )
+    ).values(),
+  ]
+    .filter((item) => `${item.name} ${item.symbol}`.toLowerCase().includes(query))
+    .sort((a, b) =>
+      (ASSET_ORDER.get(a.asset) ?? ASSET_ORDER.size) -
+      (ASSET_ORDER.get(b.asset) ?? ASSET_ORDER.size)
+    );
+  const chainMatches = (destinations ?? [])
+    .filter((item) =>
+      item.tokens?.some((asset) => asset.asset === pendingAsset) &&
+      `${item.name} ${item.chain}`.toLowerCase().includes(query)
+    )
+    .sort((a, b) =>
+      (CHAIN_ORDER.get(a.chain) ?? CHAIN_ORDER.size) -
+      (CHAIN_ORDER.get(b.chain) ?? CHAIN_ORDER.size)
+    );
 
   const pickerContent = (
     <div
@@ -202,7 +214,7 @@ export function BridgeWorkspace({
             ]}
           />
         </div>
-      ) : view === "chain" ? (
+      ) : (
         <>
           <div className="px-4 pb-4">
             <label className="flex h-11 items-center gap-3 rounded-full bg-accent px-3">
@@ -211,91 +223,51 @@ export function BridgeWorkspace({
                 src={`${BASE}/receive/search.svg`}
               />
               <input
-                aria-label="Search chains"
+                aria-label={view === "chain" ? "Search chains" : "Search assets"}
                 className="min-w-0 flex-1 bg-transparent text-[16px] leading-5 outline-none placeholder:text-muted-foreground"
                 onChange={(event) => setSearch(event.target.value)}
-                placeholder="Search chains"
+                placeholder={view === "chain" ? "Search chains" : "Search assets"}
                 type="search"
                 value={search}
               />
             </label>
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
-            {chainQuery ? (
-              chainMatches.map((item) => chainRow(item, "match"))
-            ) : (
-              <>
-                <p className="px-4 pt-1 pb-2 text-[16px] leading-5 text-muted-foreground">
-                  Popular
-                </p>
-                {popular.map((item) => chainRow(item, "popular"))}
-                <p className="px-4 pt-3 pb-2 text-[16px] leading-5 text-muted-foreground">
-                  Chains A-Z
-                </p>
-                {chainsAZ.map((item) => chainRow(item, "az"))}
-              </>
-            )}
-            {chainMatches.length === 0 && (
+            {view === "chain"
+              ? chainMatches.map((item) => {
+                  const minimum = item.tokens?.find(
+                    (asset) => asset.asset === pendingAsset
+                  )?.minUsdc ?? 0;
+                  return (
+                    <BridgePickerRow
+                      detail={minimum > 0 ? `Minimum ${minimum} USDC` : undefined}
+                      icon={item.icon || PLACEHOLDER}
+                      key={item.chain}
+                      name={item.name}
+                      onClick={() => pickChain(item.chain)}
+                    />
+                  );
+                })
+              : assetMatches.map((item) => (
+                  <BridgePickerRow
+                    detail={item.symbol}
+                    icon={item.icon || PLACEHOLDER}
+                    key={item.asset}
+                    name={item.name}
+                    onClick={() => {
+                      setPendingAsset(item.asset);
+                      openPicker("chain");
+                    }}
+                  />
+                ))}
+            {(view === "chain" ? chainMatches : assetMatches).length === 0 && (
               <p
                 className="px-4 py-6 text-[16px] text-muted-foreground"
                 role="status"
               >
-                No results found
+                No {view === "chain" ? "chains" : "assets"} found
               </p>
             )}
-          </div>
-        </>
-      ) : (
-        <>
-          <div className="flex items-center gap-3 px-4 pb-4">
-            {tabs.map((item) => (
-              <button
-                aria-label={item.name}
-                aria-pressed={item.chain === chainId}
-                className={`t-hover flex size-11 shrink-0 items-center justify-center rounded-full ${
-                  item.chain === chainId ? "ring-2 ring-border" : ""
-                }`}
-                key={item.chain}
-                onClick={() => pickChain(item.chain)}
-                type="button"
-              >
-                <BridgeIcon file={item.icon || PLACEHOLDER} />
-              </button>
-            ))}
-            <button
-              aria-label="Select chain"
-              className="t-hover ml-auto flex h-11 shrink-0 items-center gap-1 rounded-full bg-accent pr-2 pl-4 text-[16px] font-medium leading-5 hover:bg-accent-active"
-              onClick={() => openPicker("chain")}
-              type="button"
-            >
-              {destinations?.length ?? 0}
-              <ThemedIcon
-                className="size-6 text-muted-foreground"
-                src={`${BASE}/icon-chevron-right.svg`}
-              />
-            </button>
-          </div>
-          <p className="px-4 pb-2 text-[16px] leading-5 text-muted-foreground">
-            {network}
-          </p>
-          <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
-            {tokens.map((item) => (
-              <BridgePickerRow
-                badge={destination?.icon || PLACEHOLDER}
-                detail={
-                  item.minUsdc > 0
-                    ? `${item.symbol} · Minimum ${item.minUsdc} USDC`
-                    : item.symbol
-                }
-                icon={item.icon || PLACEHOLDER}
-                key={item.asset}
-                name={item.name}
-                onClick={() => {
-                  setSelection({ chain: chainId, asset: item.asset });
-                  closePicker();
-                }}
-              />
-            ))}
           </div>
         </>
       )}

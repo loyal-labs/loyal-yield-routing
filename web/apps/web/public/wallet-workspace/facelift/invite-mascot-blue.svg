@@ -1,0 +1,16 @@
+<svg preserveAspectRatio="none" overflow="visible" style="display: block;" width="69.5374" height="55.6299" viewBox="0 0 69.5374 55.6299" fill="none" xmlns="http://www.w3.org/2000/svg">
+<g id="Mascot">
+<path id="Vector" d="M10.4306 48.6762L0 24.3381H31.2918V0L45.1993 24.3381L48.6762 0L69.5374 55.6299L10.4306 48.6762Z" fill="#4F49FF"/>
+<g id="Eye">
+<path id="Vector_2" d="M38.4834 30.0819C44.2361 30.3834 48.6879 34.6695 48.4266 39.6552L27.594 38.5635C27.8553 33.5777 32.7306 29.7804 38.4834 30.0819Z" fill="white"/>
+<g id="Eye Mask">
+<mask id="mask0_0_238" style="mask-type:alpha" maskUnits="userSpaceOnUse" x="27" y="30" width="22" height="10">
+<path id="Mask" d="M38.485 30.083C44.2378 30.3844 48.6895 34.6706 48.4282 39.6563L27.5956 38.5645C27.8569 33.5788 32.7323 29.7815 38.485 30.083Z" fill="white"/>
+</mask>
+<g mask="url(#mask0_0_238)">
+<circle id="Vector_3" cx="40.8438" cy="37.7175" r="4.69377" transform="rotate(3 40.8438 37.7175)" fill="black"/>
+</g>
+</g>
+</g>
+</g>
+</svg>

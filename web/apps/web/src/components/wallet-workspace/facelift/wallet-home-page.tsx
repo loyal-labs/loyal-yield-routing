@@ -374,6 +374,16 @@ export function WalletHomePage({
                 </div>
               )}
               <div className="flex min-w-0 flex-1 items-center justify-end gap-1 pl-3">
+                {isSignedIn && launched ? (
+                  <button
+                    aria-label="Invite a friend"
+                    className="t-hover hidden size-11 shrink-0 items-center justify-center rounded-3xl hover:bg-accent max-[795px]:flex"
+                    onClick={() => onSelectPage("invite")}
+                    type="button"
+                  >
+                    <ThemedIcon className="size-6 text-tertiary" src={`${ASSET_BASE}/icon-user-add.svg`} />
+                  </button>
+                ) : null}
                 <button
                   aria-label="Open settings"
                   className="t-hover hidden size-11 items-center justify-center rounded-3xl hover:bg-accent max-[795px]:flex"
@@ -674,25 +684,6 @@ export function WalletHomePage({
                     />
                   ) : null}
                 </div>
-                {launched ? (
-                  <button
-                    className="t-hover mb-2 flex min-h-11 w-full shrink-0 items-center rounded-2xl px-4 text-left hover:bg-accent"
-                    onClick={() => onSelectPage("invite")}
-                    type="button"
-                  >
-                    <ThemedIcon
-                      className="mr-3 size-6 text-muted-foreground"
-                      src={`${ASSET_BASE}/icon-invite.svg`}
-                    />
-                    <span className="flex-1 font-medium text-[16px] text-foreground leading-5">
-                      Invite friends
-                    </span>
-                    <ThemedIcon
-                      className="size-4 text-tertiary"
-                      src={`${ASSET_BASE}/icon-chevron-right.svg`}
-                    />
-                  </button>
-                ) : null}
               </div>
             </div>
           </section>

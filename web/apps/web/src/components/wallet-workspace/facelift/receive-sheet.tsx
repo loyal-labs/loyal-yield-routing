@@ -76,7 +76,7 @@ function AssetIcon({
     <img
       alt=""
       aria-hidden="true"
-      className="shrink-0 rounded-full object-cover"
+      className="shrink-0 rounded-full bg-white object-cover"
       height={size}
       width={size}
       src={`${BASE}/receive/${file}`}

@@ -10,6 +10,7 @@ import { usePublicEnv } from "@/contexts/public-env-context";
 import { useSignInModal } from "@/contexts/sign-in-modal-context";
 import { useCherryRuntime } from "@/features/cherry/client/runtime-context";
 import { SettingsCodeField } from "@/features/referrals/code-field";
+import { useInviteLink } from "@/features/referrals/use-invite-link";
 import { useEscapeOverlay } from "./escape-owner";
 import { useSessionDisconnect } from "./use-session-disconnect";
 import { useTheme } from "@/hooks/use-theme";
@@ -17,6 +18,7 @@ import { copyTextToClipboard } from "./copy-text";
 import { InfoTooltip } from "./info-tooltip";
 import { SheetReveal } from "./sheet-reveal";
 import { SIDEBAR_LINKS } from "./sidebar";
+import { TextSwap } from "./text-swap";
 import { ThemedIcon } from "./themed-icon";
 import type { EarnPositionData } from "./use-earn-position-data";
 import type { PolicyUpdates } from "./use-policy-updates";
@@ -37,6 +39,7 @@ function SettingsRow({
   icon,
   title,
   subtitle,
+  subtitleClassName = "text-muted-foreground",
   children,
   onClick,
   disabled = false,
@@ -44,6 +47,7 @@ function SettingsRow({
   icon: string;
   title: string;
   subtitle?: string;
+  subtitleClassName?: string;
   children?: ReactNode;
   onClick?: () => void;
   disabled?: boolean;
@@ -74,7 +78,7 @@ function SettingsRow({
           {title}
         </span>
         {subtitle && (
-          <span className="mt-0.5 block text-[13px] leading-4 text-destructive">
+          <span className={`mt-0.5 block text-[13px] leading-4 ${subtitleClassName}`}>
             {subtitle}
           </span>
         )}
@@ -123,6 +127,7 @@ export function SettingsSheet({
 }) {
   const { isDark, toggleTheme } = useTheme();
   const { isAuthenticated, launched, user } = useAuthSession();
+  const invite = useInviteLink(isOpen && isAuthenticated && launched);
   const { wallet, publicKey } = useWallet();
   const { open: openSignIn } = useSignInModal();
   const { privyAppId, solanaEnv } = usePublicEnv();
@@ -204,6 +209,7 @@ export function SettingsSheet({
     <SettingsRow
       icon="settings/shield.svg"
       title="Onchain Policies"
+      subtitleClassName="text-destructive"
       subtitle={
         count
           ? `${count} ${count === 1 ? "update" : "updates"} required`
@@ -219,6 +225,27 @@ export function SettingsSheet({
       )}
       <Chevron />
     </SettingsRow>
+  );
+  const accountRows = (
+    <>
+      {policyRow}
+      {launched ? (
+        <>
+          <SettingsRow
+            icon="icon-user-add.svg"
+            title="Invite a friend"
+            subtitle="Share a link to invite someone"
+            disabled={!invite.link && !invite.error}
+            onClick={invite.link ? invite.copy : invite.retry}
+          >
+            <span className={`${smallButton} ml-3`} aria-live="polite">
+              <TextSwap text={invite.copied ? "Copied!" : !invite.link && invite.error ? "Try again" : "Copy link"} />
+            </span>
+          </SettingsRow>
+          {invite.error ? <p className="px-4 pb-2 text-[13px] text-destructive leading-4" role="alert">{invite.error}</p> : null}
+        </>
+      ) : null}
+    </>
   );
   const required = selected?.address === updates.requiredAccount;
   const title = selected
@@ -336,9 +363,9 @@ export function SettingsSheet({
                 <>
                   <SectionTitle>Account</SectionTitle>
                   {privyAppId && cherry.mode === "standalone" ? (
-                    <PrivyAccountPanel policyRow={policyRow} />
+                    <PrivyAccountPanel accountRows={accountRows} />
                   ) : (
-                    policyRow
+                    accountRows
                   )}
                   {launched ? <SettingsCodeField /> : null}
                 </>

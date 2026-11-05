@@ -762,6 +762,12 @@ resource links collapse into the original Help & resources popover; the center
 scrolls while wallet controls remain visible. Hide unsupported assets stays disabled
 until there is an authoritative supported-asset list.
 
+For launched signed-in wallets, Invite a friend is a gray sidebar action and a
+mobile wallet-header icon. Both open the sharing modal without changing the
+current page; saved Invite selections and `/app/invite` open the same modal.
+Settings offers Copy link between Onchain Policies and Export Keys. These actions
+use the existing `/api/referrals` link and preserve invite-code redemption.
+
 Policy alerts use the SDK's exact canonical-policy compatibility check. They
 appear only for the supported legacy Earn token-program migration; unknown or
 failed reads never imply an update. Updates reuse the existing Earn policy setup
