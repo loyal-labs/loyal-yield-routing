@@ -348,6 +348,22 @@ export type BridgeTransfersResponse = {
     transfers: Array<BridgeTransfer> | null;
 };
 
+export type CampaignAck = {
+    action: string;
+    status: string;
+};
+
+export type CampaignError = {
+    code: number;
+    message: string;
+};
+
+export type CampaignRejected = {
+    action: string;
+    error: CampaignError;
+    status: string;
+};
+
 export type CrossMintDeleteReadinessRequest = {
     expectedGeneration?: string;
 };
@@ -2068,6 +2084,15 @@ export type SummaryTopic = {
     title: string;
 };
 
+export type SweepAck = {
+    status: string;
+};
+
+export type SweepRejected = {
+    error: string;
+    message?: string;
+};
+
 export type TronDepositAddressResponse = {
     address: string;
     expiresAt: string;
@@ -3356,6 +3381,44 @@ export type PostWalletPushResponses = {
 };
 
 export type PostWalletPushResponse = PostWalletPushResponses[keyof PostWalletPushResponses];
+
+export type PostMixpanelCohortData = {
+    body?: {
+        [key: string]: unknown;
+    };
+    headers?: {
+        Authorization?: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/push/mixpanel-cohort';
+};
+
+export type PostMixpanelCohortErrors = {
+    /**
+     * Bad Request
+     */
+    400: CampaignRejected;
+    /**
+     * Unauthorized
+     */
+    401: CampaignRejected;
+    /**
+     * Internal Server Error
+     */
+    500: CampaignRejected;
+};
+
+export type PostMixpanelCohortError = PostMixpanelCohortErrors[keyof PostMixpanelCohortErrors];
+
+export type PostMixpanelCohortResponses = {
+    /**
+     * OK
+     */
+    200: CampaignAck;
+};
+
+export type PostMixpanelCohortResponse = PostMixpanelCohortResponses[keyof PostMixpanelCohortResponses];
 
 export type GetReferralsData = {
     body?: never;
@@ -4882,6 +4945,40 @@ export type GetSolanaWeekProgressResponses = {
 };
 
 export type GetSolanaWeekProgressResponse = GetSolanaWeekProgressResponses[keyof GetSolanaWeekProgressResponses];
+
+export type PostSweepNotifyData = {
+    body?: {
+        [key: string]: unknown;
+    };
+    headers?: {
+        Authorization?: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/solana-week/sweep-notify';
+};
+
+export type PostSweepNotifyErrors = {
+    /**
+     * Bad Request
+     */
+    400: SweepRejected;
+    /**
+     * Unauthorized
+     */
+    401: SweepRejected;
+};
+
+export type PostSweepNotifyError = PostSweepNotifyErrors[keyof PostSweepNotifyErrors];
+
+export type PostSweepNotifyResponses = {
+    /**
+     * OK
+     */
+    200: SweepAck;
+};
+
+export type PostSweepNotifyResponse = PostSweepNotifyResponses[keyof PostSweepNotifyResponses];
 
 export type GetSummariesData = {
     body?: never;
