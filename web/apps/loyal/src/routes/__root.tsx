@@ -1,11 +1,6 @@
 import "@/app/globals.css";
 
-import {
-  createRootRoute,
-  HeadContent,
-  Outlet,
-  redirect,
-} from "@tanstack/react-router";
+import { createRootRoute, HeadContent, Outlet } from "@tanstack/react-router";
 
 import AppError from "@/app/error";
 import NotFound from "@/app/not-found";
@@ -24,19 +19,7 @@ const publicEnv =
 
 export const Route = createRootRoute({
   beforeLoad: () => {
-    const { pathname, search, hash } = window.location;
-    const params = new URLSearchParams(search);
-    if (!storeLinkCode(params.get("ref"))) return;
-    const rest = search
-      .slice(1)
-      .split("&")
-      .filter((pair) => pair && !new URLSearchParams(pair).has("ref"))
-      .join("&");
-    throw redirect({
-      href: `${pathname}${rest && `?${rest}`}${hash}`,
-      reloadDocument: true,
-      replace: true,
-    });
+    storeLinkCode(new URLSearchParams(window.location.search).get("ref"));
   },
   head: () => rootHead(),
   component: () => (
