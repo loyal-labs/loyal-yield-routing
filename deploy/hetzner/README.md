@@ -805,8 +805,9 @@ Remove: `systemctl disable --now loyal-db-replica-metrics.timer
 loyal-db-retention.timer prometheus-node-exporter` on the box, delete the four
 units in `/etc/systemd/system`, `apt-get remove prometheus-node-exporter`,
 drop the `10.92.1.1:9100` target from `prometheus.yml` and the
-`loyal-db-replica` rule group. Delete that group when the subscriptions are
-dropped after cutover.
+`loyal-db-replica` rule group. After `cutover.sh pause-neon` drops the
+subscriptions, `replica.sh metrics` stops emitting their series and those
+alerts resolve, so the group can stay until the guards go.
 
 ### Withdrawal attention
 
