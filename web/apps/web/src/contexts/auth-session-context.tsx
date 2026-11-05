@@ -18,7 +18,6 @@ import { usePublicEnv } from "@/contexts/public-env-context";
 import { createAuthApiClient, type AuthApiClient } from "@/lib/auth/client";
 import type { WalletSessionResponse } from "@/features/identity/wallet-session-contracts";
 import { shouldRecheckAuthSession } from "@/contexts/auth-session-refresh";
-import { syncTestWalletFlags } from "@/features/test-wallets";
 import { resetAuthenticatedUser, trackAuthLogout } from "@/lib/core/analytics";
 
 type AuthSessionContextValue = {
@@ -26,9 +25,13 @@ type AuthSessionContextValue = {
   isHydrated: boolean;
   user: AuthSessionUser | null;
   session: WalletSessionResponse["session"] | null;
+  launched: boolean;
   refreshSession: () => Promise<WalletSessionResponse | null>;
   logout: () => Promise<void>;
 };
+
+const LAUNCH_READ_TRIES = 3;
+const LAUNCH_RETRY_BASE_MS = 500;
 
 const AuthSessionContext = createContext<AuthSessionContextValue | null>(null);
 const AuthApiClientContext = createContext<AuthApiClient | null>(null);
@@ -43,7 +46,57 @@ export function AuthSessionProvider({ children }: { children: ReactNode }) {
 
   const user = sessionState?.user ?? null;
   const session = sessionState?.session ?? null;
-  syncTestWalletFlags(user?.subjectAddress);
+  const subject = user?.subjectAddress ?? null;
+  const [launch, setLaunch] = useState<{
+    subject: string | null;
+    launched: boolean;
+  } | null>(null);
+  const launched = launch !== null && launch.subject === subject && launch.launched;
+
+  const launchReadRef = useRef(0);
+  const loadLaunched = useCallback(
+    async (readSubject: string | null) => {
+      const readId = ++launchReadRef.current;
+      for (let attempt = 0; attempt < LAUNCH_READ_TRIES; attempt += 1) {
+        try {
+          const answer = await authApiClient.getLaunched();
+          if (launchReadRef.current === readId) {
+            setLaunch({ subject: readSubject, launched: answer });
+          }
+          return;
+        } catch {
+          if (attempt === LAUNCH_READ_TRIES - 1) return;
+          await new Promise((resolve) =>
+            setTimeout(resolve, LAUNCH_RETRY_BASE_MS * 2 ** attempt)
+          );
+          if (launchReadRef.current !== readId) return;
+        }
+      }
+    },
+    [authApiClient]
+  );
+
+  useEffect(() => {
+    if (!isHydrated) return;
+    void loadLaunched(subject);
+    return () => {
+      launchReadRef.current += 1;
+    };
+  }, [isHydrated, loadLaunched, sessionState, subject]);
+
+  useEffect(() => {
+    if (!isHydrated) return;
+    const reread = () => {
+      if (document.visibilityState === "hidden") return;
+      void loadLaunched(subject);
+    };
+    window.addEventListener("focus", reread);
+    document.addEventListener("visibilitychange", reread);
+    return () => {
+      window.removeEventListener("focus", reread);
+      document.removeEventListener("visibilitychange", reread);
+    };
+  }, [isHydrated, loadLaunched, subject]);
 
   const readSession = useCallback(
     async (variant: "initial" | "return" | "refresh") => {
@@ -183,10 +236,11 @@ export function AuthSessionProvider({ children }: { children: ReactNode }) {
       isHydrated,
       session,
       user,
+      launched,
       refreshSession,
       logout,
     }),
-    [isHydrated, logout, refreshSession, session, user]
+    [isHydrated, launched, logout, refreshSession, session, user]
   );
 
   return (

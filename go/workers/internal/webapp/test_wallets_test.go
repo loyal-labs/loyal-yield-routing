@@ -70,3 +70,51 @@ func TestBridgeAndReferralsAdmitOnlyTestWallets(t *testing.T) {
 		}
 	}
 }
+
+func TestLaunchAnswersTheGateForTheSessionWalletOrEveryone(t *testing.T) {
+	signer, err := jwt.NewSigner("isolated-session-test-secret", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys, err := jwt.NewKeys("isolated-session-test-secret", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed := solana.MustPublicKeyFromBase58(ownerTestWallets[0])
+	stranger := solana.NewWallet().PublicKey()
+	for _, tc := range []struct {
+		name      string
+		list      string
+		wallet    solana.PublicKey
+		signedOut bool
+		want      bool
+	}{
+		{"listed wallet", strings.Join(ownerTestWallets, ","), listed, false, true},
+		{"unlisted wallet", strings.Join(ownerTestWallets, ","), stranger, false, false},
+		{"star opens every wallet", "*", stranger, false, true},
+		{"signed out under the default list", strings.Join(ownerTestWallets, ","), solana.PublicKey{}, true, false},
+		{"signed out under star", "*", solana.PublicKey{}, true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			router := chi.NewRouter()
+			earnRoutes{auth: &Auth{keys: keys}, Earn: Earn{TestWallets: parseTestWallets(tc.list)}}.registerLaunch(humachi.New(router, apiConfig()))
+			req := httptest.NewRequest(http.MethodGet, launchPath, nil)
+			if !tc.signedOut {
+				token, err := signer.Mint(map[string]any{"sub": tc.wallet.String()}, mobileEarnAudience, time.Hour, time.Now())
+				if err != nil {
+					t.Fatal(err)
+				}
+				req.Header.Set("Authorization", "Bearer "+token)
+			}
+			res := httptest.NewRecorder()
+			router.ServeHTTP(res, req)
+			var body LaunchResponse
+			if err := json.Unmarshal(res.Body.Bytes(), &body); err != nil || res.Code != http.StatusOK {
+				t.Fatalf("GET %s = %d %s: %v", launchPath, res.Code, res.Body.String(), err)
+			}
+			if body.Launched != tc.want {
+				t.Errorf("launched = %v, want %v", body.Launched, tc.want)
+			}
+		})
+	}
+}
