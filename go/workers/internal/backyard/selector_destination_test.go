@@ -97,18 +97,21 @@ func selectorDestinationFixtureForLane(t *testing.T, lane string, tweak func([]C
 	for _, a := range []string{bridgeVault, backyardDelegate} {
 		add(ConfirmedAccount{Address: a, Owner: "11111111111111111111111111111111", Lamports: 1_000_000_000})
 	}
-	farm := ConfirmedAccount{Address: route.DebtFarm, Owner: kamino.FarmsProgramID.String(), Lamports: 1, Data: make([]byte, 8336)}
-	copy(farm.Data, []byte{198, 102, 216, 74, 63, 66, 163, 190})
-	putKey(t, farm.Data[7328:7360], route.Kamino.MarketAuthority)
-	farm.Data[7362] = 1
-	add(farm)
-	u := ConfirmedAccount{Address: route.ObligationDebtFarm, Owner: kamino.FarmsProgramID.String(), Lamports: 1, Data: make([]byte, 920)}
-	copy(u.Data, kamino.FarmUserStateDiscriminator[:])
-	putKey(t, u.Data[16:48], route.DebtFarm)
-	putKey(t, u.Data[48:80], bridgeVault)
-	u.Data[80] = 1
-	putKey(t, u.Data[480:512], route.Kamino.Obligation)
-	add(u)
+	if route.DebtFarm != "" {
+		farm := ConfirmedAccount{Address: route.DebtFarm, Owner: kamino.FarmsProgramID.String(), Lamports: 1, Data: make([]byte, 8336)}
+		copy(farm.Data, []byte{198, 102, 216, 74, 63, 66, 163, 190})
+		putKey(t, farm.Data[7328:7360], route.Kamino.MarketAuthority)
+		farm.Data[7362] = 1
+		add(farm)
+		u := ConfirmedAccount{Address: route.ObligationDebtFarm, Owner: kamino.FarmsProgramID.String(), Lamports: 1, Data: make([]byte, 920)}
+		copy(u.Data, kamino.FarmUserStateDiscriminator[:])
+		putKey(t, u.Data[16:48], route.DebtFarm)
+		putKey(t, u.Data[48:80], bridgeVault)
+		u.Data[80] = 1
+		putKey(t, u.Data[480:512], route.Kamino.Obligation)
+		add(u)
+	}
+
 	captured := basicJupiterRequest(t, route.Lane, "USDC->"+route.CollateralSymbol)
 	reverse := basicJupiterRequest(t, route.Lane, route.CollateralSymbol+"->USDC")
 	if tweak != nil {
@@ -120,7 +123,8 @@ func selectorDestinationFixtureForLane(t *testing.T, lane string, tweak func([]C
 		switch req.URL.Path {
 		case "/quote":
 			amount, _ := strconv.ParseUint(req.URL.Query().Get("amount"), 10, 64)
-			payload = jupiter.Quote{InputMint: req.URL.Query().Get("inputMint"), OutputMint: req.URL.Query().Get("outputMint"), InAmount: fmt.Sprint(amount), OutAmount: fmt.Sprint(amount), OtherAmountThreshold: fmt.Sprint(amount * 995 / 1000), SwapMode: "ExactIn", SlippageBPS: 50, RoutePlan: []json.RawMessage{json.RawMessage(`{}`)}}
+			slippage, _ := strconv.ParseUint(req.URL.Query().Get("slippageBps"), 10, 16)
+			payload = jupiter.Quote{InputMint: req.URL.Query().Get("inputMint"), OutputMint: req.URL.Query().Get("outputMint"), InAmount: fmt.Sprint(amount), OutAmount: fmt.Sprint(amount), OtherAmountThreshold: fmt.Sprint(amount * (10_000 - slippage) / 10_000), SwapMode: "ExactIn", SlippageBPS: uint16(slippage), RoutePlan: []json.RawMessage{json.RawMessage(`{}`)}}
 		case "/swap-instructions":
 			var body struct{ QuoteResponse jupiter.Quote }
 			if json.NewDecoder(req.Body).Decode(&body) != nil {
@@ -135,7 +139,7 @@ func selectorDestinationFixtureForLane(t *testing.T, lane string, tweak func([]C
 			binary.LittleEndian.PutUint64(data[jupiter.V2InAmountOffset:], amount)
 			quotedOut, _ := strconv.ParseUint(body.QuoteResponse.OutAmount, 10, 64)
 			binary.LittleEndian.PutUint64(data[jupiter.V2QuotedOutOffset:], quotedOut)
-			binary.LittleEndian.PutUint16(data[jupiter.V2SlippageOffset:], 50)
+			binary.LittleEndian.PutUint16(data[jupiter.V2SlippageOffset:], uint16(body.QuoteResponse.SlippageBPS))
 			instruction.Data = base64.StdEncoding.EncodeToString(data)
 			payload = map[string]any{"swapInstruction": instruction}
 		default:

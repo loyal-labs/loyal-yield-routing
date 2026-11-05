@@ -87,7 +87,24 @@ func collectSelectorQuotes(ctx context.Context, rpc *chain.Client, view *View, c
 			out[i].EntryCapacity = Capacity{Known: true}
 			out[i].EntryBlockedReason = cashBlocked
 		} else {
-			jobs = append(jobs, job{i: i, maximum: canary(min(strategyTwoBridgeLegCapRaw, uint64(s.TotalVaultNAVRaw-buffer), idle-uint64(buffer)))})
+			maximum := min(strategyTwoBridgeLegCapRaw, uint64(s.TotalVaultNAVRaw-buffer), idle-uint64(buffer))
+			if policy.DiversifyNewCash {
+				limits := newAllocationLimits(s, o.lanes, policy, market.Lane)
+				room := limits.ProviderRoomRaw
+				if !policy.unleveredEntry(market.Lane) {
+					room = int64(float64(room) / laneMaxLevel(market.Lane))
+				}
+				maximum = min(maximum, uint64(room), uint64(limits.EquityRoomRaw))
+				if maximum == 0 {
+					out[i].EntryCapacity = Capacity{Known: true}
+					out[i].EntryBlockedReason = "new_allocation_limit"
+					continue
+				}
+			}
+			jobs = append(jobs, job{i: i, maximum: canary(maximum)})
+		}
+		if policy.DiversifyNewCash {
+			continue
 		}
 		held := s.heldLanes()
 		for k := range o.lanes {

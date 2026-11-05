@@ -13,6 +13,7 @@ func TestCashReserveSizesEntryAndLeavesWithdrawalsUsable(t *testing.T) {
 	} {
 		in := selectorFixture()
 		in.Policy = productionRWAPolicy
+		in.Policy.DiversifyNewCash = false // Isolate cash sizing from provider admission.
 		in.Snapshot.TotalVaultNAVRaw, in.Snapshot.VoltrIdleRaw = c.nav, c.nav
 		q := &in.Quotes[0]
 		q.MinimumIdleRaw, q.EquityRaw = uint64(c.nav), min(c.nav-c.reserve, int64(strategyTwoBridgeLegCapRaw))

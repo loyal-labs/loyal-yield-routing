@@ -1,0 +1,1160 @@
+{
+  "date": "2026-11-05",
+  "mode": "unsigned RPC bundle simulations only",
+  "repositoryHeadAtEvidenceBuild": "69e4c38e32e55fd64301a8350aa412f43345f4ec",
+  "sourceSha256": {
+    "go/workers/internal/backyard/build.go": "0348e25950a68c8400a619814675268917a8fdb22d792aefc5ce9ae5a2ce4864",
+    "go/workers/internal/backyard/step.go": "d4279292950c62786af7e5ce76a2a2c7277c57142445ca6075bbab83a6359398",
+    "go/workers/internal/backyard/jupiter.go": "47af2adf930079c084709ba90154b2588edce87acfee71496ad38f6f00e526b9",
+    "go/workers/internal/backyard/kamino_build.go": "28e589568c2522a16bded9a11b98e7eac13dcc31f8dc1df5655ae55da100de57",
+    "go/workers/internal/backyard/message_v1.go": "2825023f87e0c301ead592a09140b71f34834f63b4b429f6f9fe7be9cf82a752",
+    "go/workers/internal/backyard/execution_observe.go": "fc8c06d1092c9d67ebcb4ee70fca5e441253cde7112ba2dca6739b80ec078bca",
+    "go/workers/internal/backyard/route_catalog.go": "bbadf7ebff201aac0017ac500ba0a7b59628f4dd4781fe0927a07aa4beb83d47",
+    "go/workers/internal/backyard/wire_codec_test.go": "6ca48443c3e9c5ef67c4e431d9f10e3c1b49200693a74b287c27e2cfb0a97c32"
+  },
+  "baseline": [
+    {
+      "case": "maple-10k",
+      "kind": "baseline",
+      "asset": "Maple/syrupUSDC/USDC",
+      "positionFundingUsdcRaw": 10000000000,
+      "status": "SYNTHETICALLY_FUNDED_UNBORROWED_LIFECYCLE_PASSED",
+      "startedAt": "2026-11-05T13:07:13.264895181Z",
+      "finishedAt": "2026-11-05T13:07:45.588250165Z",
+      "bankSlot": 465716495,
+      "rawArtifactSha256": "36a78fe41764bbf01554e6dd786705456cf3903eef6dee1a30400676d989e18b",
+      "broadcastMethodsRecorded": [],
+      "productionSigningKeyLoaded": false,
+      "financialWiresValidated": 6,
+      "transactions": [
+        {
+          "label": "fund",
+          "wireBytes": 1043,
+          "err": null,
+          "units": 146403,
+          "feeLamports": 5000
+        },
+        {
+          "label": "hypothetical_funding_only",
+          "wireBytes": 341,
+          "err": null,
+          "units": 76,
+          "feeLamports": 10000
+        },
+        {
+          "label": "buy",
+          "wireBytes": 980,
+          "err": null,
+          "units": 130168,
+          "feeLamports": 5000
+        },
+        {
+          "label": "deposit",
+          "wireBytes": 859,
+          "err": null,
+          "units": 172779,
+          "feeLamports": 5000
+        },
+        {
+          "label": "withdraw_and_sell",
+          "wireBytes": 1530,
+          "err": null,
+          "units": 295131,
+          "feeLamports": 5000
+        },
+        {
+          "label": "stage_cash_to_voltr_strategy",
+          "wireBytes": 429,
+          "err": null,
+          "units": 42619,
+          "feeLamports": 5000
+        },
+        {
+          "label": "simulation_valuation_refresh",
+          "wireBytes": 838,
+          "err": null,
+          "units": 229142,
+          "feeLamports": 5000
+        },
+        {
+          "label": "restore_cash_to_voltr_idle",
+          "wireBytes": 1043,
+          "err": null,
+          "units": 153139,
+          "feeLamports": 5000
+        }
+      ],
+      "fundingFixture": {
+        "amountRaw": 9000000000,
+        "destination": "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+        "fundingKind": "simulated_donation_to_strategy_custody",
+        "hypotheticalOnly": true,
+        "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "signaturesValid": false,
+        "source": "F8qm5brrS3dHUpNem15Pcur3AJr8rct7apTRLeZ6tLhi",
+        "sourceAuthority": "41zCUJsKk6cMB94DDtm99qWmyMZfp4GkAhhuz4xTwePu",
+        "sourceBalanceRaw": 1074557233027,
+        "sourceSlot": 465716403
+      },
+      "exitQuote": {
+        "inAmount": "8350486773",
+        "outAmount": "9947974617",
+        "otherAmountThreshold": "9898234744",
+        "slippageBps": 50
+      },
+      "exitPools": [
+        {
+          "dex": "Whirlpool",
+          "pool": "6fteKNvMdv7tYmBoJHhj1jx6rHcEwC6RdSEmVpyS613J"
+        }
+      ],
+      "guaranteedDepositTokensRaw": 8350486774,
+      "soldTokensRaw": 8350486773,
+      "cashRestoredUsdcRaw": 9948010187,
+      "collateralLeftInCustodyRaw": 41962246,
+      "debtRaw": 0,
+      "depositedReceiptsRaw": 0,
+      "sharedUsdcRaw": 0,
+      "strategyUsdcRaw": 0,
+      "collateralReserve": {
+        "availableTokenRaw": 39384868107033,
+        "borrowedScaled": "0",
+        "borrowLimitTokenRaw": 0
+      }
+    },
+    {
+      "case": "prime-10k",
+      "kind": "baseline",
+      "asset": "Prime/PRIME/USDC",
+      "positionFundingUsdcRaw": 10000000000,
+      "status": "SYNTHETICALLY_FUNDED_UNBORROWED_LIFECYCLE_PASSED",
+      "startedAt": "2026-11-05T13:08:20.07241605Z",
+      "finishedAt": "2026-11-05T13:08:51.766974807Z",
+      "bankSlot": 465716801,
+      "rawArtifactSha256": "5e92ff5dc4ec1d7678ff19fba9c12a1310432c6fa57457bd7149b8c68ee3e78a",
+      "broadcastMethodsRecorded": [],
+      "productionSigningKeyLoaded": false,
+      "financialWiresValidated": 6,
+      "transactions": [
+        {
+          "label": "fund",
+          "wireBytes": 1043,
+          "err": null,
+          "units": 148382,
+          "feeLamports": 5000
+        },
+        {
+          "label": "hypothetical_funding_only",
+          "wireBytes": 341,
+          "err": null,
+          "units": 76,
+          "feeLamports": 10000
+        },
+        {
+          "label": "buy",
+          "wireBytes": 1331,
+          "err": null,
+          "units": 187012,
+          "feeLamports": 5000
+        },
+        {
+          "label": "deposit",
+          "wireBytes": 859,
+          "err": null,
+          "units": 175061,
+          "feeLamports": 5000
+        },
+        {
+          "label": "withdraw_and_sell",
+          "wireBytes": 1462,
+          "err": null,
+          "units": 296910,
+          "feeLamports": 5000
+        },
+        {
+          "label": "stage_cash_to_voltr_strategy",
+          "wireBytes": 429,
+          "err": null,
+          "units": 42619,
+          "feeLamports": 5000
+        },
+        {
+          "label": "simulation_valuation_refresh",
+          "wireBytes": 706,
+          "err": null,
+          "units": 178495,
+          "feeLamports": 5000
+        },
+        {
+          "label": "restore_cash_to_voltr_idle",
+          "wireBytes": 1043,
+          "err": null,
+          "units": 153139,
+          "feeLamports": 5000
+        }
+      ],
+      "fundingFixture": {
+        "amountRaw": 9000000000,
+        "destination": "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+        "fundingKind": "simulated_donation_to_strategy_custody",
+        "hypotheticalOnly": true,
+        "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "signaturesValid": false,
+        "source": "F8qm5brrS3dHUpNem15Pcur3AJr8rct7apTRLeZ6tLhi",
+        "sourceAuthority": "41zCUJsKk6cMB94DDtm99qWmyMZfp4GkAhhuz4xTwePu",
+        "sourceBalanceRaw": 1074557233027,
+        "sourceSlot": 465716713
+      },
+      "exitQuote": {
+        "inAmount": "9313748197",
+        "outAmount": "9948486221",
+        "otherAmountThreshold": "9898743790",
+        "slippageBps": 50
+      },
+      "exitPools": [
+        {
+          "dex": "Manifest",
+          "pool": "2eReS6GcNvkawdzhgTsADmyrd1CKJUJ3aj3BCu6GmhJH"
+        }
+      ],
+      "guaranteedDepositTokensRaw": 9313748198,
+      "soldTokensRaw": 9313748197,
+      "cashRestoredUsdcRaw": 9948486221,
+      "collateralLeftInCustodyRaw": 46986737,
+      "debtRaw": 0,
+      "depositedReceiptsRaw": 0,
+      "sharedUsdcRaw": 0,
+      "strategyUsdcRaw": 0,
+      "collateralReserve": {
+        "availableTokenRaw": 78864356197141,
+        "borrowedScaled": "0",
+        "borrowLimitTokenRaw": 0
+      }
+    },
+    {
+      "case": "maple-50k",
+      "kind": "baseline",
+      "asset": "Maple/syrupUSDC/USDC",
+      "positionFundingUsdcRaw": 50000000000,
+      "status": "SYNTHETICALLY_FUNDED_UNBORROWED_LIFECYCLE_PASSED",
+      "startedAt": "2026-11-05T13:08:56.109805132Z",
+      "finishedAt": "2026-11-05T13:09:27.826440399Z",
+      "bankSlot": 465716972,
+      "rawArtifactSha256": "35ac09b5c60ba8aacf14487267ac116eb53da3e9b0434fd9fbcaa85b84795286",
+      "broadcastMethodsRecorded": [],
+      "productionSigningKeyLoaded": false,
+      "financialWiresValidated": 6,
+      "transactions": [
+        {
+          "label": "fund",
+          "wireBytes": 1043,
+          "err": null,
+          "units": 148382,
+          "feeLamports": 5000
+        },
+        {
+          "label": "hypothetical_funding_only",
+          "wireBytes": 341,
+          "err": null,
+          "units": 76,
+          "feeLamports": 10000
+        },
+        {
+          "label": "buy",
+          "wireBytes": 980,
+          "err": null,
+          "units": 130324,
+          "feeLamports": 5000
+        },
+        {
+          "label": "deposit",
+          "wireBytes": 859,
+          "err": null,
+          "units": 171186,
+          "feeLamports": 5000
+        },
+        {
+          "label": "withdraw_and_sell",
+          "wireBytes": 1530,
+          "err": null,
+          "units": 295215,
+          "feeLamports": 5000
+        },
+        {
+          "label": "stage_cash_to_voltr_strategy",
+          "wireBytes": 429,
+          "err": null,
+          "units": 42619,
+          "feeLamports": 5000
+        },
+        {
+          "label": "simulation_valuation_refresh",
+          "wireBytes": 838,
+          "err": null,
+          "units": 230819,
+          "feeLamports": 5000
+        },
+        {
+          "label": "restore_cash_to_voltr_idle",
+          "wireBytes": 1043,
+          "err": null,
+          "units": 153139,
+          "feeLamports": 5000
+        }
+      ],
+      "fundingFixture": {
+        "amountRaw": 49000000000,
+        "destination": "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+        "fundingKind": "simulated_donation_to_strategy_custody",
+        "hypotheticalOnly": true,
+        "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "signaturesValid": false,
+        "source": "F8qm5brrS3dHUpNem15Pcur3AJr8rct7apTRLeZ6tLhi",
+        "sourceAuthority": "41zCUJsKk6cMB94DDtm99qWmyMZfp4GkAhhuz4xTwePu",
+        "sourceBalanceRaw": 1074557233027,
+        "sourceSlot": 465716880
+      },
+      "exitQuote": {
+        "inAmount": "41752135291",
+        "outAmount": "49739163515",
+        "otherAmountThreshold": "49490467698",
+        "slippageBps": 50
+      },
+      "exitPools": [
+        {
+          "dex": "Whirlpool",
+          "pool": "6fteKNvMdv7tYmBoJHhj1jx6rHcEwC6RdSEmVpyS613J"
+        }
+      ],
+      "guaranteedDepositTokensRaw": 41752135292,
+      "soldTokensRaw": 41752135291,
+      "cashRestoredUsdcRaw": 49740052762,
+      "collateralLeftInCustodyRaw": 209809726,
+      "debtRaw": 0,
+      "depositedReceiptsRaw": 0,
+      "sharedUsdcRaw": 0,
+      "strategyUsdcRaw": 0,
+      "collateralReserve": {
+        "availableTokenRaw": 39384868107033,
+        "borrowedScaled": "0",
+        "borrowLimitTokenRaw": 0
+      }
+    },
+    {
+      "case": "prime-50k",
+      "kind": "baseline",
+      "asset": "Prime/PRIME/USDC",
+      "positionFundingUsdcRaw": 50000000000,
+      "status": "SYNTHETICALLY_FUNDED_UNBORROWED_LIFECYCLE_PASSED",
+      "startedAt": "2026-11-05T13:09:32.783165406Z",
+      "finishedAt": "2026-11-05T13:10:04.685374239Z",
+      "bankSlot": 465717148,
+      "rawArtifactSha256": "0f2e523139d0fb95956cc8d6b4eb21775a6825e0cb8cae1082924935ba462e07",
+      "broadcastMethodsRecorded": [],
+      "productionSigningKeyLoaded": false,
+      "financialWiresValidated": 6,
+      "transactions": [
+        {
+          "label": "fund",
+          "wireBytes": 1043,
+          "err": null,
+          "units": 146403,
+          "feeLamports": 5000
+        },
+        {
+          "label": "hypothetical_funding_only",
+          "wireBytes": 341,
+          "err": null,
+          "units": 76,
+          "feeLamports": 10000
+        },
+        {
+          "label": "buy",
+          "wireBytes": 1331,
+          "err": null,
+          "units": 228530,
+          "feeLamports": 5000
+        },
+        {
+          "label": "deposit",
+          "wireBytes": 859,
+          "err": null,
+          "units": 174920,
+          "feeLamports": 5000
+        },
+        {
+          "label": "withdraw_and_sell",
+          "wireBytes": 2135,
+          "err": null,
+          "units": 417213,
+          "feeLamports": 5000
+        },
+        {
+          "label": "stage_cash_to_voltr_strategy",
+          "wireBytes": 429,
+          "err": null,
+          "units": 42619,
+          "feeLamports": 5000
+        },
+        {
+          "label": "simulation_valuation_refresh",
+          "wireBytes": 706,
+          "err": null,
+          "units": 178495,
+          "feeLamports": 5000
+        },
+        {
+          "label": "restore_cash_to_voltr_idle",
+          "wireBytes": 1043,
+          "err": null,
+          "units": 153139,
+          "feeLamports": 5000
+        }
+      ],
+      "fundingFixture": {
+        "amountRaw": 49000000000,
+        "destination": "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+        "fundingKind": "simulated_donation_to_strategy_custody",
+        "hypotheticalOnly": true,
+        "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "signaturesValid": false,
+        "source": "F8qm5brrS3dHUpNem15Pcur3AJr8rct7apTRLeZ6tLhi",
+        "sourceAuthority": "41zCUJsKk6cMB94DDtm99qWmyMZfp4GkAhhuz4xTwePu",
+        "sourceBalanceRaw": 1074557233027,
+        "sourceSlot": 465717057
+      },
+      "exitQuote": {
+        "inAmount": "46568214471",
+        "outAmount": "49736321261",
+        "otherAmountThreshold": "49487639655",
+        "slippageBps": 50
+      },
+      "exitPools": [
+        {
+          "dex": "Whirlpool",
+          "pool": "9R9nmGDRdLLwWjc9raRjaRoZZNXiXQBEPGFRj6SfSkPQ"
+        },
+        {
+          "dex": "Whirlpool",
+          "pool": "9tXiuRRw7kbejLhZXtxDxYs2REe43uH2e7k1kocgdM9B"
+        },
+        {
+          "dex": "Manifest",
+          "pool": "GVJfHJsvrsWZmVj2JVQ3KyY1n7azyi8Z2FdBPxucUe58"
+        }
+      ],
+      "guaranteedDepositTokensRaw": 46568214472,
+      "soldTokensRaw": 46568214471,
+      "cashRestoredUsdcRaw": 49739443831,
+      "collateralLeftInCustodyRaw": 233619834,
+      "debtRaw": 0,
+      "depositedReceiptsRaw": 0,
+      "sharedUsdcRaw": 0,
+      "strategyUsdcRaw": 0,
+      "collateralReserve": {
+        "availableTokenRaw": 78864356197141,
+        "borrowedScaled": "0",
+        "borrowLimitTokenRaw": 0
+      }
+    },
+    {
+      "case": "maple-100k",
+      "kind": "baseline",
+      "asset": "Maple/syrupUSDC/USDC",
+      "positionFundingUsdcRaw": 100000000000,
+      "status": "SYNTHETICALLY_FUNDED_UNBORROWED_LIFECYCLE_PASSED",
+      "startedAt": "2026-11-05T13:10:08.994695692Z",
+      "finishedAt": "2026-11-05T13:10:40.920696042Z",
+      "bankSlot": 465717322,
+      "rawArtifactSha256": "ee07b4bfb3ebf5f03fcaa6260f92507de723df278fb6fa48e8e6737386192289",
+      "broadcastMethodsRecorded": [],
+      "productionSigningKeyLoaded": false,
+      "financialWiresValidated": 6,
+      "transactions": [
+        {
+          "label": "fund",
+          "wireBytes": 1043,
+          "err": null,
+          "units": 148382,
+          "feeLamports": 5000
+        },
+        {
+          "label": "hypothetical_funding_only",
+          "wireBytes": 341,
+          "err": null,
+          "units": 76,
+          "feeLamports": 10000
+        },
+        {
+          "label": "buy",
+          "wireBytes": 980,
+          "err": null,
+          "units": 130414,
+          "feeLamports": 5000
+        },
+        {
+          "label": "deposit",
+          "wireBytes": 859,
+          "err": null,
+          "units": 171320,
+          "feeLamports": 5000
+        },
+        {
+          "label": "withdraw_and_sell",
+          "wireBytes": 1530,
+          "err": null,
+          "units": 295667,
+          "feeLamports": 5000
+        },
+        {
+          "label": "stage_cash_to_voltr_strategy",
+          "wireBytes": 429,
+          "err": null,
+          "units": 42619,
+          "feeLamports": 5000
+        },
+        {
+          "label": "simulation_valuation_refresh",
+          "wireBytes": 838,
+          "err": null,
+          "units": 229073,
+          "feeLamports": 5000
+        },
+        {
+          "label": "restore_cash_to_voltr_idle",
+          "wireBytes": 1043,
+          "err": null,
+          "units": 153139,
+          "feeLamports": 5000
+        }
+      ],
+      "fundingFixture": {
+        "amountRaw": 99000000000,
+        "destination": "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+        "fundingKind": "simulated_donation_to_strategy_custody",
+        "hypotheticalOnly": true,
+        "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "signaturesValid": false,
+        "source": "F8qm5brrS3dHUpNem15Pcur3AJr8rct7apTRLeZ6tLhi",
+        "sourceAuthority": "41zCUJsKk6cMB94DDtm99qWmyMZfp4GkAhhuz4xTwePu",
+        "sourceBalanceRaw": 1074557233027,
+        "sourceSlot": 465717228
+      },
+      "exitQuote": {
+        "inAmount": "83503524148",
+        "outAmount": "99476553138",
+        "otherAmountThreshold": "98979170373",
+        "slippageBps": 50
+      },
+      "exitPools": [
+        {
+          "dex": "Whirlpool",
+          "pool": "6fteKNvMdv7tYmBoJHhj1jx6rHcEwC6RdSEmVpyS613J"
+        }
+      ],
+      "guaranteedDepositTokensRaw": 83503524149,
+      "soldTokensRaw": 83503524148,
+      "cashRestoredUsdcRaw": 99480110061,
+      "collateralLeftInCustodyRaw": 419615700,
+      "debtRaw": 0,
+      "depositedReceiptsRaw": 0,
+      "sharedUsdcRaw": 0,
+      "strategyUsdcRaw": 0,
+      "collateralReserve": {
+        "availableTokenRaw": 39384868107033,
+        "borrowedScaled": "0",
+        "borrowLimitTokenRaw": 0
+      }
+    },
+    {
+      "case": "prime-100k",
+      "kind": "baseline",
+      "asset": "Prime/PRIME/USDC",
+      "positionFundingUsdcRaw": 100000000000,
+      "status": "SYNTHETICALLY_FUNDED_UNBORROWED_LIFECYCLE_PASSED",
+      "startedAt": "2026-11-05T13:10:46.263407892Z",
+      "finishedAt": "2026-11-05T13:11:18.28984235Z",
+      "bankSlot": 465717495,
+      "rawArtifactSha256": "db455ea0052d98b7f077361fe8d8b1d8c948d420e08a5206e04568dc3c1768ea",
+      "broadcastMethodsRecorded": [],
+      "productionSigningKeyLoaded": false,
+      "financialWiresValidated": 6,
+      "transactions": [
+        {
+          "label": "fund",
+          "wireBytes": 1043,
+          "err": null,
+          "units": 148382,
+          "feeLamports": 5000
+        },
+        {
+          "label": "hypothetical_funding_only",
+          "wireBytes": 341,
+          "err": null,
+          "units": 76,
+          "feeLamports": 10000
+        },
+        {
+          "label": "buy",
+          "wireBytes": 1331,
+          "err": null,
+          "units": 287925,
+          "feeLamports": 5000
+        },
+        {
+          "label": "deposit",
+          "wireBytes": 859,
+          "err": null,
+          "units": 175668,
+          "feeLamports": 5000
+        },
+        {
+          "label": "withdraw_and_sell",
+          "wireBytes": 2135,
+          "err": null,
+          "units": 436074,
+          "feeLamports": 5000
+        },
+        {
+          "label": "stage_cash_to_voltr_strategy",
+          "wireBytes": 429,
+          "err": null,
+          "units": 42619,
+          "feeLamports": 5000
+        },
+        {
+          "label": "simulation_valuation_refresh",
+          "wireBytes": 706,
+          "err": null,
+          "units": 178498,
+          "feeLamports": 5000
+        },
+        {
+          "label": "restore_cash_to_voltr_idle",
+          "wireBytes": 1043,
+          "err": null,
+          "units": 153139,
+          "feeLamports": 5000
+        }
+      ],
+      "fundingFixture": {
+        "amountRaw": 99000000000,
+        "destination": "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+        "fundingKind": "simulated_donation_to_strategy_custody",
+        "hypotheticalOnly": true,
+        "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "signaturesValid": false,
+        "source": "F8qm5brrS3dHUpNem15Pcur3AJr8rct7apTRLeZ6tLhi",
+        "sourceAuthority": "41zCUJsKk6cMB94DDtm99qWmyMZfp4GkAhhuz4xTwePu",
+        "sourceBalanceRaw": 1074557233027,
+        "sourceSlot": 465717404
+      },
+      "exitQuote": {
+        "inAmount": "93132587179",
+        "outAmount": "99466582660",
+        "otherAmountThreshold": "98969249747",
+        "slippageBps": 50
+      },
+      "exitPools": [
+        {
+          "dex": "Whirlpool",
+          "pool": "9R9nmGDRdLLwWjc9raRjaRoZZNXiXQBEPGFRj6SfSkPQ"
+        },
+        {
+          "dex": "Whirlpool",
+          "pool": "9tXiuRRw7kbejLhZXtxDxYs2REe43uH2e7k1kocgdM9B"
+        },
+        {
+          "dex": "Manifest",
+          "pool": "GVJfHJsvrsWZmVj2JVQ3KyY1n7azyi8Z2FdBPxucUe58"
+        }
+      ],
+      "guaranteedDepositTokensRaw": 93132587180,
+      "soldTokensRaw": 93132587179,
+      "cashRestoredUsdcRaw": 99477195069,
+      "collateralLeftInCustodyRaw": 468002951,
+      "debtRaw": 0,
+      "depositedReceiptsRaw": 0,
+      "sharedUsdcRaw": 0,
+      "strategyUsdcRaw": 0,
+      "collateralReserve": {
+        "availableTokenRaw": 78864356197141,
+        "borrowedScaled": "0",
+        "borrowLimitTokenRaw": 0
+      }
+    }
+  ],
+  "marketStress": [
+    {
+      "case": "pressure10-maple-100k",
+      "kind": "stress",
+      "asset": "Maple/syrupUSDC/USDC",
+      "positionFundingUsdcRaw": 100000000000,
+      "status": "STRESS_EXIT_PASSED",
+      "startedAt": "2026-11-05T13:20:06.459978496Z",
+      "finishedAt": "2026-11-05T13:20:58.38464389Z",
+      "bankSlot": 465720203,
+      "rawArtifactSha256": "8c61dbacd29096250ee6305320a242106e5a0a9f7563beb208aeec14f441b06e",
+      "broadcastMethodsRecorded": [],
+      "productionSigningKeyLoaded": false,
+      "financialWiresValidated": 5,
+      "transactions": [
+        {
+          "label": "fund",
+          "wireBytes": 1043,
+          "err": null,
+          "units": 146403,
+          "feeLamports": 5000
+        },
+        {
+          "label": "hypothetical_funding_only",
+          "wireBytes": 341,
+          "err": null,
+          "units": 76,
+          "feeLamports": 10000
+        },
+        {
+          "label": "buy",
+          "wireBytes": 980,
+          "err": null,
+          "units": 130413,
+          "feeLamports": 5000
+        },
+        {
+          "label": "deposit",
+          "wireBytes": 859,
+          "err": null,
+          "units": 171747,
+          "feeLamports": 5000
+        },
+        {
+          "label": "hypothetical_pressure_funding",
+          "wireBytes": 341,
+          "err": null,
+          "units": 76,
+          "feeLamports": 10000
+        },
+        {
+          "label": "preceding_market_sale",
+          "wireBytes": 1587,
+          "err": null,
+          "units": 277436,
+          "feeLamports": 5000
+        },
+        {
+          "label": "withdraw_and_sell",
+          "wireBytes": 1530,
+          "err": null,
+          "units": 293601,
+          "feeLamports": 5000
+        }
+      ],
+      "fundingFixture": {
+        "amountRaw": 99000000000,
+        "destination": "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+        "fundingKind": "simulated_donation_to_strategy_custody",
+        "hypotheticalOnly": true,
+        "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "signaturesValid": false,
+        "source": "F8qm5brrS3dHUpNem15Pcur3AJr8rct7apTRLeZ6tLhi",
+        "sourceAuthority": "41zCUJsKk6cMB94DDtm99qWmyMZfp4GkAhhuz4xTwePu",
+        "sourceAuthorityOnCurve": true,
+        "sourceBalanceRaw": 1074557233027,
+        "sourceExcludedFromTestedRouteAccounts": false,
+        "sourceSlot": 465720025
+      },
+      "exitQuote": {
+        "inAmount": "83503524159",
+        "outAmount": "99476553138",
+        "otherAmountThreshold": "98979170373",
+        "slippageBps": 50
+      },
+      "exitPools": [
+        {
+          "dex": "Whirlpool",
+          "pool": "6fteKNvMdv7tYmBoJHhj1jx6rHcEwC6RdSEmVpyS613J"
+        }
+      ],
+      "guaranteedDepositTokensRaw": 83503524160,
+      "soldTokensRaw": 83503524159,
+      "pressureMultipleOfExitTokens": 10,
+      "pressureQuoteUsdcRaw": 994607072658,
+      "pressurePools": [
+        {
+          "dex": "Whirlpool",
+          "pool": "6fteKNvMdv7tYmBoJHhj1jx6rHcEwC6RdSEmVpyS613J"
+        },
+        {
+          "dex": "Whirlpool",
+          "pool": "9goWMLg5ZxayhTinjtfNQLCZg2VBzdwERqHqP5tYSP9Z"
+        },
+        {
+          "dex": "Whirlpool",
+          "pool": "9RqDTfwCx2SgxsvKpspQHc38HUo3B6hRd3oR9JR966Ps"
+        }
+      ],
+      "pressureFundingFixture": {
+        "amountRaw": 835035241590,
+        "destination": "CYwM28WSoYp85HrQGuaVpWy2JhKH6JJah4m65DSWUNiN",
+        "fundingKind": "simulated_donation_to_strategy_custody",
+        "hypotheticalOnly": true,
+        "mint": "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+        "signaturesValid": false,
+        "source": "aruMouTNFRz9WwMoDPtnpNCy37PsFJE15mnfXGkWESq",
+        "sourceAuthority": "45YnzauhsBM8CpUz96Djf8UG5vqq2Dua62wuW9H3jaJ5",
+        "sourceAuthorityOnCurve": false,
+        "sourceBalanceRaw": 9432825378293,
+        "sourceExcludedFromTestedRouteAccounts": true,
+        "sourceSlot": 465720200
+      },
+      "commonExitAndPressurePools": [
+        "6fteKNvMdv7tYmBoJHhj1jx6rHcEwC6RdSEmVpyS613J"
+      ],
+      "cashRecoveredUsdcRaw": 99445084406,
+      "belowPreStressQuoteUsdcRaw": 31468732,
+      "belowPreStressQuoteBps": 3.1634320859855927,
+      "minimumOutputUsdcRaw": 98979170373,
+      "debtRaw": 0,
+      "depositedReceiptsRaw": 0
+    },
+    {
+      "case": "pressure10-prime-100k",
+      "kind": "stress",
+      "asset": "Prime/PRIME/USDC",
+      "positionFundingUsdcRaw": 100000000000,
+      "status": "STRESS_EXIT_PASSED",
+      "startedAt": "2026-11-05T13:21:03.296135874Z",
+      "finishedAt": "2026-11-05T13:21:55.71087011Z",
+      "bankSlot": 465720471,
+      "rawArtifactSha256": "abaa48a6a66645d931a63ea351b9bdd0ec99c7721dab93aedbb15f2da80e04ed",
+      "broadcastMethodsRecorded": [],
+      "productionSigningKeyLoaded": false,
+      "financialWiresValidated": 5,
+      "transactions": [
+        {
+          "label": "fund",
+          "wireBytes": 1043,
+          "err": null,
+          "units": 146403,
+          "feeLamports": 5000
+        },
+        {
+          "label": "hypothetical_funding_only",
+          "wireBytes": 341,
+          "err": null,
+          "units": 76,
+          "feeLamports": 10000
+        },
+        {
+          "label": "buy",
+          "wireBytes": 1331,
+          "err": null,
+          "units": 287721,
+          "feeLamports": 5000
+        },
+        {
+          "label": "deposit",
+          "wireBytes": 859,
+          "err": null,
+          "units": 175665,
+          "feeLamports": 5000
+        },
+        {
+          "label": "hypothetical_pressure_funding",
+          "wireBytes": 341,
+          "err": null,
+          "units": 76,
+          "feeLamports": 10000
+        },
+        {
+          "label": "preceding_market_sale",
+          "wireBytes": 1585,
+          "err": null,
+          "units": 375560,
+          "feeLamports": 5000
+        },
+        {
+          "label": "withdraw_and_sell",
+          "wireBytes": 2135,
+          "err": null,
+          "units": 455393,
+          "feeLamports": 5000
+        }
+      ],
+      "fundingFixture": {
+        "amountRaw": 99000000000,
+        "destination": "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+        "fundingKind": "simulated_donation_to_strategy_custody",
+        "hypotheticalOnly": true,
+        "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "signaturesValid": false,
+        "source": "F8qm5brrS3dHUpNem15Pcur3AJr8rct7apTRLeZ6tLhi",
+        "sourceAuthority": "41zCUJsKk6cMB94DDtm99qWmyMZfp4GkAhhuz4xTwePu",
+        "sourceAuthorityOnCurve": true,
+        "sourceBalanceRaw": 1074557233027,
+        "sourceExcludedFromTestedRouteAccounts": false,
+        "sourceSlot": 465720286
+      },
+      "exitQuote": {
+        "inAmount": "93132588107",
+        "outAmount": "99466582929",
+        "otherAmountThreshold": "98969250015",
+        "slippageBps": 50
+      },
+      "exitPools": [
+        {
+          "dex": "Whirlpool",
+          "pool": "9R9nmGDRdLLwWjc9raRjaRoZZNXiXQBEPGFRj6SfSkPQ"
+        },
+        {
+          "dex": "Whirlpool",
+          "pool": "9tXiuRRw7kbejLhZXtxDxYs2REe43uH2e7k1kocgdM9B"
+        },
+        {
+          "dex": "Manifest",
+          "pool": "GVJfHJsvrsWZmVj2JVQ3KyY1n7azyi8Z2FdBPxucUe58"
+        }
+      ],
+      "guaranteedDepositTokensRaw": 93132588108,
+      "soldTokensRaw": 93132588107,
+      "pressureMultipleOfExitTokens": 10,
+      "pressureQuoteUsdcRaw": 994266142739,
+      "pressurePools": [
+        {
+          "dex": "Whirlpool",
+          "pool": "9R9nmGDRdLLwWjc9raRjaRoZZNXiXQBEPGFRj6SfSkPQ"
+        },
+        {
+          "dex": "Manifest",
+          "pool": "GVJfHJsvrsWZmVj2JVQ3KyY1n7azyi8Z2FdBPxucUe58"
+        },
+        {
+          "dex": "Whirlpool",
+          "pool": "9tXiuRRw7kbejLhZXtxDxYs2REe43uH2e7k1kocgdM9B"
+        }
+      ],
+      "pressureFundingFixture": {
+        "amountRaw": 931325881070,
+        "destination": "DnBnX19kFyCP3Kdhkq7uEJ6juCYEaiS6jZMSXbfCXzct",
+        "fundingKind": "simulated_donation_to_strategy_custody",
+        "hypotheticalOnly": true,
+        "mint": "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7",
+        "signaturesValid": false,
+        "source": "7ND1JXFtoH8nn4rvRUvukDwAKgGuJ6uDtFTfTaR9VXiC",
+        "sourceAuthority": "XcVU4Nhzjzg69VRcpybnoFWT98oQANV58F7guE6mRza",
+        "sourceAuthorityOnCurve": false,
+        "sourceBalanceRaw": 4720665600254,
+        "sourceExcludedFromTestedRouteAccounts": true,
+        "sourceSlot": 465720467
+      },
+      "commonExitAndPressurePools": [
+        "9R9nmGDRdLLwWjc9raRjaRoZZNXiXQBEPGFRj6SfSkPQ",
+        "9tXiuRRw7kbejLhZXtxDxYs2REe43uH2e7k1kocgdM9B",
+        "GVJfHJsvrsWZmVj2JVQ3KyY1n7azyi8Z2FdBPxucUe58"
+      ],
+      "cashRecoveredUsdcRaw": 99390555942,
+      "belowPreStressQuoteUsdcRaw": 76026987,
+      "belowPreStressQuoteBps": 7.6434702752650745,
+      "minimumOutputUsdcRaw": 98969250015,
+      "debtRaw": 0,
+      "depositedReceiptsRaw": 0
+    },
+    {
+      "case": "pressure50-maple-100k",
+      "kind": "stress_setup_not_executed",
+      "asset": "Maple/syrupUSDC/USDC",
+      "positionFundingUsdcRaw": 100000000000,
+      "status": "PRESSURE_QUOTE_UNAVAILABLE_TEST_NOT_EXECUTED",
+      "originalError": "Jupiter returned invalid HTTP 400 response",
+      "quoteRecheck": {
+        "at": "2026-11-05T13:25:44.279138+00:00",
+        "params": {
+          "inputMint": "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+          "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+          "amount": "4175176207950",
+          "slippageBps": "50",
+          "swapMode": "ExactIn",
+          "maxAccounts": "50",
+          "instructionVersion": "V2",
+          "dexes": "Whirlpool"
+        },
+        "httpStatus": 400,
+        "response": {
+          "error": "No routes found",
+          "errorCode": "NO_ROUTES_FOUND"
+        }
+      },
+      "startedAt": "2026-11-05T13:22:19.904289552Z",
+      "finishedAt": "2026-11-05T13:23:00.867021151Z",
+      "rawArtifactSha256": "ed2f99384b37891f602e9d35e0dba7a7cb55f5c2935b3eaaed8a74d95586650f"
+    },
+    {
+      "case": "pressure50-prime-100k",
+      "kind": "stress",
+      "asset": "Prime/PRIME/USDC",
+      "positionFundingUsdcRaw": 100000000000,
+      "status": "STRESS_EXIT_PASSED",
+      "startedAt": "2026-11-05T13:23:05.437202569Z",
+      "finishedAt": "2026-11-05T13:23:57.766805223Z",
+      "bankSlot": 465721043,
+      "rawArtifactSha256": "5f640f84fee16a0b3632251e4f15339b2c2d34fe599486697b98ff3aacc20c93",
+      "broadcastMethodsRecorded": [],
+      "productionSigningKeyLoaded": false,
+      "financialWiresValidated": 5,
+      "transactions": [
+        {
+          "label": "fund",
+          "wireBytes": 1043,
+          "err": null,
+          "units": 148382,
+          "feeLamports": 5000
+        },
+        {
+          "label": "hypothetical_funding_only",
+          "wireBytes": 341,
+          "err": null,
+          "units": 76,
+          "feeLamports": 10000
+        },
+        {
+          "label": "buy",
+          "wireBytes": 1331,
+          "err": null,
+          "units": 287793,
+          "feeLamports": 5000
+        },
+        {
+          "label": "deposit",
+          "wireBytes": 859,
+          "err": null,
+          "units": 174029,
+          "feeLamports": 5000
+        },
+        {
+          "label": "hypothetical_pressure_funding",
+          "wireBytes": 341,
+          "err": null,
+          "units": 76,
+          "feeLamports": 10000
+        },
+        {
+          "label": "preceding_market_sale",
+          "wireBytes": 1585,
+          "err": null,
+          "units": 564239,
+          "feeLamports": 5000
+        },
+        {
+          "label": "withdraw_and_sell",
+          "wireBytes": 2135,
+          "err": null,
+          "units": 420711,
+          "feeLamports": 5000
+        }
+      ],
+      "fundingFixture": {
+        "amountRaw": 99000000000,
+        "destination": "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+        "fundingKind": "simulated_donation_to_strategy_custody",
+        "hypotheticalOnly": true,
+        "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "signaturesValid": false,
+        "source": "F8qm5brrS3dHUpNem15Pcur3AJr8rct7apTRLeZ6tLhi",
+        "sourceAuthority": "41zCUJsKk6cMB94DDtm99qWmyMZfp4GkAhhuz4xTwePu",
+        "sourceAuthorityOnCurve": true,
+        "sourceBalanceRaw": 1074557233027,
+        "sourceExcludedFromTestedRouteAccounts": false,
+        "sourceSlot": 465720857
+      },
+      "exitQuote": {
+        "inAmount": "93132588107",
+        "outAmount": "99466582906",
+        "otherAmountThreshold": "98969249992",
+        "slippageBps": 50
+      },
+      "exitPools": [
+        {
+          "dex": "Whirlpool",
+          "pool": "9R9nmGDRdLLwWjc9raRjaRoZZNXiXQBEPGFRj6SfSkPQ"
+        },
+        {
+          "dex": "Manifest",
+          "pool": "GVJfHJsvrsWZmVj2JVQ3KyY1n7azyi8Z2FdBPxucUe58"
+        },
+        {
+          "dex": "Whirlpool",
+          "pool": "9tXiuRRw7kbejLhZXtxDxYs2REe43uH2e7k1kocgdM9B"
+        }
+      ],
+      "guaranteedDepositTokensRaw": 93132588108,
+      "soldTokensRaw": 93132588107,
+      "pressureMultipleOfExitTokens": 50,
+      "pressureQuoteUsdcRaw": 4962447682644,
+      "pressurePools": [
+        {
+          "dex": "Whirlpool",
+          "pool": "9R9nmGDRdLLwWjc9raRjaRoZZNXiXQBEPGFRj6SfSkPQ"
+        },
+        {
+          "dex": "Whirlpool",
+          "pool": "9tXiuRRw7kbejLhZXtxDxYs2REe43uH2e7k1kocgdM9B"
+        },
+        {
+          "dex": "Manifest",
+          "pool": "GVJfHJsvrsWZmVj2JVQ3KyY1n7azyi8Z2FdBPxucUe58"
+        }
+      ],
+      "pressureFundingFixture": {
+        "amountRaw": 4656629405350,
+        "destination": "DnBnX19kFyCP3Kdhkq7uEJ6juCYEaiS6jZMSXbfCXzct",
+        "fundingKind": "simulated_donation_to_strategy_custody",
+        "hypotheticalOnly": true,
+        "mint": "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7",
+        "signaturesValid": false,
+        "source": "7ND1JXFtoH8nn4rvRUvukDwAKgGuJ6uDtFTfTaR9VXiC",
+        "sourceAuthority": "XcVU4Nhzjzg69VRcpybnoFWT98oQANV58F7guE6mRza",
+        "sourceAuthorityOnCurve": false,
+        "sourceBalanceRaw": 4720665600254,
+        "sourceExcludedFromTestedRouteAccounts": true,
+        "sourceSlot": 465721039
+      },
+      "commonExitAndPressurePools": [
+        "9R9nmGDRdLLwWjc9raRjaRoZZNXiXQBEPGFRj6SfSkPQ",
+        "9tXiuRRw7kbejLhZXtxDxYs2REe43uH2e7k1kocgdM9B",
+        "GVJfHJsvrsWZmVj2JVQ3KyY1n7azyi8Z2FdBPxucUe58"
+      ],
+      "cashRecoveredUsdcRaw": 99045467965,
+      "belowPreStressQuoteUsdcRaw": 421114941,
+      "belowPreStressQuoteBps": 42.3373286481522,
+      "minimumOutputUsdcRaw": 98969249992,
+      "debtRaw": 0,
+      "depositedReceiptsRaw": 0
+    }
+  ],
+  "negativeControl": {
+    "case": "surplus-trial-pressure10-prime-100k",
+    "classification": "test-fixture stale surplus, excluded from market-liquidity results",
+    "oversoldTokenBaseUnits": 548,
+    "error": {
+      "InstructionError": [
+        4,
+        {
+          "Custom": 6024
+        }
+      ]
+    },
+    "trackedPrincipalAccountsUnchanged": true
+  },
+  "limits": [
+    "Funding above the live $1,000 allocation is hypothetical; no valid production or donor signatures, and no broadcast.",
+    "Maple uses the candidate Whirlpool routing filter; current production remains Manifest-only.",
+    "All tested lending positions are unborrowed. Existing leveraged positions were not unwound.",
+    "Only the guaranteed purchased amount was deposited and sold; purchase surplus worth approximately 0.5% remains as tokens, not a realized loss.",
+    "Baseline tests return sale proceeds to Voltr idle cash. Stress tests stop after the atomic lending withdrawal/sale; they do not restore the artificial pressure sale proceeds or complete a user withdrawal receipt.",
+    "Pressure fixtures use token accounts excluded from all tested route accounts. The preceding real-program swaps, rather than account edits, consume liquidity.",
+    "Stress fill deltas are calculated from pre/post balances of the final exit transaction within the same replay.",
+    "Six financial wires per baseline were compiled and validated with an ephemeral key via the existing test helper. No signed operation was persisted to a database.",
+    "A successful simulation is not a guarantee of future liquidity, inclusion timing, oracle behavior, or underlying provider/credit/redemption performance."
+  ],
+  "remoteCleanupVerified": true
+}

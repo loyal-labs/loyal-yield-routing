@@ -1,0 +1,306 @@
+{
+  "purpose": "Local verification of 90/5/5 own-capital allocation targets; no activation.",
+  "sourceCommit": "a96ab545e597a7f3274522092b14c01a6fcb8c90",
+  "sourceSha256": {
+    "go/workers/internal/backyard/allocation_limits.go": "d9164653f598d23f82483c84cefdaf7ed60c110fd2b9a234c18120ed929124d5",
+    "go/workers/internal/backyard/allocation_limits_test.go": "ee6010ce8c013e20c50657e32894741f18e87a1c08b3134a6730cf87a276f2b9",
+    "go/workers/internal/backyard/deployment_continuity_test.go": "4d25b8317a0455d36208a9dda4aadace5a97f591baff09cd3222c29c122e4171",
+    "go/workers/internal/backyard/idle_buffer_test.go": "addfa2b12cf6b423fc930cd11391eecc4e2c840b51f9cc23a1c9aa17e8955cc2",
+    "go/workers/internal/backyard/jupiter_observe.go": "18cd741731b14df915293d5c9b32c555f2d1b514348546ceee1cd122f789b156",
+    "go/workers/internal/backyard/leverage_target.go": "b6965d72e0adda0d1622500a9085c33c02a63b5cf3e13518ce0cd4d7459ab648",
+    "go/workers/internal/backyard/main_test.go": "6f80caebab35b10003a1d7e591f30116f938e6a612f34513bbf90d7538ece9c6",
+    "go/workers/internal/backyard/route_catalog.go": "a0ca73ccf7a1151a88fd0c4f2ecb34979415aa6e07b889f140cc402f5748d15e",
+    "go/workers/internal/backyard/route_observe.go": "9d50fcce4d5e750f817955a2339c33d2603d376145d5550df00eb2a14464d3f6",
+    "go/workers/internal/backyard/selector.go": "699a8f024c2c1adfd470bd2e14fd6c2f54bd698ff26eda9cf96e8868592a6b94",
+    "go/workers/internal/backyard/selector_destination_test.go": "605eb9364cafa5ea4b946a617cf9c872bce31eca902e2eeaa64841d69a493504",
+    "go/workers/internal/backyard/selector_live.go": "34285e59202f790ea6a2c93affdf3b14729e5357aec38b956d95495d574358f2",
+    "go/workers/internal/backyard/selector_price.go": "866c12647dafac256de23b263ff722528bd707a817971ef8b9eff25c1fdde94c",
+    "go/workers/internal/backyard/selector_record.go": "03421fd6e4cba3ba6c48c31cbbb3c91d83fe65f77f9b9366470592b91f1fe8e7",
+    "go/workers/internal/backyard/state.go": "85af3cc9c3adc33fe00a21960e313eecf2ae76b538114ae83cc7194b03b12ba2",
+    "go/workers/internal/backyard/target.go": "b2a7d4daa020d83fb455be91a26aa6b086162a31f1c6d1508a235b4a519c725b",
+    "go/workers/internal/backyard/vault.go": "4a85e3f024b3bd3c5ca4ab359db63452288e78aa1bb54479e77ff852d95de1ea"
+  },
+  "policy": {
+    "ownCapitalTargetBps": {
+      "onreAndAuto": 9000,
+      "maple": 500,
+      "prime": 500
+    },
+    "targetBasis": "NAV minus funded cash-reserve target minus pending withdrawals",
+    "grossProviderCapNavBps": 10000,
+    "sharedProvider": [
+      "AUTO",
+      "PRIME"
+    ],
+    "mapleAndPrimeNewBorrowing": false,
+    "newCashUncertaintyBasis": "quote equity",
+    "uncertaintyBps": 10,
+    "horizonDays": 7,
+    "persistenceMinutes": 30,
+    "forcedRebalancing": false
+  },
+  "localVerification": {
+    "command": "scripts/verify-workers-v2.sh",
+    "result": "PASS",
+    "freshDisposablePostgres": true,
+    "databaseStopped": true,
+    "tests": [
+      "own capital versus gross borrowed exposure",
+      "90/5/5 priority and target admission",
+      "shared AUTO/PRIME provider",
+      "shared PRIME debt lanes and custody",
+      "withdrawal cash and unknown holdings",
+      "positive-benefit gate at small size",
+      "restart persistence",
+      "fresh quote recheck",
+      "no rotation or leverage reset",
+      "withdrawal, emergency and signed recovery priorities"
+    ]
+  },
+  "currentVaultReplay": {
+    "startedAt": "2026-11-05T17:14:37.379395718Z",
+    "finishedAt": "2026-11-05T17:14:42.420149395Z",
+    "slot": 465785851,
+    "firstDecision": {
+      "Action": "HOLD",
+      "Reason": "at_target",
+      "AmountRaw": 0,
+      "MaxSlippageBPS": 0,
+      "IdempotencyKey": "586a783319b5078d1d5f4fd25622f5c16f3a9d4c0d22b6171cbcbe830fd01ede:OnRe/ONyc/USDC:HOLD:0:at_target",
+      "StrategyKey": "OnRe/ONyc/USDC"
+    },
+    "priorDecision": {
+      "Action": "HOLD",
+      "Reason": "at_target",
+      "AmountRaw": 0,
+      "MaxSlippageBPS": 0,
+      "IdempotencyKey": "586a783319b5078d1d5f4fd25622f5c16f3a9d4c0d22b6171cbcbe830fd01ede:OnRe/ONyc/USDC:HOLD:0:at_target",
+      "StrategyKey": "OnRe/ONyc/USDC"
+    },
+    "selectorAction": "KEEP",
+    "selectorReason": "no_worthwhile_executable_move",
+    "navRaw": 177383135979,
+    "cashRaw": 2425098217,
+    "cashReserveTargetRaw": 17738313597,
+    "withdrawalDemandRaw": 245484104,
+    "cashShortfallBeforeNewInvestmentRaw": 15558699484,
+    "allocationLimits": {
+      "auto": {
+        "cashReserveRaw": 17738313597,
+        "providerRoomRaw": 115548354039,
+        "equityRoomRaw": 0,
+        "unleveredEntry": false
+      },
+      "maple": {
+        "cashReserveRaw": 17738313597,
+        "providerRoomRaw": 177383135979,
+        "equityRoomRaw": 7969966913,
+        "unleveredEntry": true
+      },
+      "onre": {
+        "cashReserveRaw": 17738313597,
+        "providerRoomRaw": 0,
+        "equityRoomRaw": 0,
+        "unleveredEntry": false
+      },
+      "prime": {
+        "cashReserveRaw": 17738313597,
+        "providerRoomRaw": 115548354039,
+        "equityRoomRaw": 7959638156,
+        "unleveredEntry": true
+      }
+    },
+    "storedLevels": {
+      "OnRe/ONyc/USDC": {
+        "level": 1.75,
+        "upApproved": false
+      },
+      "AUTO/AUTO/PYUSD": {
+        "level": 1.75,
+        "upApproved": true
+      },
+      "AUTO/AUTO/wYLDS": {
+        "level": 3,
+        "upApproved": false
+      },
+      "Prime/PRIME/PYUSD": {
+        "level": 1.5,
+        "upApproved": false
+      }
+    },
+    "candidateLeverageDecisions": {
+      "AUTO/AUTO/PYUSD": {
+        "Lane": "AUTO/AUTO/PYUSD",
+        "Current": 1.75,
+        "Next": 1.75,
+        "SpreadBPS": 354,
+        "GainRaw": 0,
+        "Reason": "new_allocation_limit",
+        "BorrowRaw": 0,
+        "RoomRaw": 0,
+        "Cost": {
+          "borrowFeeMicros": 0,
+          "entrySwapLossMicros": 0,
+          "exitSwapLossMicros": 0,
+          "networkMicros": 0,
+          "totalMicros": 0
+        },
+        "TermDays": 0,
+        "TermKnown": false,
+        "Down": {}
+      },
+      "AUTO/AUTO/wYLDS": {
+        "Lane": "AUTO/AUTO/wYLDS",
+        "Current": 3,
+        "Next": 3,
+        "SpreadBPS": 432,
+        "GainRaw": 0,
+        "Reason": "new_allocation_limit",
+        "BorrowRaw": 0,
+        "RoomRaw": 36107159,
+        "Cost": {
+          "borrowFeeMicros": 0,
+          "entrySwapLossMicros": 0,
+          "exitSwapLossMicros": 0,
+          "networkMicros": 0,
+          "totalMicros": 0
+        },
+        "TermDays": 8.412997685185186,
+        "TermKnown": true,
+        "Down": {}
+      },
+      "OnRe/ONyc/USDC": {
+        "Lane": "OnRe/ONyc/USDC",
+        "Current": 1.75,
+        "Next": 1.75,
+        "SpreadBPS": 354,
+        "GainRaw": 0,
+        "Reason": "new_allocation_limit",
+        "BorrowRaw": 0,
+        "RoomRaw": 1541936765252,
+        "Cost": {
+          "borrowFeeMicros": 0,
+          "entrySwapLossMicros": 0,
+          "exitSwapLossMicros": 0,
+          "networkMicros": 0,
+          "totalMicros": 0
+        },
+        "TermDays": 0,
+        "TermKnown": false,
+        "Down": {}
+      },
+      "Prime/PRIME/PYUSD": {
+        "Lane": "Prime/PRIME/PYUSD",
+        "Current": 1.5,
+        "Next": 1.5,
+        "SpreadBPS": 6,
+        "GainRaw": 0,
+        "Reason": "new_allocation_limit",
+        "BorrowRaw": 0,
+        "RoomRaw": 0,
+        "Cost": {
+          "borrowFeeMicros": 0,
+          "entrySwapLossMicros": 0,
+          "exitSwapLossMicros": 0,
+          "networkMicros": 0,
+          "totalMicros": 0
+        },
+        "TermDays": 0,
+        "TermKnown": false,
+        "Down": {}
+      }
+    },
+    "pendingOperation": "",
+    "manualRecoveryLatched": false
+  },
+  "marketHurdleIllustration": [
+    {
+      "lane": "Maple/syrupUSDC/USDC",
+      "observedAt": "2026-11-05T17:14:37Z",
+      "nativeObservedAt": "2026-11-05T16:00:00Z",
+      "unborrowedApy": 0.04960082826732304,
+      "sevenDayUnborrowedReturnBpsBeforeCosts": 9.28204638301625,
+      "additionalUncertaintyBps": 10,
+      "sevenDayMarginBpsBeforeTradingCosts": -0.7179536169837508
+    },
+    {
+      "lane": "OnRe/ONyc/USDC",
+      "observedAt": "2026-11-05T17:14:37Z",
+      "nativeObservedAt": "2026-11-05T16:00:00Z",
+      "unborrowedApy": 0.11019978262412833,
+      "sevenDayUnborrowedReturnBpsBeforeCosts": 20.055124877374794,
+      "additionalUncertaintyBps": 10,
+      "sevenDayMarginBpsBeforeTradingCosts": 10.055124877374794
+    },
+    {
+      "lane": "AUTO/AUTO/PYUSD",
+      "observedAt": "2026-11-05T17:14:37Z",
+      "nativeObservedAt": "2026-11-05T16:00:00Z",
+      "unborrowedApy": 0.1032993361939456,
+      "sevenDayUnborrowedReturnBpsBeforeCosts": 18.857884880790426,
+      "additionalUncertaintyBps": 10,
+      "sevenDayMarginBpsBeforeTradingCosts": 8.857884880790426
+    },
+    {
+      "lane": "Prime/PRIME/USDC",
+      "observedAt": "2026-11-05T17:14:37Z",
+      "nativeObservedAt": "2026-11-05T16:00:00Z",
+      "unborrowedApy": 0.060574470567764216,
+      "sevenDayUnborrowedReturnBpsBeforeCosts": 11.277401517091135,
+      "additionalUncertaintyBps": 10,
+      "sevenDayMarginBpsBeforeTradingCosts": 1.2774015170911355
+    },
+    {
+      "lane": "Prime/PRIME/PYUSD",
+      "observedAt": "2026-11-05T17:14:37Z",
+      "nativeObservedAt": "2026-11-05T16:00:00Z",
+      "unborrowedApy": 0.060574470567764216,
+      "sevenDayUnborrowedReturnBpsBeforeCosts": 11.277401517091135,
+      "additionalUncertaintyBps": 10,
+      "sevenDayMarginBpsBeforeTradingCosts": 1.2774015170911355
+    },
+    {
+      "lane": "Prime/PRIME/USDS",
+      "observedAt": "2026-11-05T17:14:37Z",
+      "nativeObservedAt": "2026-11-05T16:00:00Z",
+      "unborrowedApy": 0.060574470567764216,
+      "sevenDayUnborrowedReturnBpsBeforeCosts": 11.277401517091135,
+      "additionalUncertaintyBps": 10,
+      "sevenDayMarginBpsBeforeTradingCosts": 1.2774015170911355
+    },
+    {
+      "lane": "AUTO/AUTO/wYLDS",
+      "observedAt": "2026-11-05T17:14:37Z",
+      "nativeObservedAt": "2026-11-05T16:00:00Z",
+      "unborrowedApy": 0.1032993361939456,
+      "sevenDayUnborrowedReturnBpsBeforeCosts": 18.857884880790426,
+      "additionalUncertaintyBps": 10,
+      "sevenDayMarginBpsBeforeTradingCosts": 8.857884880790426
+    }
+  ],
+  "safety": {
+    "broadcastEnabled": false,
+    "productionSigningKeyLoaded": false,
+    "databaseReadOnly": true,
+    "productionConfigurationChanged": false,
+    "remoteTemporaryFilesRemoved": true
+  },
+  "privateEvidenceDirectory": "/tmp/earn-max-targets-20261105",
+  "privateEvidenceSha256": {
+    "current-vault-preview.json": "21ecbc8dc6857eb4bed9a4ea5426de25e530fa5050fba1b0309bad761a2ef923",
+    "current-vault-preview.log": "858bb1e7606561ae94288f6342cb91ecbc047745c566355be9d8b68f723e82fa",
+    "full-verification.log": "bf563e4842428bd1235640e1d0bb14d4b1e3103bccfc6ada0f144b9d15ec6feb",
+    "postgres-setup.log": "7f941155305f5ed86bb9e3dc966cc1ff22f1c986bfcb5bdc71da765d064b693c",
+    "candidate-probe/probe": "663d168a2652b5c141302fa062177b05bac089f2328b3f25e4cf1b2e4a76cea6",
+    "candidate-probe/preflight_test.go": "fb919899236b78299b91abfe38f60bda7da2b30ac85577ba56b97470e7d03ef5",
+    "candidate-probe/overlay.json": "0bd793bf63ba5aac692315a44038a6c45e006a2b8f56a1151830070ba90fb245"
+  },
+  "limits": [
+    "Current cash is below the reserve plus pending withdrawals; preview proves continuity, not a live allocation.",
+    "Current Maple seven-day carry is below 10 bps before fees, so its 5% target is not currently executable under the profitability guard.",
+    "90/5/5 are gradual admission targets, not a promise of exact weights; initial overweights, profits and marks can leave deviations.",
+    "100% gross provider ceilings still restrict leverage and can leave capital idle.",
+    "No new funded money-moving simulation was run for this target change; earlier funded Maple/PRIME route qualification remains separate evidence.",
+    "No paced withdrawal sales, longer withdrawal window, total economic exit-loss ceiling, fee changes or new transaction shapes."
+  ]
+}

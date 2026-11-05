@@ -91,7 +91,7 @@ func (d *Database) RecordSelectorEvaluation(ctx context.Context, routeKey string
 }
 
 func selectorSample(input SelectorInput, previous SelectorResult, history map[string]pilotCanaryEntryReceipt) (SelectorResult, *pilotCanaryEntryReceipt, bool, error) {
-	if rotationLeft(&previous, input.Snapshot, input.Lanes) {
+	if !input.Policy.DiversifyNewCash && rotationLeft(&previous, input.Snapshot, input.Lanes) {
 		return previous, nil, false, nil
 	}
 	result := SelectOpportunity(input, previous.State)

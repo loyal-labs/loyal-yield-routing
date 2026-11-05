@@ -17,6 +17,10 @@ func TestPolicyUpgradeRequiresFreshTradeEvidence(t *testing.T) {
 			q := &in.Quotes[0]
 			q.MinimumIdleRaw = uint64(in.Snapshot.VoltrIdleRaw)
 			q.EquityRaw = in.Snapshot.TotalVaultNAVRaw - in.Policy.idleBufferRaw(in.Snapshot.TotalVaultNAVRaw)
+			if in.Policy.DiversifyNewCash {
+				q.EquityRaw = min(q.EquityRaw, in.Snapshot.TotalVaultNAVRaw/3)
+				in.Markets[0].EntryCapacity = Capacity{Known: true, Raw: q.EquityRaw}
+			}
 			q.BorrowReceiveRaw = uint64(q.EquityRaw / 2)
 			*q = parBorrow(*q)
 		}

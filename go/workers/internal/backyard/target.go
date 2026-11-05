@@ -221,6 +221,9 @@ func withdrawalTarget(k targetTick) (int, LaneTarget, bool) {
 }
 
 func rotateTarget(k targetTick) (int, LaneTarget, bool) {
+	if k.vault.NewAllocation != nil {
+		return 0, LaneTarget{}, false
+	}
 	for i, l := range k.lanes {
 		if repay, withdraw := rotationReleaseStep(k.in.Entry, l.s); l.held && l.exit == nil && (repay > 0 || withdraw > 0) {
 			if j, _ := entryLane(k.lanes, k.in); j < 0 {
@@ -235,6 +238,9 @@ func rotateTarget(k targetTick) (int, LaneTarget, bool) {
 }
 
 func overflowTarget(k targetTick) (int, LaneTarget, bool) {
+	if k.vault.NewAllocation != nil {
+		return 0, LaneTarget{}, false
+	}
 	for i, l := range k.lanes {
 		if lane, e := overflowMove(k.lanes, i, k.in); e > 0 {
 			t := storedTarget(l)
@@ -367,9 +373,15 @@ func entryLane(lanes []targetLane, in targetInputs) (int, int64) {
 		}
 		s, q := l.s, r.SelectedQuote
 		raw := int64(0)
+		if limit := s.NewAllocation; limit != nil && !limit.accepts(*q) {
+			return -1, 0
+		}
 		if !r.Action.rotates() && q.DestinationLane == s.RouteLane && q.currentAtSlot(s.Slot) && q.EquityRaw > 0 && q.CostRaw >= 0 && q.CostRaw < q.EquityRaw && q.validBorrow() &&
 			q.EquityRaw <= s.VoltrIdleRaw-s.WithdrawalDemandRaw {
 			raw = q.EquityRaw
+			if limit := s.NewAllocation; limit != nil && (raw > s.VoltrIdleRaw-s.WithdrawalDemandRaw-limit.CashReserveRaw || raw > limit.ProviderRoomRaw) {
+				raw = 0
+			}
 		}
 		return i, raw
 	}
@@ -462,7 +474,7 @@ func leverageUpReceive(s Snapshot, t LaneTarget) uint64 {
 		return 0
 	}
 	receive := leverageBorrowCeiling(s, level)
-	if receive < leverageMinimumBorrowRaw {
+	if receive < leverageMinimumBorrowRaw || !allocationBorrowAllowed(s, receive) {
 		return 0
 	}
 	return receive
@@ -650,6 +662,18 @@ func outboundStep(s Snapshot, t LaneTarget, d func(Action, string, int64) Decisi
 }
 
 func inboundStep(s Snapshot, t LaneTarget, hard int64, d func(Action, string, int64) Decision) Decision {
+	if s.SquadsIdleRaw > 0 && s.NewAllocation != nil {
+		returnRaw := min(s.SquadsIdleRaw, allocationCashDeficit(s))
+		if min(s.NewAllocation.ProviderRoomRaw, s.NewAllocation.EquityRoomRaw) == 0 {
+			returnRaw = s.SquadsIdleRaw
+		}
+		if returnRaw > 0 {
+			if amount := s.StageAllowance.cap(returnRaw); amount > 0 {
+				return d(StageSquadsToVoltr, returnCashReason, amount)
+			}
+			return d(Hold, string(holdSpendingLimit), 0)
+		}
+	}
 	if !s.HasPosition && !laneInFlight(s) && s.SquadsIdleRaw > 0 {
 		if min(s.CapacityRaw, s.PolicyLimitRaw, s.MaxTargetLTVEntryRaw) < s.SquadsIdleRaw || s.LiquidationThresholdBPS <= 0 || hard <= laneCeilingLTVBPS(s.RouteLane) {
 			return d(StageSquadsToVoltr, returnCashReason, s.SquadsIdleRaw)
@@ -662,13 +686,17 @@ func inboundStep(s Snapshot, t LaneTarget, hard int64, d func(Action, string, in
 		return d(HoldManualRecovery, "invalid_entry_ltv", 0)
 	}
 	if s.SquadsIdleRaw > 0 && (t.Rule == ruleEntry || t.Rule == ruleCustody) {
+		amount := s.SquadsIdleRaw
+		if s.NewAllocation != nil {
+			amount = min(amount, s.NewAllocation.ProviderRoomRaw, s.NewAllocation.EquityRoomRaw)
+		}
 		if sharedUSDCDebt(s.RouteLane) && s.PositionDebtRaw > 0 {
-			return d(SwapDebtToCollateralStep, stepResidueReason, s.SquadsIdleRaw)
+			return d(SwapDebtToCollateralStep, stepResidueReason, amount)
 		}
 		if !s.HasPosition {
-			return d(SwapStableToCollateralStep, entrySwapReason, s.SquadsIdleRaw)
+			return d(SwapStableToCollateralStep, entrySwapReason, amount)
 		}
-		return d(SwapStableToCollateralStep, topupSwapReason, s.SquadsIdleRaw)
+		return d(SwapStableToCollateralStep, topupSwapReason, amount)
 	}
 	if laneInFlight(s) {
 		if s.MinimumCollateralDepositRaw <= 0 {

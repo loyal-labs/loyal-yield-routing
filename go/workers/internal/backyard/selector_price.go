@@ -324,67 +324,71 @@ func (p lanePricer) priceMove(ctx context.Context, o Observation, source *Snapsh
 	var borrows, borrowFees []uint64
 	var stepCosts []leverageStepCost
 	var walkErr error
-	level := settledLevel(market, 1, func(level float64) (float64, bool) {
-		if n := len(borrows); n > 0 {
-			bought, err := valueBetweenTokenRaw(borrows[n-1], position.DebtDecimals, position.CollateralDecimals, position.DebtPriceSF, position.CollateralPriceSF, false)
+	unlevered := p.manifest.vault.selectorPolicy().unleveredEntry(lane)
+	level := float64(1)
+	if !unlevered {
+		level = settledLevel(market, 1, func(level float64) (float64, bool) {
+			if n := len(borrows); n > 0 {
+				bought, err := valueBetweenTokenRaw(borrows[n-1], position.DebtDecimals, position.CollateralDecimals, position.DebtPriceSF, position.CollateralPriceSF, false)
+				if err != nil {
+					walkErr = err
+					return 0, false
+				}
+				funded.RedeemablePrimeRaw += bought
+				funded.DebtRaw += borrows[n-1] + borrowFees[n-1]
+			}
+			borrow, err := capacitySizedBorrow(funded, accounts, route, level)
 			if err != nil {
 				walkErr = err
 				return 0, false
 			}
-			funded.RedeemablePrimeRaw += bought
-			funded.DebtRaw += borrows[n-1] + borrowFees[n-1]
-		}
-		borrow, err := capacitySizedBorrow(funded, accounts, route, level)
-		if err != nil {
-			walkErr = err
-			return 0, false
-		}
-		if borrow = min(borrow, kaminoReceiveWithinRoom(debtLeft, rate), depositLeft); borrow < leverageMinimumBorrowRaw {
-			return 0, false
-		}
-		fee, err := kaminoBorrowFeeAtRate(rate, borrow)
-		if err != nil {
-			walkErr = err
-			return 0, false
-		}
-		debtLeft, depositLeft = debtLeft-min(borrow+fee, debtLeft), depositLeft-borrow
-		borrows, borrowFees = append(borrows, borrow), append(borrowFees, fee)
-		return float64(funded.DebtRaw + borrow + fee), true
-	}, func(level, debt float64) bool {
-		n := len(borrows)
-		topology := []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve}
-		if n == 1 {
-			topology = topology[:1]
-		}
-		stepCost, err := p.priceStep(ctx, accounts, route, topology, slot, borrows[n-1])
-		if err != nil {
-			if n == 1 {
-				walkErr = err
+			if borrow = min(borrow, kaminoReceiveWithinRoom(debtLeft, rate), depositLeft); borrow < leverageMinimumBorrowRaw {
+				return 0, false
 			}
-			return false
-		}
-		proceeds, err := prices.debtMicros(borrows[n-1])
-		if err != nil {
-			walkErr = err
-			return false
-		}
-		liability, err := prices.debtMicros(borrows[n-1] + borrowFees[n-1])
-		if err != nil {
-			walkErr = err
-			return false
-		}
-		if n > 1 {
-			keepAPR, errKeep := projectedBorrowAPR(market, debtMintRaw(funded.DebtRaw))
-			apr, errStep := projectedBorrowAPR(market, debtMintRaw(debt))
-			if !feeTerms || errKeep != nil || errStep != nil ||
-				!(upStepGain(market, upStep{CollateralMicros: collateralValue, DebtMicros: debtValue, AddedLiabilityMicros: float64(liability), ProceedsMicros: float64(proceeds), KeepDebtAPR: keepAPR, StepDebtAPR: apr, CostMicros: float64(stepCost.TotalMicros), Years: years, FeeBPS: s.ApprovedAdminPerformanceFeeBPS}) > 0) {
+			fee, err := kaminoBorrowFeeAtRate(rate, borrow)
+			if err != nil {
+				walkErr = err
+				return 0, false
+			}
+			debtLeft, depositLeft = debtLeft-min(borrow+fee, debtLeft), depositLeft-borrow
+			borrows, borrowFees = append(borrows, borrow), append(borrowFees, fee)
+			return float64(funded.DebtRaw + borrow + fee), true
+		}, func(level, debt float64) bool {
+			n := len(borrows)
+			topology := []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve}
+			if n == 1 {
+				topology = topology[:1]
+			}
+			stepCost, err := p.priceStep(ctx, accounts, route, topology, slot, borrows[n-1])
+			if err != nil {
+				if n == 1 {
+					walkErr = err
+				}
 				return false
 			}
-		}
-		collateralValue, debtValue = collateralValue+float64(proceeds), debtValue+float64(liability)
-		stepCosts = append(stepCosts, stepCost)
-		return true
-	})
+			proceeds, err := prices.debtMicros(borrows[n-1])
+			if err != nil {
+				walkErr = err
+				return false
+			}
+			liability, err := prices.debtMicros(borrows[n-1] + borrowFees[n-1])
+			if err != nil {
+				walkErr = err
+				return false
+			}
+			if n > 1 {
+				keepAPR, errKeep := projectedBorrowAPR(market, debtMintRaw(funded.DebtRaw))
+				apr, errStep := projectedBorrowAPR(market, debtMintRaw(debt))
+				if !feeTerms || errKeep != nil || errStep != nil ||
+					!(upStepGain(market, upStep{CollateralMicros: collateralValue, DebtMicros: debtValue, AddedLiabilityMicros: float64(liability), ProceedsMicros: float64(proceeds), KeepDebtAPR: keepAPR, StepDebtAPR: apr, CostMicros: float64(stepCost.TotalMicros), Years: years, FeeBPS: s.ApprovedAdminPerformanceFeeBPS}) > 0) {
+					return false
+				}
+			}
+			collateralValue, debtValue = collateralValue+float64(proceeds), debtValue+float64(liability)
+			stepCosts = append(stepCosts, stepCost)
+			return true
+		})
+	}
 	if walkErr != nil {
 		return q, walkErr
 	}
@@ -418,7 +422,11 @@ func (p lanePricer) priceMove(ctx context.Context, o Observation, source *Snapsh
 	if err != nil {
 		return q, err
 	}
-	exit, _, err := assembleStep(ctx, p.rpc, p.view, p.client, p.manifest, p.policies, stepState{route: route, collateral: reserve, slot: uint64(slot), topology: []string{route.Kamino.CollateralReserve}},
+	exitSlippage := uint16(0)
+	if unlevered {
+		exitSlippage = withdrawalMaxSlippageBPS
+	}
+	exit, _, err := assembleStep(ctx, p.rpc, p.view, p.client, p.manifest, p.policies, stepState{route: route, collateral: reserve, slot: uint64(slot), topology: []string{route.Kamino.CollateralReserve}, maxSlippageBPS: exitSlippage},
 		stepExit, receipts, bought, slot)
 	if err != nil {
 		return q, err

@@ -183,12 +183,13 @@ type Snapshot struct {
 	CapitalMutated                   bool
 	PostMutationNAVRequired          bool
 	LastReportAgeSeconds             int64
-	StageAllowance                   *StageAllowance `json:",omitempty"`
-	Target                           LaneTarget      `json:",omitempty"`
-	TargetInputs                     string          `json:",omitempty"`
-	ExitLiabilityRaw                 int64           `json:",omitempty"`
-	JournalExitAtReportRaw           int64           `json:",omitempty"`
-	ExitCostBPS                      microBPS        `json:",omitempty"`
+	StageAllowance                   *StageAllowance   `json:",omitempty"`
+	Target                           LaneTarget        `json:",omitempty"`
+	TargetInputs                     string            `json:",omitempty"`
+	NewAllocation                    *allocationLimits `json:",omitempty"`
+	ExitLiabilityRaw                 int64             `json:",omitempty"`
+	JournalExitAtReportRaw           int64             `json:",omitempty"`
+	ExitCostBPS                      microBPS          `json:",omitempty"`
 }
 
 func (o Observation) exitCosts() exitCosts {
