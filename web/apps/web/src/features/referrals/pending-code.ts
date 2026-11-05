@@ -1,8 +1,8 @@
-import { referralsEnabled } from "./enabled";
-
 export type PendingCode = { code: string; source: "link" | "typed" };
 
-const STORAGE_KEY = "loyal.referral.pending";
+const COOKIE_NAME = "loyal_ref";
+const COOKIE_MAX_AGE_SECONDS = 30 * 24 * 60 * 60;
+const PARENT_DOMAIN = "askloyal.com";
 export const CODE_LENGTH = 7;
 const CODE_PATTERN = new RegExp(`^[0-9A-HJKMNP-TV-Z]{${CODE_LENGTH}}$`);
 
@@ -15,44 +15,47 @@ export function normalizeCode(raw: string): string | null {
   return CODE_PATTERN.test(code) ? code : null;
 }
 
-function storage(): Storage | null {
-  if (typeof window === "undefined") return null;
-  try {
-    return window.localStorage;
-  } catch {
-    return null;
-  }
+function cookieAttributes(maxAge: number): string {
+  const { hostname, protocol } = window.location;
+  const shared =
+    hostname === PARENT_DOMAIN || hostname.endsWith(`.${PARENT_DOMAIN}`);
+  return [
+    "Path=/",
+    `Max-Age=${maxAge}`,
+    "SameSite=Lax",
+    protocol === "https:" && "Secure",
+    shared && `Domain=${PARENT_DOMAIN}`,
+  ]
+    .filter(Boolean)
+    .join("; ");
 }
 
 export function readPendingCode(): PendingCode | null {
-  if (!referralsEnabled()) return null;
-  try {
-    const raw = storage()?.getItem(STORAGE_KEY);
-    if (!raw) return null;
-    const value: unknown = JSON.parse(raw);
-    if (typeof value !== "object" || value === null) return null;
-    const { code, source } = value as Record<string, unknown>;
-    if (typeof code !== "string") return null;
-    return source === "link" || source === "typed" ? { code, source } : null;
-  } catch {
-    return null;
-  }
+  if (typeof document === "undefined") return null;
+  const entry = document.cookie
+    .split("; ")
+    .find((pair) => pair.startsWith(`${COOKIE_NAME}=`));
+  if (!entry) return null;
+  const [source, raw] = entry.slice(COOKIE_NAME.length + 1).split(":");
+  const code = normalizeCode(raw ?? "");
+  return code && (source === "link" || source === "typed")
+    ? { code, source }
+    : null;
 }
 
 export function writePendingCode(pending: PendingCode): void {
-  try {
-    storage()?.setItem(STORAGE_KEY, JSON.stringify(pending));
-  } catch {}
+  if (typeof document === "undefined") return;
+  document.cookie = `${COOKIE_NAME}=${pending.source}:${
+    pending.code
+  }; ${cookieAttributes(COOKIE_MAX_AGE_SECONDS)}`;
 }
 
 export function clearPendingCode(): void {
-  try {
-    storage()?.removeItem(STORAGE_KEY);
-  } catch {}
+  if (typeof document === "undefined") return;
+  document.cookie = `${COOKIE_NAME}=; ${cookieAttributes(0)}`;
 }
 
 export function storeLinkCode(raw: string | null | undefined): boolean {
-  if (!referralsEnabled()) return false;
   const code = normalizeCode(raw ?? "");
   if (!code) return false;
   writePendingCode({ code, source: "link" });

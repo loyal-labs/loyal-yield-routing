@@ -1,8 +1,6 @@
 import type { ReferralClaimRequest } from "@loyal-labs/api";
 import * as SecureStore from "expo-secure-store";
 
-import { referralsEnabled } from "./enabled";
-
 export type ReferralSource = ReferralClaimRequest["source"];
 export type PendingCode = { code: string; source: ReferralSource };
 
@@ -61,7 +59,6 @@ export async function storePending(
   raw: string,
   source: ReferralSource,
 ): Promise<void> {
-  if (!referralsEnabled()) return;
   const code = parseCode(raw);
   if (!code) return;
   if (source === "install_referrer" && (await readPending())) return;
