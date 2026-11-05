@@ -970,12 +970,22 @@ shows that role as unconfigured.
 
 Since Nov 5 2026 12:39 PST `askloyal.com` and `www.askloyal.com` are proxied
 CNAMEs to the loyal-workers tunnel, served by loyal-web (prerendered pages and
-the Go API routes; anything else proxies to `backend.askloyal.com`, and `/_next/`
+the Go API routes; anything else proxies to `loyal-frontend.vercel.app`, and `/_next/`
 assets go straight to the Vercel deployment). The apex keeps its Google MX, SPF
 and site-verification records. The apex CNAME was created through the
 Cloudflare API, not `tunnel route dns`, so the MX and TXT records stay put.
 Rollback: replace the apex CNAME with `A 216.198.79.1` (DNS only, TTL 600) and
 point `www` back at `CNAME 43e72ea85637f02c.vercel-dns-017.com` (DNS only).
+
+## Backend (backend.askloyal.com)
+
+Since Nov 5 2026 `backend.askloyal.com` is a proxied CNAME to the loyal-workers
+tunnel, created with `cloudflared tunnel route dns --overwrite-dns loyal-workers backend.askloyal.com`.
+It is served by loyal-web; paths Go does not serve are proxied to
+`loyal-frontend.vercel.app`, and its `/_next/` assets come from there too. Old
+mobile builds call this host directly. Rollback: `CNAME 43e72ea85637f02c.vercel-dns-017.com`
+(DNS only). Set `LOYAL_WEB_UPSTREAM` back to the Vercel alias only if
+`loyal-frontend.vercel.app` stops answering.
 
 ## Telegram (loyal-telegram)
 
