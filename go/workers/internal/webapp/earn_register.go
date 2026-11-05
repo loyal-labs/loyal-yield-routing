@@ -24,6 +24,7 @@ var earnFamilies = []earnFamily{
 	earnObservabilityFamily,
 	earnSessionFamily,
 	earnPrivyFamily,
+	earnAuthSessionFamily,
 	earnDepositFamily,
 	earnWithdrawFamily,
 	earnAutodepositFamily,
@@ -34,6 +35,9 @@ var earnFamilies = []earnFamily{
 	earnTronDepositFamily,
 	earnBridgeFamily,
 	earnReferralsFamily,
+	earnOverviewFamily,
+	earnDeskEarningsFamily,
+	earnDeskHoldingsFamily,
 }
 
 func registerEarn(api huma.API, h earnRoutes) {

@@ -21,6 +21,7 @@ type Settings struct {
 	TransactionIndex, StaleTransactionIndex uint64
 	Bump                                    uint8
 	Signers                                 []Signer
+	AccountUtilization                      uint8
 	PolicySeed                              *uint64
 	Reserved                                uint8
 }
@@ -82,7 +83,7 @@ func DecodeSettings(account *chain.Account) (Settings, error) {
 		}
 		s.Signers = append(s.Signers, signer)
 	}
-	if err = c.skip(accountUtilizationLen); err != nil {
+	if s.AccountUtilization, err = c.u8(); err != nil {
 		return fail(err)
 	}
 	if _, err = c.option(func() error {
