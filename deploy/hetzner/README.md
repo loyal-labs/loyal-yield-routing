@@ -415,8 +415,8 @@ proxying the session routes to Next.
 | `REALTIME_AUTH_SECRET` | no | the realtime deployment's value (one `realtime-envelope` input); with it Go serves `POST /api/smart-accounts/yield-optimization/realtime/token`, without it the route answers 503 `realtime_unavailable` |
 | `REALTIME_EVENTS_URL` | no | the events URL returned in the token response (`realtime.askloyal.com/events` by default) |
 | `TIMESCALEDB_URL` | no | file `loyal-web-timescale-db`; the Next deployment's value (the reserve APY feed); without it earn earnings, earn state and earn deposit prepare log one line and keep proxying to Next |
-| `MOBILE_PUSH_API_BASE_URL` | no | file `loyal-web-mobile-push-base-url`; the Next deployment's value, the app backend that sends wallet pushes |
-| `MOBILE_PUSH_API_SECRET` | no | file `loyal-web-mobile-push-secret`; the Next deployment's value (it matches the app's `PUSH_DEBUG_SECRET`); without both push values Go still serves the autodeposit family, logs one line that wallet push is off and sends no push |
+| `PUSH_DEBUG_SECRET` | no | file `loyal-web-push-debug-secret`; the app's `PUSH_DEBUG_SECRET`; with it, and an App role that holds the push-send grants, Go serves `POST /api/push-tokens/debug-send`; without it the route keeps proxying to Next |
+| `LOYAL_AUTODEPOSIT_PUSH` | no | plain config; `on` makes the autodeposit confirm ops send the wallet push in process; unset or any other value logs one line (`autodeposit wallet push off`) and sends no push |
 
 `AUTH_COOKIE_PARENT_DOMAIN` is plain config, not a credential:
 `loyal-web.service` sets `Environment=AUTH_COOKIE_PARENT_DOMAIN=askloyal.com`,
