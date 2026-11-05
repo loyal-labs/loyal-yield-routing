@@ -197,15 +197,11 @@ func site(cfg Config) http.Handler {
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if slices.Contains(apex, requestHost(r)) && appPath(r.URL.Path) {
-			w.Header().Set("Location", "https://"+cfg.AppHost+r.URL.RequestURI())
-			w.Header().Set("Content-Type", "text/plain")
-			w.Header().Set("Cache-Control", "public, max-age=0, must-revalidate")
-			w.WriteHeader(http.StatusTemporaryRedirect)
-			_, _ = w.Write([]byte("Redirecting...\n"))
+			vercelRedirect(w, "https://"+cfg.AppHost+r.URL.RequestURI(), http.StatusTemporaryRedirect)
 			return
 		}
 		if trimmed := strings.TrimRight(r.URL.Path, "/"); trimmed != "" && trimmed != r.URL.Path {
-			redirect(w, r, (&url.URL{Path: trimmed, RawQuery: r.URL.RawQuery}).String(), http.StatusPermanentRedirect)
+			vercelRedirect(w, (&url.URL{Path: trimmed, RawQuery: r.URL.RawQuery}).String(), http.StatusPermanentRedirect)
 			return
 		}
 		if cfg.AppHost != "" && requestHost(r) == cfg.AppHost {
@@ -245,6 +241,17 @@ func redirect(w http.ResponseWriter, r *http.Request, target string, status int)
 	}
 }
 
+func vercelRedirect(w http.ResponseWriter, target string, status int) {
+	w.Header().Set("Location", target)
+	w.Header().Set("Content-Type", "text/plain")
+	w.Header().Set("Cache-Control", "public, max-age=0, must-revalidate")
+	if status == http.StatusPermanentRedirect {
+		w.Header().Set("Refresh", "0;url="+target)
+	}
+	w.WriteHeader(status)
+	_, _ = w.Write([]byte("Redirecting...\n"))
+}
+
 func inviteLink(pagePath string) bool {
 	code, ok := strings.CutPrefix(pagePath, "/i/")
 	if !ok {
@@ -262,9 +269,9 @@ func skippedByNextMatcher(path string) bool {
 
 func requestHost(r *http.Request) string {
 	if host, _, err := net.SplitHostPort(r.Host); err == nil {
-		return host
+		return strings.ToLower(host)
 	}
-	return r.Host
+	return strings.ToLower(r.Host)
 }
 
 func apiConfig() huma.Config {
