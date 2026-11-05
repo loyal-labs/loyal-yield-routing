@@ -2757,10 +2757,6 @@ export type GetFundingLaunchData = {
 
 export type GetFundingLaunchErrors = {
     /**
-     * Unauthorized
-     */
-    401: RouteError;
-    /**
      * Service Unavailable
      */
     503: RouteError;

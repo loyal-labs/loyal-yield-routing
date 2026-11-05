@@ -71,7 +71,7 @@ func TestBridgeAndReferralsAdmitOnlyTestWallets(t *testing.T) {
 	}
 }
 
-func TestLaunchAnswersTheGateForTheSessionWallet(t *testing.T) {
+func TestLaunchAnswersTheGateForTheSessionWalletOrEveryone(t *testing.T) {
 	signer, err := jwt.NewSigner("isolated-session-test-secret", "")
 	if err != nil {
 		t.Fatal(err)
@@ -83,24 +83,29 @@ func TestLaunchAnswersTheGateForTheSessionWallet(t *testing.T) {
 	listed := solana.MustPublicKeyFromBase58(ownerTestWallets[0])
 	stranger := solana.NewWallet().PublicKey()
 	for _, tc := range []struct {
-		name   string
-		list   string
-		wallet solana.PublicKey
-		want   bool
+		name      string
+		list      string
+		wallet    solana.PublicKey
+		signedOut bool
+		want      bool
 	}{
-		{"listed wallet", strings.Join(ownerTestWallets, ","), listed, true},
-		{"unlisted wallet", strings.Join(ownerTestWallets, ","), stranger, false},
-		{"star opens every wallet", "*", stranger, true},
+		{"listed wallet", strings.Join(ownerTestWallets, ","), listed, false, true},
+		{"unlisted wallet", strings.Join(ownerTestWallets, ","), stranger, false, false},
+		{"star opens every wallet", "*", stranger, false, true},
+		{"signed out under the default list", strings.Join(ownerTestWallets, ","), solana.PublicKey{}, true, false},
+		{"signed out under star", "*", solana.PublicKey{}, true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			token, err := signer.Mint(map[string]any{"sub": tc.wallet.String()}, mobileEarnAudience, time.Hour, time.Now())
-			if err != nil {
-				t.Fatal(err)
-			}
 			router := chi.NewRouter()
 			earnRoutes{auth: &Auth{keys: keys}, Earn: Earn{TestWallets: parseTestWallets(tc.list)}}.registerLaunch(humachi.New(router, apiConfig()))
 			req := httptest.NewRequest(http.MethodGet, launchPath, nil)
-			req.Header.Set("Authorization", "Bearer "+token)
+			if !tc.signedOut {
+				token, err := signer.Mint(map[string]any{"sub": tc.wallet.String()}, mobileEarnAudience, time.Hour, time.Now())
+				if err != nil {
+					t.Fatal(err)
+				}
+				req.Header.Set("Authorization", "Bearer "+token)
+			}
 			res := httptest.NewRecorder()
 			router.ServeHTTP(res, req)
 			var body LaunchResponse

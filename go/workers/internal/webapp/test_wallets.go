@@ -2,6 +2,7 @@ package webapp
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"os"
@@ -85,17 +86,18 @@ func (h earnRoutes) registerLaunch(api huma.API) {
 		OperationID: "get-funding-launch",
 		Method:      http.MethodGet,
 		Path:        launchPath,
-		Summary:     "Whether bridge and referrals are open to the signed-in wallet",
-		Responses:   errorResponses[routeError](api, 401, 503),
+		Summary:     "Whether bridge and referrals are open to the signed-in wallet, or to everyone when signed out",
+		Responses:   errorResponses[routeError](api, 503),
 	}, h.launch)
 }
 
 func (h earnRoutes) launch(ctx context.Context, in *sessionRequest) (*launchOutput, error) {
 	session, err := h.auth.Session(in.SessionInput)
-	if refusal, ok := authRefusal(err); ok {
-		return nil, refusal
-	}
-	if err != nil {
+	var signedOut *AuthError
+	switch {
+	case errors.As(err, &signedOut):
+		return &launchOutput{CacheControl: "no-store", Body: LaunchResponse{Launched: h.TestWallets.all}}, nil
+	case err != nil:
 		return nil, earnUnavailable("launch session", err, "launch_unavailable", "The launch gate is unavailable.")
 	}
 	return &launchOutput{CacheControl: "no-store", Body: LaunchResponse{Launched: h.TestWallets.open(session.Wallet)}}, nil
