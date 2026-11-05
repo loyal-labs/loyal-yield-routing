@@ -2,12 +2,14 @@ package chain
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
 
 	"github.com/solana-foundation/solana-go/v2"
 	"github.com/solana-foundation/solana-go/v2/rpc"
+	"github.com/solana-foundation/solana-go/v2/rpc/jsonrpc"
 )
 
 type Execution struct {
@@ -30,6 +32,60 @@ func (c *Client) Execution(ctx context.Context, signature solana.Signature, comm
 	if err != nil {
 		return Execution{}, failed("getTransaction", err)
 	}
+	return decodeExecution(out)
+}
+
+// Executions reads signatures in one JSON-RPC batch; results keep input order and a transaction the node lacks is nil.
+func (c *Client) Executions(ctx context.Context, signatures []solana.Signature, commitment rpc.CommitmentType) ([]*Execution, error) {
+	if len(signatures) == 0 {
+		return nil, nil
+	}
+	opts := map[string]any{"encoding": solana.EncodingBase64, "commitment": commitment, "maxSupportedTransactionVersion": uint64(anyVersion)}
+	requests := make(jsonrpc.RPCRequests, len(signatures))
+	for i, signature := range signatures {
+		requests[i] = jsonrpc.NewRequest("getTransaction", signature, opts)
+	}
+	responses, err := c.batch.CallBatch(ctx, requests)
+	if err != nil {
+		return nil, failed("getTransaction", err)
+	}
+	byID := make([]*jsonrpc.RPCResponse, len(signatures))
+	for _, response := range responses {
+		if response == nil {
+			return nil, errors.New("getTransaction: invalid batch response")
+		}
+		id, ok := response.ID.(json.Number)
+		index, err := id.Int64()
+		if !ok || err != nil || index < 0 || int(index) >= len(byID) || byID[index] != nil {
+			return nil, errors.New("getTransaction: invalid batch response")
+		}
+		byID[index] = response
+	}
+	executions := make([]*Execution, len(signatures))
+	for i, response := range byID {
+		if response == nil {
+			return nil, errors.New("getTransaction: incomplete batch response")
+		}
+		if response.Error != nil {
+			return nil, failed("getTransaction", response.Error)
+		}
+		var out *rpc.GetTransactionResult
+		if err := response.GetObject(&out); err != nil {
+			return nil, failed("getTransaction", err)
+		}
+		if out == nil {
+			continue
+		}
+		execution, err := decodeExecution(out)
+		if err != nil {
+			return nil, err
+		}
+		executions[i] = &execution
+	}
+	return executions, nil
+}
+
+func decodeExecution(out *rpc.GetTransactionResult) (Execution, error) {
 	if out.Slot == 0 || out.Meta == nil || out.Transaction == nil {
 		return Execution{}, errors.New("getTransaction: incomplete transaction")
 	}
