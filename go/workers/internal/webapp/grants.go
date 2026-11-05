@@ -127,7 +127,7 @@ func GrantsHeld(ctx context.Context, pool *pgxpool.Pool, family string, want []G
 			}
 			return true
 		}
-		if ctx.Err() == nil {
+		if failure == nil || ctx.Err() == nil {
 			failure = err
 		}
 		select {
