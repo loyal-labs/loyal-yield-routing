@@ -131,6 +131,7 @@ type SelectorPolicy struct {
 	IdleBufferRaw     int64         `json:"idleBufferRaw"`
 	IdleBufferBPS     int64         `json:"idleBufferBps,omitempty"`
 	IdleBufferCapRaw  int64         `json:"idleBufferCapRaw,omitempty"`
+	DiversifyNewCash  bool          `json:"diversifyNewCash,omitempty"`
 }
 
 const selectorHorizon = 30 * 24 * time.Hour
@@ -156,7 +157,7 @@ type MoveQuote struct {
 	// at the lane's 1x yield and persisted in its own advantage window. It is
 	// quoted while the debt reserve has no room for the minimum borrow, or
 	// (SpreadUnlevered) while the lane's spread at that borrow is below the
-	// live leverage rule's 1.5x minimum.
+	// live leverage rule's 1.5x minimum), or required by new-cash policy.
 	Unlevered        bool            `json:"unlevered,omitempty"`
 	SpreadUnlevered  bool            `json:"spreadUnlevered,omitempty"`
 	DebtRoomUSDCRaw  *uint64         `json:"debtRoomUsdcRaw,omitempty"`
@@ -481,6 +482,9 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 		}
 		if displayAmount > 0 && !unpricedDebt {
 			level := sizeSettledLevel(m, displayAmount)
+			if p.unleveredEntry(lane) {
+				level = 1
+			}
 			apr, err := projectedBorrowAPR(m, debtMintRaw(float64(displayAmount)*(level-1)))
 			if err == nil {
 				c.BorrowAPR = apr
@@ -525,17 +529,33 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 			out.Candidates = append(out.Candidates, c)
 			continue
 		}
-		scoreMove(&c, s, p, m, *quote, equity, out.KeepGainRaw, years)
+		if p.DiversifyNewCash && !newAllocationQuoteAllowed(s, in.Lanes, p, *quote) {
+			c.BlockedReason = "new_allocation_limit"
+			out.Candidates = append(out.Candidates, c)
+			continue
+		}
+		uncertain := equity
+		if p.DiversifyNewCash {
+			// A small new allocation bears its own uncertainty allowance.
+			uncertain = quote.EquityRaw
+		}
+		scoreMove(&c, s, p, m, *quote, uncertain, out.KeepGainRaw, years)
 		sample(c, advantageKey{lane: lane}, *quote)
 		out.Candidates = append(out.Candidates, c)
 		quotes[len(out.Candidates)-1] = *quote
-		if c.BlockedReason == "" && c.BenefitRaw > float64(p.MinimumBenefitRaw) && (best < 0 || c.BenefitRaw > out.Candidates[best].BenefitRaw) {
+		priority := p.unleveredEntry(lane)
+		if c.BlockedReason == "" && c.BenefitRaw > float64(p.MinimumBenefitRaw) && (best < 0 ||
+			priority && !p.unleveredEntry(out.Candidates[best].Lane) ||
+			priority == p.unleveredEntry(out.Candidates[best].Lane) && c.BenefitRaw > out.Candidates[best].BenefitRaw) {
 			best = len(out.Candidates) - 1
 		}
 	}
 	bestRotation, sources := -1, map[int]Snapshot{}
 	held := s.heldLanes()
 	for _, source := range in.Lanes {
+		if p.DiversifyNewCash {
+			break
+		}
 		if !rotationSource(held, source) {
 			continue
 		}
@@ -660,7 +680,7 @@ func scoreMove(c *CandidateForecast, s Snapshot, p SelectorPolicy, m LaneEconomi
 	}
 	c.BorrowAPR = economics.APR
 	c.Leverage, c.NetAPY = quoteLeverageAndNetAPY(economics, float64(c.InvestedRaw), m, s.ApprovedAdminPerformanceFeeBPS)
-	c.BorrowBlocked, c.DebtRoomUSDCRaw = quote.Unlevered && !quote.SpreadUnlevered, quote.DebtRoomUSDCRaw
+	c.BorrowBlocked, c.DebtRoomUSDCRaw = quote.Unlevered && !quote.SpreadUnlevered && !p.unleveredEntry(quote.DestinationLane), quote.DebtRoomUSDCRaw
 	var feeKnown bool
 	c.GainRaw, feeKnown = selectorFeeReservedGain(s, p.Horizon, economics, float64(c.IdleRaw))
 	c.BenefitRaw = c.GainRaw - keepGain - float64(uncertain)*float64(p.UncertaintyBPS)/10_000

@@ -1,0 +1,790 @@
+{
+  "purpose": "Read-only diversification study; no deployment or allocation authorization.",
+  "sourceCommit": "4f1ef3bd4ef07f5fee03bd1e3004f9a600971342",
+  "workerCodeMatchesVerifiedRelease": "69e4c38e32e55fd64301a8350aa412f43345f4ec",
+  "sourceSha256": {
+    "go/workers/internal/backyard/route_catalog.go": "bbadf7ebff201aac0017ac500ba0a7b59628f4dd4781fe0927a07aa4beb83d47",
+    "go/workers/internal/backyard/jupiter.go": "47af2adf930079c084709ba90154b2588edce87acfee71496ad38f6f00e526b9",
+    "go/workers/internal/backyard/policy.go": "223908a581cf6d5746f978cd088fa49698dd0daf6a9d17d6d3cae498fdade341",
+    "go/workers/internal/backyard/build.go": "0348e25950a68c8400a619814675268917a8fdb22d792aefc5ce9ae5a2ce4864",
+    "go/workers/internal/backyard/message_v1.go": "2825023f87e0c301ead592a09140b71f34834f63b4b429f6f9fe7be9cf82a752",
+    "go/workers/internal/backyard/execution_observe.go": "fc8c06d1092c9d67ebcb4ee70fca5e441253cde7112ba2dca6739b80ec078bca",
+    "go/workers/internal/backyard/state.go": "67e5ba910f6a31ade0da869a24fcd862e00d997107dec7398f7b1d4548bf0bc3"
+  },
+  "privateEvidenceDirectory": "/tmp/earn-max-diversification-20261105",
+  "privateEvidenceSha256": {
+    "state.json": "8c9487cfb5c13b58b70529f829f77511d936ddf340451bccf1ac19a4c04bc737",
+    "maple.json": "61bc7a9ee82464d1f99f20c829b08788e09ba39c1f5197470991e9be025d82cc",
+    "bundle.json": "36cd7dbbfa80aec9e491d4187edaf9a81d2b6c2ff3e8119da8435a5854c1c2b9",
+    "whirlpool-bundle.json": "98a9a2b784d815a004ec0fd5ef8ddc66d4cb529b9e9472ebf46bb17014f52dcb",
+    "bundle-roundtrip_test.go": "ca955a304f03fcc775019dd8061d577aa8428cf5e8664d81e972c7623f0da121",
+    "bundle-roundtrip_preflight_test.go": "2cd8fb3d8aae19454956614fd237482f6b50c4c2e7a77cbe56f53485da1881d8",
+    "roundtrip_test.go": "f219245900ffc3382b238d45af90cf0eab5b96e2f8dd9f13b7da51d2b4204998",
+    "roundtrip_preflight_test.go": "2b36cedb3d94a9ea37e217c0c90c77a74449ddf5e10da4aa3ab0d7b319f7a1c1",
+    "maple_test.go": "7a7b1a66e7b90347ca21b3aa6cd8591017f25fe428a133b9314c8ca246f1e638",
+    "roundtrip-overlay.json": "a349279a5ddc1b6693a67852ec9ff1ba9fd459c16e56d8223349953c877c3f6f"
+  },
+  "safety": {
+    "productionSigningKeyLoaded": false,
+    "broadcastEnabled": false,
+    "databaseTransaction": "REPEATABLE READ READ ONLY; SET LOCAL statement_timeout=10000",
+    "productionConfigurationChanged": false,
+    "simulatedSignatureVerificationSkipped": true,
+    "simulationBankCommitment": "confirmed"
+  },
+  "compositionAndSensitivity": {
+    "observedAt": "2026-11-05T10:23:14.707319677Z",
+    "slot": 465670241,
+    "navUsdc": "177365.012851",
+    "cashUsdc": "2369.178217",
+    "cashTargetUsdc": "17736.501285",
+    "cashShortfallUsdc": "15367.323068",
+    "incomingCashToFundMoving10PctTargetUsdc": "17074.80340888888888888888889",
+    "exitAllowanceUsdc": "497.612122",
+    "positions": [
+      {
+        "lane": "OnRe/ONyc/USDC",
+        "grossUsdc": "206581.414887",
+        "debtUsdc": "68847.935406",
+        "equityUsdc": "137733.479481",
+        "equityPctNav": "77.65538268627224705390214028",
+        "grossPctNav": "116.4724719753742995769451478"
+      },
+      {
+        "lane": "AUTO/AUTO/PYUSD",
+        "grossUsdc": "51140.440896",
+        "debtUsdc": "17030.817439",
+        "equityUsdc": "34109.623457",
+        "equityPctNav": "19.23131451277522169720985521",
+        "grossPctNav": "28.83344357151307564900326916"
+      },
+      {
+        "lane": "Prime/PRIME/PYUSD",
+        "grossUsdc": "10.328255",
+        "debtUsdc": "0",
+        "equityUsdc": "10.328255",
+        "equityPctNav": "0.005823163674718933364457403283",
+        "grossPctNav": "0.005823163674718933364457403283"
+      },
+      {
+        "lane": "AUTO/AUTO/wYLDS",
+        "grossUsdc": "10676.632239",
+        "debtUsdc": "7036.616676",
+        "equityUsdc": "3640.015563",
+        "equityPctNav": "2.052273728899333633550381841",
+        "grossPctNav": "6.019581916062091149246281065"
+      }
+    ],
+    "newNonOnreInflowFor50PctEquityCapUsdc": "98101.946111",
+    "onre1PctCollateralShockNavLossPct": "1.164724719753742995769451478",
+    "illustrative50PctEquityAt1_5xShockNavLossPct": "0.75",
+    "illustrative50PctGrossCapShockNavLossPct": "0.50",
+    "onreNativeApyPct": "11.01997826241283300",
+    "mapleNativeApyPct": "5.08927514194299500",
+    "illustrativeOnre1_5xApyPct": "12.564466677403217000",
+    "illustrativeMaple1_5xApyPct": "5.546505629290569000",
+    "limitations": [
+      "Fixed prices and positions; excludes interest accrual, fees and cash flows.",
+      "Native and borrow rates are point-in-time annualized estimates, not forecasts.",
+      "No 50% cap has been selected or implemented."
+    ],
+    "newNonOnreInflowFor50PctGrossCapUsdc": "235797.816923"
+  },
+  "markets": [
+    {
+      "lane": "Maple/syrupUSDC/USDC",
+      "evidenceId": "5c72b36f73cb983ce876d122123967a98dee086f6f8004b31e06e648db898ab8:400e3299142d66007e7bd4716b4a8de5e9a3661bb925eac44c9191520356d924:8d9323428663052c08b77496445273fee8d4d9787f3a15aaaccdd534ab38d2e5",
+      "observedAt": "2026-11-05T10:23:13Z",
+      "nativeObservedAt": "2026-11-05T09:00:00Z",
+      "nativeApy": 0.05089275141942995,
+      "currentBorrowApy": 0.04174814167247847,
+      "entryCapacity": {
+        "known": false,
+        "unlimited": false,
+        "raw": 0
+      }
+    },
+    {
+      "lane": "OnRe/ONyc/USDC",
+      "evidenceId": "b752e39504b278c2596b49a787f9275a55f18afa4e3b0e590e45e860a9b66269:95c5c5d6af71c31605093607e6325faa079908050d1aceb5a744951707a58ed2:daee1a24560f1f8dafa829a6d8b09f4b2d03690ab6fb05c0822ff51d7f9406fd",
+      "observedAt": "2026-11-05T10:23:13Z",
+      "nativeObservedAt": "2026-11-05T09:00:00Z",
+      "nativeApy": 0.11019978262412833,
+      "currentBorrowApy": 0.07931001432432065,
+      "entryCapacity": {
+        "known": false,
+        "unlimited": false,
+        "raw": 0
+      }
+    },
+    {
+      "lane": "AUTO/AUTO/PYUSD",
+      "evidenceId": "e9e365d45724863b84b5fa2487342602aeeaaece9b89f472dedc903483f1e179:ba30979f60b36921de289efa4b54fa889e0c18c516f60c0d7e1bcacd55535128:01482d0b5b185164b3defe1063b64efd2666b0b6394949f25faa1fc6b5e44e89",
+      "observedAt": "2026-11-05T10:23:13Z",
+      "nativeObservedAt": "2026-11-05T09:00:00Z",
+      "nativeApy": 0.10343916730848957,
+      "currentBorrowApy": 0.0686844502646231,
+      "entryCapacity": {
+        "known": false,
+        "unlimited": false,
+        "raw": 0
+      }
+    },
+    {
+      "lane": "Prime/PRIME/USDC",
+      "evidenceId": "9102c9ddacd1efb06ce0874e69f55150a927055308f0bb13bcb55b1ada450691:b912c42e284710553cd8d55de56145e60562c21fe5339e7aa187d81087106720:a99ec4355a9353df2b6cc5c27dc0eca43ea65ce3c10f9b30e88d76796285b826",
+      "observedAt": "2026-11-05T10:23:13Z",
+      "nativeObservedAt": "2026-11-05T09:00:00Z",
+      "nativeApy": 0.062109187447384695,
+      "currentBorrowApy": 0.05444606648993357,
+      "entryCapacity": {
+        "known": false,
+        "unlimited": false,
+        "raw": 0
+      }
+    },
+    {
+      "lane": "Prime/PRIME/PYUSD",
+      "evidenceId": "9102c9ddacd1efb06ce0874e69f55150a927055308f0bb13bcb55b1ada450691:365645abbc046dd51a794a62bfbcc77de4b2744c3c360d119c2f01d7a83ec075:a99ec4355a9353df2b6cc5c27dc0eca43ea65ce3c10f9b30e88d76796285b826",
+      "observedAt": "2026-11-05T10:23:13Z",
+      "nativeObservedAt": "2026-11-05T09:00:00Z",
+      "nativeApy": 0.062109187447384695,
+      "currentBorrowApy": 0.05946828037927765,
+      "entryCapacity": {
+        "known": false,
+        "unlimited": false,
+        "raw": 0
+      }
+    },
+    {
+      "lane": "Prime/PRIME/USDS",
+      "evidenceId": "9102c9ddacd1efb06ce0874e69f55150a927055308f0bb13bcb55b1ada450691:ebebe94ecb0952c3679a185faf64de159057a76e3dfb7cae967e5d6daac131b8:a99ec4355a9353df2b6cc5c27dc0eca43ea65ce3c10f9b30e88d76796285b826",
+      "observedAt": "2026-11-05T10:23:13Z",
+      "nativeObservedAt": "2026-11-05T09:00:00Z",
+      "nativeApy": 0.062109187447384695,
+      "currentBorrowApy": 0.054342968467577295,
+      "entryCapacity": {
+        "known": false,
+        "unlimited": false,
+        "raw": 0
+      }
+    },
+    {
+      "lane": "AUTO/AUTO/wYLDS",
+      "evidenceId": "e9e365d45724863b84b5fa2487342602aeeaaece9b89f472dedc903483f1e179:92d228dce15d2e313fb51a64c42f7bb0354790837c58a6d7ef71a251a921c5b7:01482d0b5b185164b3defe1063b64efd2666b0b6394949f25faa1fc6b5e44e89",
+      "observedAt": "2026-11-05T10:23:13Z",
+      "nativeObservedAt": "2026-11-05T09:00:00Z",
+      "nativeApy": 0.10343916730848957,
+      "currentBorrowApy": 0.060032957900944504,
+      "entryCapacity": {
+        "known": false,
+        "unlimited": false,
+        "raw": 0
+      }
+    }
+  ],
+  "installedPolicies": [
+    "CHK4ni7TmwP8oKvzJL6na9Vc8cBiPCNcCe2pLvGZLgpV",
+    "DtHamyGTePJtvuqoE32FSJ2BKGodf2y6uVRNSyNnyz9X"
+  ],
+  "quoteAndCompilerSamples": [
+    {
+      "accountBudget": 50,
+      "action": "SWAP_STABLE_TO_COLLATERAL_STEP",
+      "amountRaw": 50000000000,
+      "at": "2026-11-05T10:23:18.614113685Z",
+      "dexes": "Manifest",
+      "ephemeralKeyPersistValidation": true,
+      "installedPolicy": "DtHamyGTePJtvuqoE32FSJ2BKGodf2y6uVRNSyNnyz9X",
+      "minimumOutputRaw": 12130778305,
+      "outputRaw": 12191736989,
+      "wireBytes": 912,
+      "quote": {
+        "inputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "inAmount": "50000000000",
+        "outputMint": "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+        "outAmount": "12191736989",
+        "otherAmountThreshold": "12130778305",
+        "swapMode": "ExactIn",
+        "slippageBps": 50,
+        "platformFee": null,
+        "priceImpactPct": "0.7094852509031405601032327578",
+        "routePlan": [
+          {
+            "swapInfo": {
+              "ammKey": "4im6emNBNT3LJXJSeTe4VWqC3pa1DqJtvtUHqQV96LNn",
+              "label": "Manifest",
+              "inputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+              "outputMint": "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+              "inAmount": "50000000000",
+              "outAmount": "12191736989",
+              "updateContextSlot": "465670174"
+            },
+            "percent": null,
+            "bps": 10000
+          }
+        ],
+        "contextSlot": 465670264,
+        "timeTaken": 0.000945591,
+        "swapUsdValue": "49988.380404302300000",
+        "mostReliableAmmsQuoteReport": {
+          "info": {
+            "6fteKNvMdv7tYmBoJHhj1jx6rHcEwC6RdSEmVpyS613J": "Amm is excluded from request's dexes_selection.",
+            "BZtgQEyS6eXUXicYPHecYQ7PybqodXQMvkjUbP4R8mUU": "Amm is excluded from request's dexes_selection."
+          }
+        },
+        "longtailMarketQuoteReport": null,
+        "useIncurredSlippageForQuoting": null,
+        "useRewards": null,
+        "otherRoutePlans": null,
+        "loadedLongtailToken": false,
+        "instructionVersion": "V2",
+        "transactionVersion": 0
+      },
+      "unsignedMessageSha256": "e772afb7b7494e7ffd556dde369d38b1c23a67631626cfa8b120fe861dc84769",
+      "executionStatus": "Standalone simulation rejected with Jupiter 6024: custody has no input tokens; quote/compiler evidence only."
+    },
+    {
+      "accountBudget": 50,
+      "action": "SWAP_COLLATERAL_TO_STABLE_STEP",
+      "amountRaw": 12191736989,
+      "at": "2026-11-05T10:23:28.691524939Z",
+      "dexes": "Manifest",
+      "ephemeralKeyPersistValidation": true,
+      "installedPolicy": "CHK4ni7TmwP8oKvzJL6na9Vc8cBiPCNcCe2pLvGZLgpV",
+      "minimumOutputRaw": 14452528728,
+      "outputRaw": 14525154500,
+      "wireBytes": 912,
+      "quote": {
+        "inputMint": "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+        "inAmount": "12191736989",
+        "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "outAmount": "14525154500",
+        "otherAmountThreshold": "14452528728",
+        "swapMode": "ExactIn",
+        "slippageBps": 50,
+        "platformFee": null,
+        "priceImpactPct": "0.0000401325471277627998529481",
+        "routePlan": [
+          {
+            "swapInfo": {
+              "ammKey": "4im6emNBNT3LJXJSeTe4VWqC3pa1DqJtvtUHqQV96LNn",
+              "label": "Manifest",
+              "inputMint": "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+              "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+              "inAmount": "12191736989",
+              "outAmount": "14525154500",
+              "updateContextSlot": "465670319"
+            },
+            "percent": null,
+            "bps": 10000
+          }
+        ],
+        "contextSlot": 465670358,
+        "timeTaken": 0.000401758,
+        "swapUsdValue": "14522.361790914247731929956",
+        "mostReliableAmmsQuoteReport": {
+          "info": {
+            "6fteKNvMdv7tYmBoJHhj1jx6rHcEwC6RdSEmVpyS613J": "Amm is excluded from request's dexes_selection.",
+            "BZtgQEyS6eXUXicYPHecYQ7PybqodXQMvkjUbP4R8mUU": "Not used RG: FullLiquidIntermediate, contains ALT: true"
+          }
+        },
+        "longtailMarketQuoteReport": null,
+        "useIncurredSlippageForQuoting": null,
+        "useRewards": null,
+        "otherRoutePlans": null,
+        "loadedLongtailToken": false,
+        "instructionVersion": "V2",
+        "transactionVersion": 0
+      },
+      "unsignedMessageSha256": "01ed46f2b4c43295f4d46a703b6e3b89e5f93bc8f94ca5d8b9d4eee06b3dbd45",
+      "executionStatus": "Standalone simulation rejected with Jupiter 6024: custody has no input tokens; quote/compiler evidence only."
+    },
+    {
+      "accountBudget": 50,
+      "action": "SWAP_STABLE_TO_COLLATERAL_STEP",
+      "amountRaw": 50000000000,
+      "at": "2026-11-05T10:23:48.712040154Z",
+      "dexes": "Manifest,Whirlpool",
+      "ephemeralKeyPersistValidation": true,
+      "installedPolicy": "DtHamyGTePJtvuqoE32FSJ2BKGodf2y6uVRNSyNnyz9X",
+      "minimumOutputRaw": 41752457539,
+      "outputRaw": 41962268883,
+      "wireBytes": 1232,
+      "quote": {
+        "inputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "inAmount": "50000000000",
+        "outputMint": "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+        "outAmount": "41962268883",
+        "otherAmountThreshold": "41752457539",
+        "swapMode": "ExactIn",
+        "slippageBps": 50,
+        "platformFee": null,
+        "priceImpactPct": "0.0000885003442312015081705288",
+        "routePlan": [
+          {
+            "swapInfo": {
+              "ammKey": "4im6emNBNT3LJXJSeTe4VWqC3pa1DqJtvtUHqQV96LNn",
+              "label": "Manifest",
+              "inputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+              "outputMint": "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+              "inAmount": "9000000000",
+              "outAmount": "7553418853",
+              "updateContextSlot": "465670434"
+            },
+            "percent": null,
+            "bps": 1800
+          },
+          {
+            "swapInfo": {
+              "ammKey": "6fteKNvMdv7tYmBoJHhj1jx6rHcEwC6RdSEmVpyS613J",
+              "label": "Whirlpool",
+              "inputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+              "outputMint": "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+              "inAmount": "41000000000",
+              "outAmount": "34408850030",
+              "updateContextSlot": "465668445"
+            },
+            "percent": null,
+            "bps": 8200
+          }
+        ],
+        "contextSlot": 465670450,
+        "timeTaken": 0.002809263,
+        "swapUsdValue": "49988.380404302300000",
+        "mostReliableAmmsQuoteReport": {
+          "info": {
+            "BZtgQEyS6eXUXicYPHecYQ7PybqodXQMvkjUbP4R8mUU": "Amm is excluded from request's dexes_selection.",
+            "6fteKNvMdv7tYmBoJHhj1jx6rHcEwC6RdSEmVpyS613J": "41961944714"
+          }
+        },
+        "longtailMarketQuoteReport": null,
+        "useIncurredSlippageForQuoting": null,
+        "useRewards": null,
+        "otherRoutePlans": null,
+        "loadedLongtailToken": false,
+        "instructionVersion": "V2",
+        "transactionVersion": 0
+      },
+      "unsignedMessageSha256": "496d8cebae8d9c8423efcde6b13173fd88294521e8ddf005809cbda954e4cabd",
+      "executionStatus": "Standalone simulation rejected with Jupiter 6024: custody has no input tokens; quote/compiler evidence only."
+    },
+    {
+      "accountBudget": 50,
+      "action": "SWAP_COLLATERAL_TO_STABLE_STEP",
+      "amountRaw": 41962268883,
+      "at": "2026-11-05T10:24:08.732425836Z",
+      "dexes": "Manifest,Whirlpool",
+      "ephemeralKeyPersistValidation": true,
+      "installedPolicy": "CHK4ni7TmwP8oKvzJL6na9Vc8cBiPCNcCe2pLvGZLgpV",
+      "minimumOutputRaw": 49740855194,
+      "outputRaw": 49990809240,
+      "wireBytes": 1232,
+      "quote": {
+        "inputMint": "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+        "inAmount": "41962268883",
+        "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "outAmount": "49990809240",
+        "otherAmountThreshold": "49740855194",
+        "swapMode": "ExactIn",
+        "slippageBps": 50,
+        "platformFee": null,
+        "priceImpactPct": "0.0000514146140262143470323903",
+        "routePlan": [
+          {
+            "swapInfo": {
+              "ammKey": "6fteKNvMdv7tYmBoJHhj1jx6rHcEwC6RdSEmVpyS613J",
+              "label": "Whirlpool",
+              "inputMint": "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+              "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+              "inAmount": "27695097470",
+              "outAmount": "32993165657",
+              "updateContextSlot": "465668445"
+            },
+            "percent": null,
+            "bps": 6600
+          },
+          {
+            "swapInfo": {
+              "ammKey": "4im6emNBNT3LJXJSeTe4VWqC3pa1DqJtvtUHqQV96LNn",
+              "label": "Manifest",
+              "inputMint": "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+              "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+              "inAmount": "14267171413",
+              "outAmount": "16997643583",
+              "updateContextSlot": "465670496"
+            },
+            "percent": null,
+            "bps": 3400
+          }
+        ],
+        "contextSlot": 465670541,
+        "timeTaken": 0.001515366,
+        "swapUsdValue": "49983.956415428958998429532",
+        "mostReliableAmmsQuoteReport": {
+          "info": {
+            "6fteKNvMdv7tYmBoJHhj1jx6rHcEwC6RdSEmVpyS613J": "49989493006",
+            "BZtgQEyS6eXUXicYPHecYQ7PybqodXQMvkjUbP4R8mUU": "Not used RG: FullLiquidIntermediate, contains ALT: true"
+          }
+        },
+        "longtailMarketQuoteReport": null,
+        "useIncurredSlippageForQuoting": null,
+        "useRewards": null,
+        "otherRoutePlans": null,
+        "loadedLongtailToken": false,
+        "instructionVersion": "V2",
+        "transactionVersion": 0
+      },
+      "unsignedMessageSha256": "c9007186a65a8de13930a7e90b4d5e8b22e404d57b1807b9a9d38f4e6c54da6d",
+      "executionStatus": "Standalone simulation rejected with Jupiter 6024: custody has no input tokens; quote/compiler evidence only."
+    }
+  ],
+  "independentQuotePairs": [
+    {
+      "dexes": "Manifest",
+      "inputUsdc": "50000",
+      "quotedSaleUsdc": "14525.1545",
+      "pairGapUsdc": "35474.8455",
+      "pairGapPct": "70.949691",
+      "sequentialSimulation": false
+    },
+    {
+      "dexes": "Manifest,Whirlpool",
+      "inputUsdc": "50000",
+      "quotedSaleUsdc": "49990.80924",
+      "pairGapUsdc": "9.19076",
+      "pairGapPct": "0.01838152",
+      "sequentialSimulation": false
+    }
+  ],
+  "sequentialSimulationSamples": [
+    {
+      "name": "bundle",
+      "startedAt": "2026-11-05T10:41:47.829406946Z",
+      "finishedAt": "2026-11-05T10:42:20.020817437Z",
+      "context": {
+        "apiVersion": "4.3.2",
+        "slot": 465675603
+      },
+      "status": "OK",
+      "amountUsdcRaw": 1000000000,
+      "quoteRoutes": [
+        [
+          "Manifest"
+        ],
+        [
+          "Manifest"
+        ]
+      ],
+      "quotes": [
+        {
+          "inputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+          "inAmount": "1000000000",
+          "outputMint": "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+          "outAmount": "839298506",
+          "otherAmountThreshold": "835102014",
+          "swapMode": "ExactIn",
+          "slippageBps": 50,
+          "platformFee": null,
+          "priceImpactPct": "0.0000156411970764058851648421",
+          "routePlan": [
+            {
+              "swapInfo": {
+                "ammKey": "4im6emNBNT3LJXJSeTe4VWqC3pa1DqJtvtUHqQV96LNn",
+                "label": "Manifest",
+                "inputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+                "outputMint": "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+                "inAmount": "1000000000",
+                "outAmount": "839298506",
+                "updateContextSlot": "465675446"
+              },
+              "percent": null,
+              "bps": 10000
+            }
+          ],
+          "contextSlot": 465675454,
+          "timeTaken": 0.000471417,
+          "swapUsdValue": "999.821393151632000",
+          "mostReliableAmmsQuoteReport": {
+            "info": {
+              "BZtgQEyS6eXUXicYPHecYQ7PybqodXQMvkjUbP4R8mUU": "Amm is excluded from request's dexes_selection.",
+              "6fteKNvMdv7tYmBoJHhj1jx6rHcEwC6RdSEmVpyS613J": "839246246"
+            }
+          },
+          "longtailMarketQuoteReport": null,
+          "useIncurredSlippageForQuoting": null,
+          "useRewards": null,
+          "otherRoutePlans": null,
+          "loadedLongtailToken": false,
+          "instructionVersion": "V2",
+          "transactionVersion": 0
+        },
+        {
+          "inputMint": "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+          "inAmount": "835102014",
+          "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+          "outAmount": "994980754",
+          "otherAmountThreshold": "990005851",
+          "swapMode": "ExactIn",
+          "slippageBps": 50,
+          "platformFee": null,
+          "priceImpactPct": "0.0000593046461693570478211782",
+          "routePlan": [
+            {
+              "swapInfo": {
+                "ammKey": "4im6emNBNT3LJXJSeTe4VWqC3pa1DqJtvtUHqQV96LNn",
+                "label": "Manifest",
+                "inputMint": "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+                "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+                "inAmount": "835102014",
+                "outAmount": "994980754",
+                "updateContextSlot": "465675525"
+              },
+              "percent": null,
+              "bps": 10000
+            }
+          ],
+          "contextSlot": 465675551,
+          "timeTaken": 0.000404749,
+          "swapUsdValue": "994.806726605796681349254",
+          "mostReliableAmmsQuoteReport": {
+            "info": {
+              "BZtgQEyS6eXUXicYPHecYQ7PybqodXQMvkjUbP4R8mUU": "Not used RG: FullLiquidIntermediate, contains ALT: true",
+              "6fteKNvMdv7tYmBoJHhj1jx6rHcEwC6RdSEmVpyS613J": "994862600"
+            }
+          },
+          "longtailMarketQuoteReport": null,
+          "useIncurredSlippageForQuoting": null,
+          "useRewards": null,
+          "otherRoutePlans": null,
+          "loadedLongtailToken": false,
+          "instructionVersion": "V2",
+          "transactionVersion": 0
+        }
+      ],
+      "steps": [
+        {
+          "step": "fund_shared_usdc_custody",
+          "err": null,
+          "unitsConsumed": 146403,
+          "wireBytes": 1043,
+          "unsignedWireSha256": "f675dbc7281b4ff70fa3ca84ca9cd7e5762e08f46c66539a1bf84c8b4bb1b871",
+          "postUsdcRaw": 1000000000,
+          "postSyrupUsdcRaw": 0,
+          "logsTruncated": true,
+          "invokedProgramsVisibleInLogs": [
+            "FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW",
+            "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+            "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8"
+          ]
+        },
+        {
+          "step": "buy_syrupusdc",
+          "err": null,
+          "unitsConsumed": 109456,
+          "wireBytes": 912,
+          "unsignedWireSha256": "f1e841900b98a8677ef2bd6cd4617b2a3c597f17d32c6ae7dd4cc0f2448b9cb5",
+          "postUsdcRaw": 0,
+          "postSyrupUsdcRaw": 839298506,
+          "logsTruncated": true,
+          "invokedProgramsVisibleInLogs": [
+            "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4",
+            "MNFSTqtC93rEfYHB6hF82sKdZpUDFWkViLByLd1k1Ms",
+            "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+            "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          ]
+        },
+        {
+          "step": "sell_guaranteed_buy_output",
+          "err": null,
+          "unitsConsumed": 118595,
+          "wireBytes": 912,
+          "unsignedWireSha256": "cd7d74804dbafc12694ea51ea503fb26930e7c25fba10dda09f3437b0820d58a",
+          "postUsdcRaw": 994988087,
+          "postSyrupUsdcRaw": 4196492,
+          "logsTruncated": true,
+          "invokedProgramsVisibleInLogs": [
+            "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4",
+            "MNFSTqtC93rEfYHB6hF82sKdZpUDFWkViLByLd1k1Ms",
+            "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+            "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          ]
+        }
+      ],
+      "productionTransactionShapes": true,
+      "ephemeralKeyPersistValidationEachStep": false,
+      "legacyCombinedMessagePersistValidation": true,
+      "loanLifecycleIncluded": false,
+      "remoteDiagnosticRemoved": true
+    },
+    {
+      "name": "whirlpool-bundle",
+      "startedAt": "2026-11-05T10:47:47.625102299Z",
+      "finishedAt": "2026-11-05T10:48:20.359325773Z",
+      "context": {
+        "apiVersion": "4.3.2",
+        "slot": 465677286
+      },
+      "status": "OK",
+      "amountUsdcRaw": 1000000000,
+      "quoteRoutes": [
+        [
+          "Whirlpool"
+        ],
+        [
+          "Whirlpool"
+        ]
+      ],
+      "quotes": [
+        {
+          "inputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+          "inAmount": "1000000000",
+          "outputMint": "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+          "outAmount": "839246246",
+          "otherAmountThreshold": "835050015",
+          "swapMode": "ExactIn",
+          "slippageBps": 50,
+          "platformFee": null,
+          "priceImpactPct": "0.0000747266825235179727201273",
+          "routePlan": [
+            {
+              "swapInfo": {
+                "ammKey": "6fteKNvMdv7tYmBoJHhj1jx6rHcEwC6RdSEmVpyS613J",
+                "label": "Whirlpool",
+                "inputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+                "outputMint": "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+                "inAmount": "1000000000",
+                "outAmount": "839246246",
+                "updateContextSlot": "465674559"
+              },
+              "percent": null,
+              "bps": 10000
+            }
+          ],
+          "contextSlot": 465677136,
+          "timeTaken": 0.000471317,
+          "swapUsdValue": "999.76912019727000",
+          "mostReliableAmmsQuoteReport": {
+            "info": {
+              "6fteKNvMdv7tYmBoJHhj1jx6rHcEwC6RdSEmVpyS613J": "839246246",
+              "BZtgQEyS6eXUXicYPHecYQ7PybqodXQMvkjUbP4R8mUU": "Amm is excluded from request's dexes_selection."
+            }
+          },
+          "longtailMarketQuoteReport": null,
+          "useIncurredSlippageForQuoting": null,
+          "useRewards": null,
+          "otherRoutePlans": null,
+          "loadedLongtailToken": false,
+          "instructionVersion": "V2",
+          "transactionVersion": 0
+        },
+        {
+          "inputMint": "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+          "inAmount": "835050015",
+          "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+          "outAmount": "994800653",
+          "otherAmountThreshold": "989826650",
+          "swapMode": "ExactIn",
+          "slippageBps": 50,
+          "platformFee": null,
+          "priceImpactPct": "0.000137530259669791522153069",
+          "routePlan": [
+            {
+              "swapInfo": {
+                "ammKey": "6fteKNvMdv7tYmBoJHhj1jx6rHcEwC6RdSEmVpyS613J",
+                "label": "Whirlpool",
+                "inputMint": "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+                "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+                "inAmount": "835050015",
+                "outAmount": "994800653",
+                "updateContextSlot": "465674559"
+              },
+              "percent": null,
+              "bps": 10000
+            }
+          ],
+          "contextSlot": 465677231,
+          "timeTaken": 0.000369806,
+          "swapUsdValue": "994.69593898776175325832",
+          "mostReliableAmmsQuoteReport": {
+            "info": {
+              "6fteKNvMdv7tYmBoJHhj1jx6rHcEwC6RdSEmVpyS613J": "994800653",
+              "BZtgQEyS6eXUXicYPHecYQ7PybqodXQMvkjUbP4R8mUU": "Not used RG: FullLiquidIntermediate, contains ALT: true"
+            }
+          },
+          "longtailMarketQuoteReport": null,
+          "useIncurredSlippageForQuoting": null,
+          "useRewards": null,
+          "otherRoutePlans": null,
+          "loadedLongtailToken": false,
+          "instructionVersion": "V2",
+          "transactionVersion": 0
+        }
+      ],
+      "steps": [
+        {
+          "step": "fund_shared_usdc_custody",
+          "err": null,
+          "unitsConsumed": 146402,
+          "wireBytes": 1043,
+          "unsignedWireSha256": "add019f15a6e1d310d22018b966c3f60e9d03584797120ee0953e942a4e6ea24",
+          "postUsdcRaw": 1000000000,
+          "postSyrupUsdcRaw": 0,
+          "logsTruncated": true,
+          "invokedProgramsVisibleInLogs": [
+            "FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW",
+            "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+            "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8"
+          ]
+        },
+        {
+          "step": "buy_syrupusdc",
+          "err": null,
+          "unitsConsumed": 129949,
+          "wireBytes": 980,
+          "unsignedWireSha256": "839b9147c7cab057f0676a97cb426e38db1e6eb1d3d8415b9d8877d24b87246c",
+          "postUsdcRaw": 0,
+          "postSyrupUsdcRaw": 839246246,
+          "logsTruncated": true,
+          "invokedProgramsVisibleInLogs": [
+            "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4",
+            "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+            "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc"
+          ]
+        },
+        {
+          "step": "sell_guaranteed_buy_output",
+          "err": null,
+          "unitsConsumed": 143661,
+          "wireBytes": 980,
+          "unsignedWireSha256": "92861a2a55ec29a2bf85fc778be848fc3ed3273729f5a671d2bd14002ee5db2f",
+          "postUsdcRaw": 994801009,
+          "postSyrupUsdcRaw": 4196231,
+          "logsTruncated": true,
+          "invokedProgramsVisibleInLogs": [
+            "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4",
+            "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+            "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc"
+          ]
+        }
+      ],
+      "productionTransactionShapes": true,
+      "ephemeralKeyPersistValidationEachStep": true,
+      "legacyCombinedMessagePersistValidation": false,
+      "loanLifecycleIncluded": false,
+      "remoteDiagnosticRemoved": true
+    }
+  ],
+  "limitations": [
+    "Only the small funded swaps were simulated sequentially; $50k quotes are independent and their mixed route was not executed with funding.",
+    "No Maple collateral deposit, borrowing, repayment, redemption or return of cash to Voltr was included.",
+    "Small exit leaves unsold syrupUSDC equal to the difference between actual buy output and minimum guaranteed buy output; do not count it as a loss.",
+    "No market stress, quote-expiry/congestion study, future liquidity guarantee or financial-return forecast.",
+    "The live cash reserve is below target. Technical simulation does not authorize investing that reserve.",
+    "50% is an illustration, not a chosen or implemented concentration cap."
+  ]
+}

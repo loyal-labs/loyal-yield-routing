@@ -1,0 +1,380 @@
+{
+  "status": "implemented_and_verified_not_deployed",
+  "baseCommit": "a96ab545e597a7f3274522092b14c01a6fcb8c90",
+  "sourceSha256": {
+    "go/workers/internal/backyard/allocation_limits.go": "de05213c74f0ab01133b8c1ccfe3908727259a317c1e14af389e8aadc4e65280",
+    "go/workers/internal/backyard/allocation_limits_test.go": "307ea27d2689fa4e348e7a036dd606890bc825c38764e579b469d35db7fbe7b1",
+    "go/workers/internal/backyard/deployment_continuity_test.go": "4d25b8317a0455d36208a9dda4aadace5a97f591baff09cd3222c29c122e4171",
+    "go/workers/internal/backyard/idle_buffer_test.go": "addfa2b12cf6b423fc930cd11391eecc4e2c840b51f9cc23a1c9aa17e8955cc2",
+    "go/workers/internal/backyard/jupiter_observe.go": "5088b83f66e0e2246025177def9f467ec577938202d58a97336d2d3d8cd84bb8",
+    "go/workers/internal/backyard/leverage_target.go": "b6965d72e0adda0d1622500a9085c33c02a63b5cf3e13518ce0cd4d7459ab648",
+    "go/workers/internal/backyard/main_test.go": "6f80caebab35b10003a1d7e591f30116f938e6a612f34513bbf90d7538ece9c6",
+    "go/workers/internal/backyard/route_catalog.go": "a0ca73ccf7a1151a88fd0c4f2ecb34979415aa6e07b889f140cc402f5748d15e",
+    "go/workers/internal/backyard/route_observe.go": "9d50fcce4d5e750f817955a2339c33d2603d376145d5550df00eb2a14464d3f6",
+    "go/workers/internal/backyard/selector.go": "5f749b57e10613938ffe01585e63a43ba786a66e1efabaaef05dff0d840cf435",
+    "go/workers/internal/backyard/selector_destination_test.go": "605eb9364cafa5ea4b946a617cf9c872bce31eca902e2eeaa64841d69a493504",
+    "go/workers/internal/backyard/selector_live.go": "9df9cd9ff38dbf2bc3cd37940af2534ac62032d7802ece0fdf179e9c6a38ed55",
+    "go/workers/internal/backyard/selector_price.go": "866c12647dafac256de23b263ff722528bd707a817971ef8b9eff25c1fdde94c",
+    "go/workers/internal/backyard/selector_record.go": "03421fd6e4cba3ba6c48c31cbbb3c91d83fe65f77f9b9366470592b91f1fe8e7",
+    "go/workers/internal/backyard/state.go": "85af3cc9c3adc33fe00a21960e313eecf2ae76b538114ae83cc7194b03b12ba2",
+    "go/workers/internal/backyard/target.go": "4cdc7e5528fffd743d7538f14782ffb99c2234bb9a02bd21c8ad5ae5bbe00ddc",
+    "go/workers/internal/backyard/vault.go": "4a85e3f024b3bd3c5ca4ab359db63452288e78aa1bb54479e77ff852d95de1ea"
+  },
+  "checks": {
+    "focusedTests": "PASS",
+    "workersV2": "PASS",
+    "fullLogSha256": "0096de420199e383f79d97d4326efa18ed063991a44cc733f75acd31fde54c62",
+    "focusedLogSha256": "304d3d59cb118c6c5a00cd0d79d753c7ddf985573e34231f69ef2eac57db2a34"
+  },
+  "livePreview": {
+    "startedAt": "2026-11-05T15:35:33.348735023Z",
+    "finishedAt": "2026-11-05T15:35:37.205256423Z",
+    "slot": 465758096,
+    "navRaw": 176956538501,
+    "idleRaw": 2425098217,
+    "withdrawalDemandRaw": 245484104,
+    "reserveTargetRaw": 17695653850,
+    "policy": {
+      "horizon": 604800000000000,
+      "persistence": 1800000000000,
+      "maxSampleGap": 600000000000,
+      "marketMaxAge": 90000000000,
+      "nativeMaxAge": 7200000000000,
+      "quoteMaxAge": 30000000000,
+      "minimumBenefitRaw": 250000,
+      "uncertaintyBps": 10,
+      "idleBufferRaw": 5000000000,
+      "idleBufferBps": 1000,
+      "idleBufferCapRaw": 25000000000,
+      "diversifyNewCash": true
+    },
+    "providerRoomsRaw": {
+      "hastra_auto_and_prime": 26653061563,
+      "maple": 88478269250,
+      "onre": 0
+    },
+    "priorDecision": {
+      "Action": "HOLD",
+      "Reason": "at_target",
+      "AmountRaw": 0,
+      "MaxSlippageBPS": 0,
+      "IdempotencyKey": "db8f0bd584c22f585f7636996cb9b5571dbbb7871a81db65e0443807a6ceb2df:OnRe/ONyc/USDC:HOLD:0:at_target",
+      "StrategyKey": "OnRe/ONyc/USDC"
+    },
+    "candidateDecision": {
+      "Action": "HOLD",
+      "Reason": "at_target",
+      "AmountRaw": 0,
+      "MaxSlippageBPS": 0,
+      "IdempotencyKey": "db8f0bd584c22f585f7636996cb9b5571dbbb7871a81db65e0443807a6ceb2df:OnRe/ONyc/USDC:HOLD:0:at_target",
+      "StrategyKey": "OnRe/ONyc/USDC"
+    },
+    "storedLevels": {
+      "OnRe/ONyc/USDC": {
+        "level": 1.75,
+        "upApproved": false
+      },
+      "AUTO/AUTO/PYUSD": {
+        "level": 1.75,
+        "upApproved": true
+      },
+      "AUTO/AUTO/wYLDS": {
+        "level": 3,
+        "upApproved": false
+      },
+      "Prime/PRIME/PYUSD": {
+        "level": 1.5,
+        "upApproved": false
+      }
+    },
+    "candidateLeverageDecisions": {
+      "AUTO/AUTO/PYUSD": {
+        "Lane": "AUTO/AUTO/PYUSD",
+        "Current": 1.75,
+        "Next": 1.75,
+        "SpreadBPS": 352,
+        "GainRaw": 0,
+        "Reason": "new_allocation_limit",
+        "BorrowRaw": 0,
+        "RoomRaw": 0,
+        "Cost": {
+          "borrowFeeMicros": 0,
+          "entrySwapLossMicros": 0,
+          "exitSwapLossMicros": 0,
+          "networkMicros": 0,
+          "totalMicros": 0
+        },
+        "TermDays": 0,
+        "TermKnown": false,
+        "Down": {}
+      },
+      "AUTO/AUTO/wYLDS": {
+        "Lane": "AUTO/AUTO/wYLDS",
+        "Current": 3,
+        "Next": 3,
+        "SpreadBPS": 435,
+        "GainRaw": 0,
+        "Reason": "new_allocation_limit",
+        "BorrowRaw": 0,
+        "RoomRaw": 7363843,
+        "Cost": {
+          "borrowFeeMicros": 0,
+          "entrySwapLossMicros": 0,
+          "exitSwapLossMicros": 0,
+          "networkMicros": 0,
+          "totalMicros": 0
+        },
+        "TermDays": 8.481782407407408,
+        "TermKnown": true,
+        "Down": {}
+      },
+      "OnRe/ONyc/USDC": {
+        "Lane": "OnRe/ONyc/USDC",
+        "Current": 1.75,
+        "Next": 1.75,
+        "SpreadBPS": 354,
+        "GainRaw": 0,
+        "Reason": "new_allocation_limit",
+        "BorrowRaw": 0,
+        "RoomRaw": 2188763188492,
+        "Cost": {
+          "borrowFeeMicros": 0,
+          "entrySwapLossMicros": 0,
+          "exitSwapLossMicros": 0,
+          "networkMicros": 0,
+          "totalMicros": 0
+        },
+        "TermDays": 0,
+        "TermKnown": false,
+        "Down": {}
+      },
+      "Prime/PRIME/PYUSD": {
+        "Lane": "Prime/PRIME/PYUSD",
+        "Current": 1.5,
+        "Next": 1.5,
+        "SpreadBPS": 17,
+        "GainRaw": 0,
+        "Reason": "new_allocation_limit",
+        "BorrowRaw": 0,
+        "RoomRaw": 0,
+        "Cost": {
+          "borrowFeeMicros": 0,
+          "entrySwapLossMicros": 0,
+          "exitSwapLossMicros": 0,
+          "networkMicros": 0,
+          "totalMicros": 0
+        },
+        "TermDays": 0,
+        "TermKnown": false,
+        "Down": {}
+      }
+    },
+    "holdings": [
+      {
+        "lane": "OnRe/ONyc/USDC",
+        "collateralReceiptRaw": 177617555060380,
+        "debtRaw": 68850943290,
+        "collateralValueRaw": 206562943439,
+        "debtValueRaw": 68850943290,
+        "admission": {
+          "cashReserveRaw": 17695653850,
+          "providerRoomRaw": 0,
+          "unleveredEntry": false
+        }
+      },
+      {
+        "lane": "AUTO/AUTO/PYUSD",
+        "collateralReceiptRaw": 49593308342,
+        "debtRaw": 17032028302,
+        "collateralValueRaw": 51138625720,
+        "debtValueRaw": 17025484590,
+        "admission": {
+          "cashReserveRaw": 17695653850,
+          "providerRoomRaw": 26653061563,
+          "unleveredEntry": false
+        }
+      },
+      {
+        "lane": "Prime/PRIME/PYUSD",
+        "collateralReceiptRaw": 9667165,
+        "debtRaw": 0,
+        "collateralValueRaw": 10328683,
+        "debtValueRaw": 0,
+        "admission": {
+          "cashReserveRaw": 17695653850,
+          "providerRoomRaw": 26653061563,
+          "unleveredEntry": true
+        }
+      },
+      {
+        "lane": "AUTO/AUTO/wYLDS",
+        "collateralReceiptRaw": 10353636094,
+        "debtRaw": 7036860485,
+        "collateralValueRaw": 10676253284,
+        "debtValueRaw": 7036860485,
+        "admission": {
+          "cashReserveRaw": 17695653850,
+          "providerRoomRaw": 26653061563,
+          "unleveredEntry": false
+        }
+      }
+    ],
+    "selectorAction": "KEEP",
+    "selectorReason": "no_worthwhile_executable_move",
+    "pendingOperation": "",
+    "manualLatch": false,
+    "captureSha256": "4484b84be0b616222b04411e7d4338ff6a6a566205be6832b287134af336857a",
+    "signingKeyLoaded": false,
+    "broadcastCapability": false
+  },
+  "fundedRouteSimulations": [
+    {
+      "lane": "Maple/syrupUSDC/USDC",
+      "startedAt": "2026-11-05T15:29:13.228114206Z",
+      "finishedAt": "2026-11-05T15:29:45.829885162Z",
+      "status": "SYNTHETICALLY_FUNDED_UNBORROWED_LIFECYCLE_PASSED",
+      "inputRaw": 10000000000,
+      "buyDexes": [
+        "Whirlpool"
+      ],
+      "allowedDexes": "Whirlpool",
+      "exitQuote": {
+        "otherAmountThreshold": "9928078669",
+        "outAmount": "9947974619",
+        "slippageBps": 20
+      },
+      "depositSlot": 465756373,
+      "exitSlot": 465756456,
+      "depositedDebtRaw": 0,
+      "finalCollateralReceiptRaw": 0,
+      "finalDebtRaw": 0,
+      "cashAfterExitRaw": 9948010190,
+      "unsoldBuyExcessRaw": 41962247,
+      "simulationOnly": true,
+      "borrowingIncluded": false,
+      "passed": {
+        "depositPassed": true,
+        "destinationValidationPassed": true,
+        "exitPassed": true,
+        "restorePassed": true,
+        "stagePassed": true,
+        "valuationRefreshPassed": true
+      },
+      "wireChecks": [
+        {
+          "label": "fund",
+          "wireBytes": 1043,
+          "persistSignValidation": true,
+          "messageSha256": "4c5a336180e4f07178ab11e00bf83d519c4b11ac4486da3f89d56100d8270d9a"
+        },
+        {
+          "label": "buy",
+          "wireBytes": 980,
+          "persistSignValidation": true,
+          "messageSha256": "1770e7f68aaaaf203e81bd4c20af45a57e37bee2b19ede757939ee2630d94865"
+        },
+        {
+          "label": "deposit",
+          "wireBytes": 859,
+          "persistSignValidation": true,
+          "messageSha256": "3b9e2223c228f9a8b8eddc0e8e6d87a6966fc0da3c1cc8fd8a3503be12ef0b39"
+        },
+        {
+          "label": "withdraw_and_sell",
+          "wireBytes": 1530,
+          "persistSignValidation": true,
+          "messageSha256": "19e2d363c22457ed24ff4e64a7460ac2de26045d68e514fee539af0ce51a71bc"
+        },
+        {
+          "label": "stage_cash_to_voltr_strategy",
+          "wireBytes": 429,
+          "persistSignValidation": true,
+          "messageSha256": "f6c7dff7b985fc71465093cd514e90ab328a6f82aaa14262f008e0c6e12001e1"
+        },
+        {
+          "label": "restore_cash_to_voltr_idle",
+          "wireBytes": 1043,
+          "persistSignValidation": true,
+          "messageSha256": "a493aac47bee044c0a04bc56064c6b158c590106370d091fdb33fcd4f6cec6f7"
+        }
+      ],
+      "captureSha256": "cf185153e2f36bedaa5a092b3d3357e03f049596938b74058800a422f3ad975a",
+      "limits": "Hypothetical unsigned funding; guaranteed buy minimum deposited, leaving buy surplus outside Kamino; execution qualification, not live allocation authority."
+    },
+    {
+      "lane": "Prime/PRIME/USDC",
+      "startedAt": "2026-11-05T15:29:50.683950695Z",
+      "finishedAt": "2026-11-05T15:30:23.239038321Z",
+      "status": "SYNTHETICALLY_FUNDED_UNBORROWED_LIFECYCLE_PASSED",
+      "inputRaw": 10000000000,
+      "buyDexes": [
+        "Manifest",
+        "Whirlpool"
+      ],
+      "allowedDexes": "",
+      "exitQuote": {
+        "otherAmountThreshold": "9928575924",
+        "outAmount": "9948472870",
+        "slippageBps": 20
+      },
+      "depositSlot": 465756548,
+      "exitSlot": 465756635,
+      "depositedDebtRaw": 0,
+      "finalCollateralReceiptRaw": 0,
+      "finalDebtRaw": 0,
+      "cashAfterExitRaw": 9948472870,
+      "unsoldBuyExcessRaw": 46800147,
+      "simulationOnly": true,
+      "borrowingIncluded": false,
+      "passed": {
+        "depositPassed": true,
+        "destinationValidationPassed": true,
+        "exitPassed": true,
+        "restorePassed": true,
+        "stagePassed": true,
+        "valuationRefreshPassed": true
+      },
+      "wireChecks": [
+        {
+          "label": "fund",
+          "wireBytes": 1043,
+          "persistSignValidation": true,
+          "messageSha256": "cb4dbcadbd16ed24b0988cd6824ca4b0b41944e60e45ad23a9f9fbb70bed052e"
+        },
+        {
+          "label": "buy",
+          "wireBytes": 1331,
+          "persistSignValidation": true,
+          "messageSha256": "970f5cda7f78412d25317387013697d33f8e6683422120a47ac8c459c6622242"
+        },
+        {
+          "label": "deposit",
+          "wireBytes": 859,
+          "persistSignValidation": true,
+          "messageSha256": "0bbf495539783aa7c307f91559f5e9e37a72d2ac3b5d0e0bfa41e4cf419d6aa2"
+        },
+        {
+          "label": "withdraw_and_sell",
+          "wireBytes": 1462,
+          "persistSignValidation": true,
+          "messageSha256": "86d85009ca506937872749f45f4b6072e883e8d513bc517c31b4942fbaf4b1c0"
+        },
+        {
+          "label": "stage_cash_to_voltr_strategy",
+          "wireBytes": 429,
+          "persistSignValidation": true,
+          "messageSha256": "447f2ed4e77f0d6719bc692c2f8218273586a5f9f168dd855196346084b5b788"
+        },
+        {
+          "label": "restore_cash_to_voltr_idle",
+          "wireBytes": 1043,
+          "persistSignValidation": true,
+          "messageSha256": "59e0c3069b568c4de164a0c2d6986e71bfec81b0219fcae3152064704a3b78ed"
+        }
+      ],
+      "captureSha256": "69be77a94224e6f3ef4a34598b87e4c15a2f6f184eb1282e392ba743391f0270",
+      "limits": "Hypothetical unsigned funding; guaranteed buy minimum deposited, leaving buy surplus outside Kamino; execution qualification, not live allocation authority."
+    }
+  ],
+  "remoteArtifactsRemoved": true
+}

@@ -92,6 +92,9 @@ func decideLeverageTarget(s Snapshot, selector SelectorResult, markets []LaneEco
 		out.Next = max(level, out.Current)
 	}
 	raw := leverageDesiredRaw(s, level)
+	if !allocationBorrowAllowed(s, raw) {
+		return out.held("new_allocation_limit"), true
+	}
 	if raw < leverageMinimumBorrowRaw {
 		if up && !s.BorrowCapacityKnown {
 			out.Reason = leverageReasonCapacityUnknown
