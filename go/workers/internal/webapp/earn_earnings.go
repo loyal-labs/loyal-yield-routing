@@ -80,19 +80,27 @@ func (h earnRoutes) earnEarnings(ctx context.Context, in *earningsRequest) (*ear
 		warnEarningsRead("auth", err)
 		return nil, newEarningsError(earningsUnavailableCode, nil)
 	}
+	payload, err := h.earningsFor(ctx, account, in.Timezone)
+	if err != nil {
+		return nil, err
+	}
+	return &earningsOutput{CacheControl: perWalletCacheControl(), Body: payload}, nil
+}
+
+func (h earnRoutes) earningsFor(ctx context.Context, account EarnAccount, timezone string) (EarningsRangeSet, error) {
 	input := earningsReadInput{
 		cluster:       string(account.Cluster),
 		settings:      account.Settings.String(),
-		timezone:      normalizeEarningsTimezone(in.Timezone),
+		timezone:      normalizeEarningsTimezone(timezone),
 		vaultIndex:    int16(earnprep.EarnVaultIndex),
 		walletAddress: account.Wallet.String(),
 	}
 	payload, err := readCachedEarnEarningsRangeSet(ctx, h.YieldDB, input,
 		h.scheduleEarningsRefresh(ctx), newEarningsReadDependencies(h.YieldDB, h.Timescale, false))
 	if err != nil {
-		return nil, earningsRouteError(err)
+		return EarningsRangeSet{}, earningsRouteError(err)
 	}
-	return &earningsOutput{CacheControl: perWalletCacheControl(), Body: payload}, nil
+	return payload, nil
 }
 
 func earningsRouteError(err error) error {

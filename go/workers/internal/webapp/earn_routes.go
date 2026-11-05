@@ -38,11 +38,6 @@ type Earn struct {
 	SweepNotifySecret    string
 }
 
-type WalletPush struct {
-	BaseURL string
-	Secret  string
-}
-
 type OTLP struct {
 	Endpoint     *url.URL
 	IngestionKey string

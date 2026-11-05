@@ -152,7 +152,7 @@ func granted(ctx context.Context, pool *pgxpool.Pool, routes string, grants []we
 	return false
 }
 
-type grantVerdicts struct{ Content, Stats, Session, EarnMax, Push, Yield bool }
+type grantVerdicts struct{ Content, Stats, Session, EarnMax, Push, PushSend, Yield bool }
 
 func checkGrants(ctx context.Context, appDB, yieldDB *pgxpool.Pool) grantVerdicts {
 	ctx, cancel := context.WithTimeout(ctx, grantBound)
@@ -170,6 +170,7 @@ func checkGrants(ctx context.Context, appDB, yieldDB *pgxpool.Pool) grantVerdict
 		{&v.Session, appDB, "session routes", webapp.AuthGrants},
 		{&v.EarnMax, appDB, "Earn MAX routes", webapp.EarnMaxGrants},
 		{&v.Push, appDB, "push tokens", webapp.PushGrants},
+		{&v.PushSend, appDB, "wallet push sends", webapp.PushSendGrants},
 		{&v.Yield, yieldDB, "Earn MAX route state", webapp.YieldGrants},
 	} {
 		if c.pool != nil {
@@ -267,7 +268,6 @@ func earn(ctx context.Context, registry *prometheus.Registry, rpcClient *chain.C
 	if timescaleDB == nil {
 		degraded(timescaleRoutes, errors.New("no TIMESCALEDB_URL pool"))
 	}
-	e.Push = walletPush()
 	e.MixpanelCohortSecret, _ = optionalCredential("Mixpanel cohort push", "MIXPANEL_COHORT_WEBHOOK_SECRET")
 	e.SweepNotifySecret, _ = optionalCredential("sweep notify push", "SOLANA_WEEK_NOTIFY_SECRET")
 	grantCtx, cancel := context.WithTimeout(ctx, grantBound)
@@ -276,20 +276,20 @@ func earn(ctx context.Context, registry *prometheus.Registry, rpcClient *chain.C
 	return e
 }
 
-func walletPush() *webapp.WalletPush {
-	baseURL, errBase := engine.OptionalCredential("MOBILE_PUSH_API_BASE_URL")
-	secret, errSecret := engine.OptionalCredential("MOBILE_PUSH_API_SECRET")
-	switch {
-	case errBase != nil || errSecret != nil:
-		slog.Error("Earn autodeposit wallet push off", "reason", errors.Join(errBase, errSecret).Error())
-	case baseURL == "" && secret == "":
-		slog.Info("Earn autodeposit wallet push off", "reason", "MOBILE_PUSH_API_BASE_URL and MOBILE_PUSH_API_SECRET are not installed")
-	case baseURL == "" || secret == "":
-		slog.Error("Earn autodeposit wallet push off", "reason", "only one of MOBILE_PUSH_API_BASE_URL and MOBILE_PUSH_API_SECRET is installed")
-	default:
-		return &webapp.WalletPush{BaseURL: baseURL, Secret: secret}
+func newWalletPush(appDB *pgxpool.Pool) *webapp.WalletPush {
+	secret, _ := optionalCredential("wallet push route", "PUSH_DEBUG_SECRET")
+	if secret == "" {
+		degraded("wallet push route", errors.New("PUSH_DEBUG_SECRET is not installed"))
 	}
-	return nil
+	return webapp.NewWalletPush(appDB, secret)
+}
+
+func enableEarnPush(e *webapp.Earn, push *webapp.WalletPush) {
+	if os.Getenv("LOYAL_AUTODEPOSIT_PUSH") == "on" {
+		e.Push = push
+	} else {
+		slog.Warn("autodeposit wallet push off", "reason", "LOYAL_AUTODEPOSIT_PUSH is not on")
+	}
 }
 
 func run(ctx context.Context) error {
@@ -323,7 +323,13 @@ func run(ctx context.Context) error {
 		cfg.PushDB = grants.Push
 	}
 	registry := prometheus.NewRegistry()
+	if appDB != nil && grants.PushSend {
+		cfg.WalletPush = newWalletPush(appDB)
+	}
 	cfg.Earn = earn(ctx, registry, rpcClient, appDB, yieldDB, timescaleDB)
+	if cfg.Earn != nil {
+		enableEarnPush(cfg.Earn, cfg.WalletPush)
+	}
 	if cfg.Earn != nil && cfg.Earn.OTLP != nil {
 		go webapp.NewCrons(appDB, *cfg.Earn).RunTelemetryHeartbeat(ctx, cfg.Release, cfg.Environment)
 	} else {
