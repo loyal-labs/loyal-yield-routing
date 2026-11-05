@@ -60,7 +60,7 @@ func jsSlice(s string, n int) string {
 }
 
 func normalizeWhitespace(s string) string {
-	return strings.TrimSpace(jsWhitespace.ReplaceAllString(s, " "))
+	return strings.Trim(jsWhitespace.ReplaceAllString(s, " "), " ")
 }
 
 func normalizeParticipant(s string) string { return strings.ToLower(normalizeWhitespace(s)) }

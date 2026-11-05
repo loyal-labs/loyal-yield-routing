@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"math"
 	"regexp"
 	"strings"
 )
@@ -82,7 +83,7 @@ func ShareSummary(text, date string, theme Theme, dog int) ([]byte, error) {
 		if word == "" {
 			continue
 		}
-		outer := wordFace.width(word) + summaryWordMargin
+		outer := math.Ceil(wordFace.width(word)) + summaryWordMargin
 		if x > 0 && x+outer > summaryTextWidth {
 			x, line = 0, line+1
 		}
