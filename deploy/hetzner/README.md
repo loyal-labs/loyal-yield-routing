@@ -990,7 +990,10 @@ Credentials live in `/etc/credstore.encrypted/loyal-telegram/<NAME>`:
 (also the `secret_token` given to `setWebhook`), `MESSAGE_ENCRYPTION_KEY` (the
 1Password item "Master Key Encryption"; stored DMs decrypt only with it),
 `REDPILL_AI_API_KEY`, and optionally `R2_ACCESS_KEY_ID` and
-`R2_SECRET_ACCESS_KEY`. The host drop-in `loyal-telegram.service.d/60-env.conf`
+`R2_SECRET_ACCESS_KEY`. A copy of each lives in the 1Password Environment
+`loyal-noncritical-env` as `LOYAL_TG_<NAME>` (bot token, webhook secret,
+encryption key, Redpill and R2 keys); the database URL is the App
+`DATABASE_URL`. The host drop-in `loyal-telegram.service.d/60-env.conf`
 holds `LOYAL_TELEGRAM_R2_ENDPOINT`, `_BUCKET`, `_PREFIX`,
 `LOYAL_TELEGRAM_CDN_BASE_URL`, `LOYAL_TELEGRAM_PUBLIC_URL` and
 `TELEGRAM_SUMMARY_PEER_OVERRIDE_FROM`/`_TO`, copied from the Vercel `loyal-app`
