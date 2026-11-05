@@ -16,6 +16,10 @@ route:
       group_wait: 0s
       group_interval: 1m
       repeat_interval: 1m
+    # One address per message: many held addresses in one group would pass
+    # Telegram's 4096-character limit.
+    - matchers: [alertname=~"LoyalBridgeIncoming(Unmoved|Stranded)"]
+      group_by: [alertname, address, chain, asset]
 
 inhibit_rules:
   # A unit that is down explains its own stale families and missing metrics.

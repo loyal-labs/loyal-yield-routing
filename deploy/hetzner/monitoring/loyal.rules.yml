@@ -330,6 +330,50 @@ groups:
           action: "Read loyal-web's 'bridge sponsored send refused' log lines for Privy's message. Check the Privy dashboard under Billing > Fee sponsorship for the credit balance and that the chain is enabled in the sponsorship policy."
           recovery: "Confirm a fresh Move on that chain sends without a refusal and the counter stops increasing; the window expiring is not a fix."
 
+      - alert: LoyalBridgeIncomingUnmoved
+        expr: max by (address, chain, asset) (last_over_time(loyal_bridge_incoming_unmoved{under_min="false"}[15m])) > 0
+        for: 30m
+        labels: {severity: page}
+        annotations:
+          summary: "{{ printf \"%g\" $value }} {{ $labels.asset }} left unmoved on {{ $labels.address }} ({{ $labels.chain }})"
+          trigger: "A relay_signed EVM wallet held at least 0.1 units of a token with no inbound transfer confirmed for its wallet in the last 30 minutes, and every scan for 30 minutes found it still there; a gap in the scans under about 13 minutes, such as an engine restart, does not reset that clock."
+          impact: "A user's funds sit on their EVM wallet and never reach their Solana balance until the user moves them or support does."
+          action: "Read the retail engine's 'bridge incoming unmoved' log line for this address. The user must press Confirm on Assets to move it, or support moves or refunds it."
+          recovery: "Confirm the next scan reads the address and its series reads 0; a missing series does not prove recovery."
+
+      - alert: LoyalBridgeIncomingStranded
+        expr: max by (address, chain, asset) (last_over_time(loyal_bridge_incoming_unmoved{under_min="true"}[15m])) > 0
+        for: 30m
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ printf \"%g\" $value }} {{ $labels.asset }} on {{ $labels.address }} ({{ $labels.chain }}) is under the chain minimum and cannot be moved"
+          trigger: "A relay_signed EVM wallet held at least 0.1 units of a token below its chain's minimum with no inbound transfer confirmed for its wallet, and every scan for 30 minutes found it still there; a gap in the scans under about 13 minutes, such as an engine restart, does not reset that clock."
+          impact: "The balance is too small for the Move screen to bridge, so it stays on the EVM wallet until support acts."
+          action: "The UI cannot move an amount under the chain minimum. Support refunds it or the user tops it up to the minimum; read the 'bridge incoming unmoved' log line with under_min=true for the amount."
+          recovery: "Confirm the next scan reads the address and its series reads 0; a missing series does not prove recovery."
+
+      - alert: LoyalBridgeIncomingScanStale
+        expr: time() - max(loyal_bridge_incoming_scan_last_success_timestamp_seconds) > 2100
+        for: 2m
+        labels: {severity: page}
+        annotations:
+          summary: "The unmoved-funds scan has not completed for 35m"
+          trigger: "No scan read the relay_signed routes from the database for over 35 minutes (three scan intervals plus a tick of slack); condition persisted for 2 minutes."
+          impact: "Funds left unmoved on a user's EVM wallet would go unnoticed."
+          action: "Check the retail engine is running, that privy-gas-spend.conf credentials are installed on the retail unit and the role has SELECT on loyal_yield.evm_deposit_routes. Read the retail engine's 'bridge incoming scan failed' error."
+          recovery: "Confirm the last-success timestamp advances every 10 minutes. A vanished series is not proof of recovery."
+
+      - alert: LoyalBridgeIncomingScanFailing
+        expr: max(loyal_bridge_incoming_scan_failed_addresses) > 0
+        for: 1h
+        labels: {severity: warning}
+        annotations:
+          summary: "The unmoved-funds scan could not read {{ printf \"%g\" $value }} relay_signed EVM wallets"
+          trigger: "The last scan failed to read at least one relay_signed EVM wallet from Privy; condition persisted for 1 hour."
+          impact: "Funds left unmoved on those wallets go unnoticed while the reads fail, and their last known series stays as it was."
+          action: "Read the retail engine's 'bridge incoming scan incomplete' warning for the error and Privy status. Check Privy rate limits and that the address still exists as an Ethereum wallet in the Privy app."
+          recovery: "Confirm the failed-addresses gauge is back to 0 on the next scan."
+
   - name: loyal-db-replica
     rules:
       # Series come from `loyal-db-replica metrics` on loyal-db-primary (a

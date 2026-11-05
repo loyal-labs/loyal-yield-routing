@@ -77,6 +77,7 @@ type Tracker struct {
 	DB    *pgxpool.Pool
 	Relay *Relay
 	Facts *engine.Facts
+	Privy PrivyGet
 }
 
 func (t *Tracker) Run(ctx context.Context) error {
@@ -93,6 +94,12 @@ func (t *Tracker) Run(ctx context.Context) error {
 		}
 		t.Facts.BridgeDetectionBatchesFailed(string(Tron.Chain), 0)
 		detection.Go(func() { t.detectEvery(ctx, Tron) })
+	}
+	if t.Privy == nil {
+		slog.Warn("bridge incoming unmoved scan disabled: no privy credentials")
+	} else {
+		t.Facts.BridgeIncomingScanStarted()
+		detection.Go(func() { t.unmovedEvery(ctx) })
 	}
 	ticker := time.NewTicker(trackInterval)
 	defer ticker.Stop()
