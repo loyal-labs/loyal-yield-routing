@@ -23,13 +23,15 @@ die() { echo "cutover: $*" >&2; exit 1; }
 now() { perl -MTime::HiRes=time -e 'printf "%.1f", time'; }
 
 timed() {
-  local label=$1 t
+  local label=$1 t rc
   shift
   t=$(now)
   printf '\n== %s (%s)\n' "$label" "$(date -u +%H:%M:%SZ)"
   "$@"
+  rc=$?
   TIMES+=("$label $(perl -e "printf '%.1f', $(now) - $t")")
-  echo "-- $label: ${TIMES[${#TIMES[@]} - 1]#* }s"
+  echo "-- $label: ${TIMES[${#TIMES[@]} - 1]#* }s$( ((rc == 0)) || echo ", FAILED exit $rc")"
+  return $rc
 }
 
 report_times() {
@@ -228,9 +230,22 @@ def encrypt(text, name, path):
     os.chmod(path + ".tmp", 0o600)
     os.replace(path + ".tmp", path)
 
-def install(src, dst):
+def publish(src, dst):
+    os.makedirs(os.path.dirname(dst), mode=0o700, exist_ok=True)
     shutil.copy2(src, dst + ".cutover")
+    with open(dst + ".cutover", "rb") as f:
+        os.fsync(f.fileno())
     os.replace(dst + ".cutover", dst)
+    d = os.open(os.path.dirname(dst), os.O_RDONLY)
+    os.fsync(d)
+    os.close(d)
+
+def neon_copy(path, name, key):
+    r = subprocess.run(["systemd-creds", "decrypt", f"--name={name}", saved(path), "-"], capture_output=True, text=True)
+    try:
+        return r.returncode == 0 and on_neon(url(r.stdout, key))
+    except (ValueError, KeyError, TypeError):
+        return False
 
 def staged(p):
     return ROOT + "/stage" + p
@@ -310,15 +325,16 @@ for path, c in sorted(creds.items()):
         if not os.path.exists(staged(path)):
             sys.exit(f"{label}: not staged; run preflight")
         live, want = decrypt(path, name), decrypt(staged(path), name)
-        if not os.path.exists(saved(path)):
+        if not neon_copy(path, name, key):
             if not on_neon(url(live, key)):
-                sys.exit(f"{label}: live value is not Neon and there is no saved Neon copy")
-            os.makedirs(os.path.dirname(saved(path)), mode=0o700, exist_ok=True)
-            shutil.copy2(path, saved(path))
+                sys.exit(f"{label}: live value is not Neon and there is no valid saved Neon copy")
+            publish(path, saved(path))
+            if not neon_copy(path, name, key):
+                sys.exit(f"{label}: saved Neon copy {saved(path)} does not decrypt to a Neon URL")
         if live == want:
             print(f"unchanged: {label} already on {where(url(want, key))}")
             continue
-        install(staged(path), path)
+        publish(staged(path), path)
         print(f"switched: {label} -> {where(url(want, key))}, Neon copy in {saved(path)}")
     elif mode == "rollback":
         if not os.path.exists(saved(path)):
@@ -327,7 +343,7 @@ for path, c in sorted(creds.items()):
         if decrypt(path, name) == decrypt(saved(path), name):
             print(f"unchanged: {label} already on Neon")
             continue
-        install(saved(path), path)
+        publish(saved(path), path)
         print(f"rolled back: {label} -> {where(url(decrypt(path, name), key))}")
     elif mode == "status":
         live = url(decrypt(path, name), key)
@@ -402,7 +418,7 @@ for unit, v in out.items():
 stop_writers() {
   workers "systemctl stop ${TIMERS[*]}"
   echo "stopped timers: ${TIMERS[*]}"
-  workers "for i in \$(seq 300); do systemctl is-active --quiet ${CRONS[*]} || exit 0; sleep 1; done; echo 'a web cron run is still active after 300s' >&2; exit 1"
+  workers "for i in \$(seq 300); do systemctl is-active ${CRONS[*]} | grep -qvxE 'inactive|failed' || exit 0; sleep 1; done; echo 'a web cron run is still running after 300s' >&2; exit 1"
   local u
   for u in "${ENGINES[@]}"; do
     workers "systemctl stop $u; [ \"\$(systemctl show -p Result --value $u)\" = success ] || { echo '$u did not stop cleanly' >&2; exit 1; }"
@@ -413,7 +429,11 @@ stop_writers() {
   writers_stopped || die "a writer is still active"
 }
 
-writers_stopped() { ! workers "systemctl is-active --quiet ${ENGINES[*]} ${SERVICES[*]} ${CRONS[*]} ${TIMERS[*]}"; }
+writers_stopped() {
+  local states
+  states=$(workers "systemctl is-active ${ENGINES[*]} ${SERVICES[*]} ${CRONS[*]} ${TIMERS[*]} || true")
+  [[ -n $states ]] && ! grep -qvxE 'inactive|failed' <<<"$states"
+}
 
 start_healthy() {
   local u path
@@ -508,14 +528,16 @@ cmd_freeze() {
   local verify_out
   verify_out=$CUTOVER_PROOF/freeze-verify-$(date -u +%Y%m%dT%H%MZ).txt
   creds status staged >/dev/null || die "credentials are not staged; run preflight"
+  creds status neon >/dev/null || die "a credential already points at Hetzner; freeze runs before switch, rerun switch instead"
   timed install install
+  db subscriptions enabled || die "a subscription is disabled, so the replica is not following Neon; rerun switch, or rebuild the replica"
   timed silence silence_add
   timed stop stop_writers
   timed neon-sessions db sessions
   timed lag-wait db lag-wait 600
   timed catchup db catchup
   timed sequences db sequences
-  timed writes-save db writes save freeze
+  timed writes-save db writes save freeze neon
   timed replica-verify db verify >"$verify_out"
   grep ' DIFF$' "$verify_out" && die "replica differs from Neon at the freeze point ($verify_out); rerun freeze"
   echo "replica verify: no DIFF at the freeze point; $verify_out"
@@ -532,26 +554,37 @@ cmd_switch() {
     timed disable db subscriptions disable
     timed catchup db catchup
     timed sequences db sequences
-    timed writes-save db writes save switch
+    timed writes-save db writes save switch hz
     timed creds-switch creds switch
   fi
   timed start start_healthy "${SERVICES[@]}"
   report_times
 }
 
+neon_writes_since_freeze() {
+  local out
+  if out=$(db writes diff freeze neon) && (($(neon_writes_total "$out") == 0)); then
+    echo "$out"
+    return 0
+  fi
+  echo "$out"
+  echo "cutover: Neon took writes after the freeze snapshot, or its counters cannot be read; those rows may not be on Hetzner (tables above)"
+  [[ ${ACCEPT_NEON_WRITES:-} == 1 ]] && { echo "cutover: ACCEPT_NEON_WRITES=1, a human has checked them; continuing"; return 0; }
+  return 1
+}
+
 cmd_verify() {
   local out bad=0
   timed creds-live creds test-live || bad=1
   timed health health "${SERVICES[@]}" || bad=1
-  out=$(db writes diff switch)
-  echo "$out"
-  if (($(hz_writes_total "$out") == 0)); then
-    echo "verify: FAIL no write has landed on Hetzner since switch"
+  if ! out=$(db writes diff switch hz) || (($(hz_writes_total "$out") == 0)); then
+    echo "$out"
+    echo "verify: FAIL no write has landed on Hetzner since switch, or its counters cannot be read"
     bad=1
+  else
+    echo "$out"
   fi
-  if (($(neon_writes_total "$out") > 0)) || grep -q 'neon.*counters reset' <<<"$out"; then
-    echo "verify: WARN Neon took writes after the subscriptions stopped; those rows are not on Hetzner (tables above)"
-  fi
+  neon_writes_since_freeze || { echo "verify: FAIL copy those rows to Hetzner or roll back; rerun with ACCEPT_NEON_WRITES=1 once a human has checked"; bad=1; }
   report_times
   ((bad == 0)) || die "verify failed"
   echo "verify: ok"
@@ -560,6 +593,8 @@ cmd_verify() {
 cmd_unfreeze() {
   creds status hetzner >/dev/null || die "credentials still point at Neon; run switch"
   cmd_verify
+  workers "touch $CRED_ROOT/unfrozen && sync $CRED_ROOT"
+  echo "unfreeze: $CRED_ROOT/unfrozen written; rollback now refuses without --force"
   timed start-timers workers "systemctl start ${TIMERS[*]}"
   timed start-engines start_healthy "${ENGINES[@]}"
   sleep 60
@@ -568,18 +603,25 @@ cmd_unfreeze() {
 }
 
 cmd_rollback() {
-  local out
+  local out snap enable=1
   box "test ! -e $STATE/paused" || die "Neon is paused and its slots are dropped; rolling back means re-enabling the Neon endpoints and losing every write since switch"
+  if [[ $(workers "test -e $CRED_ROOT/unfrozen && echo yes || echo no") == yes && ${1:-} != --force ]]; then
+    die "unfreeze has run, so the engines have written to Hetzner. Rollback would discard every Hetzner write since switch and the replica could not resume. Fix forward. 'rollback --force' discards them and lists the tables first"
+  fi
   timed stop stop_writers
-  timed creds-rollback creds rollback
-  if out=$(db writes diff switch 2>/dev/null); then
-    echo "$out"
-    if (($(hz_writes_total "$out") == 0)); then
-      timed enable db subscriptions enable
+  snap=$(box "test -s $STATE/writes-switch-hz-app && echo yes || echo no")
+  if [[ $snap == yes ]]; then
+    if out=$(db writes diff switch hz) && (($(hz_writes_total "$out") == 0)); then
+      echo "$out"
     else
-      echo "rollback: $(hz_writes_total "$out") row change(s) landed on Hetzner after switch; the replica has diverged. Subscriptions stay disabled; rebuild with remote.sh setup from empty databases."
+      echo "$out"
+      enable=0
+      echo "rollback: DISCARDING the Hetzner row changes above (or ones the counters cannot count). They stay on Hetzner only. Subscriptions stay disabled; rebuild the replica with remote.sh setup from empty databases."
     fi
   fi
+  timed creds-rollback creds rollback
+  ((enable == 0)) || timed enable db subscriptions enable
+  workers "rm -f $CRED_ROOT/unfrozen"
   timed start start_healthy "${SERVICES[@]}"
   timed start-timers workers "systemctl start ${TIMERS[*]}"
   timed start-engines start_healthy "${ENGINES[@]}"
@@ -587,13 +629,9 @@ cmd_rollback() {
 }
 
 cmd_pause_neon() {
-  local out pe
+  local pe
   creds status hetzner >/dev/null || die "credentials still point at Neon"
-  out=$(db writes diff switch)
-  echo "$out"
-  if (($(neon_writes_total "$out") > 0)) && [[ ${PAUSE_ACCEPT_NEON_WRITES:-} != 1 ]]; then
-    die "Neon took writes after switch (above). Copy them to Hetzner, or rerun with PAUSE_ACCEPT_NEON_WRITES=1 to drop them"
-  fi
+  neon_writes_since_freeze || die "copy those rows to Hetzner, or rerun with ACCEPT_NEON_WRITES=1 to drop them"
   timed install install
   timed drop db subscriptions drop
   NEON_KEY=$(op read 'op://Engineering/f4adqjr3dxnqofikunbwaajumy/credential')
@@ -615,8 +653,8 @@ case ${1:-} in
   switch) cmd_switch ;;
   verify) cmd_verify ;;
   unfreeze) cmd_unfreeze ;;
-  rollback) cmd_rollback ;;
+  rollback) cmd_rollback "${2:-}" ;;
   pause-neon) cmd_pause_neon ;;
   status) creds status ;;
-  *) echo "usage: $0 inventory|preflight|freeze|switch|verify|unfreeze|rollback|pause-neon|status" >&2; exit 2 ;;
+  *) echo "usage: $0 inventory|preflight|freeze|switch|verify|unfreeze|rollback [--force]|pause-neon|status" >&2; exit 2 ;;
 esac

@@ -64,7 +64,7 @@ All 19 live bindings are on loyal-workers, and all of them log in as `neondb_own
 | `loyal_yield_prod` | loyal-admin, loyal-backyard, loyal-observer, loyal-realtime (inside `realtime-envelope`), loyal-retail, loyal-stats, loyal-web, loyal-web-cron@ | direct, maps to 5432 |
 | `kamino_timescale` | loyal-admin, loyal-backyard, loyal-observer, loyal-retail, loyal-web, loyal-web-cron@ | pooler, maps to 6432 |
 
-`/etc/credstore.encrypted/loyal-web-app-db.a347` and `.owner` are on disk but no unit references them, so they are not switched. The Vercel projects (`loyal-frontend`, `loyal-app`) still have 104 route handlers that reach a database. They are not switched: only 2 non-cron requests landed after 12:45 PST on Nov 5. A Vercel write after switch lands on Neon, and the write counters catch it (`verify` warns, `pause-neon` refuses).
+`/etc/credstore.encrypted/loyal-web-app-db.a347` and `.owner` are on disk but no unit references them, so they are not switched. The Vercel projects (`loyal-frontend`, `loyal-app`) still have 104 route handlers that reach a database. They are not switched: only 2 non-cron requests landed after 12:45 PST on Nov 5. A Vercel write after the freeze snapshot lands on Neon only. The write counters catch it, and `verify`, `unfreeze` and `pause-neon` fail until a human copies the rows and reruns with `ACCEPT_NEON_WRITES=1`. A Neon restart or stats reset between snapshots makes the counters unknown, which fails the same way.
 
 ### Kit
 
@@ -73,12 +73,12 @@ All 19 live bindings are on loyal-workers, and all of them log in as `neondb_own
 | Step | What it does |
 | --- | --- |
 | `preflight` | Inventory, coverage, hba and pgbouncer access, grants, schema, pgbouncer test, staging every credential into `/etc/loyal-cutover/stage`, a read through each staged URL, Neon sessions, lag-wait, catchup, sequences, write counters, a replica verify, both Neon endpoints over the API, unit stop/start times from 14 days of journal, and the estimate. Neon sees only read-only sessions. No running unit is touched. |
-| `freeze` | Silence, then stop: web-cron timers, wait for running crons, engines one at a time (each must stop with `Result=success`), then services. Neon sessions, lag-wait, catchup, sequences, a `freeze` write snapshot, and a replica verify that must show no DIFF. |
-| `switch` | lag-wait, `ALTER SUBSCRIPTION ... DISABLE`, catchup, sequences, a `switch` write snapshot. Then it saves each live Neon credential to `/etc/loyal-cutover/neon/<path>` and installs the staged one. Services start, and each must answer its health path. Engines stay stopped. |
-| `verify` | Reads through every live URL, health on each service, write counters since `switch`. Fails if Hetzner took no write. Warns if Neon took one. |
-| `unfreeze` | `verify`, then the timers, then the engines (each must answer `/metrics`), then health on everything after 60 s. |
-| `rollback` | Stop the writers, put the saved Neon credentials back, start everything. Re-enables the subscriptions only if Hetzner took 0 writes since `switch`. Refuses once `pause-neon` has run. |
-| `pause-neon` | Refuses if Neon took writes since `switch` (override with `PAUSE_ACCEPT_NEON_WRITES=1`). Drops the subscriptions and their Neon slots, sets `disabled: true` on `ep-dry-forest-ah27inp9` and `ep-ancient-grass-aqb5aalu`, and suspends them if they are active. Neither project is deleted. Branch endpoints are left alone. |
+| `freeze` | Refuses if a credential already points at Hetzner or a subscription is disabled. Silence, then stop: web-cron timers, wait until each cron instance is `inactive` or `failed` (a running oneshot is `activating`), engines one at a time (each must stop with `Result=success`), then services. Neon sessions, lag-wait, catchup, sequences, the Neon `freeze` write snapshot (the baseline for every later Neon check), and a replica verify that must show no DIFF. A DIFF is any table not in sync state `r`, a max pk that differs, or an exact count that differs. Counts are exact on tables under 256 MB on both sides. Larger tables rely on state `r`, lag-wait and max pk: their counts took 334 s by seq scan on Nov 5, with 0% of pages all-visible. |
+| `switch` | lag-wait, `ALTER SUBSCRIPTION ... DISABLE`, catchup, sequences, the Hetzner `switch` write snapshot. Then it saves each live Neon credential to `/etc/loyal-cutover/neon/<path>` (temp file, fsync, rename, then checked to decrypt to a Neon URL) and installs the staged one the same way. Services start, and each must answer its health path. Engines stay stopped. A rerun resumes: lag-wait skips a subscription that is already disabled. |
+| `verify` | Reads through every live URL, health on each service, Hetzner write counters since `switch` and Neon write counters since `freeze`. Fails if any check fails, if Hetzner took no write, if Neon took one, or if either side's counters cannot be read or were reset. |
+| `unfreeze` | `verify`, then writes `/etc/loyal-cutover/unfrozen`, then the timers, then the engines (each must answer `/metrics`), then health on everything after 60 s. |
+| `rollback` | Refuses once `unfreeze` has run (`rollback --force` overrides it). Refuses once `pause-neon` has run. Stops the writers, then lists the Hetzner row changes since `switch`, which it discards. Puts the saved Neon credentials back and starts everything. Re-enables the subscriptions only if Hetzner took 0 writes since `switch`, counted. |
+| `pause-neon` | Refuses if Neon took writes since `freeze` or its counters are unknown (override with `ACCEPT_NEON_WRITES=1`). Drops the subscriptions and their Neon slots, sets `disabled: true` on `ep-dry-forest-ah27inp9` and `ep-ancient-grass-aqb5aalu`, and suspends them if they are active. Neither project is deleted. Branch endpoints are left alone. |
 | `status` | Which side each credential points at, plus whether a staged copy and a saved Neon copy exist. |
 
 ### Freeze plan, measured
@@ -98,9 +98,9 @@ Writes stop for about 5.2 minutes, from freeze to unfreeze. loyal-web, admin, st
 
 Reverse replication from Hetzner to Neon is not set up. It needs `wal_level=logical` on the box, which means a Postgres restart. It also keeps Neon awake through the window, while the plan pauses Neon. And hypertables do not replicate through their root.
 
-- Before `unfreeze`: `rollback` loses nothing the engines wrote. Services may have written during `verify`, and those writes stay only on Hetzner.
-- After `unfreeze`, fix forward. Hetzner's pgbackrest PITR covers Hetzner. Neon keeps its own history until the project is deleted.
-- If `switch` stops after disabling the subscriptions but before the `switch` snapshot, `rollback` leaves them disabled. Run `remote.sh verify`, then `replica.sh subscriptions enable` on the box.
+- Before `unfreeze`: `rollback` loses nothing the engines wrote. Services write during `verify` (it requires a Hetzner write). `rollback` lists those row changes and leaves them only on Hetzner.
+- After `unfreeze`, fix forward. `rollback` refuses. `rollback --force` discards every Hetzner write since `switch`, engine money moves included. Hetzner's pgbackrest PITR covers Hetzner. Neon keeps its own history until the project is deleted.
+- If `switch` stops after disabling the subscriptions but before the `switch` snapshot, rerun `switch`. `rollback` from there re-enables the subscriptions, because no client wrote to Hetzner yet.
 
 ## After
 

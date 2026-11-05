@@ -272,7 +272,7 @@ EOF
     join -t'|' -a1 -a2 -e '-' -o 0,1.2,2.2,1.3,2.3 \
       <(neon_ro "$src" -c "$q_tables" | sort -t'|' -k1,1) \
       <(local_sql -d "$db" -c "$q_tables" | sort -t'|' -k1,1) |
-      awk -F'|' '{ flag = ($4 == $5 || $3 ~ /^syncing/) ? "" : "  DIFF"; printf "%-70s %16s %16s %s | %s%s\n", $1, $2, $3, $4, $5, flag }'
+      awk -F'|' '{ exact = $2 !~ /^~/ && $3 !~ /^~/; flag = ($3 ~ /^syncing/ || $4 != $5 || (exact && $2 != $3)) ? "  DIFF" : ""; printf "%-70s %16s %16s %s | %s%s\n", $1, $2, $3, $4, $5, flag }'
     echo "-- subscription (Hetzner)"
     local_sql -d "$db" -F' ' -c "select 'tables by state: ' || string_agg(st::text || '=' || n, ' ' order by st) from (select srsubstate as st, count(*) n from pg_subscription_rel r join pg_subscription s on s.oid=r.srsubid where s.subname='loyal_hz_$src' group by 1) x" \
       -c "select 'worker ' || coalesce(relid::regclass::text, 'apply') || ' received ' || coalesce(received_lsn::text, '-') || ' last_msg ' || coalesce(round(extract(epoch from now() - last_msg_receipt_time))::text, '-') || 's ago' from pg_stat_subscription where subname='loyal_hz_$src'" \
@@ -375,7 +375,7 @@ CUTOVER=$WORK/cutover
 CLIENT_NETS=(10.92.0.0/16 127.0.0.1/32)
 USER_NS="n.nspname not in ('pg_catalog','information_schema') and n.nspname !~ '^(_timescaledb|timescaledb_|pg_toast|pg_temp)' and not exists (select 1 from pg_depend e where e.classid = 'pg_namespace'::regclass and e.objid = n.oid and e.deptype = 'e')"
 NOT_EXT="not exists (select 1 from pg_depend e where e.objid = c.oid and e.classid = 'pg_class'::regclass and e.deptype = 'e')"
-WRITES_SQL="select format('%I.%I', schemaname, relname) || '|' || (n_tup_ins + n_tup_upd + n_tup_del) from pg_stat_user_tables where schemaname not in ('_timescaledb_catalog', '_timescaledb_config')"
+WRITES_SQL="select '@epoch|' || extract(epoch from pg_postmaster_start_time())::bigint || '/' || coalesce(extract(epoch from stats_reset)::bigint, 0) from pg_stat_database where datname = current_database() union all select format('%I.%I', schemaname, relname) || '|' || (n_tup_ins + n_tup_upd + n_tup_del) from pg_stat_user_tables where schemaname not in ('_timescaledb_catalog', '_timescaledb_config')"
 DUMP_FLAGS=(--schema-only --no-owner --no-privileges --no-publications --no-subscriptions --exclude-schema='_timescaledb*' --exclude-schema='timescaledb_*')
 ROLE_SETTINGS="select name || '=' || setting from pg_settings where name in ('TimeZone','search_path','DateStyle','IntervalStyle','lock_timeout','idle_in_transaction_session_timeout','idle_session_timeout','transaction_timeout','default_transaction_isolation','client_encoding','standard_conforming_strings','statement_timeout') order by 1"
 
@@ -568,9 +568,13 @@ SQL
 }
 
 cmd_lag_wait() {
-  local spec src target deadline=$((SECONDS + ${1:-600}))
+  local spec src db target deadline=$((SECONDS + ${1:-600}))
   for spec in "${DATABASES[@]}"; do
-    src=$(field "$spec" 1)
+    src=$(field "$spec" 1) db=$(field "$spec" 2)
+    if [[ $(local_sql -d "$db" -c "select subenabled from pg_subscription where subname = 'loyal_hz_$src'") == f ]]; then
+      echo "lag-wait: subscription loyal_hz_$src is disabled, so an earlier switch already passed lag-wait; skipped"
+      continue
+    fi
     target=$(neon_ro "$src" -c "select pg_current_wal_lsn()")
     until [[ $(neon_ro "$src" -c "select coalesce(bool_and(confirmed_flush_lsn >= '$target'), false) from pg_replication_slots where slot_name = 'loyal_hz_$src'") == t ]]; do
       ((SECONDS < deadline)) || { echo "lag-wait: slot loyal_hz_$src has not confirmed $target" >&2; exit 1; }
@@ -581,24 +585,30 @@ cmd_lag_wait() {
 }
 
 cmd_writes() {
-  local action=$1 tag=$2 spec src db file
+  local action=$1 tag=$2 only=${3:-} spec src db file unknown=0
   mkdir -p "$CUTOVER"
   for spec in "${DATABASES[@]}"; do
     src=$(field "$spec" 1) db=$(field "$spec" 2)
     for side in neon hz; do
+      [[ -z $only || $only == "$side" ]] || continue
       file=$CUTOVER/writes-$tag-$side-$src
+      if [[ $side == neon ]]; then neon_ro "$src" -c "$WRITES_SQL"; else local_sql -d "$db" -c "$WRITES_SQL"; fi >"$file.now"
+      grep -q '^@epoch|' "$file.now" || { echo "writes: $side $src returned no counters" >&2; exit 1; }
       if [[ $action == save ]]; then
-        if [[ $side == neon ]]; then neon_ro "$src" -c "$WRITES_SQL"; else local_sql -d "$db" -c "$WRITES_SQL"; fi >"$file"
-        echo "writes: saved $tag $side $src ($(wc -l <"$file") tables)"
-      else
-        [[ -s $file ]] || { echo "writes: no snapshot $file" >&2; exit 1; }
-        awk -F'|' -v l="$side $src" -v tag="$tag" 'NR == FNR { was[$1] = $2; next }
-          { d = $2 - was[$1] } d != 0 { printf "writes: %s %s %+d\n", l, $1, d; t += (d < 0 ? 0 : d); r += (d < 0) }
-          END { printf "writes: %s total %d since %s%s\n", l, t, tag, (r ? ", counters reset on " r " table(s)" : "") }' \
-          "$file" <(if [[ $side == neon ]]; then neon_ro "$src" -c "$WRITES_SQL"; else local_sql -d "$db" -c "$WRITES_SQL"; fi)
+        mv -f "$file.now" "$file"
+        echo "writes: saved $tag $side $src ($(($(wc -l <"$file") - 1)) tables)"
+        continue
       fi
+      [[ -s $file ]] || { echo "writes: no snapshot $file" >&2; exit 1; }
+      awk -F'|' -v l="$side $src" -v tag="$tag" 'NR == FNR { was[$1] = $2; next }
+        $1 == "@epoch" { r += ($2 != was[$1]); next }
+        { d = $2 - was[$1] } d != 0 { printf "writes: %s %s %+d\n", l, $1, d; t += (d < 0 ? 0 : d); r += (d < 0) }
+        END { printf "writes: %s total %d since %s%s\n", l, t, tag, (r ? ", UNKNOWN: counters reset (restart or stats reset), writes since " tag " cannot be counted" : ""); exit (r > 0) }' \
+        "$file" "$file.now" || unknown=1
+      rm -f "$file.now"
     done
   done
+  exit $unknown
 }
 
 cmd_sessions() {
@@ -611,6 +621,14 @@ cmd_sessions() {
 
 cmd_subscriptions() {
   local spec src db
+  if [[ $1 == enabled ]]; then
+    for spec in "${DATABASES[@]}"; do
+      src=$(field "$spec" 1) db=$(field "$spec" 2)
+      [[ $(local_sql -d "$db" -c "select subenabled from pg_subscription where subname = 'loyal_hz_$src'") == t ]] || { echo "subscription loyal_hz_$src: not enabled" >&2; exit 1; }
+    done
+    echo "subscriptions: all enabled"
+    return 0
+  fi
   for spec in "${DATABASES[@]}"; do
     src=$(field "$spec" 1) db=$(field "$spec" 2)
     [[ -n $(local_sql -d "$db" -c "select 1 from pg_subscription where subname = 'loyal_hz_$src'") ]] || { echo "subscription loyal_hz_$src: absent"; continue; }
@@ -634,7 +652,7 @@ case ${1:-} in
   schema) cmd_schema ;;
   pgbouncer-test) cmd_pgbouncer_test ;;
   lag-wait) cmd_lag_wait "${2:-600}" ;;
-  writes) cmd_writes "$2" "$3" ;;
+  writes) cmd_writes "$2" "$3" "${4:-}" ;;
   sessions) cmd_sessions ;;
   subscriptions) cmd_subscriptions "$2" ;;
   setup) cmd_setup ;;
@@ -645,5 +663,5 @@ case ${1:-} in
   check) cmd_check ;;
   metrics) cmd_metrics ;;
   retain) cmd_retain "${2:-}" ;;
-  *) echo "usage: $0 setup|backfill|catchup|sequences|verify|check|metrics|retain [--dry-run]|access|grants [--fix]|schema|pgbouncer-test|lag-wait [secs]|writes save|diff <tag>|sessions|subscriptions disable|enable|drop" >&2; exit 2 ;;
+  *) echo "usage: $0 setup|backfill|catchup|sequences|verify|check|metrics|retain [--dry-run]|access|grants [--fix]|schema|pgbouncer-test|lag-wait [secs]|writes save|diff <tag> [neon|hz]|sessions|subscriptions enabled|disable|enable|drop" >&2; exit 2 ;;
 esac
