@@ -315,6 +315,10 @@ export type BridgeRecipientsResponse = {
     recipients: Array<BridgeRecipient> | null;
 };
 
+export type BridgeReleaseRequest = {
+    reason: 'rejected' | 'refused' | 'reverted' | 'aborted';
+};
+
 export type BridgeSponsorRefusalRequest = {
     /**
      * Privy's error text, logged for the operator
@@ -3027,7 +3031,7 @@ export type PostFundingBridgeTransferConfirmResponses = {
 export type PostFundingBridgeTransferConfirmResponse = PostFundingBridgeTransferConfirmResponses[keyof PostFundingBridgeTransferConfirmResponses];
 
 export type PostFundingBridgeTransferReleaseData = {
-    body?: never;
+    body?: BridgeReleaseRequest;
     headers?: {
         Authorization?: string;
         Cookie?: string;
@@ -3044,6 +3048,10 @@ export type PostFundingBridgeTransferReleaseData = {
 };
 
 export type PostFundingBridgeTransferReleaseErrors = {
+    /**
+     * Bad Request
+     */
+    400: RouteError;
     /**
      * Unauthorized
      */

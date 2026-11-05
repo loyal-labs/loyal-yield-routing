@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math/big"
 	"net/http"
 	"net/url"
@@ -82,6 +83,27 @@ type BridgeSubmitRequest struct {
 	OriginTx string `json:"originTx"`
 }
 
+type BridgeReleaseReason string
+
+const (
+	ReleaseRejected BridgeReleaseReason = "rejected"
+	ReleaseRefused  BridgeReleaseReason = "refused"
+	ReleaseReverted BridgeReleaseReason = "reverted"
+	ReleaseAborted  BridgeReleaseReason = "aborted"
+)
+
+func (r BridgeReleaseReason) known() bool {
+	switch r {
+	case ReleaseRejected, ReleaseRefused, ReleaseReverted, ReleaseAborted:
+		return true
+	}
+	return false
+}
+
+type BridgeReleaseRequest struct {
+	Reason BridgeReleaseReason `json:"reason" enum:"rejected,refused,reverted,aborted"`
+}
+
 type BridgeTransfer struct {
 	RequestID     string               `json:"requestId"`
 	Chain         bridge.Chain         `json:"chain"`
@@ -124,6 +146,12 @@ type bridgeConfirmInput struct {
 	RequestID string `path:"requestId" doc:"Relay request id from the quote"`
 }
 
+type bridgeReleaseInput struct {
+	SessionInput
+	RequestID string `path:"requestId" doc:"Relay request id from the quote"`
+	Raw       rawJSON
+}
+
 type bridgeSubmitInput struct {
 	SessionInput
 	RequestID string `path:"requestId" doc:"Relay request id from the quote"`
@@ -157,9 +185,10 @@ func (h earnRoutes) registerBridge(api huma.API) {
 		OperationID: "post-funding-bridge-transfer-release",
 		Method:      http.MethodPost,
 		Path:        bridgeReleasePath,
-		Summary:     "Record that a confirmed incoming bridge sent no deposit (rejected, refused or reverted), so it is no longer in flight",
-		Responses:   errorResponses[routeError](api, 401, 403, 404, 503),
+		Summary:     "Record that a confirmed incoming bridge broadcast no deposit, so it is no longer in flight; the tracker still adopts it if Relay reports one",
+		Responses:   errorResponses[routeError](api, 400, 401, 403, 404, 503),
 	}, h.bridgeRelease)
+	documentJSONBody[BridgeReleaseRequest](api, bridgeReleasePath)
 	huma.Register(api, huma.Operation{
 		OperationID: "post-funding-bridge-transfer-submit",
 		Method:      http.MethodPost,
@@ -191,11 +220,11 @@ type rowQuerier interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
-func bridgeInBlocker(ctx context.Context, db rowQuerier, wallet solana.PublicKey, chain bridge.Chain, asset bridge.Asset, except string) (string, error) {
+func bridgeInBlocker(ctx context.Context, db rowQuerier, sender string, chain bridge.Chain, asset bridge.Asset, except string) (string, error) {
 	var requestID string
 	err := db.QueryRow(ctx, `SELECT request_id FROM loyal_yield.bridge_transfers
-WHERE solana_wallet = $1 AND chain = $2 AND asset = $3 AND request_id <> $4 AND `+bridgeInInFlight+`
-ORDER BY confirmed_at DESC LIMIT 1`, wallet.String(), string(chain), string(asset), except).Scan(&requestID)
+WHERE counterparty = $1 AND chain = $2 AND asset = $3 AND request_id <> $4 AND `+bridgeInInFlight+`
+ORDER BY coalesce(submitted_at, confirmed_at) DESC LIMIT 1`, sender, string(chain), string(asset), except).Scan(&requestID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", nil
 	}
@@ -271,7 +300,7 @@ func (h earnRoutes) bridgeQuote(ctx context.Context, in *bridgeQuoteInput) (*bri
 	if !ok {
 		return nil, earnError(http.StatusBadRequest, "invalid_body", "amountRaw must be a decimal integer.")
 	}
-	blocker, err := bridgeInBlocker(ctx, h.YieldDB, wallet, body.Chain, body.Asset, "")
+	blocker, err := bridgeInBlocker(ctx, h.YieldDB, from, body.Chain, body.Asset, "")
 	if err != nil {
 		return nil, bridgeUnavailable("bridge in-flight read", err)
 	}
@@ -335,22 +364,24 @@ func (h earnRoutes) confirmBridgeTransfer(ctx context.Context, wallet solana.Pub
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, "bridge-in:"+wallet.String()); err != nil {
-		return err
-	}
+	missing := earnError(http.StatusNotFound, "bridge_transfer_missing", "No quoted transfer with this id for this wallet.")
 	var chain bridge.Chain
 	var asset bridge.Asset
 	var direction bridge.Direction
-	err = tx.QueryRow(ctx, `SELECT chain, asset, direction FROM loyal_yield.bridge_transfers
-WHERE request_id = $1 AND solana_wallet = $2 AND state = 'quoted'`, requestID, wallet.String()).Scan(&chain, &asset, &direction)
+	var sender string
+	err = tx.QueryRow(ctx, `SELECT chain, asset, direction, counterparty FROM loyal_yield.bridge_transfers
+WHERE request_id = $1 AND solana_wallet = $2 AND state = 'quoted' AND released_at IS NULL`, requestID, wallet.String()).Scan(&chain, &asset, &direction, &sender)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return earnError(http.StatusNotFound, "bridge_transfer_missing", "No quoted transfer with this id for this wallet.")
+		return missing
 	}
 	if err != nil {
 		return err
 	}
 	if direction == bridge.DirectionIn {
-		blocker, err := bridgeInBlocker(ctx, tx, wallet, chain, asset, requestID)
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, "bridge-in:"+sender+":"+string(chain)+":"+string(asset)); err != nil {
+			return err
+		}
+		blocker, err := bridgeInBlocker(ctx, tx, sender, chain, asset, requestID)
 		if err != nil {
 			return err
 		}
@@ -358,29 +389,39 @@ WHERE request_id = $1 AND solana_wallet = $2 AND state = 'quoted'`, requestID, w
 			return bridgeInFlightError(blocker)
 		}
 	}
-	if _, err := tx.Exec(ctx, `UPDATE loyal_yield.bridge_transfers
+	tag, err := tx.Exec(ctx, `UPDATE loyal_yield.bridge_transfers
 SET confirmed_at = coalesce(confirmed_at, clock_timestamp()), updated_at = clock_timestamp()
-WHERE request_id = $1 AND solana_wallet = $2 AND state = 'quoted'`, requestID, wallet.String()); err != nil {
+WHERE request_id = $1 AND solana_wallet = $2 AND state = 'quoted' AND released_at IS NULL`, requestID, wallet.String())
+	if err != nil {
 		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return missing
 	}
 	return tx.Commit(ctx)
 }
 
-func (h earnRoutes) bridgeRelease(ctx context.Context, in *bridgeConfirmInput) (*bridgeTransferOutput, error) {
+func (h earnRoutes) bridgeRelease(ctx context.Context, in *bridgeReleaseInput) (*bridgeTransferOutput, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	wallet, err := h.evmDepositWallet(in.SessionInput)
 	if err != nil {
 		return nil, err
 	}
-	tag, err := h.YieldDB.Exec(ctx, `UPDATE loyal_yield.bridge_transfers SET confirmed_at = NULL, updated_at = clock_timestamp()
-WHERE request_id = $1 AND solana_wallet = $2 AND direction = 'in' AND state = 'quoted'`, in.RequestID, wallet.String())
+	var body BridgeReleaseRequest
+	if json.Unmarshal(in.Raw.data, &body) != nil || !body.Reason.known() {
+		return nil, earnError(http.StatusBadRequest, "invalid_body", "reason must be rejected, refused, reverted or aborted.")
+	}
+	tag, err := h.YieldDB.Exec(ctx, `UPDATE loyal_yield.bridge_transfers
+SET released_at = coalesce(released_at, clock_timestamp()), updated_at = clock_timestamp()
+WHERE request_id = $1 AND solana_wallet = $2 AND direction = 'in' AND state = 'quoted' AND origin_tx IS NULL`, in.RequestID, wallet.String())
 	if err != nil {
 		return nil, bridgeUnavailable("bridge transfer release", err)
 	}
 	if tag.RowsAffected() == 0 {
-		return nil, earnError(http.StatusNotFound, "bridge_transfer_missing", "No quoted incoming transfer with this id for this wallet.")
+		return nil, earnError(http.StatusNotFound, "bridge_transfer_missing", "No unsent incoming transfer with this id for this wallet.")
 	}
+	slog.Info("bridge transfer released", "wallet", bridge.MaskAddress(wallet.String()), "request_id", in.RequestID, "reason", body.Reason)
 	t, err := h.bridgeTransfer(ctx, wallet, in.RequestID)
 	if err != nil || t == nil {
 		return nil, bridgeUnavailable("bridge transfer read", err)
@@ -446,7 +487,9 @@ func (h earnRoutes) bridgeTransfers(ctx context.Context, in *bridgeTransfersInpu
 }
 
 func listBridgeTransfers(ctx context.Context, db *pgxpool.Pool, wallet solana.PublicKey, direction bridge.Direction) ([]BridgeTransfer, error) {
-	rows, err := db.Query(ctx, bridgeTransferSelect+` WHERE solana_wallet = $1 AND direction = $3 AND (state <> 'quoted' OR `+bridgeInFlight+`)
+	rows, err := db.Query(ctx, bridgeTransferSelect+` WHERE direction = $3 AND (
+  (solana_wallet = $1 AND (state <> 'quoted' OR `+bridgeInFlight+`))
+  OR (`+bridgeInInFlight+` AND counterparty IN (SELECT evm_address FROM loyal_yield.evm_deposit_routes WHERE solana_wallet = $1 AND kind = 'relay_signed')))
 ORDER BY in_flight DESC, submitted_at DESC NULLS LAST LIMIT $2`, wallet.String(), bridgeTransferLimit, string(direction))
 	if err != nil {
 		return nil, err
@@ -456,7 +499,7 @@ ORDER BY in_flight DESC, submitted_at DESC NULLS LAST LIMIT $2`, wallet.String()
 
 var (
 	bridgeOutInFlight    = fmt.Sprintf(`(direction = 'out' AND ((state = 'quoted' AND confirmed_at > clock_timestamp() - make_interval(secs => %d)) OR (state = 'submitted' AND submitted_at > clock_timestamp() - make_interval(secs => %d))))`, int(bridge.OutConfirmWindow.Seconds()), int(bridge.OutSubmittedWindow.Seconds()))
-	bridgeInInFlight     = fmt.Sprintf(`(direction = 'in' AND state IN ('quoted', 'submitted') AND confirmed_at > clock_timestamp() - make_interval(secs => %d))`, int(bridge.LostSubmitWindow.Seconds()))
+	bridgeInInFlight     = fmt.Sprintf(`(direction = 'in' AND ((state = 'submitted' AND origin_tx IS NOT NULL AND submitted_at > clock_timestamp() - make_interval(secs => %d)) OR (state = 'quoted' AND origin_tx IS NULL AND released_at IS NULL AND confirmed_at > clock_timestamp() - make_interval(secs => %d))))`, int(bridge.LostSubmitWindow.Seconds()), int(bridge.InConfirmWindow.Seconds()))
 	bridgeInFlight       = `(` + bridgeOutInFlight + ` OR ` + bridgeInInFlight + `)`
 	bridgeTransferSelect = `SELECT request_id, chain, asset, amount_in_raw::text, amount_out_raw::text, direction, state, origin_tx, destination_tx, refund_tx, quoted_at, confirmed_at, submitted_at, settled_at, coalesce(` + bridgeInFlight + `, false) AS in_flight
 FROM loyal_yield.bridge_transfers`

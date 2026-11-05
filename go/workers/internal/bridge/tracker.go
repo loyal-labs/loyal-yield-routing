@@ -25,6 +25,7 @@ const (
 
 	adoptDeadline    = 10 * time.Second
 	LostSubmitWindow = 2 * time.Hour
+	InConfirmWindow  = 15 * time.Minute
 	lostSubmitBatch  = 32
 
 	abandonedQuoteAge   = "interval '24 hours'"

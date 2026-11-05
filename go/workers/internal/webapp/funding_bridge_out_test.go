@@ -151,17 +151,16 @@ settled_at = CASE WHEN $2 IN ('filled', 'refunded') THEN clock_timestamp() - $4:
 	}
 }
 
-func TestBridgeQuoteRefusesASecondMoveWhileTheFirstIsConfirmedAndUnsubmitted(t *testing.T) {
+type bridgeInRouter struct {
+	t      *testing.T
+	pool   *pgxpool.Pool
+	sender string
+	signer *jwt.Signer
+	router *chi.Mux
+}
+
+func newBridgeInRouter(t *testing.T) *bridgeInRouter {
 	pool := bridgeOutTestDB(t)
-	ctx := context.Background()
-	wallet := solana.NewWallet().PublicKey()
-	sender := "0x" + hex.EncodeToString(wallet[:20])
-	if _, err := pool.Exec(ctx, `INSERT INTO loyal_yield.evm_deposit_routes (solana_wallet, app_user_id, kind, evm_address) VALUES ($1, gen_random_uuid(), 'relay_signed', $2)`, wallet.String(), sender); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pool.Exec(ctx, `INSERT INTO loyal_yield.bridge_transfers (request_id, solana_wallet, counterparty, chain, asset, amount_in_raw, amount_out_raw) VALUES ('0xfirst', $1, $2, 'base', 'usdc', 25000000, 24900000)`, wallet.String(), sender); err != nil {
-		t.Fatal(err)
-	}
 	keys, err := jwt.NewKeys("isolated-session-test-secret", "")
 	if err != nil {
 		t.Fatal(err)
@@ -170,38 +169,86 @@ func TestBridgeQuoteRefusesASecondMoveWhileTheFirstIsConfirmedAndUnsubmitted(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	token, err := signer.Mint(map[string]any{"sub": wallet.String()}, mobileEarnAudience, time.Hour, time.Now())
-	if err != nil {
-		t.Fatal(err)
-	}
-	router := chi.NewRouter()
+	seed := solana.NewWallet().PublicKey()
+	r := &bridgeInRouter{t: t, pool: pool, sender: "0x" + hex.EncodeToString(seed[:20]), signer: signer, router: chi.NewRouter()}
 	earnRoutes{
 		auth:         &Auth{keys: keys},
 		bridgeQuotes: newLimiters(),
 		Earn:         Earn{TestWallets: parseTestWallets("*"), YieldDB: pool, Relay: &bridge.Relay{BaseURL: "http://127.0.0.1:9", HTTP: &http.Client{}}},
-	}.registerBridge(humachi.New(router, apiConfig()))
-	post := func(path, body string) *httptest.ResponseRecorder {
-		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
-		req.Header.Set("Authorization", "Bearer "+token)
-		req.Header.Set("Content-Type", "application/json")
-		res := httptest.NewRecorder()
-		router.ServeHTTP(res, req)
-		return res
+	}.registerBridge(humachi.New(r.router, apiConfig()))
+	return r
+}
+
+func (r *bridgeInRouter) wallet(quoted ...string) solana.PublicKey {
+	wallet := solana.NewWallet().PublicKey()
+	if _, err := r.pool.Exec(context.Background(), `INSERT INTO loyal_yield.evm_deposit_routes (solana_wallet, app_user_id, kind, evm_address) VALUES ($1, gen_random_uuid(), 'relay_signed', $2)`, wallet.String(), r.sender); err != nil {
+		r.t.Fatal(err)
 	}
-	if res := post("/api/funding/bridge/transfers/0xfirst/confirm", `{}`); res.Code != http.StatusOK {
-		t.Fatalf("confirm = %d %s", res.Code, res.Body.String())
+	for _, id := range quoted {
+		if _, err := r.pool.Exec(context.Background(), `INSERT INTO loyal_yield.bridge_transfers (request_id, solana_wallet, counterparty, chain, asset, amount_in_raw, amount_out_raw) VALUES ($1, $2, $3, 'base', 'usdc', 25000000, 24900000)`, id, wallet.String(), r.sender); err != nil {
+			r.t.Fatal(err)
+		}
 	}
-	res := post(bridgeQuotePath, `{"chain":"base","asset":"usdc","amountRaw":"25000000"}`)
+	return wallet
+}
+
+func (r *bridgeInRouter) post(wallet solana.PublicKey, path, body string) *httptest.ResponseRecorder {
+	token, err := r.signer.Mint(map[string]any{"sub": wallet.String()}, mobileEarnAudience, time.Hour, time.Now())
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	res := httptest.NewRecorder()
+	r.router.ServeHTTP(res, req)
+	return res
+}
+
+func (r *bridgeInRouter) refusedNaming(res *httptest.ResponseRecorder, step, requestID string) {
+	r.t.Helper()
 	var body struct {
 		Error struct {
 			Code      string `json:"code"`
 			RequestID string `json:"requestId"`
 		} `json:"error"`
 	}
-	if err := json.Unmarshal(res.Body.Bytes(), &body); err != nil {
-		t.Fatal(err)
+	_ = json.Unmarshal(res.Body.Bytes(), &body)
+	if res.Code != http.StatusConflict || body.Error.Code != "bridge_in_flight" || body.Error.RequestID != requestID {
+		r.t.Fatalf("%s = %d %s; want 409 bridge_in_flight naming %s", step, res.Code, res.Body.String(), requestID)
 	}
-	if res.Code != http.StatusConflict || body.Error.Code != "bridge_in_flight" || body.Error.RequestID != "0xfirst" {
-		t.Fatalf("second quote = %d %s; want 409 bridge_in_flight naming 0xfirst", res.Code, res.Body.String())
+}
+
+func TestBridgeQuoteRefusesASecondMoveWhileTheFirstIsConfirmedAndUnsubmitted(t *testing.T) {
+	r := newBridgeInRouter(t)
+	wallet := r.wallet("0xfirst")
+	if res := r.post(wallet, "/api/funding/bridge/transfers/0xfirst/confirm", `{}`); res.Code != http.StatusOK {
+		t.Fatalf("confirm = %d %s", res.Code, res.Body.String())
 	}
+	r.refusedNaming(r.post(wallet, bridgeQuotePath, `{"chain":"base","asset":"usdc","amountRaw":"25000000"}`), "second quote", "0xfirst")
+}
+
+func TestBridgeConfirmRefusesALinkedWalletMovingTheSameSendersFunds(t *testing.T) {
+	r := newBridgeInRouter(t)
+	first := r.wallet("0xfirst")
+	second := r.wallet("0xsecond")
+	if res := r.post(first, "/api/funding/bridge/transfers/0xfirst/confirm", `{}`); res.Code != http.StatusOK {
+		t.Fatalf("first confirm = %d %s", res.Code, res.Body.String())
+	}
+	r.refusedNaming(r.post(second, "/api/funding/bridge/transfers/0xsecond/confirm", `{}`), "linked wallet confirm", "0xfirst")
+}
+
+func TestBridgeSubmitAfterReleaseKeepsTheSentTransferInFlight(t *testing.T) {
+	r := newBridgeInRouter(t)
+	wallet := r.wallet("0xfirst", "0xsecond")
+	for _, step := range []struct{ path, body string }{
+		{"/api/funding/bridge/transfers/0xfirst/confirm", `{}`},
+		{"/api/funding/bridge/transfers/0xfirst/release", `{"reason":"aborted"}`},
+		{"/api/funding/bridge/transfers/0xfirst/submit", `{"originTx":"0x` + strings.Repeat("1", 64) + `"}`},
+	} {
+		if res := r.post(wallet, step.path, step.body); res.Code != http.StatusOK {
+			t.Fatalf("%s = %d %s", step.path, res.Code, res.Body.String())
+		}
+	}
+	r.refusedNaming(r.post(wallet, "/api/funding/bridge/transfers/0xsecond/confirm", `{}`), "confirm after a sent release", "0xfirst")
 }
