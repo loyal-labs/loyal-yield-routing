@@ -7,6 +7,7 @@ CONF=/etc/postgresql/18/main/conf.d/zz-replica.conf
 PUBLICATION=loyal_hz
 TS_RETAIN_DAYS=62
 CATCHUP_EVENT_MARGIN=10000
+ARCHIVE_BACKLOG_MAX=512
 export PGSERVICEFILE=$SECRETS/pg_service.conf
 
 DATABASES=(
@@ -179,6 +180,15 @@ cmd_setup() {
   echo "setup: $changes change(s)"
 }
 
+archive_backlog() { find /srv/postgresql/18/main/pg_wal/archive_status -name '*.ready' | wc -l; }
+
+wait_for_archiver() {
+  while (( $(archive_backlog) > ARCHIVE_BACKLOG_MAX )); do
+    echo "backfill: waiting, $(archive_backlog) WAL segments not yet archived"
+    sleep 300
+  done
+}
+
 ts_state() { echo "$WORK/backfill/${1//./_}"; }
 
 ts_cutoff() {
@@ -203,6 +213,7 @@ cmd_backfill() {
     while [[ $day < $(date -u -d tomorrow +%F) ]]; do
       next=$(date -u -d "$day + 1 day" +%F)
       if [[ ! -e $state/$day.done ]]; then
+        wait_for_archiver
         local_sql -d kamino_timescale -c "DELETE FROM $table WHERE observed_at >= '$day' AND observed_at < '$next'" >/dev/null
         neon_ro timescale -c "\\copy (select * from $table where observed_at >= '$day' and observed_at < '$next') to stdout with (format binary)" |
           local_sql -d kamino_timescale --single-transaction -c "SET session_replication_role = replica" -c "\\copy $table from stdin with (format binary)" >/dev/null
@@ -252,6 +263,7 @@ from t where pk is not null order by 1
 EOF
 )
   echo "verify-replica $(date -u +%FT%TZ)"
+  echo "box: $(df -h --output=avail /srv/postgresql | tail -1 | tr -d ' ') free on /srv/postgresql, pg_wal $(du -sh /srv/postgresql/18/main/pg_wal | cut -f1), $(archive_backlog) segments waiting for pgbackrest"
   for spec in "${DATABASES[@]}"; do
     src=$(field "$spec" 1) db=$(field "$spec" 2)
     echo
