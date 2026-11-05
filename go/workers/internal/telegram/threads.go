@@ -120,7 +120,7 @@ func (b *Bot) historyForAI(ctx context.Context, threadID, lastUserMessageID stri
 		       coalesce(encrypted_content->>'ciphertext', ''), coalesce(encrypted_content->>'iv', '')
 		FROM bot_messages WHERE thread_id = $1::uuid
 		  AND (sender_type <> 'user' OR created_at <= (SELECT created_at FROM bot_messages WHERE id = $3::uuid))
-		ORDER BY created_at DESC LIMIT $2`, threadID, limit, lastUserMessageID)
+		ORDER BY id = $3::uuid DESC, created_at DESC LIMIT $2`, threadID, limit, lastUserMessageID)
 	if err != nil {
 		return nil, fmt.Errorf("load thread history: %w", err)
 	}

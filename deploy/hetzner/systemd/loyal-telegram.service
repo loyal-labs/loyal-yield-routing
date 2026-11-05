@@ -17,7 +17,7 @@ Type=exec
 ExecStart=/opt/loyal/bin/loyal-telegram
 Restart=on-failure
 RestartSec=5s
-TimeoutStopSec=6min
+TimeoutStopSec=7min
 
 Environment=LOYAL_TELEGRAM_ADDRESS=127.0.0.1:10083
 LoadCredentialEncrypted=TELEGRAM_APP_DATABASE_URL:/etc/credstore.encrypted/loyal-telegram/TELEGRAM_APP_DATABASE_URL
