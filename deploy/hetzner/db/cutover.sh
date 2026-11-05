@@ -603,21 +603,21 @@ cmd_unfreeze() {
 }
 
 cmd_rollback() {
-  local out snap enable=1
+  local out snap enable=0
   box "test ! -e $STATE/paused" || die "Neon is paused and its slots are dropped; rolling back means re-enabling the Neon endpoints and losing every write since switch"
   if [[ $(workers "test -e $CRED_ROOT/unfrozen && echo yes || echo no") == yes && ${1:-} != --force ]]; then
     die "unfreeze has run, so the engines have written to Hetzner. Rollback would discard every Hetzner write since switch and the replica could not resume. Fix forward. 'rollback --force' discards them and lists the tables first"
   fi
   timed stop stop_writers
-  snap=$(box "test -s $STATE/writes-switch-hz-app && echo yes || echo no")
-  if [[ $snap == yes ]]; then
-    if out=$(db writes diff switch hz) && (($(hz_writes_total "$out") == 0)); then
-      echo "$out"
-    else
-      echo "$out"
-      enable=0
-      echo "rollback: DISCARDING the Hetzner row changes above (or ones the counters cannot count). They stay on Hetzner only. Subscriptions stay disabled; rebuild the replica with remote.sh setup from empty databases."
-    fi
+  snap=$(box "test -s $STATE/writes-switch-hz-app && echo yes || echo no") || snap=unreadable
+  if [[ $snap != yes ]]; then
+    echo "rollback: no readable switch-phase write snapshot ($snap), so whether Hetzner took writes is UNKNOWN. Subscriptions stay disabled. A human must run remote.sh verify, and only then replica.sh subscriptions enable."
+  elif out=$(db writes diff switch hz) && (($(hz_writes_total "$out") == 0)); then
+    echo "$out"
+    enable=1
+  else
+    echo "$out"
+    echo "rollback: DISCARDING the Hetzner row changes above (or ones the counters cannot count). They stay on Hetzner only. Subscriptions stay disabled; rebuild the replica with remote.sh setup from empty databases."
   fi
   timed creds-rollback creds rollback
   ((enable == 0)) || timed enable db subscriptions enable

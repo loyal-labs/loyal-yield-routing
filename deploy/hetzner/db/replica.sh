@@ -595,7 +595,9 @@ cmd_writes() {
       if [[ $side == neon ]]; then neon_ro "$src" -c "$WRITES_SQL"; else local_sql -d "$db" -c "$WRITES_SQL"; fi >"$file.now"
       grep -q '^@epoch|' "$file.now" || { echo "writes: $side $src returned no counters" >&2; exit 1; }
       if [[ $action == save ]]; then
+        sync "$file.now"
         mv -f "$file.now" "$file"
+        sync "$CUTOVER"
         echo "writes: saved $tag $side $src ($(($(wc -l <"$file") - 1)) tables)"
         continue
       fi
