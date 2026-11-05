@@ -160,7 +160,15 @@ func site(cfg Config) http.Handler {
 	app := webserve.New(cfg.Dist)
 	pages := pagePaths(cfg.Dist)
 	translated := translatedPaths(pages)
-	serve := func(w http.ResponseWriter, r *http.Request) {
+	apex := apexHosts(cfg.AppHost)
+	serve := func(w http.ResponseWriter, r *http.Request, marketing bool) {
+		unknown := func() {
+			if marketing && !appPath(path.Clean(r.URL.Path)) {
+				app.NotFound(w, r)
+				return
+			}
+			app.Shell(w, r, http.StatusNotFound)
+		}
 		switch pagePath := path.Clean(r.URL.Path); {
 		case len(pages) == 0:
 			http.Error(w, "web page manifest missing or invalid", http.StatusServiceUnavailable)
@@ -180,7 +188,7 @@ func site(cfg Config) http.Handler {
 			} else {
 				info, err := fs.Stat(cfg.Dist, strings.TrimPrefix(pagePath, "/"))
 				if err != nil || info.IsDir() || path.Base(pagePath) == "index.html" {
-					app.Shell(w, r, http.StatusNotFound)
+					unknown()
 					return
 				}
 			}
@@ -188,6 +196,14 @@ func site(cfg Config) http.Handler {
 		}
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if slices.Contains(apex, requestHost(r)) && appPath(r.URL.Path) {
+			w.Header().Set("Location", "https://"+cfg.AppHost+r.URL.RequestURI())
+			w.Header().Set("Content-Type", "text/plain")
+			w.Header().Set("Cache-Control", "public, max-age=0, must-revalidate")
+			w.WriteHeader(http.StatusTemporaryRedirect)
+			_, _ = w.Write([]byte("Redirecting...\n"))
+			return
+		}
 		if trimmed := strings.TrimRight(r.URL.Path, "/"); trimmed != "" && trimmed != r.URL.Path {
 			redirect(w, r, (&url.URL{Path: trimmed, RawQuery: r.URL.RawQuery}).String(), http.StatusPermanentRedirect)
 			return
@@ -197,14 +213,27 @@ func site(cfg Config) http.Handler {
 				http.Redirect(w, r, (&url.URL{Path: "/app", RawQuery: r.URL.RawQuery}).String(), http.StatusFound)
 				return
 			}
-			serve(w, r)
+			serve(w, r, false)
 			return
 		}
 		if !skippedByNextMatcher(r.URL.Path) && localeRedirect(w, r, translated) {
 			return
 		}
-		serve(w, r)
+		serve(w, r, true)
 	})
+}
+
+func apexHosts(appHost string) []string {
+	apex, ok := strings.CutPrefix(appHost, "app.")
+	if !ok {
+		return nil
+	}
+	return []string{apex, "www." + apex}
+}
+
+func appPath(p string) bool {
+	p = strings.ToLower(p)
+	return p == "/app" || strings.HasPrefix(p, "/app/")
 }
 
 func redirect(w http.ResponseWriter, r *http.Request, target string, status int) {

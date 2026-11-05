@@ -46,6 +46,20 @@ func (s Site) Shell(w http.ResponseWriter, r *http.Request, status int) {
 	}
 }
 
+func (s Site) NotFound(w http.ResponseWriter, r *http.Request) {
+	body, err := fs.ReadFile(s.dist, "404/index.html")
+	if err != nil {
+		s.Shell(w, r, http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Cache-Control", noCache)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusNotFound)
+	if r.Method != http.MethodHead {
+		_, _ = w.Write(body)
+	}
+}
+
 func (s Site) Page(w http.ResponseWriter, r *http.Request, status int) bool {
 	pagePath := path.Clean(r.URL.Path)
 	body, err := fs.ReadFile(s.dist, s.pageFile(pagePath, r.URL.Query()))
