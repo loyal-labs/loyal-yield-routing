@@ -18,12 +18,9 @@ function parsePage(value: string | undefined): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
 }
 
-// The router JSON-parses search values, so `?page=2` arrives as the number 2
-// while `?page=abc` stays a string; Next's searchParams would always be a
-// string. Accept both and normalise to the string the loader parses.
-function rawPage(value: unknown): string | undefined {
+function searchPage(value: unknown): number | string | undefined {
   return typeof value === "number" || typeof value === "string"
-    ? String(value)
+    ? value
     : undefined;
 }
 
@@ -140,10 +137,12 @@ function BlogIndexRoute() {
 }
 
 export const Route = createFileRoute("/blog/")({
-  validateSearch: (search: Record<string, unknown>): { page?: string } => ({
-    page: rawPage(search.page),
+  validateSearch: (search: Record<string, unknown>): { page?: number | string } => ({
+    page: searchPage(search.page),
   }),
-  loaderDeps: ({ search }) => ({ page: search.page }),
+  loaderDeps: ({ search }) => ({
+    page: search.page === undefined ? undefined : String(search.page),
+  }),
   loader: ({ deps }) => getBlogPosts({ page: parsePage(deps.page) }),
   head: ({ loaderData }) => pageHead(blogMetadata(loaderData?.page ?? 1)),
   component: BlogIndexRoute,

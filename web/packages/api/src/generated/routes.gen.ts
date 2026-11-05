@@ -9,7 +9,6 @@ export type Get = {
   "/api/funding/bridge/out/recipients": Types.BridgeRecipientsResponse;
   "/api/funding/bridge/transfers": Types.BridgeTransfersResponse;
   "/api/funding/evm-deposit-address": Types.EvmDepositAddressResponse;
-  "/api/funding/launch": Types.LaunchResponse;
   "/api/mobile/dapps": Types.MobileTrustedDappsResponse;
   "/api/mobile/library": Types.MobileLibraryResponse;
   "/api/mobile/tokens/{mint}": Types.MobileTokenDetailResponse;
@@ -33,6 +32,10 @@ export type Get = {
 export type Post = {
   "/api/auth/privy/complete": Types.PrivyCompleteResponse;
   "/api/auth/session/refresh": Types.AuthSessionResponse;
+  "/api/auth/wallet/challenge": Types.WalletChallengeResponse;
+  "/api/auth/wallet/complete": Types.WalletCompleteResponse;
+  "/api/cap/challenge": Types.CapChallengeResponse;
+  "/api/cap/redeem": Types.CapRedeemResponse;
   "/api/funding/bridge/out/quote": Types.BridgeOutQuoteResponse;
   "/api/funding/bridge/quote": Types.BridgeQuoteResponse;
   "/api/funding/bridge/transfers/{requestId}/confirm": Types.BridgeTransfer;
@@ -45,6 +48,7 @@ export type Post = {
   "/api/observability/metrics": Types.ObsIngestAccepted;
   "/api/push-tokens": Types.PushTokenSaved;
   "/api/push-tokens/debug-send": Types.WalletPushSent;
+  "/api/push/mixpanel-cohort": Types.CampaignAck;
   "/api/referrals/claim": Types.ReferralClaim;
   "/api/smart-accounts/earn-max/context": Types.EarnMaxContextResponse;
   "/api/smart-accounts/earn-max/invite": Types.InviteStatus;
@@ -68,4 +72,5 @@ export type Post = {
   "/api/smart-accounts/yield-optimization/withdrawals/cleanup/prepare": Types.EarnCleanupPrepareResponse;
   "/api/smart-accounts/yield-optimization/withdrawals/confirm": Types.EarnWithdrawConfirmResponse;
   "/api/smart-accounts/yield-optimization/withdrawals/prepare": Types.EarnWithdrawPrepareResponse;
+  "/api/solana-week/sweep-notify": Types.SweepAck;
 };

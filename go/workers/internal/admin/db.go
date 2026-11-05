@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/r2"
 )
 
 type Deps struct {
@@ -17,7 +18,7 @@ type Deps struct {
 	Yield     *pgxpool.Pool
 	Timescale *pgxpool.Pool
 
-	R2                *R2Config
+	R2                *r2.Config
 	ClickStackReadKey string
 }
 

@@ -1,0 +1,13 @@
+# vercel.json: 41 15 * * * (UTC, 08:41 in San Francisco while PDT, 07:41 PST).
+# Persistent: a run missed while the host was down starts at boot.
+[Unit]
+Description=Loyal web cron earn-yield-joy, daily 15:41 UTC
+
+[Timer]
+Unit=loyal-web-cron@earn-yield-joy.service
+OnCalendar=*-*-* 15:41:00 UTC
+Persistent=true
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

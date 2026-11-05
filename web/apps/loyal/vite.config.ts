@@ -20,10 +20,11 @@ const preset = nextSpa({
   devProxy: ["/api", "/ingest", "/readyz"],
 });
 
-export default defineConfig({
+export default defineConfig(({ isSsrBuild }) => ({
   ...preset,
   build: {
     ...preset.build,
+    copyPublicDir: !isSsrBuild,
     rolldownOptions: {
       ...preset.build?.rolldownOptions,
       output: {
@@ -37,6 +38,15 @@ export default defineConfig({
   },
   plugins: [
     ...(preset.plugins ?? []),
+    {
+      name: "loyal-prerender-no-css",
+      enforce: "pre",
+      apply: () => isSsrBuild === true,
+      load(id) {
+        if (/\.css(\?|$)/.test(id) && !/\.module\.css(\?|$)/.test(id))
+          return "";
+      },
+    },
     {
       name: "loyal-app-skeleton",
       transformIndexHtml(html) {
@@ -53,4 +63,4 @@ export default defineConfig({
       },
     },
   ],
-});
+}));
