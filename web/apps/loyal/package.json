@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "bun run --cwd ../.. build:packages && vite build",
+    "build": "bun run --cwd ../.. build:packages && vite build && vite build --ssr src/prerender.tsx --outDir build/prerender",
     "typecheck": "tsc --noEmit -p .",
     "routes:check": "bun ../../../scripts/web/gen-routes.ts --check"
   },
