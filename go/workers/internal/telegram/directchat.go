@@ -15,6 +15,7 @@ const (
 	directWorkers       = 16
 	directBacklog       = 256
 	directReplyDeadline = 5 * time.Minute
+	directDrainMargin   = 10 * time.Second
 
 	historyLimit     = 20
 	redpillModel     = "phala/gpt-oss-120b"
@@ -40,85 +41,82 @@ var (
 	errUserBlocked       = errors.New("user blocked the bot")
 )
 
-func (b *Bot) enqueueDirect(_ context.Context, update *Update) error {
-	if !b.direct.enqueue(update.Message.Chat.ID, update) {
-		return errDirectBacklogFull
-	}
-	return nil
-}
-
-func (b *Bot) DrainDirectChats(ctx context.Context) {
+func (b *Bot) DrainDirectChats() {
+	ctx, cancel := context.WithTimeout(context.Background(), directReplyDeadline+directDrainMargin)
+	defer cancel()
 	b.direct.drain(ctx)
 }
 
-func (b *Bot) directUpdate(ctx context.Context, update *Update) {
-	if update.Message.ForumTopicCreated != nil {
-		b.directTopicCreated(ctx, update)
-		return
-	}
-	b.directMessage(ctx, update)
-}
-
-func (b *Bot) directTopicCreated(ctx context.Context, update *Update) {
+func (b *Bot) directTopicCreated(ctx context.Context, update *Update) error {
 	message := update.Message
 	if message.From == nil || message.MessageThreadID == 0 || message.ForumTopicCreated.Name == "" {
 		slog.Warn("direct topic created message is missing fields", "update_id", update.UpdateID)
-		return
+		return nil
 	}
 	name := message.ForumTopicCreated.Name
-	err := func() error {
-		userID, err := b.ensureUser(ctx, message.From.ID, message.From.username(), message.From.displayName())
-		if err != nil {
-			return err
-		}
-		threadID, err := b.getOrCreateThread(ctx, userID, message.Chat.ID, message.MessageThreadID, name)
-		if err != nil {
-			return err
-		}
-		return b.renameThread(ctx, threadID, name)
-	}()
+	userID, err := b.ensureUser(ctx, message.From.ID, message.From.username(), message.From.displayName())
 	if err != nil {
-		slog.Error("direct topic created message failed", "update_id", update.UpdateID, "error", err)
+		return err
 	}
+	threadID, err := b.getOrCreateThread(ctx, userID, message.Chat.ID, message.MessageThreadID, name)
+	if err != nil {
+		return err
+	}
+	return b.renameThread(ctx, threadID, name)
 }
 
-func (b *Bot) directMessage(ctx context.Context, update *Update) {
+func (b *Bot) directMessage(ctx context.Context, update *Update) error {
 	message := update.Message
 	if message.From == nil {
 		slog.Error("direct message is missing fields", "update_id", update.UpdateID)
-		return
+		return nil
 	}
-	err := b.answerDirectMessage(ctx, message)
-	if err == nil {
-		return
+	if !b.direct.reserve() {
+		return errDirectBacklogFull
 	}
-	slog.Error("direct message failed", "update_id", update.UpdateID, "error", err)
-	replyCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), sideEffectTimeout)
-	defer cancel()
-	if _, err := b.api.Send(replyCtx, message.Chat.ID, errorReply, SendOptions{ThreadID: message.MessageThreadID}); err != nil {
-		slog.Error("direct message error reply failed", "update_id", update.UpdateID, "error", err)
+	reply, err := b.storeDirectMessage(ctx, update)
+	if err != nil {
+		b.direct.release()
+		return err
 	}
+	b.direct.submit(message.Chat.ID, reply)
+	return nil
 }
 
-func (b *Bot) answerDirectMessage(ctx context.Context, message *Message) error {
+func (b *Bot) storeDirectMessage(ctx context.Context, update *Update) (directReply, error) {
+	message := update.Message
 	from := message.From
 	displayName := from.displayName()
 	userID, err := b.ensureUser(ctx, from.ID, from.username(), displayName)
 	if err != nil {
-		return err
+		return directReply{}, err
 	}
 	threadID, err := b.getOrCreateThread(ctx, userID, message.Chat.ID, message.MessageThreadID, "Conversation with "+displayName)
 	if err != nil {
-		return err
+		return directReply{}, err
 	}
-	if _, err := b.addMessage(ctx, threadID, senderUser, message.Text, &message.MessageID); err != nil {
-		return err
-	}
-	history, err := b.historyForAI(ctx, threadID, historyLimit)
+	messageID, err := b.addMessage(ctx, threadID, senderUser, message.Text, &message.MessageID)
 	if err != nil {
-		return err
+		return directReply{}, err
 	}
-	return b.streamReply(ctx, message.Chat.ID, message.MessageThreadID, threadID, history)
+	return directReply{update: update, threadID: threadID, messageID: messageID}, nil
+}
+
+func (b *Bot) answerDirectMessage(ctx context.Context, reply directReply) {
+	message := reply.update.Message
+	history, err := b.historyForAI(ctx, reply.threadID, reply.messageID, historyLimit)
+	if err == nil {
+		err = b.streamReply(ctx, message.Chat.ID, message.MessageThreadID, reply.threadID, history)
+	}
+	if err == nil {
+		return
+	}
+	slog.Error("direct message failed", "update_id", reply.update.UpdateID, "error", err)
+	replyCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), sideEffectTimeout)
+	defer cancel()
+	if _, err := b.api.Send(replyCtx, message.Chat.ID, errorReply, SendOptions{ThreadID: message.MessageThreadID}); err != nil {
+		slog.Error("direct message error reply failed", "update_id", reply.update.UpdateID, "error", err)
+	}
 }
 
 func (b *Bot) streamReply(ctx context.Context, chatID int64, topic int64, threadID string, history []chatMessage) error {
