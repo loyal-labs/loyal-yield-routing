@@ -39,6 +39,7 @@ type Facts struct {
 	bridgeBatchFailed   *prometheus.CounterVec
 	bridgeDetected      *prometheus.GaugeVec
 	bridgeUnmoved       *prometheus.GaugeVec
+	bridgeScanned       *prometheus.GaugeVec
 }
 
 func NewFacts(registerer prometheus.Registerer) *Facts {
@@ -132,12 +133,15 @@ func NewFacts(registerer prometheus.Registerer) *Facts {
 			Name: "loyal_bridge_detection_last_success_timestamp_seconds", Help: "Last detection pass that read every batch and inserted every recordable request, by origin chain.",
 		}, []string{"chain"}),
 		bridgeUnmoved: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Name: "loyal_bridge_incoming_unmoved", Help: "Token balances on relay_signed EVM wallets that the last scan found nonzero for 30 minutes with no bridge transfer for their wallet.",
+			Name: "loyal_bridge_incoming_unmoved", Help: "Token balances on relay_signed EVM wallets that the last scan found nonzero for 30 minutes with no inbound transfer confirmed for their wallet. Moves only on a scan that read every wallet.",
+		}, nil),
+		bridgeScanned: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "loyal_bridge_incoming_scan_last_success_timestamp_seconds", Help: "Last unmoved-funds scan that read every relay_signed wallet.",
 		}, nil),
 	}
 	registerer.MustRegister(f.withdrawalAttention, f.withdrawalObserved, f.navReported, f.landed, f.failed, f.inflight, f.progress, f.lane, f.payer, f.oldestDue, f.fleetReplans, f.fleetSimulations, f.fleetMovable,
 		f.leverageRoom, f.leverageGap, f.leverageLanded, f.leverageReaction, f.leverageOutages, f.termDebtDays, f.stepNoRoom, f.hold, f.privyGasSpend, f.privyGasRead,
-		f.bridgePolled, f.bridgeAdvanced, f.bridgeSeen, f.bridgeRecorded, f.bridgeBatchFailed, f.bridgeDetected, f.bridgeUnmoved)
+		f.bridgePolled, f.bridgeAdvanced, f.bridgeSeen, f.bridgeRecorded, f.bridgeBatchFailed, f.bridgeDetected, f.bridgeUnmoved, f.bridgeScanned)
 	return f
 }
 
@@ -276,8 +280,14 @@ func (f *Facts) BridgeDetectionPassed(chain string) {
 	f.bridgeDetected.WithLabelValues(chain).Set(float64(time.Now().Unix()))
 }
 
-func (f *Facts) BridgeIncomingUnmoved(n int) {
-	f.bridgeUnmoved.WithLabelValues().Set(float64(n))
+func (f *Facts) BridgeIncomingScanUnread() {
+	f.bridgeUnmoved.WithLabelValues().Set(0)
+	f.bridgeScanned.WithLabelValues().Set(0)
+}
+
+func (f *Facts) BridgeIncomingScanned(unmoved int) {
+	f.bridgeUnmoved.WithLabelValues().Set(float64(unmoved))
+	f.bridgeScanned.WithLabelValues().Set(float64(time.Now().Unix()))
 }
 
 func (f *Facts) AutodepositOldestDueAge(seconds float64) { f.oldestDue.Set(seconds) }

@@ -330,6 +330,34 @@ groups:
           action: "Read loyal-web's 'bridge sponsored send refused' log lines for Privy's message. Check the Privy dashboard under Billing > Fee sponsorship for the credit balance and that the chain is enabled in the sponsorship policy."
           recovery: "Confirm a fresh Move on that chain sends without a refusal and the counter stops increasing; the window expiring is not a fix."
 
+      # The retail engine reads every relay_signed EVM wallet's balances every
+      # 10m. A token of at least 0.1 units that stays 30m with no inbound
+      # transfer confirmed for its wallet counts here. Funds that never move
+      # are lost to the user, so this pages. A scan that cannot read every
+      # wallet publishes nothing, so the stale rule covers Privy outages and
+      # a dead scan.
+      - alert: LoyalBridgeIncomingUnmoved
+        expr: max(loyal_bridge_incoming_unmoved) > 0
+        for: 5m
+        labels: {severity: page}
+        annotations:
+          summary: "Funds left unmoved on a relay_signed EVM wallet"
+          trigger: "The last complete scan found tokens on a relay_signed EVM wallet for at least 30 minutes with no inbound transfer confirmed for it; condition persisted for 5 minutes."
+          impact: "A user's funds sit on their EVM wallet and never reach their Solana balance until the user moves them or support does."
+          action: "Read the retail engine's 'bridge incoming unmoved' log lines for the masked address, chain, asset, amount and whether it is under the chain's minimum. The user must press Confirm on Assets to move it, or support moves or refunds it."
+          recovery: "Confirm the next complete scan no longer logs the line for that address and the gauge is back to 0; a stale gauge does not prove recovery."
+
+      - alert: LoyalBridgeIncomingScanStale
+        expr: time() - max(max_over_time(loyal_bridge_incoming_scan_last_success_timestamp_seconds[2h])) > 2100
+        for: 2m
+        labels: {severity: page}
+        annotations:
+          summary: "The unmoved-funds scan has not completed for 35m"
+          trigger: "No scan that read every relay_signed EVM wallet for over 35 minutes (three scan intervals plus a tick of slack); condition persisted for 2 minutes."
+          impact: "Funds left unmoved on a user's EVM wallet would go unnoticed."
+          action: "Check privy-gas-spend.conf credentials are installed on the retail unit, that RETAIL_PRIVY_APP_ID is the same Privy app as loyal-web's PRIVY_APP_ID, and that the role has SELECT on loyal_yield.evm_deposit_routes. Read the retail engine's 'bridge incoming scan' warnings for the failing address and Privy status."
+          recovery: "Confirm the last-success timestamp advances every 10 minutes. A vanished series is not proof of recovery."
+
   - name: loyal-db-replica
     rules:
       # Series come from `loyal-db-replica metrics` on loyal-db-primary (a

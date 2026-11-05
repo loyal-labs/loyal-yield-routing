@@ -98,7 +98,7 @@ func (t *Tracker) Run(ctx context.Context) error {
 	if t.Privy == nil {
 		slog.Warn("bridge incoming unmoved scan disabled: no privy credentials")
 	} else {
-		t.Facts.BridgeIncomingUnmoved(0)
+		t.Facts.BridgeIncomingScanUnread()
 		detection.Go(func() { t.unmovedEvery(ctx) })
 	}
 	ticker := time.NewTicker(trackInterval)

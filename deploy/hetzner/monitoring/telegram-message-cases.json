@@ -318,6 +318,32 @@
   },
   {
     "labels": {
+      "alertname": "LoyalBridgeIncomingUnmoved",
+      "severity": "page"
+    },
+    "annotations": {
+      "action": "Read the retail engine's 'bridge incoming unmoved' log lines for the masked address, chain, asset, amount and whether it is under the chain's minimum. The user must press Confirm on Assets to move it, or support moves or refunds it.",
+      "impact": "A user's funds sit on their EVM wallet and never reach their Solana balance until the user moves them or support does.",
+      "recovery": "Confirm the next complete scan no longer logs the line for that address and the gauge is back to 0; a stale gauge does not prove recovery.",
+      "summary": "Funds left unmoved on a relay_signed EVM wallet",
+      "trigger": "The last complete scan found tokens on a relay_signed EVM wallet for at least 30 minutes with no inbound transfer confirmed for it; condition persisted for 5 minutes."
+    }
+  },
+  {
+    "labels": {
+      "alertname": "LoyalBridgeIncomingScanStale",
+      "severity": "page"
+    },
+    "annotations": {
+      "action": "Check privy-gas-spend.conf credentials are installed on the retail unit, that RETAIL_PRIVY_APP_ID is the same Privy app as loyal-web's PRIVY_APP_ID, and that the role has SELECT on loyal_yield.evm_deposit_routes. Read the retail engine's 'bridge incoming scan' warnings for the failing address and Privy status.",
+      "impact": "Funds left unmoved on a user's EVM wallet would go unnoticed.",
+      "recovery": "Confirm the last-success timestamp advances every 10 minutes. A vanished series is not proof of recovery.",
+      "summary": "The unmoved-funds scan has not completed for 35m",
+      "trigger": "No scan that read every relay_signed EVM wallet for over 35 minutes (three scan intervals plus a tick of slack); condition persisted for 2 minutes."
+    }
+  },
+  {
+    "labels": {
       "alertname": "LoyalDbReplicaSubscriptionDown",
       "subscription": "loyal_hz_app",
       "severity": "page"

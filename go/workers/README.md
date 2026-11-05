@@ -63,6 +63,19 @@ confirmed within 24 hours. Detection exports
 row born `filled` counts here and not in `loyal_bridge_transfers_advanced_total`),
 `loyal_bridge_deposit_batches_failed_total` and
 `loyal_bridge_detection_last_success_timestamp_seconds`, each by `chain`.
+The unmoved-funds scan runs beside it in the same process, every 10 minutes
+after a first wait of 10, with the Privy credentials of the gas-spend reader
+(the same Privy app as loyal-web's `PRIVY_APP_ID`). It reads the balance of every
+`relay_signed` address in `loyal_yield.evm_deposit_routes` and logs
+`bridge incoming unmoved` (masked address, chain, asset, amount, `under_min`)
+for each token of at least 0.1 units that has sat there 30 minutes, minus a
+minute of tick slack, with no inbound `bridge_transfers` row confirmed for any
+of the address's wallets in the last 30 minutes. A balance first seen on the
+process's first complete pass counts as already 30 minutes old. A pass that
+fails to read any address logs `bridge incoming scan incomplete` and moves no
+metric. A complete pass sets `loyal_bridge_incoming_unmoved` (tokens logged
+that pass) and `loyal_bridge_incoming_scan_last_success_timestamp_seconds`. It
+writes no table.
 `RETAIL_CROSS_MINT_ENABLED=true` opts the planner/controller into fresh cross-mint
 work; it defaults off. Existing signed recovery and custody continuation stay
 available with rollout off. Source database controls are checked independently.

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"math/big"
 	"net/url"
 	"slices"
@@ -20,12 +21,13 @@ const (
 	unmovedInterval = 10 * time.Minute
 	unmovedDeadline = 3 * time.Minute
 	unmovedAfter    = 30 * time.Minute
+	unmovedSlack    = time.Minute
 
 	relaySignedAddresses = `SELECT evm_address, array_agg(solana_wallet) FROM loyal_yield.evm_deposit_routes
 WHERE kind = 'relay_signed' GROUP BY evm_address ORDER BY evm_address`
 
 	recentTransferWallets = `SELECT DISTINCT solana_wallet FROM loyal_yield.bridge_transfers
-WHERE greatest(quoted_at, updated_at) > now() - interval '30 minutes'`
+WHERE direction = 'in' AND confirmed_at > now() - interval '30 minutes'`
 )
 
 // PrivyGet is one GET against Privy's API; path starts at /v1.
@@ -49,10 +51,12 @@ type unmovedRead struct {
 }
 
 // unmovedWatch holds what a balance cannot say: when the loop first saw it,
-// and the Privy wallet id an address resolved to. A restart forgets both.
+// and the Privy wallet id an address resolved to. A restart forgets both, so
+// until the first complete pass a balance counts as already old.
 type unmovedWatch struct {
 	walletIDs map[string]string
 	firstSeen map[unmovedKey]time.Time
+	scanned   bool
 }
 
 func (t *Tracker) unmovedEvery(ctx context.Context) {
@@ -60,23 +64,24 @@ func (t *Tracker) unmovedEvery(ctx context.Context) {
 	ticker := time.NewTicker(unmovedInterval)
 	defer ticker.Stop()
 	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
 		pass, cancel := context.WithTimeout(ctx, unmovedDeadline)
 		err := t.unmoved(pass, watch, time.Now(), unmovedAfter)
 		cancel()
 		if err != nil && ctx.Err() == nil {
 			slog.Error("bridge incoming scan failed", "error", engine.ErrorText(err))
 		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-		}
 	}
 }
 
 // unmoved reports every token that has sat on a relay_signed wallet for after
-// with no bridge transfer for any Solana wallet sharing it in that time. The
-// balance is the state: a moved balance drops out of the next pass by itself.
+// with no inbound transfer confirmed by any Solana wallet sharing it in that
+// time. The balance is the state: a moved balance drops out of the next pass
+// by itself. The facts move only on a pass that read every address.
 func (t *Tracker) unmoved(ctx context.Context, w *unmovedWatch, now time.Time, after time.Duration) error {
 	rows, err := t.DB.Query(ctx, relaySignedAddresses)
 	if err != nil {
@@ -90,8 +95,15 @@ func (t *Tracker) unmoved(ctx context.Context, w *unmovedWatch, now time.Time, a
 	if err != nil {
 		return err
 	}
+	live := make(map[string]bool, len(routes))
+	for _, r := range routes {
+		live[r.address] = true
+	}
+	maps.DeleteFunc(w.walletIDs, func(address, _ string) bool { return !live[address] })
+	maps.DeleteFunc(w.firstSeen, func(key unmovedKey, _ time.Time) bool { return !live[key.address] })
 	if len(routes) == 0 {
-		t.Facts.BridgeIncomingUnmoved(0)
+		t.Facts.BridgeIncomingScanned(0)
+		w.scanned = true
 		return nil
 	}
 	rows, err = t.DB.Query(ctx, recentTransferWallets)
@@ -131,16 +143,19 @@ func (t *Tracker) unmoved(ctx context.Context, w *unmovedWatch, now time.Time, a
 		inFlight := slices.ContainsFunc(r.wallets, func(wallet string) bool { return slices.Contains(recent, wallet) })
 		for _, b := range read.balances {
 			key := unmovedKey{r.address, b.Chain, b.Asset}
-			if b.AmountRaw.Sign() == 0 {
+			if b.AmountRaw.Cmp(tenPow(max(int64(b.Decimals)-1, 0))) < 0 {
 				delete(w.firstSeen, key)
 				continue
 			}
 			first, seen := w.firstSeen[key]
 			if !seen {
 				first = now
-				w.firstSeen[key] = now
+				if !w.scanned {
+					first = now.Add(-after)
+				}
+				w.firstSeen[key] = first
 			}
-			if inFlight || now.Sub(first) < after {
+			if inFlight || now.Sub(first) < after-unmovedSlack {
 				continue
 			}
 			alerts++
@@ -150,8 +165,10 @@ func (t *Tracker) unmoved(ctx context.Context, w *unmovedWatch, now time.Time, a
 	}
 	if failed > 0 {
 		slog.Warn("bridge incoming scan incomplete", "failed_addresses", failed, "addresses", len(routes), "error", engine.ErrorText(firstErr))
+		return nil
 	}
-	t.Facts.BridgeIncomingUnmoved(alerts)
+	t.Facts.BridgeIncomingScanned(alerts)
+	w.scanned = true
 	return nil
 }
 
