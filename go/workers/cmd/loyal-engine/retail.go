@@ -402,7 +402,11 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 		case engine.FamilyAutodeposit:
 			relay := bridge.NewRelay()
 			relay.APIKey = cfg.relayAPIKey
-			lanes = append(lanes, control, aWorker, &bridge.Tracker{DB: yieldPool, Relay: relay, Facts: facts})
+			tracker := &bridge.Tracker{DB: yieldPool, Relay: relay, Facts: facts}
+			if reader, ok := gasSpend.(*gasSpendReader); ok {
+				tracker.Privy = reader.get
+			}
+			lanes = append(lanes, control, aWorker, tracker)
 		case engine.FamilyFleet:
 			facts.LaneSucceeded(family, "planner")
 			facts.LaneSucceeded(family, "executor")

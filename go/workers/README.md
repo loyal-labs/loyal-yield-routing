@@ -63,6 +63,28 @@ confirmed within 24 hours. Detection exports
 row born `filled` counts here and not in `loyal_bridge_transfers_advanced_total`),
 `loyal_bridge_deposit_batches_failed_total` and
 `loyal_bridge_detection_last_success_timestamp_seconds`, each by `chain`.
+The unmoved-funds scan runs beside it in the same process, every 10 minutes
+after a first wait of 2, with the Privy credentials of the gas-spend reader
+(the same Privy app as loyal-web's `PRIVY_APP_ID`). It reads the balance of every
+`relay_signed` address in `loyal_yield.evm_deposit_routes` and reports what the
+address holds now: each token of at least 0.1 units, unless an inbound
+`bridge_transfers` row confirmed in the last 30 minutes for any of the
+address's wallets, logs `bridge incoming unmoved` (masked address, chain, asset,
+amount, `under_min`) and sets `loyal_bridge_incoming_unmoved{address, chain,
+asset, under_min}` (full lowercase address) to its amount in token units. An
+address that read cleanly sets every series it held before and no longer holds
+to 0, so a moved balance reads 0 and the alert rules clear on the next scrape; an
+address whose read failed keeps the series it had, and a route that is gone
+loses them. The engine keeps no clock: the 30 minutes live in the
+`LoyalBridgeIncomingUnmoved` and `LoyalBridgeIncomingStranded` rules, which read
+the last sample in the last 15 minutes, so a gap in the scans under about 13
+minutes (an engine restart) does not reset them and a longer one delays a page
+without losing it. A pass whose database reads succeed sets
+`loyal_bridge_incoming_scan_last_success_timestamp_seconds` (the process start
+time until the first pass) and `loyal_bridge_incoming_scan_failed_addresses`
+(addresses Privy could not be read for, also logged as `bridge incoming scan
+incomplete`). Both scan gauges are absent while the scan is off, and the failed
+gauge is absent until the first pass. It writes no table.
 `RETAIL_CROSS_MINT_ENABLED=true` opts the planner/controller into fresh cross-mint
 work; it defaults off. Existing signed recovery and custody continuation stay
 available with rollout off. Source database controls are checked independently.

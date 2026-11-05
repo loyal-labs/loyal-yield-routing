@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"strconv"
+	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -38,6 +40,11 @@ type Facts struct {
 	bridgeRecorded      *prometheus.CounterVec
 	bridgeBatchFailed   *prometheus.CounterVec
 	bridgeDetected      *prometheus.GaugeVec
+	bridgeUnmoved       *prometheus.GaugeVec
+	bridgeScanned       *prometheus.GaugeVec
+	bridgeScanFailed    *prometheus.GaugeVec
+	unmovedMu           sync.Mutex
+	unmovedSeries       map[string]map[incomingSeries]struct{}
 }
 
 func NewFacts(registerer prometheus.Registerer) *Facts {
@@ -130,10 +137,20 @@ func NewFacts(registerer prometheus.Registerer) *Facts {
 		bridgeDetected: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "loyal_bridge_detection_last_success_timestamp_seconds", Help: "Last detection pass that read every batch and inserted every recordable request, by origin chain.",
 		}, []string{"chain"}),
+		bridgeUnmoved: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "loyal_bridge_incoming_unmoved", Help: "Token units the last read of a relay_signed EVM wallet found on it with no inbound transfer confirmed for its wallet in 30 minutes, by full lowercase address, chain, asset and whether the amount is under the chain minimum. A read that no longer finds the token sets its series to 0; the series goes when the address leaves the relay_signed routes.",
+		}, []string{"address", "chain", "asset", "under_min"}),
+		bridgeScanned: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "loyal_bridge_incoming_scan_last_success_timestamp_seconds", Help: "Last unmoved-funds scan whose database reads succeeded; the process start time until then; no series while the scan is off.",
+		}, nil),
+		bridgeScanFailed: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "loyal_bridge_incoming_scan_failed_addresses", Help: "relay_signed EVM wallets the last unmoved-funds scan could not read from Privy; no series until the first scan.",
+		}, nil),
+		unmovedSeries: map[string]map[incomingSeries]struct{}{},
 	}
 	registerer.MustRegister(f.withdrawalAttention, f.withdrawalObserved, f.navReported, f.landed, f.failed, f.inflight, f.progress, f.lane, f.payer, f.oldestDue, f.fleetReplans, f.fleetSimulations, f.fleetMovable,
 		f.leverageRoom, f.leverageGap, f.leverageLanded, f.leverageReaction, f.leverageOutages, f.termDebtDays, f.stepNoRoom, f.hold, f.privyGasSpend, f.privyGasRead,
-		f.bridgePolled, f.bridgeAdvanced, f.bridgeSeen, f.bridgeRecorded, f.bridgeBatchFailed, f.bridgeDetected)
+		f.bridgePolled, f.bridgeAdvanced, f.bridgeSeen, f.bridgeRecorded, f.bridgeBatchFailed, f.bridgeDetected, f.bridgeUnmoved, f.bridgeScanned, f.bridgeScanFailed)
 	return f
 }
 
@@ -270,6 +287,47 @@ func (f *Facts) BridgeDetectionBatchesFailed(chain string, n int) {
 
 func (f *Facts) BridgeDetectionPassed(chain string) {
 	f.bridgeDetected.WithLabelValues(chain).Set(float64(time.Now().Unix()))
+}
+
+type IncomingHeld struct {
+	Chain, Asset string
+	UnderMin     bool
+	Units        float64
+}
+
+type incomingSeries struct{ chain, asset, underMin string }
+
+func (f *Facts) BridgeIncomingHeld(address string, held []IncomingHeld) {
+	f.unmovedMu.Lock()
+	defer f.unmovedMu.Unlock()
+	now := make(map[incomingSeries]struct{}, len(held))
+	for _, h := range held {
+		s := incomingSeries{h.Chain, h.Asset, strconv.FormatBool(h.UnderMin)}
+		now[s] = struct{}{}
+		f.bridgeUnmoved.WithLabelValues(address, s.chain, s.asset, s.underMin).Set(h.Units)
+	}
+	for s := range f.unmovedSeries[address] {
+		if _, ok := now[s]; !ok {
+			f.bridgeUnmoved.WithLabelValues(address, s.chain, s.asset, s.underMin).Set(0)
+		}
+	}
+	f.unmovedSeries[address] = now
+}
+
+func (f *Facts) BridgeIncomingRouteGone(address string) {
+	f.unmovedMu.Lock()
+	defer f.unmovedMu.Unlock()
+	f.bridgeUnmoved.DeletePartialMatch(prometheus.Labels{"address": address})
+	delete(f.unmovedSeries, address)
+}
+
+func (f *Facts) BridgeIncomingScanStarted() {
+	f.bridgeScanned.WithLabelValues().Set(float64(time.Now().Unix()))
+}
+
+func (f *Facts) BridgeIncomingScanned(failed int) {
+	f.bridgeScanned.WithLabelValues().Set(float64(time.Now().Unix()))
+	f.bridgeScanFailed.WithLabelValues().Set(float64(failed))
 }
 
 func (f *Facts) AutodepositOldestDueAge(seconds float64) { f.oldestDue.Set(seconds) }
