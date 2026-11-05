@@ -314,7 +314,11 @@ func run(ctx context.Context) error {
 	}
 	cfg.Earn = earn(ctx, registry, rpcClient, appDB, yieldDB, timescaleDB)
 	if cfg.Earn != nil {
-		cfg.Earn.Push = cfg.WalletPush
+		if os.Getenv("LOYAL_AUTODEPOSIT_PUSH") == "on" {
+			cfg.Earn.Push = cfg.WalletPush
+		} else {
+			slog.Warn("autodeposit wallet push off", "reason", "LOYAL_AUTODEPOSIT_PUSH is not on")
+		}
 	}
 	if address := os.Getenv("LOYAL_METRICS_ADDRESS"); address == "" {
 		degraded("metrics", errors.New("LOYAL_METRICS_ADDRESS is not set"))
