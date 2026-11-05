@@ -31,6 +31,7 @@ type APIError struct {
 	Method      string
 	Code        int
 	Description string
+	RetryAfter  int
 }
 
 func (e *APIError) Error() string {
@@ -65,6 +66,9 @@ func (a *BotAPI) call(ctx context.Context, method string, params, result any) er
 		Result      json.RawMessage `json:"result"`
 		ErrorCode   int             `json:"error_code"`
 		Description string          `json:"description"`
+		Parameters  struct {
+			RetryAfter int `json:"retry_after"`
+		} `json:"parameters"`
 	}
 	if err := json.Unmarshal(raw, &envelope); err != nil {
 		return fmt.Errorf("telegram %s: HTTP %d with an unreadable body", method, response.StatusCode)
@@ -74,7 +78,7 @@ func (a *BotAPI) call(ctx context.Context, method string, params, result any) er
 		if code == 0 {
 			code = response.StatusCode
 		}
-		return &APIError{Method: method, Code: code, Description: envelope.Description}
+		return &APIError{Method: method, Code: code, Description: envelope.Description, RetryAfter: envelope.Parameters.RetryAfter}
 	}
 	if result == nil {
 		return nil
@@ -92,11 +96,31 @@ func (a *BotAPI) GetMe(ctx context.Context) (User, error) {
 }
 
 func (a *BotAPI) SendMessage(ctx context.Context, chatID int64, text string) (int64, error) {
+	return a.SendTopicMessage(ctx, chatID, nil, text)
+}
+
+func (a *BotAPI) SendTopicMessage(ctx context.Context, chatID int64, topic *int64, text string) (int64, error) {
+	params := map[string]any{"chat_id": chatID, "text": text}
+	if topic != nil {
+		params["message_thread_id"] = *topic
+	}
 	var sent struct {
 		MessageID int64 `json:"message_id"`
 	}
-	err := a.call(ctx, "sendMessage", map[string]any{"chat_id": chatID, "text": text}, &sent)
+	err := a.call(ctx, "sendMessage", params, &sent)
 	return sent.MessageID, err
+}
+
+func (a *BotAPI) SendMessageDraft(ctx context.Context, chatID int64, topic *int64, draftID int64, text string) error {
+	params := map[string]any{"chat_id": chatID, "draft_id": draftID, "text": text}
+	if topic != nil {
+		params["message_thread_id"] = *topic
+	}
+	return a.call(ctx, "sendMessageDraft", params, nil)
+}
+
+func (a *BotAPI) EditMessageText(ctx context.Context, chatID, messageID int64, text string) error {
+	return a.call(ctx, "editMessageText", map[string]any{"chat_id": chatID, "message_id": messageID, "text": text}, nil)
 }
 
 func (a *BotAPI) SetMessageReaction(ctx context.Context, chatID, messageID int64, emoji string) error {

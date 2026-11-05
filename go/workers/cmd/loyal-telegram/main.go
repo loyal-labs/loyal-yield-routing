@@ -31,6 +31,7 @@ func envOr(name, fallback string) string {
 func run(ctx context.Context) error {
 	address := envOr("LOYAL_TELEGRAM_ADDRESS", "127.0.0.1:10083")
 	apiBase := envOr("LOYAL_TELEGRAM_BOT_API", "https://api.telegram.org")
+	redpillBase := envOr("LOYAL_TELEGRAM_REDPILL_API", "https://api.redpill.ai/v1")
 	dsn, err := engine.Credential("TELEGRAM_APP_DATABASE_URL")
 	if err != nil {
 		return err
@@ -46,6 +47,18 @@ func run(ctx context.Context) error {
 	if !webhookSecretFormat.MatchString(secret) {
 		return errors.New("TELEGRAM_WEBHOOK_SECRET: want 1-256 characters of A-Z, a-z, 0-9, _ and -")
 	}
+	redpillKey, err := engine.Credential("REDPILL_AI_API_KEY")
+	if err != nil {
+		return err
+	}
+	encryptionKey, err := engine.Credential("MESSAGE_ENCRYPTION_KEY")
+	if err != nil {
+		return err
+	}
+	messageCipher, err := telegram.NewMessageCipher(encryptionKey)
+	if err != nil {
+		return err
+	}
 	pool, err := db.OpenLazy(ctx, dsn, 8)
 	if err != nil {
 		return fmt.Errorf("TELEGRAM_APP_DATABASE_URL: %w", err)
@@ -59,7 +72,19 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("getMe: %w", err)
 	}
-	bot := telegram.New(telegram.Config{DB: pool, API: api, BotUsername: me.Username, WebhookSecret: secret})
+	bot := telegram.New(telegram.Config{
+		DB:            pool,
+		API:           api,
+		Redpill:       telegram.NewRedpill(redpillBase, redpillKey),
+		Cipher:        messageCipher,
+		BotUsername:   me.Username,
+		WebhookSecret: secret,
+	})
+	defer func() {
+		drainCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		bot.DrainDirectChats(drainCtx)
+	}()
 
 	server := &http.Server{
 		Addr:              address,
