@@ -8,9 +8,7 @@ import (
 )
 
 // forward sends a request to the Next deployment that still owns the path
-// (every /api and /ingest path Go does not answer; /ingest is not a rewrite —
-// apps/web has no rewrites, it is a route handler of Next's,
-// web/apps/web/src/app/ingest/[...path]/route.ts).
+// (every /api path Go does not answer).
 //
 // The contract:
 //
