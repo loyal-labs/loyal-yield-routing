@@ -213,6 +213,9 @@ func (h earnRoutes) sponsorRecord(ctx context.Context, record smartAccountRecord
 		return smartAccountRecord{}, failure
 	}
 }
+
+const provisioningFailedMessage = "Failed to provision the smart account."
+
 func provisioningFailure(err error) *routeError {
 	var refused *routeError
 	if errors.As(err, &refused) {
@@ -222,8 +225,9 @@ func provisioningFailure(err error) *routeError {
 		return &routeError{Detail: EarnMaxErrorDetail{Code: "smart_account_sponsor_not_configured",
 			Message: "Sponsored smart account creation is not configured on this environment."}, status: http.StatusInternalServerError}
 	}
+	slog.Error("smart account provisioning failed", "error", chain.Scrub(err.Error()))
 	return &routeError{Detail: EarnMaxErrorDetail{Code: "smart_account_provisioning_failed",
-		Message: chain.Scrub(err.Error())}, status: http.StatusBadGateway}
+		Message: provisioningFailedMessage}, status: http.StatusBadGateway}
 }
 func (h earnRoutes) createSponsoredSmartAccount(ctx context.Context, settingsPda string, treasury, wallet solana.PublicKey) (string, error) {
 	if h.Sponsor == nil {

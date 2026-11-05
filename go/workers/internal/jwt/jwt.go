@@ -70,7 +70,7 @@ func (k Keys) Verify(token string, want Audience, now time.Time) ([]byte, error)
 	if len(segments) != 3 {
 		return nil, ErrMalformed
 	}
-	rawHeader, err := base64.RawURLEncoding.DecodeString(segments[0])
+	rawHeader, err := decodeSegment(segments[0])
 	if err != nil {
 		return nil, ErrMalformed
 	}
@@ -81,7 +81,7 @@ func (k Keys) Verify(token string, want Audience, now time.Time) ([]byte, error)
 	if h.Crit != nil {
 		return nil, ErrAlgorithm
 	}
-	signature, err := base64.RawURLEncoding.DecodeString(segments[2])
+	signature, err := decodeSegment(segments[2])
 	if err != nil {
 		return nil, ErrMalformed
 	}
@@ -100,7 +100,7 @@ func (k Keys) Verify(token string, want Audience, now time.Time) ([]byte, error)
 	default:
 		return nil, ErrAlgorithm
 	}
-	claims, err := base64.RawURLEncoding.DecodeString(segments[1])
+	claims, err := decodeSegment(segments[1])
 	if err != nil {
 		return nil, ErrMalformed
 	}
@@ -120,6 +120,17 @@ func (k Keys) Verify(token string, want Audience, now time.Time) ([]byte, error)
 		return nil, ErrAudience
 	}
 	return claims, nil
+}
+
+func decodeSegment(segment string) ([]byte, error) {
+	raw, err := base64.RawURLEncoding.DecodeString(segment)
+	if err != nil {
+		return nil, err
+	}
+	if base64.RawURLEncoding.EncodeToString(raw) != segment {
+		return nil, ErrMalformed
+	}
+	return raw, nil
 }
 
 func audienceMatches(raw json.RawMessage, want Audience) bool {
