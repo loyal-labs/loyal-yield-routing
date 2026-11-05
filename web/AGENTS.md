@@ -795,14 +795,20 @@ embedded EVM wallet until they press Confirm on Assets. Assets shows one "Confir
 transfer" card per nonzero balance from `/api/funding/bridge/balances` above the asset list,
 and the sidebar Assets item counts them with a red dot. Only a signed-in wallet whose Solana
 account is not a Privy embedded wallet reads the deposit route and balances. The balance is
-the truth of what waits; a submitted transfer from `/api/funding/bridge/transfers` is the
-truth of what moves, and hides its balance for 15 minutes. `useIncomingTransfers` owns the
-reads, one 3 s transfers poll while anything bridges, and every Move; cards only render its
-items. Confirm takes the per-chain Web Lock first, re-reads, and quotes the fresh balance, so
-a second tab or a second asset on the same chain waits and then finds nothing to move. The
-origin transaction must land before `/submit`. The card row shows Bridging…, Arrived or
-Failed with Retry. A failed balances read keeps transfers and shows an inline Retry. A
-balance under its chain's `minUsd` shows the minimum with Confirm disabled.
+the truth of what waits; a transfer the server flags `inFlight` in
+`/api/funding/bridge/transfers` is the truth of what moves and hides its balance. The server
+owns in flight: an incoming transfer is in flight from `/confirm` until it settles, within the
+tracker's 2 h lost-submit window, and quote or confirm for the same chain and asset answers
+409 `bridge_in_flight` with its `requestId`, which the card shows as Bridging…. A send that
+was rejected, refused or reverted posts `/release` so the lane frees at once.
+`useIncomingTransfers` owns the reads, one 3 s transfers poll while anything is in flight, a
+balances re-read on window focus at most every 30 s, and every Move; cards only render its
+items, in one chain-then-asset order. Confirm takes the per-chain Web Lock first, re-reads,
+and quotes the fresh balance. Only a reverted receipt skips `/submit`; an unreadable receipt
+submits the hash. Every request of a Move stops when the wallet that started it changes. The
+card row shows Bridging…, Arrived or Failed with Retry, and a settled server state beats a
+client failure. A failed balances or deposit-address read shows an inline Retry. A balance
+under its chain's `minUsd` shows the minimum with Confirm disabled.
 `privy_autobridge` routes make no balances request. The card is the only Move entry point.
 The sidebar Bridge action opens the Bridge Out main pane,
 with send-asset, receive-asset → chain, and recipient selectors. It shares the
