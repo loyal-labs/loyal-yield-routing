@@ -966,6 +966,17 @@ private. An unset name disables only the page or panel that needs it.
 The public-key names have no built-in default: unset, the Earn funding page
 shows that role as unconfigured.
 
+## Apex (askloyal.com, www)
+
+Since Nov 5 2026 12:39 PST `askloyal.com` and `www.askloyal.com` are proxied
+CNAMEs to the loyal-workers tunnel, served by loyal-web (prerendered pages and
+the Go API routes; anything else proxies to `backend.askloyal.com`, and `/_next/`
+assets go straight to the Vercel deployment). The apex keeps its Google MX, SPF
+and site-verification records. The apex CNAME was created through the
+Cloudflare API, not `tunnel route dns`, so the MX and TXT records stay put.
+Rollback: replace the apex CNAME with `A 216.198.79.1` (DNS only, TTL 600) and
+point `www` back at `CNAME 43e72ea85637f02c.vercel-dns-017.com` (DNS only).
+
 ## Telegram (loyal-telegram)
 
 `loyal-telegram.service` answers the `@askloyal_tgbot` webhook. The tunnel
