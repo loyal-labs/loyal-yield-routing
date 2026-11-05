@@ -30,7 +30,7 @@ func TestBridgeAndReferralsAdmitOnlyTestWallets(t *testing.T) {
 		}
 		return "Bearer " + token
 	}
-	routes := earnRoutes{auth: &Auth{keys: keys}}
+	routes := earnRoutes{auth: &Auth{keys: keys}, Earn: Earn{TestWallets: parseTestWallets(strings.Join(ownerTestWallets, ","))}}
 	router := chi.NewRouter()
 	api := humachi.New(router, apiConfig())
 	routes.registerBridge(api)

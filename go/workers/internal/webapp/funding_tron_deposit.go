@@ -104,7 +104,7 @@ func (h earnRoutes) tronDepositAddress(ctx context.Context, in *sessionRequest) 
 		return nil, tronDepositUnavailable("tron deposit session", err)
 	}
 	wallet := session.Wallet
-	if err := admitTestWallet(wallet); err != nil {
+	if err := h.TestWallets.admit(wallet); err != nil {
 		return nil, err
 	}
 	userID, err := h.appUserID(ctx, wallet)

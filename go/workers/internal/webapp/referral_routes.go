@@ -101,6 +101,7 @@ type referralRoutes struct {
 	inviteBase string
 	tries      *inviteAttempts
 	lookups    *limiters
+	wallets    TestWallets
 }
 
 func (h earnRoutes) registerReferrals(api huma.API) {
@@ -110,6 +111,7 @@ func (h earnRoutes) registerReferrals(api huma.API) {
 		inviteBase: strings.TrimRight(cmp.Or(os.Getenv("LOYAL_INVITE_BASE_URL"), defaultInviteBase), "/"),
 		tries:      newInviteAttempts(),
 		lookups:    newLimiters(),
+		wallets:    h.TestWallets,
 	}
 	huma.Register(api, huma.Operation{
 		OperationID: "get-referrals",
@@ -143,7 +145,7 @@ func (h referralRoutes) user(ctx context.Context, in SessionInput) (referral.Use
 	if err != nil {
 		return referral.User{}, earnUnavailable("referrals session", err, referralsDownCode, referralsDownReason)
 	}
-	if err := admitTestWallet(session.Wallet); err != nil {
+	if err := h.wallets.admit(session.Wallet); err != nil {
 		return referral.User{}, err
 	}
 	user, err := h.store.User(ctx, session.Wallet.String())

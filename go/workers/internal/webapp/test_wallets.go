@@ -5,14 +5,13 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"sync"
 
 	"github.com/solana-foundation/solana-go/v2"
 )
 
 // Bridge and referrals stay closed until launch. The web client's copy of this list
 // (web/apps/web/src/features/test-wallets.ts) only picks which UI to show.
-type walletGate struct {
+type TestWallets struct {
 	all     bool
 	wallets map[solana.PublicKey]struct{}
 }
@@ -22,12 +21,16 @@ var ownerTestWallets = []string{
 	"62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5",
 }
 
-var testWallets = sync.OnceValue(func() walletGate {
+func TestWalletsFromEnv() TestWallets {
 	list, set := os.LookupEnv("LOYAL_TEST_WALLETS")
 	if !set {
 		list = strings.Join(ownerTestWallets, ",")
 	}
-	gate := walletGate{wallets: map[solana.PublicKey]struct{}{}}
+	return parseTestWallets(list)
+}
+
+func parseTestWallets(list string) TestWallets {
+	gate := TestWallets{wallets: map[solana.PublicKey]struct{}{}}
 	for _, entry := range strings.Split(list, ",") {
 		entry = strings.TrimSpace(entry)
 		switch {
@@ -44,15 +47,10 @@ var testWallets = sync.OnceValue(func() walletGate {
 		}
 	}
 	return gate
-})
-
-func (g walletGate) admits(wallet solana.PublicKey) bool {
-	_, listed := g.wallets[wallet]
-	return g.all || listed
 }
 
-func admitTestWallet(wallet solana.PublicKey) error {
-	if testWallets().admits(wallet) {
+func (g TestWallets) admit(wallet solana.PublicKey) error {
+	if _, listed := g.wallets[wallet]; g.all || listed {
 		return nil
 	}
 	return earnError(http.StatusForbidden, "not_open", "This feature is not open yet.")
