@@ -969,7 +969,7 @@ shows that role as unconfigured.
 ## Telegram (loyal-telegram)
 
 `loyal-telegram.service` answers the `@askloyal_tgbot` webhook. The tunnel
-carries only `https://tg.askloyal.com/api/telegram/webhook` to it on
+carries only `https://tgbot.askloyal.com/api/telegram/webhook` to it on
 127.0.0.1:10083; every other path on that host is a 404. The first release went
 in by hand like `loyal-web`'s; after that `bun run deploy telegram [<sha>]`
 deploys and rolls back.
