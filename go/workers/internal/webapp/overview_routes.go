@@ -24,6 +24,8 @@ var earnOverviewFamily = earnFamily{
 	register: earnRoutes.registerOverview,
 }
 
+var overviewRefreshBudget = budget{every: 3 * time.Second, burst: 3}
+
 const (
 	overviewCooldown    = 15 * time.Second
 	overviewResultTTL   = 2 * time.Second
@@ -39,7 +41,8 @@ var (
 
 type overviewRoutes struct {
 	earnRoutes
-	cache *overviewCache
+	cache  *overviewCache
+	assets *overviewAssets
 }
 
 type overviewInput struct {
@@ -76,15 +79,19 @@ type overviewMeta struct {
 }
 
 func (h earnRoutes) registerOverview(api huma.API) {
-	o := &overviewRoutes{earnRoutes: h, cache: newOverviewCache()}
+	o := &overviewRoutes{earnRoutes: h, cache: newOverviewCache(), assets: newOverviewAssets(h)}
+	o.register(api)
+}
+
+func (o *overviewRoutes) register(api huma.API) {
 	registerWebReads(api, "smart-account-overview-base", "/api/smart-accounts/overview/base", func(ctx context.Context, in *overviewInput) (*overviewOutput, error) {
 		return o.serve(ctx, in.SessionInput, "smart-account-overview-base", func(ctx context.Context, settings solana.PublicKey) (any, error) {
-			return overviewLoad(ctx, o.cache, settings.String()+":base", false, func(ctx context.Context) (overviewBase, error) { return o.base(ctx, settings) })
+			return overviewLoad(ctx, o.cache, settings.String()+":base", false, overviewResultTTL, func(ctx context.Context) (overviewBase, error) { return o.base(ctx, settings) })
 		}), nil
 	})
 	registerWebReads(api, "smart-account-overview-policies", "/api/smart-accounts/overview/policies", func(ctx context.Context, in *overviewPoliciesInput) (*overviewOutput, error) {
 		return o.serve(ctx, in.SessionInput, "smart-account-overview-policies", func(ctx context.Context, settings solana.PublicKey) (any, error) {
-			return overviewLoad(ctx, o.cache, settings.String()+":policies", in.ForceRefresh == "1", func(ctx context.Context) (overviewPolicies, error) { return o.policies(ctx, settings) })
+			return overviewLoad(ctx, o.cache, settings.String()+":policies", in.ForceRefresh == "1" && o.refreshAllowed(settings), overviewResultTTL, func(ctx context.Context) (overviewPolicies, error) { return o.policies(ctx, settings) })
 		}), nil
 	})
 	registerWebReads(api, "smart-account-overview-best-apy-reserves", "/api/smart-accounts/overview/best-apy-reserves", func(ctx context.Context, in *overviewReservesInput) (*overviewOutput, error) {
@@ -97,17 +104,43 @@ func (h earnRoutes) registerOverview(api huma.API) {
 			return o.bestApyReserves(ctx, markets)
 		}), nil
 	})
+	registerWebReads(api, "smart-account-overview-vaults", "/api/smart-accounts/overview/vaults", func(ctx context.Context, in *overviewVaultsInput) (*overviewOutput, error) {
+		return o.serve(ctx, in.SessionInput, "smart-account-overview-vaults", func(ctx context.Context, settings solana.PublicKey) (any, error) {
+			bypass, err := overviewInvalidates(in.Invalidate)
+			if err != nil {
+				return nil, err
+			}
+			bypass = bypass && o.refreshAllowed(settings)
+			highest, given := overviewParseInt(in.AccountUtilization)
+			return overviewLoad(ctx, o.cache, settings.String()+":vaults", bypass, overviewResultTTL, func(ctx context.Context) ([]overviewVault, error) { return o.vaults(ctx, settings, highest, given) })
+		}), nil
+	})
+	registerWebReads(api, "smart-account-vault-activity", "/api/smart-accounts/vault-activity", func(ctx context.Context, in *overviewActivityInput) (*overviewOutput, error) {
+		return o.serveActivity(ctx, in), nil
+	})
 }
 
-func (o *overviewRoutes) serve(ctx context.Context, in SessionInput, timing string, load func(context.Context, solana.PublicKey) (any, error)) *overviewOutput {
+func (o *overviewRoutes) refreshAllowed(settings solana.PublicKey) bool {
+	return o.bridgeQuotes.get(limiterKey{"overview-refresh", "settings", settings.String()}, overviewRefreshBudget, time.Now()).Allow()
+}
+
+func (o *overviewRoutes) principal(ctx context.Context, in SessionInput, timing string) (solana.PublicKey, *overviewOutput) {
 	settings, err := o.sessionSettings(ctx, in)
 	var refused *AuthError
 	if errors.As(err, &refused) && refused.Failure == Unauthenticated {
-		return overviewJSON(http.StatusUnauthorized, overviewUnauthenticated)
+		return solana.PublicKey{}, overviewJSON(http.StatusUnauthorized, overviewUnauthenticated)
 	}
 	if err != nil {
 		slog.Warn("[smart-account-overview] session principal refused", "timing", timing, "error", err)
-		return overviewFailed()
+		return solana.PublicKey{}, overviewFailed()
+	}
+	return settings, nil
+}
+
+func (o *overviewRoutes) serve(ctx context.Context, in SessionInput, timing string, load func(context.Context, solana.PublicKey) (any, error)) *overviewOutput {
+	settings, refused := o.principal(ctx, in, timing)
+	if refused != nil {
+		return refused
 	}
 	started := time.Now()
 	data, err := load(ctx, settings)
@@ -176,7 +209,7 @@ func newOverviewCache() *overviewCache {
 	return &overviewCache{latest: map[string]uint64{}, flights: map[string]*overviewFlight{}, cooldown: map[string]time.Time{}, done: map[string]ttlItem[any]{}}
 }
 
-func overviewLoad[T any](ctx context.Context, c *overviewCache, key string, bypass bool, load func(context.Context) (T, error)) (T, error) {
+func overviewLoad[T any](ctx context.Context, c *overviewCache, key string, bypass bool, ttl time.Duration, load func(context.Context) (T, error)) (T, error) {
 	var zero T
 	now := time.Now()
 	c.mu.Lock()
@@ -205,7 +238,7 @@ func overviewLoad[T any](ctx context.Context, c *overviewCache, key string, bypa
 	go func() {
 		loadCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), overviewLoadTimeout)
 		defer cancel()
-		flight.value, flight.err = c.run(loadCtx, key, token, func(ctx context.Context) (any, error) { return load(ctx) })
+		flight.value, flight.err = c.run(loadCtx, key, token, ttl, func(ctx context.Context) (any, error) { return load(ctx) })
 		c.mu.Lock()
 		if c.flights[key] == flight {
 			delete(c.flights, key)
@@ -219,7 +252,7 @@ func overviewLoad[T any](ctx context.Context, c *overviewCache, key string, bypa
 	return overviewWait[T](ctx, flight)
 }
 
-func (c *overviewCache) run(ctx context.Context, key string, token uint64, load func(context.Context) (any, error)) (any, error) {
+func (c *overviewCache) run(ctx context.Context, key string, token uint64, ttl time.Duration, load func(context.Context) (any, error)) (any, error) {
 	for attempt := 0; ; attempt++ {
 		value, err := load(ctx)
 		now := time.Now()
@@ -228,7 +261,7 @@ func (c *overviewCache) run(ctx context.Context, key string, token uint64, load 
 			c.mu.Lock()
 			if c.latest[key] == token {
 				delete(c.cooldown, key)
-				c.done[key] = ttlItem[any]{expires: now.Add(overviewResultTTL), value: value}
+				c.done[key] = ttlItem[any]{expires: now.Add(ttl), value: value}
 			}
 			c.mu.Unlock()
 			return value, nil

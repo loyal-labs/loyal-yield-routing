@@ -109,17 +109,24 @@ func registerAPI(api huma.API, cfg Config) {
 	if cfg.WalletPush != nil && cfg.WalletPush.Secret != "" {
 		registerWalletPush(api, cfg.WalletPush)
 	}
+	var details *tokenDetails
+	var tokens *webTokens
+	if cfg.CoinGeckoAPIKey != "" {
+		details = newTokenDetails(cfg.CoinGeckoAPIKey)
+		tokens = newWebTokens(details)
+	}
 	if cfg.Earn != nil {
-		registerEarn(api, newEarnRoutes(cfg.Auth, cfg.AppDB, *cfg.Earn))
+		routes := newEarnRoutes(cfg.Auth, cfg.AppDB, *cfg.Earn)
+		routes.tokens = tokens
+		registerEarn(api, routes)
 	}
 	registerCSPReport(api, cfg.Earn)
 	registerKaminoProxies(api)
 	registerCherryLaunch(api)
 	registerLogout(api)
-	if cfg.CoinGeckoAPIKey != "" {
-		details := newTokenDetails(cfg.CoinGeckoAPIKey)
+	if tokens != nil {
 		registerTokens(api, details)
-		registerWebTokens(api, newWebTokens(details))
+		registerWebTokens(api, tokens)
 	}
 }
 
