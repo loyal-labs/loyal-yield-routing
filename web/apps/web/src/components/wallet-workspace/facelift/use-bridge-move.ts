@@ -19,65 +19,38 @@ import {
   useState,
 } from "react";
 
-export type MoveBalance = {
+import { useEvmDepositAddress } from "./use-evm-deposit-address";
+
+export type IncomingTransfer = {
   chain: string;
-  chainName: string;
+  shortName: string;
   chainIcon: string | null;
   asset: string;
   symbol: string;
-  name: string;
   icon: string | null;
   decimals: number;
   amountRaw: bigint;
-};
-
-export type MoveTransfer = {
-  requestId: string;
-  status: string;
-  amount: string;
-  symbol: string;
-  chainName: string;
-  chainIcon: string | null;
-  icon: string | null;
-};
-
-export type MoveSource = {
-  sender: string;
-  recipient: string;
-  balances: MoveBalance[];
-  start: MoveBalance;
+  minUsd: number;
+  requestId: string | null;
 };
 
 export type MoveStep =
   | { kind: "form" }
-  | { kind: "sending"; quote: BridgeQuoteResponse }
-  | { kind: "bridging"; quote: BridgeQuoteResponse; originTx: string }
+  | { kind: "sending" }
+  | { kind: "bridging"; requestId: string }
   | { kind: "filled"; transfer: BridgeTransfer }
   | { kind: "failed"; message: string; requestId: string | null };
 
-const RECEIVE_DECIMALS = 6;
-const QUOTE_DEBOUNCE_MS = 500;
 const POLL_MS = 3000;
 const RECEIPT_TIMEOUT_MS = 120_000;
 const SEND_TIMEOUT_MS = 120_000;
 const SEND_TIMEOUT = "move_send_timeout";
-const QUOTE_MAX_AGE_MS = 30_000;
-const SETTLED_ROW_MS = 86_400_000;
-const TRANSFER_ROWS = 3;
 
 const SPONSOR_REFUSAL_CODES = new Set([
   "insufficient_funds",
   "policy_violation",
   "feature_not_enabled",
 ]);
-
-const TRANSFER_STATUS: Record<BridgeTransfer["state"], string> = {
-  quoted: "Bridging to Solana",
-  submitted: "Bridging to Solana",
-  filled: "Moved to Solana",
-  refunded: "Refunded",
-  failed: "Move failed",
-};
 
 export function toRaw(input: string, decimals: number): bigint {
   const [whole = "", fraction = ""] = input.replace(/,/g, "").split(".");
@@ -93,8 +66,6 @@ export function fromRaw(raw: bigint | string, decimals: number): string {
   const whole = (value / base).toLocaleString("en-US");
   return trimmed ? `${whole}.${trimmed}` : whole;
 }
-
-export const receivedAmount = (raw: string) => fromRaw(raw, RECEIVE_DECIMALS);
 
 async function readJSON<T>(res: Response, fallback: string): Promise<T> {
   const body = (await res.json().catch(() => null)) as
@@ -157,16 +128,6 @@ function sendFailureCopy(failure: SendFailure, symbol: string, sent: boolean) {
     : "The move did not finish. Please try again.";
 }
 
-function recentTransfers(transfers: BridgeTransfer[], now: number) {
-  return transfers
-    .filter(
-      (t) =>
-        t.state === "submitted" ||
-        now - Date.parse(t.settledAt ?? t.quotedAt) < SETTLED_ROW_MS
-    )
-    .slice(0, TRANSFER_ROWS);
-}
-
 const readBalances = async () =>
   (
     await readJSON<BridgeBalancesResponse>(
@@ -187,7 +148,6 @@ type MoveRead = {
   wallet: string | null;
   balances: BridgeBalance[];
   transfers: BridgeTransfer[];
-  error: string | null;
 };
 
 export function useBridgeMoveBalances(
@@ -203,17 +163,10 @@ export function useBridgeMoveBalances(
     let live = true;
     void Promise.all([readBalances(), readTransfers().catch(() => [])])
       .then(([balances, transfers]) => {
-        if (live)
-          setRead({
-            wallet,
-            balances,
-            transfers: recentTransfers(transfers, Date.now()),
-            error: null,
-          });
+        if (live) setRead({ wallet, balances, transfers });
       })
-      .catch((e) => {
-        if (live)
-          setRead({ wallet, balances: [], transfers: [], error: errorText(e) });
+      .catch(() => {
+        if (live) setRead({ wallet, balances: [], transfers: [] });
       });
     return () => {
       live = false;
@@ -221,50 +174,66 @@ export function useBridgeMoveBalances(
   }, [enabled, hasNetworks, wallet, reads]);
 
   const shown = enabled && read?.wallet === wallet ? read : null;
-  const balances = useMemo(
-    () =>
-      (shown?.balances ?? []).flatMap((b): MoveBalance[] => {
-        const network = networks.find((n) => n.chain === b.chain);
-        const token = network?.tokens?.find((t) => t.asset === b.asset);
-        const amountRaw = BigInt(b.amountRaw);
-        if (!network || !token || amountRaw === BigInt(0)) return [];
-        return [
-          {
-            chain: b.chain,
-            chainName: network.name,
-            chainIcon: network.icon,
-            asset: b.asset,
-            symbol: token.symbol,
-            name: token.name,
-            icon: token.icon,
-            decimals: b.decimals,
-            amountRaw,
-          },
-        ];
-      }),
-    [networks, shown]
+  const incoming = useMemo(() => {
+    const row = (
+      chain: string,
+      asset: string,
+      amountRaw: bigint,
+      requestId: string | null
+    ): IncomingTransfer[] => {
+      const network = networks.find((n) => n.chain === chain);
+      const token = network?.tokens?.find((t) => t.asset === asset);
+      if (!network || !token || amountRaw === BigInt(0)) return [];
+      return [
+        {
+          chain,
+          shortName: network.shortName,
+          chainIcon: network.icon,
+          asset,
+          symbol: token.symbol,
+          icon: token.icon,
+          decimals: token.decimals,
+          amountRaw,
+          minUsd: network.minUsd,
+          requestId,
+        },
+      ];
+    };
+    const bridging = (shown?.transfers ?? []).filter(
+      (t) => t.state === "submitted"
+    );
+    const moving = new Set(bridging.map((t) => `${t.chain}:${t.asset}`));
+    return [
+      ...bridging.flatMap((t) =>
+        row(t.chain, t.asset, BigInt(t.amountInRaw), t.requestId)
+      ),
+      ...(shown?.balances ?? [])
+        .filter((b) => !moving.has(`${b.chain}:${b.asset}`))
+        .flatMap((b) => row(b.chain, b.asset, BigInt(b.amountRaw), null)),
+    ];
+  }, [networks, shown]);
+  return { incoming, reload };
+}
+
+export function useIncomingTransfers(walletAddress: string | null) {
+  const evm = useEvmDepositAddress(walletAddress);
+  const { info, load, retryOnNextLoad } = evm;
+  const [peeks, peek] = useReducer((n: number) => n + 1, 0);
+  useEffect(() => {
+    void load(false);
+  }, [load, peeks]);
+  const sender = info?.kind === "relay_signed" ? info.address : null;
+  const { incoming, reload } = useBridgeMoveBalances(
+    sender !== null,
+    evm.networks,
+    walletAddress
   );
-  const transfers = useMemo(
-    () =>
-      (shown?.transfers ?? []).flatMap((t): MoveTransfer[] => {
-        const network = networks.find((n) => n.chain === t.chain);
-        const token = network?.tokens?.find((k) => k.asset === t.asset);
-        if (!network || !token) return [];
-        return [
-          {
-            requestId: t.requestId,
-            status: TRANSFER_STATUS[t.state],
-            amount: fromRaw(t.amountInRaw, token.decimals),
-            symbol: token.symbol,
-            chainName: network.name,
-            chainIcon: network.icon,
-            icon: token.icon,
-          },
-        ];
-      }),
-    [networks, shown]
-  );
-  return { balances, transfers, error: shown?.error ?? null, reload };
+  const refresh = useCallback(() => {
+    retryOnNextLoad();
+    peek();
+    reload();
+  }, [reload, retryOnNextLoad]);
+  return { sender, transfers: sender ? incoming : [], reload: refresh };
 }
 
 async function waitForReceipt(
@@ -286,114 +255,25 @@ async function waitForReceipt(
   throw new Error("Transaction confirmation timed out");
 }
 
-type HeldQuote = {
-  key: string;
-  response: BridgeQuoteResponse;
-  expiresAt: number;
-  stale: boolean;
-};
-
-export function useBridgeMove(balance: MoveBalance, sender: string) {
+export function useBridgeMove(
+  transfer: IncomingTransfer,
+  sender: string,
+  onSubmitted: () => void
+) {
   const { sendTransaction } = useSendTransaction();
   const { wallets } = useWallets();
-  const [amountInput, setAmountInput] = useState("");
-  const [held, setHeld] = useState<HeldQuote | null>(null);
-  const [quoteError, setQuoteError] = useState<string | null>(null);
-  const [quoting, setQuoting] = useState(false);
-  const [refreshes, refresh] = useReducer((n: number) => n + 1, 0);
-  const [lockedElsewhere, setLockedElsewhere] = useState<string | null>(null);
-  const [step, setStep] = useState<MoveStep>({ kind: "form" });
-  const sendingRef = useRef(false);
-  const amountRaw = toRaw(amountInput, balance.decimals);
-  const insufficient = amountRaw > balance.amountRaw;
-  const key = `${balance.chain}:${balance.asset}:${amountRaw}`;
-  const current = held && held.key === key ? held : null;
-  const onForm = step.kind === "form";
-  const lockName = `loyal.bridge.move:${sender.toLowerCase()}:${balance.chain}`;
-
-  useEffect(() => {
-    if (!onForm || amountRaw === BigInt(0) || insufficient) {
-      setQuoting(false);
-      setQuoteError(null);
-      return;
-    }
-    let live = true;
-    setQuoting(true);
-    setQuoteError(null);
-    const timer = setTimeout(() => {
-      void post("/api/funding/bridge/quote", {
-        chain: balance.chain,
-        asset: balance.asset,
-        amountRaw: amountRaw.toString(),
-      })
-        .then((res) => readJSON<BridgeQuoteResponse>(res, "Could not get a quote"))
-        .then((response) => {
-          if (live)
-            setHeld({
-              key,
-              response,
-              expiresAt: Date.now() + QUOTE_MAX_AGE_MS,
-              stale: false,
-            });
-        })
-        .catch((e) => {
-          if (live) setQuoteError(errorText(e));
-        })
-        .finally(() => {
-          if (live) setQuoting(false);
-        });
-    }, QUOTE_DEBOUNCE_MS);
-    return () => {
-      live = false;
-      clearTimeout(timer);
-    };
-  }, [
-    amountRaw,
-    balance.asset,
-    balance.chain,
-    insufficient,
-    key,
-    onForm,
-    refreshes,
-  ]);
-
-  const expire = useCallback(() => {
-    setHeld((q) => q && { ...q, stale: true });
-    if (!document.hidden) refresh();
-  }, []);
-
-  useEffect(() => {
-    if (!onForm || !current) return;
-    const timer = setTimeout(
-      expire,
-      current.stale ? QUOTE_MAX_AGE_MS : current.expiresAt - Date.now()
-    );
-    const onVisible = () => {
-      if (!document.hidden && Date.now() >= current.expiresAt) expire();
-    };
-    document.addEventListener("visibilitychange", onVisible);
-    return () => {
-      clearTimeout(timer);
-      document.removeEventListener("visibilitychange", onVisible);
-    };
-  }, [current, expire, onForm]);
-
-  useEffect(() => {
-    if (lockedElsewhere !== lockName) return;
-    const waiting = new AbortController();
-    void navigator.locks
-      .request(lockName, { signal: waiting.signal }, () => {
-        setLockedElsewhere(null);
-        refresh();
-      })
-      .catch(() => undefined);
-    return () => waiting.abort();
-  }, [lockName, lockedElsewhere]);
+  const [step, setStep] = useState<MoveStep>(
+    transfer.requestId
+      ? { kind: "bridging", requestId: transfer.requestId }
+      : { kind: "form" }
+  );
+  const busyRef = useRef(false);
+  const lockName = `loyal.bridge.move:${sender.toLowerCase()}:${transfer.chain}`;
 
   const move = useCallback(
     async (quoted: BridgeQuoteResponse) => {
       const calls = quoted.calls ?? [];
-      setStep({ kind: "sending", quote: quoted });
+      setStep({ kind: "sending" });
       const wallet = wallets.find(
         (w) => w.address.toLowerCase() === sender.toLowerCase()
       );
@@ -444,13 +324,13 @@ export function useBridgeMove(balance: MoveBalance, sender: string) {
           ).catch(() => undefined);
         setStep({
           kind: "failed",
-          message: sendFailureCopy(failure, balance.symbol, sent),
+          message: sendFailureCopy(failure, transfer.symbol, sent),
           requestId: null,
         });
         return;
       }
       if (!originTx) return;
-      setStep({ kind: "bridging", quote: quoted, originTx });
+      setStep({ kind: "bridging", requestId: quoted.requestId });
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
           await readJSON<BridgeTransfer>(
@@ -460,24 +340,29 @@ export function useBridgeMove(balance: MoveBalance, sender: string) {
             ),
             "Could not record the bridge"
           );
-          return;
+          break;
         } catch {
           if (attempt < 2) await new Promise((r) => setTimeout(r, 2000));
         }
       }
+      onSubmitted();
     },
-    [balance.symbol, sendTransaction, sender, wallets]
+    [onSubmitted, sendTransaction, sender, transfer.symbol, wallets]
   );
 
-  const send = useCallback(async () => {
-    if (!current || sendingRef.current) return;
-    if (Date.now() >= current.expiresAt) {
-      expire();
-      return;
-    }
-    const quoted = current.response;
-    sendingRef.current = true;
+  const confirm = useCallback(async () => {
+    if (busyRef.current) return;
+    busyRef.current = true;
+    setStep({ kind: "sending" });
     try {
+      const quoted = await readJSON<BridgeQuoteResponse>(
+        await post("/api/funding/bridge/quote", {
+          chain: transfer.chain,
+          asset: transfer.asset,
+          amountRaw: transfer.amountRaw.toString(),
+        }),
+        "Could not get a quote"
+      );
       if (!navigator.locks) {
         await move(quoted);
         return;
@@ -487,13 +372,22 @@ export function useBridgeMove(balance: MoveBalance, sender: string) {
         { ifAvailable: true },
         async (lock: Lock | null) => {
           if (lock) await move(quoted);
-          else setLockedElsewhere(lockName);
+          else
+            setStep({
+              kind: "failed",
+              message: "A move is already running in another tab.",
+              requestId: null,
+            });
         }
       );
+    } catch (e) {
+      setStep({ kind: "failed", message: errorText(e), requestId: null });
     } finally {
-      sendingRef.current = false;
+      busyRef.current = false;
     }
-  }, [current, expire, lockName, move]);
+  }, [lockName, move, transfer.amountRaw, transfer.asset, transfer.chain]);
+
+  const reset = useCallback(() => setStep({ kind: "form" }), []);
 
   const bridging = step.kind === "bridging" ? step : null;
   useEffect(() => {
@@ -501,19 +395,20 @@ export function useBridgeMove(balance: MoveBalance, sender: string) {
     let live = true;
     const poll = async () => {
       try {
-        const transfer = (await readTransfers()).find(
-          (t) => t.requestId === bridging.quote.requestId
+        const settled = (await readTransfers()).find(
+          (t) => t.requestId === bridging.requestId
         );
-        if (!live || !transfer) return;
-        if (transfer.state === "filled") setStep({ kind: "filled", transfer });
-        else if (transfer.state === "refunded" || transfer.state === "failed")
+        if (!live || !settled) return;
+        if (settled.state === "filled")
+          setStep({ kind: "filled", transfer: settled });
+        else if (settled.state === "refunded" || settled.state === "failed")
           setStep({
             kind: "failed",
             message:
-              transfer.state === "refunded"
-                ? `Relay refunded ${balance.symbol} to your ${balance.chainName} wallet.`
+              settled.state === "refunded"
+                ? `Relay refunded ${transfer.symbol} to your ${transfer.shortName} wallet.`
                 : "The bridge failed.",
-            requestId: transfer.requestId,
+            requestId: settled.requestId,
           });
       } catch {
         return;
@@ -525,19 +420,7 @@ export function useBridgeMove(balance: MoveBalance, sender: string) {
       live = false;
       clearInterval(timer);
     };
-  }, [balance.chainName, balance.symbol, bridging]);
+  }, [bridging, transfer.shortName, transfer.symbol]);
 
-  return {
-    amountInput,
-    setAmountInput,
-    amountRaw,
-    insufficient,
-    quote: current?.response ?? null,
-    ready: Boolean(current && !current.stale && !quoting),
-    elsewhere: lockedElsewhere === lockName,
-    quoting,
-    quoteError,
-    step,
-    send,
-  };
+  return { step, confirm, reset };
 }

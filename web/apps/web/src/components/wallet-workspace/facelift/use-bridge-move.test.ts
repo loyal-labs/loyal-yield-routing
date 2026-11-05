@@ -43,16 +43,17 @@ const NETWORKS = [
     tokens: [{ asset: "0xusdc", symbol: "USDC", name: "USD Coin", icon: null, decimals: 6 }],
   },
 ];
-const BALANCE = {
+const TRANSFER = {
   chain: "base",
-  chainName: "Base",
+  shortName: "Base",
   chainIcon: null,
   asset: "0xusdc",
   symbol: "USDC",
-  name: "USD Coin",
   icon: null,
   decimals: 6,
   amountRaw: BigInt(5_000_000),
+  minUsd: 0,
+  requestId: null,
 };
 const CALL = { to: EVM, data: "0x", value: "0" };
 const QUOTE = {
@@ -99,7 +100,7 @@ test("one open reads the balances once, however often the sheet renders", async 
     await React.act(async () => root.render(React.createElement(Probe)));
     await waitFor(50);
     expect(paths.filter((p) => p.endsWith("/balances"))).toHaveLength(1);
-    expect(moves.balances).toHaveLength(1);
+    expect(moves.incoming).toHaveLength(1);
   } finally {
     await React.act(async () => root.unmount());
     globalThis.fetch = realFetch;
@@ -122,15 +123,13 @@ async function failSend(failure: unknown, calls = [CALL], confirmStatus = 200) {
   sendTransaction.mockImplementationOnce(() => Promise.reject(failure));
   let move!: ReturnType<typeof useBridgeMove>;
   function Probe() {
-    move = useBridgeMove(BALANCE, EVM);
+    move = useBridgeMove(TRANSFER, EVM, () => undefined);
     return null;
   }
   const root = createRoot(document.createElement("div") as unknown as Element);
   try {
     await React.act(async () => root.render(React.createElement(Probe)));
-    await React.act(async () => move.setAmountInput("1"));
-    await waitFor(600);
-    await React.act(async () => move.send());
+    await React.act(async () => move.confirm());
     const { step } = move;
     return {
       step: step.kind,

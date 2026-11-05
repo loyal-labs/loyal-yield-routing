@@ -23,9 +23,9 @@ import {
 } from "@/components/wallet-workspace/facelift/crypto-pane";
 import { deriveSwapTokens, selectSwapToken } from "@/components/wallet-sidebar/swap-tokens";
 import { useAuthSession } from "@/contexts/auth-session-context";
-import { BridgeMove } from "./bridge-move";
 import { BridgeWorkspace } from "./bridge-workspace";
-import type { MoveSource } from "./use-bridge-move";
+import { IncomingTransferCard } from "./incoming-transfer-card";
+import type { useIncomingTransfers } from "./use-bridge-move";
 import { useEscapePage } from "@/components/wallet-workspace/facelift/escape-owner";
 import {
   MiddlePaneSlide,
@@ -82,16 +82,17 @@ function tokenRowToSwapToken(token: TokenRow): SwapToken {
   };
 }
 
-type BridgeAction = { type: "bridge" } | { type: "move"; source: MoveSource };
-export type AssetAction = { type: "send" } | { type: "swap" } | BridgeAction;
+export type AssetAction = { type: "send" | "swap" | "bridge" };
 
 export function CryptoPage({
+  incoming,
   navigationNonce,
   onBack,
   onEarn,
   onReceive,
   requestedAction,
 }: {
+  incoming: ReturnType<typeof useIncomingTransfers>;
   navigationNonce: number;
   onBack: () => void;
   onReceive: () => void;
@@ -100,6 +101,7 @@ export function CryptoPage({
 }) {
   const publicEnv = usePublicEnv();
   const { isHydrated, isSignedIn } = useAuthCapability();
+  const { sender, transfers } = incoming;
 
   const data = useWalletDesktopData({});
   const swapVisibleBalances = useMemo(
@@ -181,7 +183,7 @@ export function CryptoPage({
   const { recents: sendRecents, recordSend: recordSendRecent } =
     useSendRecentRecipients(data.walletAddress);
 
-  const [bridge, setBridge] = useState<BridgeAction | null>(null);
+  const [isBridgeOpen, setIsBridgeOpen] = useState(false);
   const bridgeUsdc = data.positions.find(
     (position) => position.asset.mint === TOKEN_MINTS.USDC
   );
@@ -303,11 +305,11 @@ export function CryptoPage({
 
   const { launched: showBridge } = useAuthSession();
   useEffect(() => {
-    if (!showBridge && bridge) setBridge(null);
-  }, [bridge, showBridge]);
+    if (!showBridge) setIsBridgeOpen(false);
+  }, [showBridge]);
   const openBridge = useCallback(() => {
     setIsDetailSheetOpen(false);
-    setBridge({ type: "bridge" });
+    setIsBridgeOpen(true);
     setViewStack([]);
     setSendSelect(null);
     closeSwap();
@@ -315,7 +317,7 @@ export function CryptoPage({
   }, [closeSwap, closeUnshield]);
 
   useAbandonActionsOnNavigate(navigationNonce, () => {
-    setBridge(null);
+    setIsBridgeOpen(false);
     setViewStack([]);
     setSendSelect(null);
     closeSwap();
@@ -325,12 +327,8 @@ export function CryptoPage({
   useEffect(() => {
     if (!requestedAction) return;
     setIsDetailSheetOpen(false);
-    setBridge(
-      requestedAction.type === "bridge" || requestedAction.type === "move"
-        ? requestedAction
-        : null
-    );
-    if (requestedAction.type === "bridge" || requestedAction.type === "move") {
+    setIsBridgeOpen(requestedAction.type === "bridge");
+    if (requestedAction.type === "bridge") {
       setViewStack([]);
       setSendSelect(null);
       closeSwap();
@@ -342,15 +340,6 @@ export function CryptoPage({
       openSwap();
     }
   }, [requestedAction, closeSwap, closeUnshield, openSend, openSwap]);
-
-  useEffect(() => {
-    if (data.walletAddress)
-      setBridge((open) =>
-        open?.type === "move" && open.source.recipient !== data.walletAddress
-          ? null
-          : open
-      );
-  }, [data.walletAddress]);
 
   useEscapePage(
     viewStack.length > 0 || isSwapOpen || isUnshieldOpen,
@@ -486,17 +475,11 @@ export function CryptoPage({
       <div className="flex h-full min-h-0 min-w-0 flex-1 gap-2 p-2 max-[795px]:gap-0 max-[795px]:p-0">
         <MiddlePaneSlide
           actionPane={
-            bridge?.type === "move" ? (
-              <BridgeMove
-                key={navigationNonce}
-                onBack={() => setBridge(null)}
-                source={bridge.source}
-              />
-            ) : bridge ? (
+            isBridgeOpen ? (
               <BridgeWorkspace
                 balance={bridgeUsdc?.publicBalance ?? 0}
                 key={navigationNonce}
-                onBack={() => setBridge(null)}
+                onBack={() => setIsBridgeOpen(false)}
                 price={bridgeUsdc?.priceUsd ?? 0}
               />
             ) : isSendOpen ? (
@@ -556,6 +539,18 @@ export function CryptoPage({
             <CryptoPane
               balanceFraction={pageBalance.balanceFraction}
               balanceWhole={pageBalance.balanceWhole}
+              incoming={
+                sender && transfers.length > 0
+                  ? transfers.map((transfer) => (
+                      <IncomingTransferCard
+                        key={`${transfer.chain}:${transfer.asset}`}
+                        onSettled={incoming.reload}
+                        sender={sender}
+                        transfer={transfer}
+                      />
+                    ))
+                  : null
+              }
               isBalanceRevealed={isWalletDataRevealed}
               isEmpty={isWalletDataRevealed && !hasAssets}
               onReceive={onReceive}
@@ -573,7 +568,7 @@ export function CryptoPage({
             />
           </PaneReveal>
         </MiddlePaneSlide>
-        {bridge ? null : isSendOpen ? (
+        {isBridgeOpen ? null : isSendOpen ? (
           <div className="hidden h-full w-[400px] shrink-0 min-[1204px]:block">
             <InlineSheetReveal
               className="flex h-full w-full min-w-0 flex-col overflow-clip rounded-3xl bg-card"

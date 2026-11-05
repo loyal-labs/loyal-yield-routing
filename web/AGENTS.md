@@ -790,6 +790,15 @@ Receive's Solana tab uses the authenticated wallet address and working copy/QR.
 The sidebar Bridge button and Receive → Other chains show when `/api/funding/launch` answers `launched: true` for the signed-in wallet (the server's `LOYAL_TEST_WALLETS` gate, read once into the auth session context as `launched`). Receive → Other chains is the sole entry
 to Bridge In: select a deposit asset, then its source chain; the asset to receive is fixed
 USDC on Solana. Its assets, chains, addresses, minimums and fees come from the server.
+Deposits to a `relay_signed` route (an external Solana wallet) stop on the user's Privy
+embedded EVM wallet until they press Confirm on Assets. Assets shows one "Confirm incoming
+transfer" card per nonzero balance from `/api/funding/bridge/balances` above the asset list,
+and the sidebar Assets item counts them with a red dot. The shell reads the balances once per
+load, again when Receive closes and after each Move. Confirm quotes the whole balance and runs
+the sponsored Move in `use-bridge-move.ts`; the card then shows bridging, filled or failed. A
+submitted transfer from `/api/funding/bridge/transfers` restores the bridging card after a
+reload. A balance under its chain's `minUsd` shows the minimum with Confirm disabled.
+`privy_autobridge` routes make no balances request. The card is the only Move entry point.
 The sidebar Bridge action opens the Bridge Out main pane,
 with send-asset, receive-asset → chain, and recipient selectors. It shares the
 Assets action page slide, form reveal, token icon swap, and text transitions
