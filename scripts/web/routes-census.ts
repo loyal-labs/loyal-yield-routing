@@ -29,7 +29,7 @@ const BASES: Record<string, { next: NextApp[]; go: boolean }> = {
 };
 const THIRD_PARTY_BASES = new Set(["gridAuthBaseUrl"]);
 
-const GO_MOBILE_ROUTES = new Set(["/api/mobile/dapps", "/api/mobile/library", "/api/mobile/tokens/{mint}"]);
+const GO_MOBILE_ROUTES = new Set(["/api/mobile/dapps", "/api/mobile/library", "/api/mobile/tokens/{mint}", "/api/smart-accounts/mobile/earn/earnings", "/api/smart-accounts/mobile/earn/holdings"]);
 
 const GO_ONLY_PREFIXES = [
   "/api/smart-accounts/yield-optimization",
