@@ -4,7 +4,7 @@ import type { EvmDepositNetwork, EvmDepositToken } from "@loyal-labs/api";
 import { QRCodeSVG } from "qrcode.react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
-import { bridgeEnabled } from "@/features/bridge/enabled";
+import { useAuthSession } from "@/contexts/auth-session-context";
 
 import { copyTextToClipboard } from "./copy-text";
 import { useEscapeOverlay } from "./escape-owner";
@@ -302,7 +302,10 @@ export function ReceiveSheet({
     wallet: string | null;
     tab: Tab;
   }>({ wallet: walletAddress, tab: initialTab });
-  const tab = tabState.wallet === walletAddress ? tabState.tab : initialTab;
+  const { launched } = useAuthSession();
+  const requestedTab =
+    tabState.wallet === walletAddress ? tabState.tab : initialTab;
+  const tab = launched ? requestedTab : "Solana";
   const setTab = (next: Tab) =>
     setTabState({ wallet: walletAddress, tab: next });
   const [view, setView] = useState<View>("receive");
@@ -312,7 +315,7 @@ export function ReceiveSheet({
   const panelRef = useRef<HTMLDivElement>(null);
   const bridge = tab === "Other chains";
   const evm = useEvmDepositAddress(walletAddress);
-  const live = bridgeEnabled() && evm.ready;
+  const live = launched && evm.ready;
   useEffect(() => {
     if (isOpen && bridge && live) void evm.load();
   }, [bridge, evm, isOpen, live]);

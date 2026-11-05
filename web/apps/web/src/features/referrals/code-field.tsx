@@ -10,8 +10,8 @@ import {
 } from "react";
 
 import { earnToast } from "@/components/wallet-workspace/facelift/earn-toast";
+import { useAuthSession } from "@/contexts/auth-session-context";
 
-import { referralsEnabled } from "./enabled";
 import { claimCode, codeExists, readClaimWindow } from "./claim";
 import {
   closesCopy,
@@ -128,7 +128,8 @@ function InviteCodeRow() {
 }
 
 export function SignInCodeRow() {
-  return referralsEnabled() ? <InviteCodeRow /> : null;
+  const { launched } = useAuthSession();
+  return launched ? <InviteCodeRow /> : null;
 }
 
 export function SettingsCodeField() {
