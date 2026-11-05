@@ -35,6 +35,7 @@ type Config struct {
 	EarnMax     *EarnMax
 	Earn        *Earn
 	PushDB      bool
+	WalletPush  *WalletPush
 	ContentDB   bool
 	StatsDB     bool
 	Dist        fs.FS
@@ -104,6 +105,9 @@ func registerAPI(api huma.API, cfg Config) {
 		if cfg.PushDB {
 			registerPush(api, cfg.Auth, cfg.AppDB)
 		}
+	}
+	if cfg.WalletPush != nil && cfg.WalletPush.Secret != "" {
+		registerWalletPush(api, cfg.WalletPush)
 	}
 	if cfg.Earn != nil {
 		registerEarn(api, newEarnRoutes(cfg.Auth, cfg.AppDB, *cfg.Earn))
@@ -227,6 +231,7 @@ func OpenAPI() *huma.OpenAPI {
 	routes.registerPublicAPY(api)
 	routes.registerRedeem(api)
 	registerPush(api, nil, nil)
+	registerWalletPush(api, nil)
 	documentEarn(api)
 	spec := api.OpenAPI()
 	markNullableObjects(spec)
