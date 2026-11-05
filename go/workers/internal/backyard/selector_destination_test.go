@@ -174,8 +174,8 @@ func TestEntryPricesTheExecutorsLegsWithoutMutatingAccounts(t *testing.T) {
 	if q.Unlevered || q.BorrowReceiveRaw != 49_749_999 || q.BorrowValueRaw != q.BorrowReceiveRaw || q.ProceedsValueRaw != q.BorrowReceiveRaw || q.EquityRaw != 100_000_000 || !q.validBorrow() {
 		t.Fatal("entry borrow", q)
 	}
-	if q.Cost.EntrySwapCostMicros != 0 || q.Cost.ExitSwapCostMicros != 0 || q.Cost.NetworkMicros <= 0 || q.Cost.Step.NetworkMicros <= 0 ||
-		q.CostRaw != int64(q.Cost.NetworkMicros+q.Cost.Step.TotalMicros) || int64(q.Cost.TotalMicros) != q.CostRaw {
+	if q.Cost.EntrySwapCostMicros != 500_000 || q.Cost.ExitSwapCostMicros != 497_500 || q.Cost.NetworkMicros <= 0 || q.Cost.Step.NetworkMicros <= 0 ||
+		q.CostRaw != int64(q.Cost.NetworkMicros+q.Cost.Step.TotalMicros+997_500) || int64(q.Cost.TotalMicros) != q.CostRaw {
 		t.Fatalf("entry cost %+v", q.Cost)
 	}
 }
@@ -201,7 +201,7 @@ func TestEntryIntoAnAbsentObligationCarriesItsSetup(t *testing.T) {
 	// The vault pays the obligation's rent and the delegate the farm user
 	// state's, both above any network fee.
 	rent := uint64((128+kamino.ObligationSize)*3480*2 + (128+kamino.FarmUserStateSize)*3480*2)
-	if q.Cost.SetupMicros <= 0 || q.CostRaw != int64(q.Cost.NetworkMicros+q.Cost.SetupMicros+q.Cost.Step.TotalMicros) {
+	if q.Cost.SetupMicros <= 0 || q.CostRaw != int64(q.Cost.NetworkMicros+q.Cost.SetupMicros+q.Cost.Step.TotalMicros+q.Cost.EntrySwapCostMicros+q.Cost.ExitSwapCostMicros) {
 		t.Fatalf("entry cost %+v", q.Cost)
 	}
 	if rentOnly, err := testLanePricer(t, rpc, client, m, 42).lamportsMicros(rent); err != nil || q.Cost.SetupMicros <= rentOnly {

@@ -47,6 +47,14 @@ func (p lanePricer) networkMicros(message []byte) (usdMicros, error) {
 	return p.lamportsMicros(fee)
 }
 
+func (p lanePricer) stepNetworkMicros(request StepRequest) (usdMicros, error) {
+	message, err := compileStepMessageForDelegate(p.manifest.vault, request, mustKey(backyardDelegate))
+	if err != nil {
+		return 0, err
+	}
+	return p.networkMicros(message)
+}
+
 func (p lanePricer) lamportsMicros(lamports uint64) (usdMicros, error) {
 	if p.sol.Decimals != 9 {
 		return 0, staleHold("native_sol_decimal_mismatch")
@@ -147,6 +155,23 @@ func conversionQuotedOutput(r StepRequest) uint64 {
 	return 0
 }
 
+func conversionFloorOutput(r StepRequest) (uint64, error) {
+	var conversion any
+	switch {
+	case r.Swap != nil:
+		conversion = *r.Swap
+	case r.Hastra != nil:
+		conversion = *r.Hastra
+	default:
+		return 0, staleHold(leverageReasonCostUnavailable)
+	}
+	floor, err := stepConversionOutput(conversion)
+	if err != nil || floor == 0 || floor > conversionQuotedOutput(r) {
+		return 0, staleHoldFrom(err, leverageReasonCostUnavailable)
+	}
+	return floor, nil
+}
+
 func (p lanePricer) priceStep(ctx context.Context, accounts []ConfirmedAccount, route RuntimeRoute, topology []string, slot int64, borrowRaw uint64) (leverageStepCost, error) {
 	if borrowRaw == 0 || slot <= 0 {
 		return leverageStepCost{}, costOutage(stageInputs, staleHold(leverageReasonCostUnavailable))
@@ -173,6 +198,10 @@ func (p lanePricer) priceStep(ctx context.Context, accounts []ConfirmedAccount, 
 		return leverageStepCost{}, costOutage(stepStage(stageEntryQuote, err), err)
 	}
 	bought := conversionQuotedOutput(up.Request)
+	guaranteed, err := conversionFloorOutput(up.Request)
+	if err != nil {
+		return leverageStepCost{}, costOutage(stageEntryQuote, err)
+	}
 	receipts, err := payoffReceiptsForLiquidity(collateral.totalLiquiditySF, collateral.terms.CollateralMintTotalSupply, bought)
 	if err != nil {
 		return leverageStepCost{}, costOutage(stageExitQuote, err)
@@ -215,6 +244,45 @@ func (p lanePricer) priceStep(ctx context.Context, accounts []ConfirmedAccount, 
 	if err != nil {
 		return c, costOutage(stageInputs, err)
 	}
+	quotedTotal := c.TotalMicros
+	quotedDownNetwork, err := p.stepNetworkMicros(down.Request)
+	if err != nil {
+		return c, costOutage(stageNetworkFee, err)
+	}
+	if guaranteed != bought {
+		receipts, err = payoffReceiptsForLiquidity(collateral.totalLiquiditySF, collateral.terms.CollateralMintTotalSupply, guaranteed)
+		if err != nil {
+			return c, costOutage(stageExitQuote, err)
+		}
+		down, _, err = assembleStep(ctx, p.rpc, p.view, p.client, p.manifest, p.policies, st, stepDown, receipts, guaranteed, slot)
+		if err != nil {
+			return c, costOutage(stepStage(stageExitQuote, err), err)
+		}
+	}
+	exitFloor, err := conversionFloorOutput(down.Request)
+	if err != nil {
+		return c, costOutage(stageExitQuote, err)
+	}
+	if legs.EntryCollateralMicros, err = prices.collateralMicros(guaranteed); err != nil {
+		return c, costOutage(stagePrice, err)
+	}
+	legs.ExitCollateralMicros = legs.EntryCollateralMicros
+	if legs.ExitDebtMicros, err = prices.debtMicros(exitFloor); err != nil {
+		return c, costOutage(stagePrice, err)
+	}
+	floorDownNetwork, err := p.stepNetworkMicros(down.Request)
+	if err != nil {
+		return c, costOutage(stageNetworkFee, err)
+	}
+	legs.NetworkMicros, err = sumMicros(legs.NetworkMicros-quotedDownNetwork, floorDownNetwork)
+	if err != nil {
+		return c, costOutage(stageNetworkFee, err)
+	}
+	c, err = legs.cost()
+	if err != nil {
+		return c, costOutage(stageInputs, err)
+	}
+	c.QuotedTotalMicros = quotedTotal
 	return c, nil
 }
 
@@ -238,6 +306,7 @@ type entryCost struct {
 	ReleaseExitMicros    usdMicros        `json:"releaseExitMicros,omitempty"`
 	Step                 leverageStepCost `json:"step"`
 	TotalMicros          usdMicros        `json:"totalMicros"`
+	QuotedTotalMicros    usdMicros        `json:"quotedTotalMicros"`
 }
 
 func (p lanePricer) priceEntry(ctx context.Context, o Observation, market LaneEconomics, equity uint64) (MoveQuote, error) {
@@ -297,8 +366,9 @@ func (p lanePricer) priceMove(ctx context.Context, o Observation, source *Snapsh
 	if err != nil {
 		return q, err
 	}
-	bought, guaranteed := entry.Request.QuotedOutputRaw, entry.Request.MinimumOutputRaw
-	if guaranteed <= 1 {
+	bought := entry.Request.QuotedOutputRaw
+	guaranteed, err := stepConversionOutput(entry.Request)
+	if err != nil || guaranteed <= 1 || guaranteed > bought {
 		return q, staleHold("selector_destination_below_deposit_minimum")
 	}
 	funded := position
@@ -442,6 +512,27 @@ func (p lanePricer) priceMove(ctx context.Context, o Observation, source *Snapsh
 		return q, staleHoldFrom(err, selectorDestinationExitUnpriced)
 	}
 	q.DestinationExit = &destinationExit
+	quotedSwapCost := cost.EntrySwapCostMicros + cost.ExitSwapCostMicros
+	quotedExitNetwork, err := p.stepNetworkMicros(exit.Request)
+	if err != nil {
+		return q, err
+	}
+	if guaranteed != bought {
+		receipts, err = payoffReceiptsForLiquidity(reserve.totalLiquiditySF, reserve.terms.CollateralMintTotalSupply, guaranteed)
+		if err != nil {
+			return q, err
+		}
+		exit, _, err = assembleStep(ctx, p.rpc, p.view, p.client, p.manifest, p.policies, stepState{route: route, collateral: reserve, slot: uint64(slot), topology: []string{route.Kamino.CollateralReserve}, maxSlippageBPS: exitSlippage}, stepExit, receipts, guaranteed, slot)
+		if err != nil {
+			return q, err
+		}
+	}
+	exitFloor, err := conversionFloorOutput(exit.Request)
+	if err != nil {
+		return q, err
+	}
+	cost.EntrySwapCostMicros = usdMicros(equity) - depositValue
+	cost.ExitSwapCostMicros = depositValue - usdMicros(exitFloor)
 	blockhash := LatestBlockhash{Blockhash: entry.Request.RecentBlockhash, LastValidBlockHeight: entry.Request.LastValidBlockHeight}
 	deposit, err := p.manifest.kaminoPacketForRoute(p.policies, OpenRouteStep, kaminoLegDeposit, guaranteed, blockhash, lane)
 	if err != nil {
@@ -490,6 +581,11 @@ func (p lanePricer) priceMove(ctx context.Context, o Observation, source *Snapsh
 	if cost.TotalMicros = fees + cost.EntrySwapCostMicros + cost.ExitSwapCostMicros; cost.TotalMicros < 0 {
 		cost.TotalMicros = 0
 	}
+	floorExitNetwork, err := p.stepNetworkMicros(exit.Request)
+	if err != nil {
+		return q, err
+	}
+	cost.QuotedTotalMicros = max(fees-cost.Step.TotalMicros+cost.Step.QuotedTotalMicros-floorExitNetwork+quotedExitNetwork+quotedSwapCost, 0)
 	q.Cost, q.CostRaw = cost, int64(cost.TotalMicros)
 	if !q.validBorrow() {
 		return q, staleHold("selector_entry_borrow_invalid")

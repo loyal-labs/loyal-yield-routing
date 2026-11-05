@@ -195,24 +195,27 @@ func TestSelectorReplayLiveStepCost(t *testing.T) {
 		t.Fatal(err)
 	}
 	old := replayOldLiveStep
-	if got.BorrowFeeMicros != old.BorrowFeeMicros || got.EntrySwapCostMicros != old.EntrySwapCostMicros || got.UnwindSwapCostMicros != old.UnwindSwapCostMicros {
-		t.Fatalf("conversion losses moved: %+v, old %+v", got, old)
+	if got.BorrowFeeMicros != old.BorrowFeeMicros || got.EntrySwapCostMicros <= old.EntrySwapCostMicros || got.UnwindSwapCostMicros <= old.UnwindSwapCostMicros {
+		t.Fatalf("floor conversion losses not conservative: %+v, old %+v", got, old)
 	}
-	if got.NetworkMicros*3 != old.NetworkMicros || got.TotalMicros != old.TotalMicros-old.NetworkMicros+got.NetworkMicros {
-		t.Fatalf("network fees: %+v is not two of the old six transactions %+v", got, old)
+	if got.NetworkMicros*3 != old.NetworkMicros || got.QuotedTotalMicros != old.TotalMicros-old.NetworkMicros+got.NetworkMicros || got.TotalMicros <= got.QuotedTotalMicros {
+		t.Fatalf("quoted parity or floor costs lost: %+v, old %+v", got, old)
 	}
-	// The level decision on the live economics for a lane at 1.5x under a
-	// stored 1.75: the whole step to 1.75 is approved as before, its gain
-	// higher by the four transactions it no longer charges (and the growth
-	// on that capital).
 	markets := replayMarkets(t, o.routeBatch.Accounts, c.Now)
 	below := lane
 	below.LTVBPS, below.LeverageDesiredRaw[2], below.LeverageDesiredRaw[3] = leverageLevelLTVBPS(1.5), borrow, borrow
 	d, ok := decideLeverageTarget(below, SelectorResult{Action: "KEEP"}, markets, DefaultSelectorPolicy(), productionLeverageStepPricer(context.Background(), rpc, view, client, m, o, below), nil)
 	t.Log(d.logLine())
-	if !ok || d.Reason != "up_move_approved" || d.Next != 1.75 || d.BorrowRaw != borrow || d.Cost.TotalMicros != got.TotalMicros ||
-		d.GainRaw < replayOldLiveStepGain || d.GainRaw-replayOldLiveStepGain > 1.01*float64(old.TotalMicros-got.TotalMicros) {
-		t.Fatalf("live level decision moved: %+v", d)
+	if !ok || d.Reason != leverageReasonNotWorthCost || d.BorrowRaw != 0 || d.Cost.TotalMicros != got.TotalMicros || d.GainRaw >= 0 {
+		t.Fatalf("floor-losing live step admitted: %+v", d)
+	}
+	quotedDecision, _ := decideLeverageTarget(below, SelectorResult{Action: "KEEP"}, markets, DefaultSelectorPolicy(), func(uint64) (leverageStepCost, error) {
+		quoted := got
+		quoted.TotalMicros = got.QuotedTotalMicros
+		return quoted, nil
+	}, nil)
+	if quotedDecision.Reason != leverageReasonApproved || quotedDecision.BorrowRaw != borrow || quotedDecision.GainRaw < replayOldLiveStepGain {
+		t.Fatalf("quoted baseline changed: %+v", quotedDecision)
 	}
 	// The overflow lane converts through Hastra, the same producer the old
 	// pricer called, here through the step.
@@ -263,18 +266,6 @@ func decideEntry(t *testing.T, s Snapshot, market LaneEconomics, q MoveQuote) en
 	return out
 }
 
-// A flat vault's entry priced by the one pricer on the synthetic stacks and
-// decided by the selector, against the old multi-leg recipe's decisions on
-// the same stacks (recorded at 4681fa2d). Every decision is the same: the
-// lane, the equity entered, 1x or levered and the borrow (within the old
-// recipe's one-raw receipt-rounding term). The cost is lower: the old recipe
-// charged the fees of about twenty messages (NAV reports and Voltr legs
-// included) and the receipt-rounding windows of its separate legs; the one
-// pricer charges the entry swap, the deposit, the up and down steps and the
-// atomic exit step, at most $0.01 apart here. The benefit is higher by that, and, on PYUSD debt, by valuing the
-// borrow at central prices: the old recipe valued the liability at the
-// price interval's top and the proceeds at its bottom, 1% each way (within
-// 3% of the benefit).
 func TestSelectorReplayFlatEntry(t *testing.T) {
 	t.Parallel()
 	type stack struct {
@@ -327,17 +318,24 @@ func TestSelectorReplayFlatEntry(t *testing.T) {
 					t.Fatal(err)
 				}
 				got, want := decideEntry(t, o.Snapshot, market, q), old[name]
-				t.Logf("old %+v", want)
-				t.Logf("new %+v cost %+v", got, q.Cost)
-				if got.action != want.action || got.entered != want.entered || got.unlevered != want.unlevered || q.SpreadUnlevered != want.unlevered ||
-					got.borrow < want.borrow || got.borrow > want.borrow+1 {
-					t.Fatalf("decision changed: %+v, old %+v", got, want)
+				quoted := q
+				quoted.CostRaw = int64(q.Cost.QuotedTotalMicros)
+				quotedRun := decideEntry(t, o.Snapshot, market, quoted)
+				t.Logf("old %+v quoted %+v floor %+v cost %+v", want, quotedRun, got, q.Cost)
+				if quotedRun.action != want.action || quotedRun.entered != want.entered || quotedRun.unlevered != want.unlevered || quotedRun.borrow < want.borrow || quotedRun.borrow > want.borrow+1 || quotedRun.cost <= 0 || quotedRun.cost > want.cost || want.cost-quotedRun.cost > 10_000 || quotedRun.benefit < want.benefit || quotedRun.benefit > want.benefit*1.03 {
+					t.Fatalf("quoted baseline changed: %+v old %+v", quotedRun, want)
 				}
-				if got.cost <= 0 || got.cost > want.cost || want.cost-got.cost > 10_000 {
-					t.Fatalf("cost %d against the old %d", got.cost, want.cost)
+				wantAction := SelectorEnter
+				wantEntered := int64(c.equity)
+				if spread == "unlevered" || c.name == "auto-lossy" {
+					wantAction = SelectorKeep
+					wantEntered = 0
 				}
-				if got.benefit < want.benefit || got.benefit > want.benefit*1.03 {
-					t.Fatalf("benefit %.2f against the old %.2f", got.benefit, want.benefit)
+				if got.action != wantAction || got.entered != wantEntered || got.unlevered != want.unlevered || got.borrow != quotedRun.borrow || got.cost <= quotedRun.cost || got.benefit >= quotedRun.benefit {
+					t.Fatalf("unexpected floor decision: %+v quoted %+v", got, quotedRun)
+				}
+				if q.Cost.TotalMicros != q.Cost.NetworkMicros+q.Cost.EntrySwapCostMicros+q.Cost.ExitSwapCostMicros+q.Cost.Step.TotalMicros {
+					t.Fatalf("floor accounting %+v", q.Cost)
 				}
 			})
 		}
