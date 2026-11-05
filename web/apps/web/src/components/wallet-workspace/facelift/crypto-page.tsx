@@ -302,6 +302,9 @@ export function CryptoPage({
   const closeUnshield = useCallback(() => setIsUnshieldOpen(false), []);
 
   const { launched: showBridge } = useAuthSession();
+  useEffect(() => {
+    if (!showBridge && bridge) setBridge(null);
+  }, [bridge, showBridge]);
   const openBridge = useCallback(() => {
     setIsDetailSheetOpen(false);
     setBridge({ type: "bridge" });

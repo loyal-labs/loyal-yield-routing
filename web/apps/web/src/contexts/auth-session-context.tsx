@@ -30,6 +30,9 @@ type AuthSessionContextValue = {
   logout: () => Promise<void>;
 };
 
+const LAUNCH_READ_TRIES = 3;
+const LAUNCH_RETRY_BASE_MS = 500;
+
 const AuthSessionContext = createContext<AuthSessionContextValue | null>(null);
 const AuthApiClientContext = createContext<AuthApiClient | null>(null);
 
@@ -50,16 +53,50 @@ export function AuthSessionProvider({ children }: { children: ReactNode }) {
   } | null>(null);
   const launched = launch !== null && launch.subject === subject && launch.launched;
 
+  const launchReadRef = useRef(0);
+  const loadLaunched = useCallback(
+    async (readSubject: string | null) => {
+      const readId = ++launchReadRef.current;
+      for (let attempt = 0; attempt < LAUNCH_READ_TRIES; attempt += 1) {
+        try {
+          const answer = await authApiClient.getLaunched();
+          if (launchReadRef.current === readId) {
+            setLaunch({ subject: readSubject, launched: answer });
+          }
+          return;
+        } catch {
+          if (attempt === LAUNCH_READ_TRIES - 1) return;
+          await new Promise((resolve) =>
+            setTimeout(resolve, LAUNCH_RETRY_BASE_MS * 2 ** attempt)
+          );
+          if (launchReadRef.current !== readId) return;
+        }
+      }
+    },
+    [authApiClient]
+  );
+
   useEffect(() => {
     if (!isHydrated) return;
-    let cancelled = false;
-    void authApiClient.getLaunched().then((answer) => {
-      if (!cancelled) setLaunch({ subject, launched: answer });
-    });
+    void loadLaunched(subject);
     return () => {
-      cancelled = true;
+      launchReadRef.current += 1;
     };
-  }, [authApiClient, isHydrated, subject]);
+  }, [isHydrated, loadLaunched, sessionState, subject]);
+
+  useEffect(() => {
+    if (!isHydrated) return;
+    const reread = () => {
+      if (document.visibilityState === "hidden") return;
+      void loadLaunched(subject);
+    };
+    window.addEventListener("focus", reread);
+    document.addEventListener("visibilitychange", reread);
+    return () => {
+      window.removeEventListener("focus", reread);
+      document.removeEventListener("visibilitychange", reread);
+    };
+  }, [isHydrated, loadLaunched, subject]);
 
   const readSession = useCallback(
     async (variant: "initial" | "return" | "refresh") => {

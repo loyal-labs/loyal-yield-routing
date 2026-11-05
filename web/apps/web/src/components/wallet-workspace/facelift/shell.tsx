@@ -164,6 +164,9 @@ export function WorkspaceFaceliftShell() {
     setActivePage(storedPage);
   }, [isHydrated, isSignedIn, launched, storedPage]);
   useEffect(() => {
+    if (activePage === "invite" && !launched) setActivePage("earn");
+  }, [activePage, launched]);
+  useEffect(() => {
     localStorage.setItem(PAGE_STORAGE_KEY, activePage);
   }, [activePage]);
   useEffect(() => {

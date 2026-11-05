@@ -230,16 +230,12 @@ export function createAuthApiClient(): AuthApiClient {
     },
 
     async getLaunched() {
-      try {
-        const response = await fetch("/api/funding/launch", {
-          credentials: "include",
-        });
-        if (!response.ok) return false;
-        const body = (await response.json()) as Get["/api/funding/launch"];
-        return body.launched;
-      } catch {
-        return false;
-      }
+      const response = await fetch("/api/funding/launch", {
+        credentials: "include",
+      });
+      if (!response.ok) throw new Error(`launch read ${response.status}`);
+      const body = (await response.json()) as Get["/api/funding/launch"];
+      return body.launched;
     },
 
     async refreshSession(options) {

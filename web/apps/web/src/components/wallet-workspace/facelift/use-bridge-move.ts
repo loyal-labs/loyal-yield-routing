@@ -309,7 +309,7 @@ export function useBridgeMove(balance: MoveBalance, sender: string) {
   const key = `${balance.chain}:${balance.asset}:${amountRaw}`;
   const current = held && held.key === key ? held : null;
   const onForm = step.kind === "form";
-  const lockName = `loyal-bridge-move:${sender.toLowerCase()}:${balance.chain}`;
+  const lockName = `loyal.bridge.move:${sender.toLowerCase()}:${balance.chain}`;
 
   useEffect(() => {
     if (!onForm || amountRaw === BigInt(0) || insufficient) {
