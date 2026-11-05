@@ -65,6 +65,7 @@ func publicBase() (*url.URL, error) {
 func run(ctx context.Context) error {
 	address := envOr("LOYAL_TELEGRAM_ADDRESS", "127.0.0.1:10083")
 	apiBase := envOr("LOYAL_TELEGRAM_BOT_API", "https://api.telegram.org")
+	redpillBase := envOr("LOYAL_TELEGRAM_REDPILL_API", "https://api.redpill.ai/v1")
 	jupiterSearch := os.Getenv("LOYAL_TELEGRAM_JUPITER_SEARCH")
 	dsn, err := engine.Credential("TELEGRAM_APP_DATABASE_URL")
 	if err != nil {
@@ -80,6 +81,18 @@ func run(ctx context.Context) error {
 	}
 	if !webhookSecretFormat.MatchString(secret) {
 		return errors.New("TELEGRAM_WEBHOOK_SECRET: want 1-256 characters of A-Z, a-z, 0-9, _ and -")
+	}
+	redpillKey, err := engine.Credential("REDPILL_AI_API_KEY")
+	if err != nil {
+		return err
+	}
+	encryptionKey, err := engine.Credential("MESSAGE_ENCRYPTION_KEY")
+	if err != nil {
+		return err
+	}
+	messageCipher, err := telegram.NewMessageCipher(encryptionKey)
+	if err != nil {
+		return err
 	}
 	uploadToken, err := engine.OptionalCredential("LIBRARY_UPLOAD_TOKEN")
 	if err != nil {
@@ -110,7 +123,13 @@ func run(ctx context.Context) error {
 		DB: pool, API: api, BotUsername: me.Username, WebhookSecret: secret,
 		BotID: me.ID, R2: storage, LibraryUploadToken: uploadToken, PublicBase: base,
 		JupiterSearch: jupiterSearch,
+		Redpill:       telegram.NewRedpill(redpillBase, redpillKey), Cipher: messageCipher,
 	})
+	defer func() {
+		drainCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		bot.DrainDirectChats(drainCtx)
+	}()
 
 	server := &http.Server{
 		Addr:              address,

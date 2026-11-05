@@ -52,14 +52,18 @@ type Entity struct {
 }
 
 type Message struct {
-	MessageID         int64           `json:"message_id"`
-	From              *User           `json:"from"`
-	Chat              Chat            `json:"chat"`
-	Text              string          `json:"text"`
-	Entities          []Entity        `json:"entities"`
-	ForumTopicCreated json.RawMessage `json:"forum_topic_created"`
-	MessageThreadID   int64           `json:"message_thread_id"`
-	IsTopicMessage    bool            `json:"is_topic_message"`
+	MessageID         int64              `json:"message_id"`
+	From              *User              `json:"from"`
+	Chat              Chat               `json:"chat"`
+	Text              string             `json:"text"`
+	Entities          []Entity           `json:"entities"`
+	ForumTopicCreated *ForumTopicCreated `json:"forum_topic_created"`
+	MessageThreadID   int64              `json:"message_thread_id"`
+	IsTopicMessage    bool               `json:"is_topic_message"`
+}
+
+type ForumTopicCreated struct {
+	Name string `json:"name"`
 }
 
 type InlineQuery struct {

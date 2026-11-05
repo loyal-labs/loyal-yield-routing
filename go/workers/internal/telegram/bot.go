@@ -23,6 +23,8 @@ const (
 type Config struct {
 	DB            *pgxpool.Pool
 	API           *BotAPI
+	Redpill       *Redpill
+	Cipher        *MessageCipher
 	BotUsername   string
 	WebhookSecret string
 
@@ -36,6 +38,9 @@ type Config struct {
 type Bot struct {
 	db       *pgxpool.Pool
 	api      *BotAPI
+	redpill  *Redpill
+	cipher   *MessageCipher
+	direct   *chatQueue
 	username string
 	secret   []byte
 	routes   map[Route]Handler
@@ -50,12 +55,13 @@ type Bot struct {
 }
 
 func New(cfg Config) *Bot {
-	b := &Bot{db: cfg.DB, api: cfg.API, username: cfg.BotUsername, secret: []byte(cfg.WebhookSecret),
+	b := &Bot{db: cfg.DB, api: cfg.API, redpill: cfg.Redpill, cipher: cfg.Cipher, username: cfg.BotUsername, secret: []byte(cfg.WebhookSecret),
 		botID: cfg.BotID, r2: cfg.R2, uploadToken: []byte(cfg.LibraryUploadToken), publicBase: cfg.PublicBase,
 		http: &http.Client{Timeout: 10 * time.Second}, jupiterSearch: cfg.JupiterSearch}
 	if b.jupiterSearch == "" {
 		b.jupiterSearch = jupiterTokenSearch
 	}
+	b.direct = newChatQueue(directWorkers, directBacklog, directReplyDeadline, b.directUpdate)
 	b.routes = map[Route]Handler{
 		RouteCommandStart:                 b.start,
 		RouteCommandSettings:              b.settings,
@@ -72,6 +78,8 @@ func New(cfg Config) *Bot {
 		RouteCallbackOther:                b.answerCallback,
 		RouteBusinessConnection:           b.businessConnection,
 		RouteMyChatMember:                 b.myChatMember,
+		RouteDirectText:                   b.enqueueDirect,
+		RouteDirectTopicCreated:           b.enqueueDirect,
 	}
 	return b
 }
