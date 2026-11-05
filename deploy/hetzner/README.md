@@ -866,6 +866,16 @@ across restarts. It sets `service.name` from each unit's syslog identifier
 (`loyal-observer`, `loyal-retail`, `loyal-backyard`, ...), lifts the slog
 fields into attributes, and exports OTLP/HTTP to ClickStack.
 
+### Reading ClickStack
+
+Loyal's logs, traces and Telegram alerts live in ClickStack (HyperDX), not PostHog. The MCP header is `Bearer ${LOYAL_CLICKSTACK_API_KEY}`, a name that exists only in `.env.1password`, so an agent session started outside `op run` gets `401 AUTH_HEADER_REJECTED`. Inside `op run --env-file=.env.1password`, call the MCP over plain JSON-RPC with curl: `initialize`, keep the `Mcp-Session-Id` header, then `tools/call`. For example `clickstack_sql` on the connection "Local ClickHouse", table `otel_logs`.
+
+The alert webhooks are "TG Alerts" and "TG Direct". The "Errors" alert filters `deployment.environment.name IN (production, prod)`. The collector does not set that attribute (`collector/otelcol.yaml` sets only `service.name`), so the alert sees the frontend and mobile apps but not the Go workers.
+
+### Helius
+
+One prod Helius project serves Loyal's workers and robinx. Billing is 20 credits per MB streamed on LaserStream and 1 credit per RPC call, on uncompressed bytes. Measure a process's stream before trusting a code estimate: sample `ss -tinH state established dst <laserstream ip>` twice and take the `bytes_received` delta. The workers' RPC URLs are sealed credentials (`BACKYARD_SOLANA_RPC_URL`, `SOLANA_RPC_URL`, `RETAIL_SOLANA_RPC_URL`). The observer streams about 2.6 GB a day (measured 2026-10-10); robinx's transaction tape on the same project is the bulk of the bytes.
+
 ### Backyard alert response
 
 Every checked-in rule has a signal description, impact, action and recovery
