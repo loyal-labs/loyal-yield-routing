@@ -159,21 +159,27 @@ func ready(ok func() bool) http.HandlerFunc {
 func site(cfg Config) http.Handler {
 	app := webserve.New(cfg.Dist)
 	pages := pagePaths(cfg.Dist)
+	translated := translatedPaths(pages)
 	serve := func(w http.ResponseWriter, r *http.Request) {
 		switch pagePath := path.Clean(r.URL.Path); {
 		case len(pages) == 0:
 			http.Error(w, "web page manifest missing or invalid", http.StatusServiceUnavailable)
 		case pagePath == "/500":
-			app.Shell(w, r, http.StatusInternalServerError)
+			if !app.Page(w, r, http.StatusInternalServerError) {
+				app.Shell(w, r, http.StatusInternalServerError)
+			}
 		case pagePath == "/dev/txv1" && cfg.Environment == "prod":
 			app.Shell(w, r, http.StatusNotFound)
 		default:
+			if slices.Contains(pages, pagePath) && app.Page(w, r, http.StatusOK) {
+				return
+			}
 			if slices.Contains(pages, pagePath) || inviteLink(pagePath) {
 				r = r.Clone(r.Context())
 				r.URL.Path = "/"
 			} else {
 				info, err := fs.Stat(cfg.Dist, strings.TrimPrefix(pagePath, "/"))
-				if err != nil || info.IsDir() {
+				if err != nil || info.IsDir() || path.Base(pagePath) == "index.html" {
 					app.Shell(w, r, http.StatusNotFound)
 					return
 				}
@@ -182,6 +188,10 @@ func site(cfg Config) http.Handler {
 		}
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if trimmed := strings.TrimRight(r.URL.Path, "/"); trimmed != "" && trimmed != r.URL.Path {
+			redirect(w, r, (&url.URL{Path: trimmed, RawQuery: r.URL.RawQuery}).String(), http.StatusPermanentRedirect)
+			return
+		}
 		if cfg.AppHost != "" && requestHost(r) == cfg.AppHost {
 			if r.URL.Path == "/" {
 				http.Redirect(w, r, (&url.URL{Path: "/app", RawQuery: r.URL.RawQuery}).String(), http.StatusFound)
@@ -190,11 +200,20 @@ func site(cfg Config) http.Handler {
 			serve(w, r)
 			return
 		}
-		if !skippedByNextMatcher(r.URL.Path) && localeRedirect(w, r) {
+		if !skippedByNextMatcher(r.URL.Path) && localeRedirect(w, r, translated) {
 			return
 		}
 		serve(w, r)
 	})
+}
+
+func redirect(w http.ResponseWriter, r *http.Request, target string, status int) {
+	w.Header().Set("Location", target)
+	w.Header().Set("Content-Type", "text/plain")
+	w.WriteHeader(status)
+	if r.Method != http.MethodHead {
+		_, _ = w.Write([]byte(http.StatusText(status)))
+	}
 }
 
 func inviteLink(pagePath string) bool {

@@ -1,10 +1,13 @@
 package webserve
 
 import (
+	"fmt"
 	"io/fs"
 	"net/http"
+	"net/url"
 	"path"
 	"runtime/debug"
+	"strconv"
 	"strings"
 )
 
@@ -41,6 +44,61 @@ func (s Site) Shell(w http.ResponseWriter, r *http.Request, status int) {
 	if r.Method != http.MethodHead {
 		_, _ = w.Write(body)
 	}
+}
+
+func (s Site) Page(w http.ResponseWriter, r *http.Request, status int) bool {
+	pagePath := path.Clean(r.URL.Path)
+	body, err := fs.ReadFile(s.dist, s.pageFile(pagePath, r.URL.Query()))
+	if err != nil {
+		return false
+	}
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Cache-Control", noStore)
+		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+		return true
+	}
+	w.Header().Set("Cache-Control", noCache)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(status)
+	if r.Method != http.MethodHead {
+		_, _ = w.Write(body)
+	}
+	return true
+}
+
+func (s Site) pageFile(pagePath string, query url.Values) string {
+	if pagePath == "/" {
+		return "__root/index.html"
+	}
+	if pagePath == "/blog" {
+		last := 1
+		for s.exists(blogPageFile(last + 1)) {
+			last++
+		}
+		if page := min(parsePage(query.Get("page")), last); page > 1 {
+			return blogPageFile(page)
+		}
+	}
+	return strings.TrimPrefix(pagePath, "/") + "/index.html"
+}
+
+func blogPageFile(page int) string {
+	return fmt.Sprintf("blog/__page/%d/index.html", page)
+}
+
+func (s Site) exists(name string) bool {
+	_, err := fs.Stat(s.dist, name)
+	return err == nil
+}
+
+func parsePage(value string) int {
+	value = strings.TrimPrefix(strings.TrimLeft(value, " \t\n\v\f\r"), "+")
+	end := 0
+	for end < len(value) && value[end] >= '0' && value[end] <= '9' {
+		end++
+	}
+	page, _ := strconv.Atoi(value[:end])
+	return max(page, 1)
 }
 
 func (s Site) ServeHTTP(w http.ResponseWriter, r *http.Request) {
