@@ -24,7 +24,7 @@ const (
 	trackLookback = 7 * 24 * time.Hour
 
 	adoptDeadline    = 10 * time.Second
-	lostSubmitWindow = "interval '2 hours'"
+	LostSubmitWindow = 2 * time.Hour
 	lostSubmitBatch  = 32
 
 	abandonedQuoteAge   = "interval '24 hours'"
@@ -49,10 +49,6 @@ WHERE ` + openState + ` AND submitted_at <= now() - ` + trackWindow + `
   AND updated_at < submitted_at + ` + trackWindow + `
 RETURNING request_id, state, submitted_at`
 
-	confirmedQuotes = `SELECT request_id, direction FROM loyal_yield.bridge_transfers
-WHERE state = 'quoted' AND confirmed_at > now() - ` + lostSubmitWindow + `
-ORDER BY confirmed_at DESC LIMIT $1`
-
 	adoptSubmit = `UPDATE loyal_yield.bridge_transfers
 SET state = 'submitted', origin_tx = $2, submitted_at = clock_timestamp(), updated_at = clock_timestamp()
 WHERE request_id = $1 AND state = 'quoted'`
@@ -72,6 +68,10 @@ ORDER BY address`
 VALUES ($1, $2, $3, $3, $4, $5, $6::text::numeric, $7::text::numeric, $8, $9, $10)
 ON CONFLICT (request_id) DO NOTHING`
 )
+
+var confirmedQuotes = fmt.Sprintf(`SELECT request_id, direction FROM loyal_yield.bridge_transfers
+WHERE state = 'quoted' AND confirmed_at > now() - make_interval(secs => %d)
+ORDER BY confirmed_at DESC LIMIT $1`, int(LostSubmitWindow.Seconds()))
 
 type Tracker struct {
 	DB    *pgxpool.Pool

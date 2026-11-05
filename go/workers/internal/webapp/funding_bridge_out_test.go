@@ -2,15 +2,23 @@ package webapp
 
 import (
 	"context"
+	"encoding/hex"
+	"encoding/json"
 	"math/big"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/danielgtaylor/huma/v2/adapters/humachi"
+	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/bridge"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/jwt"
 	"github.com/solana-foundation/solana-go/v2"
 )
 
@@ -41,7 +49,7 @@ func bridgeOutTestDB(t *testing.T) *pgxpool.Pool {
 		}
 	})
 	var migrations []string
-	for _, pattern := range []string{"*_bridge_transfers*.sql", "*_relay_deposit_addresses.sql"} {
+	for _, pattern := range []string{"*_evm_deposit_routes*.sql", "*_bridge_transfers*.sql", "*_relay_deposit_addresses.sql"} {
 		found, err := filepath.Glob("../../../../migrations/yield/" + pattern)
 		if err != nil || len(found) == 0 {
 			t.Fatal(pattern, "migrations not found", err)
@@ -140,5 +148,60 @@ settled_at = CASE WHEN $2 IN ('filled', 'refunded') THEN clock_timestamp() - $4:
 		if id != "0xrecent" && inFlight {
 			t.Fatalf("%s flagged inFlight", id)
 		}
+	}
+}
+
+func TestBridgeQuoteRefusesASecondMoveWhileTheFirstIsConfirmedAndUnsubmitted(t *testing.T) {
+	pool := bridgeOutTestDB(t)
+	ctx := context.Background()
+	wallet := solana.NewWallet().PublicKey()
+	sender := "0x" + hex.EncodeToString(wallet[:20])
+	if _, err := pool.Exec(ctx, `INSERT INTO loyal_yield.evm_deposit_routes (solana_wallet, app_user_id, kind, evm_address) VALUES ($1, gen_random_uuid(), 'relay_signed', $2)`, wallet.String(), sender); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO loyal_yield.bridge_transfers (request_id, solana_wallet, counterparty, chain, asset, amount_in_raw, amount_out_raw) VALUES ('0xfirst', $1, $2, 'base', 'usdc', 25000000, 24900000)`, wallet.String(), sender); err != nil {
+		t.Fatal(err)
+	}
+	keys, err := jwt.NewKeys("isolated-session-test-secret", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer, err := jwt.NewSigner("isolated-session-test-secret", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := signer.Mint(map[string]any{"sub": wallet.String()}, mobileEarnAudience, time.Hour, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := chi.NewRouter()
+	earnRoutes{
+		auth:         &Auth{keys: keys},
+		bridgeQuotes: newLimiters(),
+		Earn:         Earn{TestWallets: parseTestWallets("*"), YieldDB: pool, Relay: &bridge.Relay{BaseURL: "http://127.0.0.1:9", HTTP: &http.Client{}}},
+	}.registerBridge(humachi.New(router, apiConfig()))
+	post := func(path, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		res := httptest.NewRecorder()
+		router.ServeHTTP(res, req)
+		return res
+	}
+	if res := post("/api/funding/bridge/transfers/0xfirst/confirm", `{}`); res.Code != http.StatusOK {
+		t.Fatalf("confirm = %d %s", res.Code, res.Body.String())
+	}
+	res := post(bridgeQuotePath, `{"chain":"base","asset":"usdc","amountRaw":"25000000"}`)
+	var body struct {
+		Error struct {
+			Code      string `json:"code"`
+			RequestID string `json:"requestId"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(res.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if res.Code != http.StatusConflict || body.Error.Code != "bridge_in_flight" || body.Error.RequestID != "0xfirst" {
+		t.Fatalf("second quote = %d %s; want 409 bridge_in_flight naming 0xfirst", res.Code, res.Body.String())
 	}
 }

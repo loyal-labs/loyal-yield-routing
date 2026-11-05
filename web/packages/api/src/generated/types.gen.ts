@@ -823,6 +823,10 @@ export type EarnMaxContextResponse = {
 export type EarnMaxErrorDetail = {
     code: string;
     message?: string;
+    /**
+     * The bridge transfer already in flight, on bridge_in_flight
+     */
+    requestId?: string;
 };
 
 export type EarnMaxSummary = {
@@ -2900,6 +2904,10 @@ export type PostFundingBridgeQuoteErrors = {
      */
     404: RouteError;
     /**
+     * Conflict
+     */
+    409: RouteError;
+    /**
      * Too Many Requests
      */
     429: RouteError;
@@ -2997,6 +3005,10 @@ export type PostFundingBridgeTransferConfirmErrors = {
      * Not Found
      */
     404: RouteError;
+    /**
+     * Conflict
+     */
+    409: RouteError;
     /**
      * Service Unavailable
      */
