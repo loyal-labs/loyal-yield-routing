@@ -126,6 +126,9 @@ func walletReplayFailure(record *walletCompletion) error {
 	if record.LastErrorMessage != nil {
 		message = *record.LastErrorMessage
 	}
+	if code == "smart_account_provisioning_failed" {
+		message = provisioningFailedMessage
+	}
 	if code == "smart_account_reservation_conflict" {
 		status = http.StatusConflict
 	}

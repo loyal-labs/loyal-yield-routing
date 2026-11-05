@@ -327,6 +327,7 @@ func (h earnMaxRoutes) registerReads(api huma.API) {
 		}
 		return &inviteOutput{h.headers, InviteStatus{Redeemed: true}}, nil
 	})
+	h.registerLegacyRead(api)
 }
 
 const earnMaxAPYPath = "/api/earn-max/apy"

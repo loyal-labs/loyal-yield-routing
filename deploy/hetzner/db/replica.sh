@@ -5,7 +5,7 @@ SECRETS=/etc/loyal-db/replica
 WORK=/var/lib/loyal-db-replica
 CONF=/etc/postgresql/18/main/conf.d/zz-replica.conf
 PUBLICATION=loyal_hz
-TS_RETAIN_DAYS=62
+TS_RETAIN_DAYS=${TS_RETAIN_DAYS:-62}
 CATCHUP_EVENT_MARGIN=10000
 ARCHIVE_BACKLOG_MAX=512
 export PGSERVICEFILE=$SECRETS/pg_service.conf
@@ -21,7 +21,7 @@ HYPERTABLES=(kamino.reserve_updates loyal_prod.balance_sweep_wallet_ata_observat
 changes=0
 changed() { changes=$((changes + 1)); echo "changed: $*"; }
 local_sql() { sudo -u postgres psql -XAtq -v ON_ERROR_STOP=1 "$@"; }
-neon_ro() { PGOPTIONS='-c default_transaction_read_only=on -c statement_timeout=0' psql -XAtq -v ON_ERROR_STOP=1 "service=neon_$1" "${@:2}"; }
+neon_ro() { PGOPTIONS="-c default_transaction_read_only=on -c statement_timeout=${NEON_STATEMENT_TIMEOUT:-0}" psql -XAtq -v ON_ERROR_STOP=1 "service=neon_$1" "${@:2}"; }
 neon_rw() { psql -XAtq -v ON_ERROR_STOP=1 "service=neon_$1" "${@:2}"; }
 field() { local IFS=: parts; read -ra parts <<<"$1"; echo "${parts[$2 - 1]}"; }
 
@@ -316,6 +316,57 @@ cmd_check() {
   exit $bad
 }
 
+cmd_metrics() {
+  local out=/var/lib/prometheus/node-exporter/loyal_db_replica.prom
+  local spec src sub sql row active lag enabled workers last
+  {
+    echo '# TYPE loyal_db_subscription_enabled gauge'
+    echo '# TYPE loyal_db_subscription_worker_up gauge'
+    echo '# TYPE loyal_db_subscription_last_msg_receipt_timestamp_seconds gauge'
+    for spec in "${DATABASES[@]}"; do
+      sub=loyal_hz_$(field "$spec" 1)
+      sql="select coalesce((select subenabled::int from pg_subscription where subname='$sub'), 0), (select count(*) from pg_stat_subscription where subname='$sub' and worker_type='apply' and pid is not null), coalesce((select extract(epoch from max(last_msg_receipt_time))::bigint::text from pg_stat_subscription where subname='$sub' and worker_type='apply'), '')"
+      IFS='|' read -r enabled workers last < <(local_sql -d postgres -c "$sql")
+      echo "loyal_db_subscription_enabled{subscription=\"$sub\"} $enabled"
+      echo "loyal_db_subscription_worker_up{subscription=\"$sub\"} $((workers > 0 ? 1 : 0))"
+      [[ -z $last ]] || echo "loyal_db_subscription_last_msg_receipt_timestamp_seconds{subscription=\"$sub\"} $last"
+    done
+    echo '# TYPE loyal_db_neon_probe_success gauge'
+    echo '# TYPE loyal_db_neon_slot_active gauge'
+    echo '# TYPE loyal_db_neon_slot_lag_bytes gauge'
+    for spec in "${DATABASES[@]}"; do
+      src=$(field "$spec" 1) sub=loyal_hz_$(field "$spec" 1)
+      if row=$(PGCONNECT_TIMEOUT=10 NEON_STATEMENT_TIMEOUT=20000 neon_ro "$src" -c "select coalesce(bool_or(active), false)::int || ' ' || coalesce(max(pg_wal_lsn_diff(pg_current_wal_lsn(), confirmed_flush_lsn))::bigint, 0) from pg_replication_slots where slot_name='$sub'" 2>/dev/null); then
+        read -r active lag <<<"$row"
+        echo "loyal_db_neon_probe_success{source=\"$src\"} 1"
+        echo "loyal_db_neon_slot_active{slot=\"$sub\"} $active"
+        echo "loyal_db_neon_slot_lag_bytes{slot=\"$sub\"} $lag"
+      else
+        echo "loyal_db_neon_probe_success{source=\"$src\"} 0"
+      fi
+    done
+    echo '# TYPE loyal_db_pg_wal_bytes gauge'
+    echo "loyal_db_pg_wal_bytes $(local_sql -d postgres -c 'select coalesce(sum(size), 0) from pg_ls_waldir()')"
+    echo '# TYPE loyal_db_replica_metrics_last_success_timestamp_seconds gauge'
+    echo "loyal_db_replica_metrics_last_success_timestamp_seconds $(date +%s)"
+  } >"$out.tmp"
+  chmod 0644 "$out.tmp"
+  mv -f "$out.tmp" "$out"
+}
+
+cmd_retain() {
+  local table dropped
+  for table in "${HYPERTABLES[@]}"; do
+    if [[ ${1:-} == --dry-run ]]; then
+      local_sql -d kamino_timescale -F' ' -c "select 'would drop ' || c || ' ' || pg_size_pretty(pg_total_relation_size(c)) from show_chunks('$table', older_than => interval '$TS_RETAIN_DAYS days') c order by c::text"
+    else
+      dropped=$(local_sql -d kamino_timescale -c "select drop_chunks('$table', older_than => interval '$TS_RETAIN_DAYS days')")
+      echo "retain: $table dropped $(grep -c . <<<"$dropped") chunk(s) older than $TS_RETAIN_DAYS days"
+      [[ -z $dropped ]] || echo "$dropped"
+    fi
+  done
+}
+
 case ${1:-} in
   setup) cmd_setup ;;
   backfill) cmd_backfill ;;
@@ -323,5 +374,7 @@ case ${1:-} in
   verify) cmd_verify ;;
   sequences) cmd_sequences ;;
   check) cmd_check ;;
-  *) echo "usage: $0 setup|backfill|catchup|sequences|verify|check" >&2; exit 2 ;;
+  metrics) cmd_metrics ;;
+  retain) cmd_retain "${2:-}" ;;
+  *) echo "usage: $0 setup|backfill|catchup|sequences|verify|check|metrics|retain [--dry-run]" >&2; exit 2 ;;
 esac

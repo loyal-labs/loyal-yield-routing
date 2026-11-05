@@ -2,6 +2,7 @@ package webapp
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 
@@ -93,27 +94,30 @@ func (h earnRoutes) registerTransactions(api huma.API) {
 }
 
 func (h earnRoutes) earnTransactions(ctx context.Context, in *sessionRequest) (*earnTransactionsOutput, error) {
-	const unavailableCode = "earn_transactions_unavailable"
-	const unavailableMessage = "Earn transactions are unavailable."
-
 	account, err := h.account(ctx, in.SessionInput)
 	if err != nil {
-		return nil, earnUnavailable("earn transactions session", err, unavailableCode, unavailableMessage)
+		return nil, earnUnavailable("earn transactions session", err, "earn_transactions_unavailable", "Earn transactions are unavailable.")
 	}
+	transactions, err := h.earnTransactionsFor(ctx, account)
+	if err != nil {
+		return nil, earnUnavailable("earn transactions history", err, "earn_transactions_unavailable", "Earn transactions are unavailable.")
+	}
+	return &earnTransactionsOutput{Body: EarnTransactionsResponse{Transactions: transactions}}, nil
+}
+
+func (h earnRoutes) earnTransactionsFor(ctx context.Context, account EarnAccount) ([]SerializedEarnTransaction, error) {
 	if err := h.syncRebalanceHoldingEvents(ctx, account); err != nil {
-		return nil, earnUnavailable("sync rebalance holding events", err, unavailableCode, unavailableMessage)
+		return nil, fmt.Errorf("sync rebalance holding events: %w", err)
 	}
 	positionEvents, err := h.yieldPositionHistoryEvents(ctx, account)
 	if err != nil {
-		return nil, earnUnavailable("position history", err, unavailableCode, unavailableMessage)
+		return nil, fmt.Errorf("position history: %w", err)
 	}
 	autodepositEvents, err := h.autodepositHistoryEvents(ctx, account)
 	if err != nil {
-		return nil, earnUnavailable("autodeposit history", err, unavailableCode, unavailableMessage)
+		return nil, fmt.Errorf("autodeposit history: %w", err)
 	}
-
-	transactions := txreadsAssembleTransactions(positionEvents, autodepositEvents)
-	return &earnTransactionsOutput{Body: EarnTransactionsResponse{Transactions: transactions}}, nil
+	return txreadsAssembleTransactions(positionEvents, autodepositEvents), nil
 }
 
 const earnPolicyRefundScanPath = "/api/smart-accounts/yield-optimization/policy-refunds/scan"

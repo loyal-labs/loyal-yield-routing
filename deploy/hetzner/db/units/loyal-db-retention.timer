@@ -1,0 +1,9 @@
+[Unit]
+Description=Daily 62-day retention for the Timescale hypertables
+
+[Timer]
+OnCalendar=*-*-* 04:30:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target

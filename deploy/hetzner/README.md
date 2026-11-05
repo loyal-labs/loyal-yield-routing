@@ -747,6 +747,14 @@ The alerts are:
 | LoyalUnitDown | Any `loyal-*` unit is `failed`, or stuck `activating`, for 2m |
 | LoyalUnitRestartLoop | Any `loyal-*` unit restarts more than 3 times in 15m |
 | LoyalMonitoringDown | node_exporter, Prometheus or Alertmanager is not scrapeable for 2m |
+| LoyalDbReplicaSubscriptionDown | A Neon replica subscription on loyal-db-primary has no apply worker for 5m (disabled, dropped or crashing) |
+| LoyalDbReplicaSubscriptionStale | `pg_stat_subscription.last_msg_receipt_time` is over 15m old (keepalives arrive every minute when healthy), sustained for 1m |
+| LoyalDbNeonSlotInactive | Neon reports a `loyal_hz_*` slot with no consumer for 10m. Neon drops an inactive slot after about 40h |
+| LoyalDbNeonSlotLag | A Neon slot trails the Neon write position by over 5 GiB for 10m |
+| LoyalDbNeonProbeFailing | The slot query against Neon failed on every run for 15m, so the slot alerts are blind |
+| LoyalDbVolumeLow | `/srv/postgresql` on loyal-db-primary has under 100 GiB free for 5m |
+| LoyalDbWalLarge | `pg_wal` on loyal-db-primary is over 60 GB for 5m |
+| LoyalDbReplicaMetricsStale | The replica metrics timer has not completed for 10m, or its series is gone |
 | Watchdog | Always firing. It goes to the heartbeat receiver, and the external switch pages when it stops |
 
 Known Autodeposit gaps:
@@ -770,6 +778,29 @@ amtool check-config monitoring/alertmanager.yml
 python3 monitoring/verify-alert-messages.py  # requires python3-yaml and amtool
 systemd-analyze verify deploy/hetzner/systemd/*.service   # Linux only
 ```
+
+### Replica guards (loyal-db-primary)
+
+The DB box runs a node_exporter bound to `10.92.1.1:9100` with only the
+filesystem and textfile collectors. Prometheus scrapes it as a second target
+of job `node`, so `LoyalMonitoringDown` covers it. The textfile
+`/var/lib/prometheus/node-exporter/loyal_db_replica.prom` is written every
+minute by `loyal-db-replica-metrics.timer` (`replica.sh metrics`). It reads
+subscription state locally and the Neon slots through the replica's own
+read-only `pg_service.conf`, so no Neon API key is involved. Install or
+refresh the box side with `deploy/hetzner/db/remote.sh guards`.
+
+`loyal-db-retention.timer` runs `replica.sh retain` daily at 04:30 UTC. It
+calls `drop_chunks(..., older_than => interval '62 days')` on the two
+hypertables of the replica only. `remote.sh retain --dry-run` lists the chunks
+it would drop.
+
+Remove: `systemctl disable --now loyal-db-replica-metrics.timer
+loyal-db-retention.timer prometheus-node-exporter` on the box, delete the four
+units in `/etc/systemd/system`, `apt-get remove prometheus-node-exporter`,
+drop the `10.92.1.1:9100` target from `prometheus.yml` and the
+`loyal-db-replica` rule group. Delete that group when the subscriptions are
+dropped after cutover.
 
 ### Withdrawal attention
 
