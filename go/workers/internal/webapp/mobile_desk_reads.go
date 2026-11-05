@@ -117,6 +117,10 @@ func deskWallet(raw string) (solana.PublicKey, error) {
 // deskAccount is the wallet's ready smart account, or nil when the wallet has
 // none or does not control it, the cases Next answers with an empty read.
 func (h earnRoutes) deskAccount(ctx context.Context, wallet solana.PublicKey) (*EarnAccount, error) {
+	return h.walletAccount(ctx, wallet, true)
+}
+
+func (h earnRoutes) walletAccount(ctx context.Context, wallet solana.PublicKey, verifySigner bool) (*EarnAccount, error) {
 	settings, err := h.auth.readySettings(ctx, wallet)
 	var principal Principal
 	if err == nil {
@@ -124,7 +128,9 @@ func (h earnRoutes) deskAccount(ctx context.Context, wallet solana.PublicKey) (*
 		smartAccount, _, err = squads.SmartAccountAddress(settings, 0)
 		if err == nil {
 			principal = Principal{Wallet: wallet, Settings: settings, SmartAccount: smartAccount}
-			err = h.auth.controls(ctx, principal)
+			if verifySigner {
+				err = h.auth.controls(ctx, principal)
+			}
 		}
 	}
 	var refused *AuthError

@@ -20,8 +20,13 @@ export type Get = {
   "/api/smart-accounts/earn-max/invite": Types.InviteStatus;
   "/api/smart-accounts/earn-max/summary": Types.EarnMaxSummaryResponse;
   "/api/smart-accounts/earn-transactions": Types.EarnTransactionsResponse;
+  "/api/smart-accounts/mobile/earn-max": Types.MobileEarnMaxResponse;
+  "/api/smart-accounts/mobile/earn/autodeposit/state": Types.MobileEarnAutodepositStateResponse;
   "/api/smart-accounts/mobile/earn/earnings": Types.EarningsRangeSet;
   "/api/smart-accounts/mobile/earn/holdings": Types.DeskHoldingsResponse;
+  "/api/smart-accounts/mobile/earn/policy-refunds/scan": Types.MobileEarnRefundScanResponse;
+  "/api/smart-accounts/mobile/earn/state": Types.MobileEarnStateResponse;
+  "/api/smart-accounts/mobile/earn/transactions": Types.EarnTransactionsResponse;
   "/api/smart-accounts/yield-optimization/autodeposit/sweeps/execute": Types.AutodepositSweepsProgressResponse;
   "/api/smart-accounts/yield-optimization/earn-state": Types.EarnStateResponse;
   "/api/smart-accounts/yield-optimization/earnings": Types.EarningsRangeSet;
