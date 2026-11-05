@@ -221,7 +221,7 @@ func (h earnRoutes) validateCapChallenge(body any, now time.Time) (reason, nonce
 		saltSeed := fnv1a(tokenHash, strconv.Itoa(i+1))
 		salt := capPRNG(saltSeed, size)
 		target := capPRNG(fnv1a(saltSeed, "d"), difficulty)
-		digest := sha256.Sum256([]byte(salt + jsNumberString(solution.(float64))))
+		digest := sha256.Sum256([]byte(salt + capNumberString(solution.(float64))))
 		if !strings.HasPrefix(hex.EncodeToString(digest[:]), target) {
 			return "invalid_solution", "", time.Time{}
 		}
@@ -395,7 +395,7 @@ func capInteger(value any, low, high int) (int, bool) {
 	return int(number), true
 }
 
-func jsNumberString(n float64) string {
+func capNumberString(n float64) string {
 	if n == 0 {
 		return "0"
 	}
