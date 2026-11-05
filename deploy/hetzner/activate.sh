@@ -5,12 +5,12 @@ family=${1:-}
 sha=${2:-}
 want=${3:-}
 mode=${4:-running}
-case $family in backyard | retail) binary=loyal-engine ;; observer) binary=loyal-observer ;; web) binary=loyal-web ;; admin) binary=loyal-admin ;; stats) binary=loyal-stats ;; *) family=bad ;; esac
+case $family in backyard | retail) binary=loyal-engine ;; observer) binary=loyal-observer ;; telegram) binary=loyal-telegram ;; web) binary=loyal-web ;; admin) binary=loyal-admin ;; stats) binary=loyal-stats ;; *) family=bad ;; esac
 case $sha in *[!0-9a-f]* | '') sha=bad ;; esac
 case $want in *[!0-9a-f]* | '') want=bad ;; esac
 case $mode in running | stopped) ;; *) mode=bad ;; esac
 if [ "$family" = bad ] || [ ${#sha} -ne 40 ] || [ ${#want} -ne 64 ] || [ "$mode" = bad ]; then
-	echo "usage: activate.sh backyard|retail|observer|web|admin|stats <40-hex commit sha> <64-hex sha256> [stopped]" >&2
+	echo "usage: activate.sh backyard|retail|observer|telegram|web|admin|stats <40-hex commit sha> <64-hex sha256> [stopped]" >&2
 	exit 2
 fi
 unit=loyal-$family

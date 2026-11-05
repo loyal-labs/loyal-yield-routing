@@ -20,3 +20,6 @@ release:
 	CGO_ENABLED=0 GOOS=linux GOARCH=$(GOARCH) $(GO) build -trimpath \
 		-ldflags "-s -w -X github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine.Release=$(RELEASE)" \
 		-o bin/ ./cmd/loyal-observer ./cmd/loyal-engine ./cmd/loyal-migrate
+	CGO_ENABLED=0 GOOS=linux GOARCH=$(GOARCH) $(GO) build -trimpath \
+		-ldflags "-s -w -X github.com/loyal-labs/loyal-yield-routing/go/workers/internal/webserve.stamp=$(RELEASE)" \
+		-o bin/ ./cmd/loyal-telegram
