@@ -16,6 +16,7 @@ import (
 	"strings"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
@@ -25,6 +26,7 @@ const (
 )
 
 const squadsSpendingLimitReason = "squads_spending_limit_exceeded"
+const jupiterSlippageReason = "jupiter_slippage_limit_exceeded"
 
 const adaptorMaxReportAgeSlots = int64(32)
 
@@ -144,6 +146,8 @@ func confirmedFailureReason(rawErr json.RawMessage, logs []string) string {
 		return "adaptor_report_ticket_replayed"
 	case program == squads.ProgramID.String() && code == squads.ErrSpendingLimitExceeded:
 		return squadsSpendingLimitReason
+	case program == jupiter.ProgramID.String() && code == 6001:
+		return jupiterSlippageReason
 	}
 	return "program_error:" + program + ":" + strconv.FormatUint(uint64(code), 10)
 }

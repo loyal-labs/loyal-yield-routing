@@ -514,8 +514,16 @@ func decideSnapshot(s Snapshot, initializationReady func(Snapshot) bool) Decisio
 		}
 	}
 	d := func(action Action, reason string, amount int64) Decision {
-		return Decision{Action: action, Reason: reason, AmountRaw: amount, StrategyKey: s.RouteLane,
+		decision := Decision{Action: action, Reason: reason, AmountRaw: amount, StrategyKey: s.RouteLane,
 			IdempotencyKey: fmt.Sprintf("%s:%s:%s:%d:%s", s.ObservationID, s.RouteLane, action, amount, reason)}
+		if !s.Trustful && reason != hardLTVDeleverReason && (s.Target.Rule == ruleWithdrawal ||
+			s.Target.Rule == ruleCustody && withdrawalShortfallRaw(s) > 0) {
+			switch reason {
+			case releaseReason, debtZeroReason, exitWithdrawReason, outboundCollateralReason, outboundDebtReason:
+				decision.MaxSlippageBPS = withdrawalMaxSlippageBPS
+			}
+		}
+		return decision
 	}
 	if s.Nonterminal != "" {
 		reason := "resume_nonterminal_operation"

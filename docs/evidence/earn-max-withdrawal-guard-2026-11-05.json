@@ -1,0 +1,119 @@
+{
+  "date": "2026-11-05",
+  "mode": "unsigned read-only RPC bundle simulations; no production transaction broadcast",
+  "baseCommit": "69e4c38e32e55fd64301a8350aa412f43345f4ec",
+  "sourceHashes": {
+    "go/workers/internal/backyard/hold.go": "442b1947b1686a4c400b5239dedb158b409daaab6fd4e09b987a79f462d4deff",
+    "go/workers/internal/backyard/jupiter.go": "430e1e15b1206a47569ea530e2a05c13adb0388b2befaf2a4681e6872693bf6c",
+    "go/workers/internal/backyard/jupiter_catalog_test.go": "25b623edaadabbd3e534193abaf21925c65d4ab336319d617480ce88e4d3248e",
+    "go/workers/internal/backyard/jupiter_observe.go": "7355d918277840c974ea10ca0d08421823cfd63d183faafec59a4862d83a4a7d",
+    "go/workers/internal/backyard/jupiter_test.go": "fe412292ee980416acebe7ca1bda646769b83d02a686188eb6f2d85073b5955b",
+    "go/workers/internal/backyard/lifecycle.go": "c72e48a9530b3118b51e2f1583f775d8ff24ce47e9cd0fda6c0a74f273e53aed",
+    "go/workers/internal/backyard/policy_legs_test.go": "1c3e8a53a00400620453af3c1ecd7a5b5cfe90c611cfc6e51fbb55bef9cfd3e3",
+    "go/workers/internal/backyard/report_failure.go": "1d19308cae14d80ba75c43ec0b6f43e93c39cdac155f5dec6bfb67cfdbf5b7a2",
+    "go/workers/internal/backyard/state.go": "c384039bb43c13fe31ba9f6a4d1aa83548ae35dd8fc603ee9bf0b0378f6f5ada",
+    "go/workers/internal/backyard/step_prepare.go": "5cab8ed35b0ab181168c4602d283b0b2fa8c0824e0340a413aa701ede475bc21",
+    "go/workers/internal/backyard/store.go": "d1daacd46e6904251e70ff08906925b6a4ddcfc2160a0e71782539785595774a",
+    "go/workers/internal/backyard/target.go": "e0bb0e6e572ff85cb19cb3a4166452531f305d927a2864253d1481c307781f19",
+    "go/workers/internal/backyard/withdrawal_health.go": "b57029e48a9ed34e966fbeaa607918ae9ac8050b1f68574cf3fae6cc80ccf7b8",
+    "go/workers/internal/backyard/withdrawal_slippage_test.go": "95df53bf45fb48d549817ccf59b3b6325d0a1da4aa1a0d9e07f11eb61f9ac421"
+  },
+  "policy": {
+    "ordinaryEarnMaxWithdrawalBPS": 20,
+    "legacyDefaultAndUrgentDebtReductionBPS": 50,
+    "alreadySignedTransactions": "recover recorded wire without recompiling"
+  },
+  "cases": [
+    {
+      "case": "guard-normal-prime-100k",
+      "startedAt": "2026-11-05T14:14:33.944626023Z",
+      "finishedAt": "2026-11-05T14:15:06.429939113Z",
+      "lane": "Prime/PRIME/USDC",
+      "fundingUSDCRaw": "100000000000",
+      "slippageBPS": 20,
+      "slot": 465735429,
+      "status": "SYNTHETICALLY_FUNDED_UNBORROWED_LIFECYCLE_PASSED",
+      "productionStepPrepared": true,
+      "quotedUSDCOutputRaw": "99468038964",
+      "minimumUSDCOutputRaw": "99269102886",
+      "captureSHA256": "6129a8c3889583647d08a37f84d23067686686b5cba65a185ed4bf2ff2c61cd1",
+      "initialDecision": {
+        "Action": "HOLD_MANUAL_RECOVERY",
+        "Reason": "receipt_nav_mismatch",
+        "StrategyKey": "OnRe/ONyc/USDC"
+      },
+      "financialWiresWithSignAndPersistEnvelopeValidation": 6,
+      "debtAfterRaw": "0",
+      "depositedCollateralAfterRaw": "0",
+      "usdcRestoredToVaultIdleRaw": "99474653798",
+      "buyExcessOutsideLendingRaw": "468006223"
+    },
+    {
+      "case": "guard-normal-recheck-maple-100k",
+      "startedAt": "2026-11-05T14:16:41.593009445Z",
+      "finishedAt": "2026-11-05T14:17:14.282859746Z",
+      "lane": "Maple/syrupUSDC/USDC",
+      "fundingUSDCRaw": "100000000000",
+      "slippageBPS": 20,
+      "slot": 465736029,
+      "status": "SYNTHETICALLY_FUNDED_UNBORROWED_LIFECYCLE_PASSED",
+      "productionStepPrepared": true,
+      "quotedUSDCOutputRaw": "99476553138",
+      "minimumUSDCOutputRaw": "99277600031",
+      "captureSHA256": "09946caff32a3e4691dd014770d5aa81095ea19c76732677c31814311ae8a397",
+      "initialDecision": {
+        "Action": "HOLD_MANUAL_RECOVERY",
+        "Reason": "receipt_nav_mismatch",
+        "StrategyKey": "OnRe/ONyc/USDC"
+      },
+      "financialWiresWithSignAndPersistEnvelopeValidation": 6,
+      "debtAfterRaw": "0",
+      "depositedCollateralAfterRaw": "0",
+      "usdcRestoredToVaultIdleRaw": "99480110062",
+      "buyExcessOutsideLendingRaw": "419615701"
+    },
+    {
+      "case": "guard-pressure50-prime-100k",
+      "startedAt": "2026-11-05T14:17:28.149863908Z",
+      "finishedAt": "2026-11-05T14:18:20.31141546Z",
+      "lane": "Prime/PRIME/USDC",
+      "fundingUSDCRaw": "100000000000",
+      "slippageBPS": 20,
+      "slot": 465736340,
+      "status": "STRESS_EXIT_BLOCKED",
+      "productionStepPrepared": true,
+      "quotedUSDCOutputRaw": "99466794522",
+      "minimumUSDCOutputRaw": "99267860932",
+      "captureSHA256": "84ded0ded0004066ae3042f7dc2e69973bc090dcdd51f2f66e9d205b1ab2751f",
+      "initialDecision": {
+        "Action": "HOLD",
+        "Reason": "at_target",
+        "StrategyKey": "OnRe/ONyc/USDC"
+      },
+      "precedingSaleQuotedUSDCOutputRaw": "4962465575260",
+      "jupiterError": 6001,
+      "trackedAccountsUnchanged": 55,
+      "allPrecedingTransactionsSucceeded": true,
+      "withdrawalRolledBack": true
+    }
+  ],
+  "checks": {
+    "baselineBackyardSuite": "PASS",
+    "workerVerifierWithFreshLocalPostgres": "PASS",
+    "withdrawalSlippageTestsIncludingRetry": "PASS",
+    "latestVaultDecision": "HOLD at_target",
+    "workerHealthAtReadOnlyCheck": {
+      "active": true,
+      "restartsSinceStart": 0,
+      "manualHold": false
+    }
+  },
+  "limits": [
+    "Funding above 1000 USDC is supplied by unsigned hypothetical transfers in the simulated bank.",
+    "Only guaranteed buy output is deposited; surplus collateral remains outside lending and is not part of the tested position exit.",
+    "Funded candidate cycles are unborrowed. Maple uses the experimental Whirlpool filter, not the production Manifest filter.",
+    "Reject/reobserve/retry and signed legacy recovery are worker tests; the stressed chain experiment proves rollback, not future liquidity recovery.",
+    "Two earlier standalone observations returned receipt_nav_mismatch. The later fresh observation returned HOLD at_target; the live service showed no manual hold. Repeat continuity checks at actual activation.",
+    "These captures were taken before production rollout. The tighter quote-to-fill limit is not a total economic loss ceiling."
+  ]
+}

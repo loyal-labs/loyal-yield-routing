@@ -234,6 +234,7 @@ type Decision struct {
 	Action         Action
 	Reason         string
 	AmountRaw      int64
+	MaxSlippageBPS uint16
 	IdempotencyKey string
 	StrategyKey    string
 }
@@ -246,7 +247,7 @@ func validateSelectorInitializerDecision(d Decision) error {
 }
 
 func (d Decision) Validate() error {
-	if d.Reason == "" || d.IdempotencyKey == "" || d.AmountRaw < 0 {
+	if d.Reason == "" || d.IdempotencyKey == "" || d.AmountRaw < 0 || d.MaxSlippageBPS > jupiterMaxSlippageBPS {
 		return fmt.Errorf("incomplete decision")
 	}
 	switch d.Action {

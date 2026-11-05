@@ -258,11 +258,11 @@ func fixtureSwapRequest(t *testing.T, lane string, action Action) JupiterSwapReq
 	if err != nil {
 		t.Fatal(err)
 	}
-	quote, instruction, err := freshSwapForRoute(context.Background(), rwa, client, lane, action, amount, maxAccounts)
+	quote, instruction, err := freshSwapForRoute(context.Background(), rwa, client, lane, action, amount, maxAccounts, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, _, err := validateJupiterQuoteForRoute(rwa, quote, action, amount, lane)
+	out, _, err := validateJupiterQuoteForRoute(rwa, quote, action, amount, lane, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -119,6 +119,7 @@ type stepState struct {
 	obligation                                 kamino.Obligation
 	slot, collateralBalance, debtBalance, cash uint64
 	topology                                   []string
+	maxSlippageBPS                             uint16
 }
 
 func (st stepState) heldDebt() uint64 {
@@ -293,6 +294,7 @@ func prepareStepFromTickObservation(ctx context.Context, rpc *chain.Client, view
 	if err != nil {
 		return Observation{}, StepExecutionEvidence{}, err
 	}
+	st.maxSlippageBPS = decision.MaxSlippageBPS
 	switch kind {
 	case stepMove:
 		evidence, entry, err := assembleMove(ctx, rpc, manifest, observation.policies, accounts, st, s, decision)
@@ -354,6 +356,7 @@ func prepareStepFromTickObservation(ctx context.Context, rpc *chain.Client, view
 }
 
 func releaseLeg(ctx context.Context, rpc *chain.Client, view *View, client *jupiter.Client, manifest RouteManifest, policies installedPolicies, accounts []ConfirmedAccount, st stepState, s Snapshot, decision Decision) (StepExecutionEvidence, uint64, error) {
+	st.maxSlippageBPS = decision.MaxSlippageBPS
 	if decision.Reason == releaseReason && st.position.DebtRaw > 0 {
 		plan, err := planDownStep(s, decision, st, 0)
 		if err != nil {
@@ -426,7 +429,7 @@ func assembleStep(ctx context.Context, rpc *chain.Client, view *View, client *ju
 		}
 		request.Close = &closing
 	}
-	decision := Decision{Action: conversion, AmountRaw: int64(convertRaw), StrategyKey: lane}
+	decision := Decision{Action: conversion, AmountRaw: int64(convertRaw), StrategyKey: lane, MaxSlippageBPS: st.maxSlippageBPS}
 	var conversionRequest any
 	if conversionVenueHastra(decision) {
 		e, err := prepareHastraQuoteEvidence(ctx, v, rpc, view, policies, decision, sourceHeld+openLiquidity, destinationHeld, slot)
