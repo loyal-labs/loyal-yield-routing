@@ -2482,6 +2482,29 @@
   }
 }
 
+.t-incoming-enter {
+  display: grid;
+  grid-template-rows: 1fr;
+  animation: t-incoming-enter var(--panel-open-dur) var(--panel-ease);
+}
+.t-incoming-enter > * {
+  min-height: 0;
+  overflow: hidden;
+}
+
+@keyframes t-incoming-enter {
+  from {
+    grid-template-rows: 0fr;
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .t-incoming-enter {
+    animation: none;
+  }
+}
+
 /* Facelift adaptation — the panel reveal as keyframes for the sheet
    overlays (withdraw source select, autodeposit info, expanded charts):
    fill-mode `both` on a data-state flip plays regardless of prior computed

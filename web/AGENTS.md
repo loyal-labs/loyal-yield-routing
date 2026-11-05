@@ -790,6 +790,30 @@ Receive's Solana tab uses the authenticated wallet address and working copy/QR.
 The sidebar Bridge button and Receive → Other chains show when `/api/funding/launch` answers `launched: true` for the signed-in wallet (the server's `LOYAL_TEST_WALLETS` gate, read once into the auth session context as `launched`). Receive → Other chains is the sole entry
 to Bridge In: select a deposit asset, then its source chain; the asset to receive is fixed
 USDC on Solana. Its assets, chains, addresses, minimums and fees come from the server.
+Deposits to a `relay_signed` route (an external Solana wallet) stop on the user's Privy
+embedded EVM wallet until they press Confirm on Assets. Assets shows one "Confirm incoming
+transfer" card per nonzero balance from `/api/funding/bridge/balances` above the asset list,
+and the sidebar Assets item counts them with a red dot. Only a signed-in wallet whose Solana
+account is not a Privy embedded wallet reads the deposit route and balances. The balance is
+the truth of what waits; a transfer the server flags `inFlight` in
+`/api/funding/bridge/transfers` is the truth of what moves and hides its balance. The server
+owns in flight, keyed on the EVM sender that every linked Solana wallet shares: a confirmed
+transfer with no hash for 15 min, a submitted one for 2 h; quote or confirm for the same
+sender, chain and asset answers 409 `bridge_in_flight` with its `requestId`, which the card
+shows as Bridging…, and `/transfers` lists that transfer to every linked wallet. A run that
+ends after confirm with no deposit broadcast posts `/release` with its reason (rejected,
+refused, reverted, or aborted on unmount or wallet change), retried once; a deposit handed to
+the wallet is never released. A finished run whose `requestId` the server stops listing is
+dropped.
+`useIncomingTransfers` owns the reads, one 3 s transfers poll while anything is in flight, a
+balances re-read on window focus at most every 30 s, and every Move; cards only render its
+items, in one chain-then-asset order. Confirm takes the per-chain Web Lock first, re-reads,
+and quotes the fresh balance. Only a reverted receipt skips `/submit`; an unreadable receipt
+submits the hash. Every request of a Move stops when the wallet that started it changes. The
+card row shows Bridging…, Arrived or Failed with Retry, and a settled server state beats a
+client failure. A failed balances or deposit-address read shows an inline Retry. A balance
+under its chain's `minUsd` shows the minimum with Confirm disabled.
+`privy_autobridge` routes make no balances request. The card is the only Move entry point.
 The sidebar Bridge action opens the Bridge Out main pane,
 with send-asset, receive-asset → chain, and recipient selectors. It shares the
 Assets action page slide, form reveal, token icon swap, and text transitions

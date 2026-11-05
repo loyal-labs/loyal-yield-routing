@@ -14,11 +14,6 @@ import { SheetReveal } from "./sheet-reveal";
 import { SlidingTabs } from "./sliding-tabs";
 import { TextSwap } from "./text-swap";
 import { ThemedIcon } from "./themed-icon";
-import {
-  fromRaw,
-  type MoveSource,
-  useBridgeMoveBalances,
-} from "./use-bridge-move";
 import { useEvmDepositAddress } from "./use-evm-deposit-address";
 import { useIsNarrowViewport } from "./use-is-narrow-viewport";
 
@@ -290,13 +285,11 @@ export function ReceiveSheet({
   onClose,
   walletAddress,
   initialTab = "Solana",
-  onMove,
 }: {
   isOpen: boolean;
   onClose: () => void;
   walletAddress: string | null;
   initialTab?: Tab;
-  onMove: (source: MoveSource) => void;
 }) {
   const [tabState, setTabState] = useState<{
     wallet: string | null;
@@ -323,11 +316,6 @@ export function ReceiveSheet({
   useEffect(() => {
     if (!isOpen) evm.retryOnNextLoad();
   }, [evm, isOpen]);
-  const moves = useBridgeMoveBalances(
-    isOpen && bridge && evm.info?.kind === "relay_signed",
-    evm.networks,
-    walletAddress
-  );
   const narrow = useIsNarrowViewport();
   const title =
     view === "chains"
@@ -503,61 +491,9 @@ export function ReceiveSheet({
             </div>
             {bridge ? (
               <div className="min-h-0 flex-1 overflow-y-auto">
-                {((live && routeError) || moves.error) && (
+                {live && routeError && (
                   <div className="flex flex-col gap-2 px-2 pt-2 max-[795px]:px-4">
-                    {live && routeError && (
-                      <Warning onRetry={retryRoute}>{routeError}</Warning>
-                    )}
-                    {moves.error && (
-                      <Warning onRetry={moves.reload}>{moves.error}</Warning>
-                    )}
-                  </div>
-                )}
-                {(moves.balances.length > 0 || moves.transfers.length > 0) && (
-                  <div className="px-2 pt-2">
-                    {moves.balances.map((item) => (
-                      <BridgeRow
-                        key={`${item.chain}:${item.asset}`}
-                        label="Ready to move to Solana"
-                        value={`${fromRaw(item.amountRaw, item.decimals)} ${item.symbol}`}
-                        badge={item.chainName}
-                        onClick={() => {
-                          if (!evm.info || !walletAddress) return;
-                          onMove({
-                            sender: evm.info.address,
-                            recipient: walletAddress,
-                            balances: moves.balances,
-                            start: item,
-                          });
-                        }}
-                        icon={
-                          <BadgedIcon
-                            file={item.icon}
-                            label={item.symbol}
-                            badge={item.chainIcon}
-                            badgeLabel={item.chainName}
-                          />
-                        }
-                      />
-                    ))}
-                    {moves.transfers.map((item) => (
-                      <div
-                        className="flex h-[60px] w-full items-center rounded-2xl px-4 max-[795px]:px-2"
-                        key={item.requestId}
-                      >
-                        <BadgedIcon
-                          file={item.icon}
-                          label={item.symbol}
-                          badge={item.chainIcon}
-                          badgeLabel={item.chainName}
-                        />
-                        <RowText
-                          label={item.status}
-                          value={`${item.amount} ${item.symbol}`}
-                          badge={item.chainName}
-                        />
-                      </div>
-                    ))}
+                    <Warning onRetry={retryRoute}>{routeError}</Warning>
                   </div>
                 )}
                 <div className="relative p-2">

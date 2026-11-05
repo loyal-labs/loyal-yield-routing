@@ -131,7 +131,7 @@ func (t *Tracker) unmoved(ctx context.Context, walletIDs map[string]string) erro
 					continue
 				}
 				held = append(held, engine.IncomingHeld{Chain: string(b.Chain), Asset: string(b.Asset), UnderMin: underMin(b), Units: units(b)})
-				slog.Warn("bridge incoming unmoved", "address", maskAddress(r.address), "chain", b.Chain, "asset", b.Asset,
+				slog.Warn("bridge incoming unmoved", "address", MaskAddress(r.address), "chain", b.Chain, "asset", b.Asset,
 					"amount", decimalAmount(b), "under_min", underMin(b))
 			}
 		}
@@ -164,7 +164,7 @@ func (t *Tracker) privyBalances(ctx context.Context, walletID, address string) u
 			}
 		}
 		if walletID == "" {
-			return unmovedRead{err: fmt.Errorf("privy has no ethereum wallet %s", maskAddress(address))}
+			return unmovedRead{err: fmt.Errorf("privy has no ethereum wallet %s", MaskAddress(address))}
 		}
 	}
 	queries := PrivyBalanceQueries()
@@ -180,7 +180,7 @@ func (t *Tracker) privyBalances(ctx context.Context, walletID, address string) u
 	return unmovedRead{walletID: walletID, balances: balances, err: err}
 }
 
-func maskAddress(address string) string {
+func MaskAddress(address string) string {
 	if len(address) <= 10 {
 		return address
 	}
