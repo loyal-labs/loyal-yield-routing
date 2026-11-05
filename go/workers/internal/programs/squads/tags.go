@@ -45,7 +45,6 @@ const (
 	legacyPolicyThreshold   = 1
 	legacyPolicyTimeLock    = 0
 
-	archivalAuthorityLen  = 32
-	archivableAfterLen    = 8
-	accountUtilizationLen = 1
+	archivalAuthorityLen = 32
+	archivableAfterLen   = 8
 )

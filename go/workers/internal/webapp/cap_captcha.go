@@ -147,7 +147,7 @@ func (h earnRoutes) capChallenge(_ context.Context, _ *struct{}) (*capChallengeO
 
 func (h earnRoutes) capRedeem(ctx context.Context, in *capRedeemInput) (*capRedeemOutput, error) {
 	var body any
-	if json.Unmarshal(in.Raw.data, &body) != nil || !jsTruthy(body) {
+	if json.Unmarshal(in.Raw.data, &body) != nil || !capTruthy(body) {
 		return nil, &capRefusal{Reason: "invalid_body", status: http.StatusBadRequest}
 	}
 	refuse := func(reason string) error { return &capRefusal{Reason: reason, status: http.StatusForbidden} }
@@ -202,9 +202,9 @@ func (h earnRoutes) validateCapChallenge(body any, now time.Time) (reason, nonce
 	if exp == 0 || exp < nowMs {
 		return "expired", "", time.Time{}
 	}
-	count, okCount := jsInteger(claims["c"], 1, capMaxCount)
-	size, okSize := jsInteger(claims["s"], 1, capMaxSize)
-	difficulty, okDifficulty := jsInteger(claims["d"], 1, capMaxDifficulty)
+	count, okCount := capInteger(claims["c"], 1, capMaxCount)
+	size, okSize := capInteger(claims["s"], 1, capMaxSize)
+	difficulty, okDifficulty := capInteger(claims["d"], 1, capMaxDifficulty)
 	if !okCount || !okSize || !okDifficulty {
 		return "invalid_token", "", time.Time{}
 	}
@@ -255,7 +255,7 @@ func verifyCapInstrumentation(key *jwt.HS256, sealed string, body map[string]any
 		return ""
 	case body["instr_timeout"] == true:
 		return "instr_timeout"
-	case jsTruthy(body["instr"]):
+	case capTruthy(body["instr"]):
 		return capInstrumentationResult(meta, body["instr"])
 	default:
 		return "instr_missing"
@@ -387,7 +387,7 @@ func capPRNG(state uint32, length int) string {
 	return out.String()[:length]
 }
 
-func jsInteger(value any, low, high int) (int, bool) {
+func capInteger(value any, low, high int) (int, bool) {
 	number, ok := value.(float64)
 	if !ok || number != math.Trunc(number) || number < float64(low) || number > float64(high) {
 		return 0, false
@@ -407,7 +407,7 @@ func jsNumberString(n float64) string {
 	return mantissa + "e" + sign + digits
 }
 
-func jsTruthy(value any) bool {
+func capTruthy(value any) bool {
 	switch v := value.(type) {
 	case nil:
 		return false

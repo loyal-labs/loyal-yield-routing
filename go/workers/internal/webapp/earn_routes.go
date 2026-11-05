@@ -36,11 +36,6 @@ type Earn struct {
 	TestWallets  TestWallets
 }
 
-type WalletPush struct {
-	BaseURL string
-	Secret  string
-}
-
 type OTLP struct {
 	Endpoint     *url.URL
 	IngestionKey string

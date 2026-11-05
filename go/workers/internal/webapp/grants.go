@@ -59,6 +59,15 @@ var PushGrants = []Grant{
 	TableGrant("push_tokens", "UPDATE"),
 }
 
+var PushSendGrants = []Grant{
+	TableGrant("push_tokens", "SELECT"),
+	TableGrant("push_tokens", "DELETE"),
+	TableGrant("push_notification_sends", "SELECT"),
+	TableGrant("push_notification_sends", "INSERT"),
+	TableGrant("push_notification_sends", "UPDATE"),
+	TableGrant("push_notification_tickets", "INSERT"),
+}
+
 var YieldGrants = []Grant{
 	TableGrant("loyal_yield.multiply_operations", "SELECT"),
 	TableGrant("loyal_yield.multiply_route_states", "SELECT"),
