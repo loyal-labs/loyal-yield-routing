@@ -1,0 +1,61 @@
+{
+  "captured_at": "2026-11-05T23:22:02.576211+00:00",
+  "request": {
+    "name": "clickstack_get_dashboard",
+    "arguments": {
+      "id": "6aed0f29a57960f7f83c6c69"
+    }
+  },
+  "response": {
+    "id": "6aed0f29a57960f7f83c6c69",
+    "name": "Backyard Looping / Earn MAX alert health",
+    "tiles": [
+      {
+        "id": "6aed0f29a57960f7f83c6c67",
+        "x": 0,
+        "y": 0,
+        "w": 6,
+        "h": 3,
+        "name": "Heartbeats in 5 minutes",
+        "config": {
+          "configType": "sql",
+          "displayType": "number",
+          "connectionId": "6a58601284f8f1d4ff4d12a1",
+          "sqlTemplate": "WITH fromUnixTimestamp64Milli({endDateMilliseconds:Int64}) AS evaluated_at\nSELECT count() AS heartbeat_count\nFROM $__sourceTable\nWHERE Timestamp >= evaluated_at - INTERVAL 5 MINUTE\n  AND Timestamp <= evaluated_at\n  AND ServiceName = 'loyal-backyard' AND LogAttributes['vault'] = 'looping' AND Body = 'backyard_heartbeat'\nLIMIT 1",
+          "sourceId": "6a58601284f8f1d4ff4d12a5",
+          "numberFormat": {
+            "output": "number",
+            "mantissa": 0
+          }
+        }
+      },
+      {
+        "id": "6aed0f29a57960f7f83c6c68",
+        "x": 6,
+        "y": 0,
+        "w": 6,
+        "h": 3,
+        "name": "NAV report within 75 minutes (1 = fresh, 0 = stale)",
+        "config": {
+          "configType": "sql",
+          "displayType": "number",
+          "connectionId": "6a58601284f8f1d4ff4d12a1",
+          "sqlTemplate": "WITH fromUnixTimestamp64Milli({endDateMilliseconds:Int64}) AS evaluated_at\nSELECT toUInt8(count() > 0 AND max(Timestamp) >= evaluated_at - INTERVAL 75 MINUTE) AS nav_fresh\nFROM $__sourceTable\nWHERE Timestamp >= evaluated_at - INTERVAL 2 HOUR\n  AND Timestamp <= evaluated_at\n  AND ServiceName = 'loyal-backyard' AND LogAttributes['vault'] = 'looping' AND Body = 'backyard_operation_reconciled' AND LogAttributes['action'] = 'REPORT_NAV'\nLIMIT 1",
+          "sourceId": "6a58601284f8f1d4ff4d12a5",
+          "numberFormat": {
+            "output": "number",
+            "mantissa": 0
+          }
+        }
+      }
+    ],
+    "tags": [
+      "loyal-looping-monitor-v1"
+    ],
+    "filters": [],
+    "savedQuery": null,
+    "savedQueryLanguage": null,
+    "savedFilterValues": [],
+    "url": "https://observability.5.161.121.229.sslip.io/dashboards/6aed0f29a57960f7f83c6c69"
+  }
+}
