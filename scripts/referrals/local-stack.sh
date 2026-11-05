@@ -93,7 +93,7 @@ web() {
   echo "http://127.0.0.1:8899" >"$creds/WEB_SOLANA_RPC_URL"
   build loyal-web
   CREDENTIALS_DIRECTORY=$creds LOYAL_WEB_ADDRESS=${LOYAL_WEB_ADDRESS:-127.0.0.1:8787} \
-    LOYAL_WEB_UPSTREAM=http://127.0.0.1:9 exec "$dir/loyal-web"
+    LOYAL_TEST_WALLETS='*' LOYAL_WEB_UPSTREAM=http://127.0.0.1:9 exec "$dir/loyal-web"
 }
 
 case ${1:-} in

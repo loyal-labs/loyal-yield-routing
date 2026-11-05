@@ -362,6 +362,9 @@ func (h earnRoutes) evmDepositWallet(in SessionInput) (solana.PublicKey, error) 
 	if err != nil {
 		return solana.PublicKey{}, evmDepositUnavailable("evm deposit session", err)
 	}
+	if err := h.TestWallets.admit(session.Wallet); err != nil {
+		return solana.PublicKey{}, err
+	}
 	return session.Wallet, nil
 }
 

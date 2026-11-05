@@ -2242,6 +2242,10 @@ export type GetFundingBridgeBalancesErrors = {
      */
     401: RouteError;
     /**
+     * Forbidden
+     */
+    403: RouteError;
+    /**
      * Not Found
      */
     404: RouteError;
@@ -2280,6 +2284,10 @@ export type GetFundingBridgeDestinationsErrors = {
      */
     401: RouteError;
     /**
+     * Forbidden
+     */
+    403: RouteError;
+    /**
      * Service Unavailable
      */
     503: RouteError;
@@ -2317,6 +2325,10 @@ export type PostFundingBridgeOutQuoteErrors = {
      * Unauthorized
      */
     401: RouteError;
+    /**
+     * Forbidden
+     */
+    403: RouteError;
     /**
      * Too Many Requests
      */
@@ -2365,6 +2377,10 @@ export type GetFundingBridgeOutRecipientsErrors = {
      */
     401: RouteError;
     /**
+     * Forbidden
+     */
+    403: RouteError;
+    /**
      * Service Unavailable
      */
     503: RouteError;
@@ -2402,6 +2418,10 @@ export type PostFundingBridgeQuoteErrors = {
      * Unauthorized
      */
     401: RouteError;
+    /**
+     * Forbidden
+     */
+    403: RouteError;
     /**
      * Not Found
      */
@@ -2454,6 +2474,10 @@ export type GetFundingBridgeTransfersErrors = {
      */
     401: RouteError;
     /**
+     * Forbidden
+     */
+    403: RouteError;
+    /**
      * Service Unavailable
      */
     503: RouteError;
@@ -2492,6 +2516,10 @@ export type PostFundingBridgeTransferConfirmErrors = {
      * Unauthorized
      */
     401: RouteError;
+    /**
+     * Forbidden
+     */
+    403: RouteError;
     /**
      * Not Found
      */
@@ -2539,6 +2567,10 @@ export type PostFundingBridgeSponsorRefusalErrors = {
      * Unauthorized
      */
     401: RouteError;
+    /**
+     * Forbidden
+     */
+    403: RouteError;
     /**
      * Not Found
      */
@@ -2590,6 +2622,10 @@ export type PostFundingBridgeTransferSubmitErrors = {
      * Unauthorized
      */
     401: RouteError;
+    /**
+     * Forbidden
+     */
+    403: RouteError;
     /**
      * Not Found
      */
@@ -3161,6 +3197,10 @@ export type GetReferralsErrors = {
      */
     401: RouteError;
     /**
+     * Forbidden
+     */
+    403: RouteError;
+    /**
      * Service Unavailable
      */
     503: RouteError;
@@ -3198,6 +3238,10 @@ export type PostReferralsClaimErrors = {
      * Unauthorized
      */
     401: RouteError;
+    /**
+     * Forbidden
+     */
+    403: RouteError;
     /**
      * Too Many Requests
      */

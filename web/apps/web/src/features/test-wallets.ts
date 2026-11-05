@@ -3,11 +3,14 @@ const TEST_WALLETS: ReadonlySet<string> = new Set([
   "62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5",
 ]);
 
-// Owner test wallets get the gated bridge and referrals UI without a manual localStorage step. Public keys only.
-export function unlockTestWalletFlags(address: string | null | undefined) {
-  if (!address || !TEST_WALLETS.has(address)) return;
+// Go gates the same wallets in go/workers/internal/webapp/test_wallets.go; this only picks the UI. Public keys only.
+export function syncTestWalletFlags(address: string | null | undefined) {
+  if (!address) return;
+  const open = TEST_WALLETS.has(address) || process.env.NODE_ENV === "development";
   try {
-    localStorage.setItem("loyal.bridge", "1");
-    localStorage.setItem("loyal.referrals", "1");
+    for (const key of ["loyal.bridge", "loyal.referrals"]) {
+      if (open) localStorage.setItem(key, "1");
+      else localStorage.removeItem(key);
+    }
   } catch {}
 }

@@ -209,7 +209,7 @@ func earn(ctx context.Context, registry *prometheus.Registry, rpcClient *chain.C
 		degraded("Earn routes", err)
 		return nil
 	}
-	e := &webapp.Earn{YieldDB: yieldDB, Chain: rpcClient, Cluster: cluster, Timescale: timescaleDB, Relay: bridge.NewRelay(), Refusals: webapp.NewSponsorRefusals(registry)}
+	e := &webapp.Earn{YieldDB: yieldDB, Chain: rpcClient, Cluster: cluster, Timescale: timescaleDB, Relay: bridge.NewRelay(), Refusals: webapp.NewSponsorRefusals(registry), TestWallets: webapp.TestWalletsFromEnv()}
 	if raw, ok := optionalCredential("Relay swap quotes", "WEB_EVM_RPC_URLS"); ok {
 		if e.Relay.EVMRPC, err = bridge.ParseEVMRPCURLs(raw); err != nil {
 			degraded("Relay swap quotes", fmt.Errorf("WEB_EVM_RPC_URLS: %w", err))

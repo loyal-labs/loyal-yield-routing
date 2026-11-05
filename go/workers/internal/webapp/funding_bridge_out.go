@@ -108,14 +108,14 @@ func (h earnRoutes) registerBridgeOut(api huma.API) {
 		Method:      http.MethodGet,
 		Path:        bridgeDestinationsPath,
 		Summary:     "The chains and stablecoins the signed-in wallet's Solana USDC can be sent to",
-		Responses:   errorResponses[routeError](api, 401, 503),
+		Responses:   errorResponses[routeError](api, 401, 403, 503),
 	}, h.bridgeDestinations)
 	huma.Register(api, huma.Operation{
 		OperationID: "post-funding-bridge-out-quote",
 		Method:      http.MethodPost,
 		Path:        bridgeOutQuotePath,
 		Summary:     "Quote Solana USDC from the signed-in wallet to a stablecoin on another chain, with the deposit instruction to sign",
-		Responses:   errorResponses[routeError](api, 400, 401, 429, 503),
+		Responses:   errorResponses[routeError](api, 400, 401, 403, 429, 503),
 	}, h.bridgeOutQuote)
 	documentJSONBody[BridgeOutQuoteRequest](api, bridgeOutQuotePath)
 	huma.Register(api, huma.Operation{
@@ -123,7 +123,7 @@ func (h earnRoutes) registerBridgeOut(api huma.API) {
 		Method:      http.MethodGet,
 		Path:        bridgeRecipientsPath,
 		Summary:     "The signed-in wallet's most recent bridge-out recipients of a chain's address kind",
-		Responses:   errorResponses[routeError](api, 400, 401, 503),
+		Responses:   errorResponses[routeError](api, 400, 401, 403, 503),
 	}, h.bridgeOutRecipients)
 }
 

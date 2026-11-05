@@ -35,7 +35,7 @@ func TestEvmDepositPostChecksSessionBeforeBody(t *testing.T) {
 	}
 	router := chi.NewRouter()
 	api := humachi.New(router, apiConfig())
-	earnRoutes{auth: &Auth{keys: keys}}.registerEvmDeposit(api)
+	earnRoutes{auth: &Auth{keys: keys}, Earn: Earn{TestWallets: parseTestWallets("*")}}.registerEvmDeposit(api)
 	req := httptest.NewRequest(http.MethodPost, evmDepositPath, strings.NewReader(`{}`))
 	req.Header.Set("Content-Type", "application/json")
 	res := httptest.NewRecorder()
@@ -193,10 +193,11 @@ func TestEvmDepositRelaySignedRefusesEmbeddedWalletWhenPrivyLookupIsEmpty(t *tes
 			router := chi.NewRouter()
 			api := humachi.New(router, apiConfig())
 			earnRoutes{auth: &Auth{keys: keys}, Earn: Earn{
-				YieldDB: pool,
-				HTTP:    &http.Client{Transport: rewriteTransport{target}},
-				Privy:   &Privy{AppID: appID, AppSecret: "secret"},
-				Relay:   &bridge.Relay{BaseURL: "http://127.0.0.1:9", HTTP: &http.Client{}},
+				YieldDB:     pool,
+				TestWallets: parseTestWallets("*"),
+				HTTP:        &http.Client{Transport: rewriteTransport{target}},
+				Privy:       &Privy{AppID: appID, AppSecret: "secret"},
+				Relay:       &bridge.Relay{BaseURL: "http://127.0.0.1:9", HTTP: &http.Client{}},
 			}, appDB: pool}.registerEvmDeposit(api)
 			body, err := json.Marshal(map[string]string{"privyIdentityToken": identityToken})
 			if err != nil {
@@ -308,10 +309,11 @@ func newEvmDepositPoster(t *testing.T, pool *pgxpool.Pool) evmDepositPoster {
 		auth:  &Auth{keys: keys},
 		appDB: pool,
 		Earn: Earn{
-			YieldDB: pool,
-			HTTP:    &http.Client{Transport: rewriteTransport{target}},
-			Privy:   &Privy{AppID: "app", AppSecret: "secret"},
-			Relay:   &bridge.Relay{BaseURL: "http://127.0.0.1:9", HTTP: &http.Client{}},
+			YieldDB:     pool,
+			TestWallets: parseTestWallets("*"),
+			HTTP:        &http.Client{Transport: rewriteTransport{target}},
+			Privy:       &Privy{AppID: "app", AppSecret: "secret"},
+			Relay:       &bridge.Relay{BaseURL: "http://127.0.0.1:9", HTTP: &http.Client{}},
 		},
 	}.registerEvmDeposit(humachi.New(router, apiConfig()))
 	return evmDepositPoster{router: router, token: token, privy: privy}
@@ -436,7 +438,7 @@ func TestEvmDepositGetServesEvmWhenTronRowReadFails(t *testing.T) {
 	router := chi.NewRouter()
 	earnRoutes{
 		auth: &Auth{keys: keys},
-		Earn: Earn{YieldDB: pool, Relay: &bridge.Relay{BaseURL: "http://127.0.0.1:9", HTTP: &http.Client{}}},
+		Earn: Earn{TestWallets: parseTestWallets("*"), YieldDB: pool, Relay: &bridge.Relay{BaseURL: "http://127.0.0.1:9", HTTP: &http.Client{}}},
 	}.registerEvmDeposit(humachi.New(router, apiConfig()))
 	req := httptest.NewRequest(http.MethodGet, evmDepositPath, nil)
 	req.Header.Set("Authorization", "Bearer "+token)

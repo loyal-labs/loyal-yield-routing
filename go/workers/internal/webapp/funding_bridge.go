@@ -135,14 +135,14 @@ func (h earnRoutes) registerBridge(api huma.API) {
 		Method:      http.MethodGet,
 		Path:        bridgeBalancesPath,
 		Summary:     "What the signed-in wallet's EVM wallet holds on each supported chain",
-		Responses:   errorResponses[routeError](api, 401, 404, 503),
+		Responses:   errorResponses[routeError](api, 401, 403, 404, 503),
 	}, h.bridgeBalances)
 	huma.Register(api, huma.Operation{
 		OperationID: "post-funding-bridge-quote",
 		Method:      http.MethodPost,
 		Path:        bridgeQuotePath,
 		Summary:     "Quote a Relay bridge from the signed-in wallet's EVM wallet to it",
-		Responses:   errorResponses[routeError](api, 400, 401, 404, 429, 503),
+		Responses:   errorResponses[routeError](api, 400, 401, 403, 404, 429, 503),
 	}, h.bridgeQuote)
 	documentJSONBody[BridgeQuoteRequest](api, bridgeQuotePath)
 	huma.Register(api, huma.Operation{
@@ -150,14 +150,14 @@ func (h earnRoutes) registerBridge(api huma.API) {
 		Method:      http.MethodPost,
 		Path:        bridgeConfirmPath,
 		Summary:     "Record that the user confirmed a quoted bridge, before any send",
-		Responses:   errorResponses[routeError](api, 401, 404, 503),
+		Responses:   errorResponses[routeError](api, 401, 403, 404, 503),
 	}, h.bridgeConfirm)
 	huma.Register(api, huma.Operation{
 		OperationID: "post-funding-bridge-transfer-submit",
 		Method:      http.MethodPost,
 		Path:        bridgeSubmitPath,
 		Summary:     "Record the transaction that sent a quoted bridge",
-		Responses:   errorResponses[routeError](api, 400, 401, 404, 503),
+		Responses:   errorResponses[routeError](api, 400, 401, 403, 404, 503),
 	}, h.bridgeSubmit)
 	documentJSONBody[BridgeSubmitRequest](api, bridgeSubmitPath)
 	huma.Register(api, huma.Operation{
@@ -165,7 +165,7 @@ func (h earnRoutes) registerBridge(api huma.API) {
 		Method:      http.MethodGet,
 		Path:        bridgeTransfersPath,
 		Summary:     "The signed-in wallet's latest bridges and their state",
-		Responses:   errorResponses[routeError](api, 400, 401, 503),
+		Responses:   errorResponses[routeError](api, 400, 401, 403, 503),
 	}, h.bridgeTransfers)
 	h.registerBridgeRefusal(api)
 	h.registerBridgeOut(api)
