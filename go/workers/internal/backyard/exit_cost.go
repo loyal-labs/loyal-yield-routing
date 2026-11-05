@@ -124,13 +124,14 @@ func (c ExitCost) outlier(realized *ExitCost) bool {
 
 func (e exitCosts) quoteDue(b heldExitBasis, lastAttempt, now time.Time) bool {
 	costs := e[b.st.route.Lane]
-	switch {
-	case costs.Quote != nil && costs.Quote.fresh(b.heldRaw, b.mark):
-		return false
-	case costs.Realized == nil:
+	if costs.Quote != nil && costs.Quote.fresh(b.heldRaw, b.mark) {
+		if !costs.Quote.At.IsZero() && !costs.Quote.At.After(now) && now.Sub(costs.Quote.At) < exitQuoteInterval {
+			return false
+		}
+	} else if costs.Realized == nil {
 		return true
 	}
-	return now.Sub(lastAttempt) >= exitQuoteInterval
+	return lastAttempt.IsZero() || lastAttempt.After(now) || now.Sub(lastAttempt) >= exitQuoteInterval
 }
 
 func (e exitCosts) withQuote(c ExitCost) exitCosts {
