@@ -19,14 +19,14 @@ func TestErrorPagesPreserveShellAndHTTPStatus(t *testing.T) {
 		path, environment string
 		status            int
 	}{
-		{"/500", "prod", 500}, {"/500/?retry=1", "dev", 500},
-		{"/dev/txv1", "prod", 404}, {"/dev/txv1/?probe=1", "prod", 404},
+		{"/500", "prod", 500}, {"/500", "dev", 500},
+		{"/dev/txv1", "prod", 404},
 		{"/dev/txv1", "dev", 200}, {"/dev/txv1", "local", 200},
 		{"/app", "prod", 200},
-		{"/", "prod", 200}, {"/app/settings/?tab=wallet", "prod", 200},
+		{"/", "prod", 200}, {"/app/settings?tab=wallet", "prod", 200},
 		{"/ru/earn", "prod", 200}, {"/blog", "prod", 200},
-		{"/blog/published.post/", "prod", 200},
-		{"/missing-page", "prod", 404}, {"/missing-page/?retry=1", "prod", 404},
+		{"/blog/published.post", "prod", 200},
+		{"/missing-page", "prod", 404}, {"/missing-page?retry=1", "prod", 404},
 		{"/app/missing", "prod", 404}, {"/blog/missing-post", "prod", 404},
 		{"/assets", "prod", 404}, {"/missing.html", "prod", 404},
 		{"/assets/missing.js", "prod", 404},

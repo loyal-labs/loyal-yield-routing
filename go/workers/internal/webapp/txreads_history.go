@@ -3,6 +3,7 @@ package webapp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnprep"
@@ -606,7 +607,7 @@ func (h earnRoutes) autodepositSweepEvents(ctx context.Context, account EarnAcco
 			signature       string
 			slot            int64
 			amountRaw       int64
-			receivedAt      time.Time
+			receivedAt      *time.Time
 			decodedAt       *time.Time
 			decodedEvidence []byte
 			tokenMint       string
@@ -618,10 +619,14 @@ func (h earnRoutes) autodepositSweepEvents(ctx context.Context, account EarnAcco
 			&decodedEvidence, &tokenMint, &policyAccount, &recurringDeleg, &walletFloor); err != nil {
 			return nil, err
 		}
-		confirmedAt := receivedAt
-		if decodedAt != nil {
-			confirmedAt = *decodedAt
+		confirmedAtPtr := decodedAt
+		if confirmedAtPtr == nil {
+			confirmedAtPtr = receivedAt
 		}
+		if confirmedAtPtr == nil {
+			return nil, fmt.Errorf("balance sweep execution %d has neither decoded_at nor received_at", id)
+		}
+		confirmedAt := *confirmedAtPtr
 		events = append(events, txreadsAutodepositEvent{
 			actionType:            "balance_sweep",
 			amountRaw:             amountRaw,

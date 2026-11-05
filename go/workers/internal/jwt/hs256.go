@@ -30,11 +30,11 @@ func (k *HS256) OpenHS256(token string) ([]byte, bool) {
 	if first < 1 || last == first || strings.Count(token, ".") != 2 {
 		return nil, false
 	}
-	signature, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(token[last+1:], "="))
+	signature, err := decodeSegment(strings.TrimRight(token[last+1:], "="))
 	if err != nil || !hmac.Equal(signature, k.mac(token[:last])) {
 		return nil, false
 	}
-	payload, err := base64.RawURLEncoding.DecodeString(token[first+1 : last])
+	payload, err := decodeSegment(token[first+1 : last])
 	if err != nil {
 		return nil, false
 	}

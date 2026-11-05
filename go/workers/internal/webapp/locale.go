@@ -1,6 +1,7 @@
 package webapp
 
 import (
+	"fmt"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -16,21 +17,13 @@ const (
 
 var locales = map[string]bool{"en": true, "ru": true, "zh": true}
 
-var translatedPaths = map[string]bool{
-	"/":       true,
-	"/earn":   true,
-	"/agents": true,
-	"/trust":  true,
-	"/risks":  true,
-}
-
 var localePrefix = map[string]string{"ru": "/ru", "zh": "/zh"}
 
 const localeCookieMaxAge = 60 * 60 * 24 * 365
 
 var botUserAgent = regexp.MustCompile(`(?i)bot|crawl|spider|slurp|preview|facebookexternalhit|embedly|whatsapp|telegram`)
 
-func localeRedirect(w http.ResponseWriter, r *http.Request) bool {
+func localeRedirect(w http.ResponseWriter, r *http.Request, translated map[string]bool) bool {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		return false
 	}
@@ -47,11 +40,11 @@ func localeRedirect(w http.ResponseWriter, r *http.Request) bool {
 			SameSite: http.SameSiteLaxMode,
 		})
 		w.Header().Set("Cache-Control", "private, no-store")
-		http.Redirect(w, r, target.RequestURI(), http.StatusTemporaryRedirect)
+		redirect(w, r, target.RequestURI(), http.StatusTemporaryRedirect)
 		return true
 	}
 
-	if !translatedPaths[r.URL.Path] {
+	if !translated[r.URL.Path] {
 		return false
 	}
 	if locales[cookieValue(r, localeCookie)] {
@@ -67,8 +60,24 @@ func localeRedirect(w http.ResponseWriter, r *http.Request) bool {
 
 	w.Header().Set("Cache-Control", "private, no-store")
 	w.Header().Set("Vary", "Accept-Language, Cookie")
-	http.Redirect(w, r, localizedPath(preferred, r.URL), http.StatusTemporaryRedirect)
+	redirect(w, r, localizedPath(preferred, r.URL), http.StatusTemporaryRedirect)
 	return true
+}
+
+func translatedPaths(pages []string) map[string]bool {
+	listed := make(map[string]bool, len(pages))
+	for _, page := range pages {
+		listed[page] = true
+	}
+	translated := map[string]bool{}
+	for _, page := range pages {
+		suffix := strings.TrimSuffix(page, "/")
+		translated[page] = true
+		for _, prefix := range localePrefix {
+			translated[page] = translated[page] && listed[prefix+suffix]
+		}
+	}
+	return translated
 }
 
 func withoutParam(rawQuery, name string) string {
@@ -91,9 +100,22 @@ func withoutParam(rawQuery, name string) string {
 			kept = append(kept, pair)
 			continue
 		}
-		kept = append(kept, url.QueryEscape(key)+"="+url.QueryEscape(value))
+		kept = append(kept, encodeComponent(key)+"="+encodeComponent(value))
 	}
 	return strings.Join(kept, "&")
+}
+
+func encodeComponent(text string) string {
+	var out strings.Builder
+	for _, b := range []byte(text) {
+		switch {
+		case b >= 'a' && b <= 'z', b >= 'A' && b <= 'Z', b >= '0' && b <= '9', strings.IndexByte("-_.!~*'()", b) >= 0:
+			out.WriteByte(b)
+		default:
+			fmt.Fprintf(&out, "%%%02X", b)
+		}
+	}
+	return out.String()
 }
 
 func localizedPath(locale string, u *url.URL) string {

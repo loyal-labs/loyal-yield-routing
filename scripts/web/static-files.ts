@@ -125,7 +125,7 @@ for (const name of ["llms.txt", "llms-full.txt"]) {
 }
 
 const { totalPages: blogPages } = await getBlogPosts({ page: 1 });
-const prerendered = [
+const prerendered: { href: string; file: string; statusCode?: 200 | 404 }[] = [
   ...pages
     .filter((page) => page.host === "site")
     .map((page) => ({
@@ -135,6 +135,7 @@ const prerendered = [
           ? "__root/index.html"
           : `${page.path.slice(1)}/index.html`,
     })),
+  { href: "/__not-found", file: "404/index.html", statusCode: 404 },
   ...Array.from({ length: blogPages - 1 }, (_, index) => ({
     href: `/blog?page=${index + 2}`,
     file: `blog/__page/${index + 2}/index.html`,
@@ -163,8 +164,8 @@ function replaceOnce(
 
 const hoisted = /^(?:<title>[^<]*<\/title>|<meta [^>]*\/>|<link [^>]*\/>)/;
 
-for (const { href, file } of prerendered) {
-  let body: string = await prerender.render(href);
+for (const { href, file, statusCode } of prerendered) {
+  let body: string = await prerender.render(href, statusCode);
   let head = "";
   for (let tag = body.match(hoisted); tag; tag = body.match(hoisted)) {
     head += tag[0];
