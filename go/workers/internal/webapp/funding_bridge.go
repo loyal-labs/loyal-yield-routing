@@ -39,6 +39,7 @@ const (
 	bridgeTransfersPath = "/api/funding/bridge/transfers"
 	bridgeConfirmPath   = "/api/funding/bridge/transfers/{requestId}/confirm"
 	bridgeSubmitPath    = "/api/funding/bridge/transfers/{requestId}/submit"
+	bridgeReleasePath   = "/api/funding/bridge/transfers/{requestId}/release"
 	bridgeTransferLimit = 20
 )
 
@@ -152,6 +153,13 @@ func (h earnRoutes) registerBridge(api huma.API) {
 		Summary:     "Record that the user confirmed a quoted bridge, before any send",
 		Responses:   errorResponses[routeError](api, 401, 403, 404, 409, 503),
 	}, h.bridgeConfirm)
+	huma.Register(api, huma.Operation{
+		OperationID: "post-funding-bridge-transfer-release",
+		Method:      http.MethodPost,
+		Path:        bridgeReleasePath,
+		Summary:     "Record that a confirmed incoming bridge sent no deposit (rejected, refused or reverted), so it is no longer in flight",
+		Responses:   errorResponses[routeError](api, 401, 403, 404, 503),
+	}, h.bridgeRelease)
 	huma.Register(api, huma.Operation{
 		OperationID: "post-funding-bridge-transfer-submit",
 		Method:      http.MethodPost,
@@ -358,6 +366,28 @@ WHERE request_id = $1 AND solana_wallet = $2 AND state = 'quoted'`, requestID, w
 	return tx.Commit(ctx)
 }
 
+func (h earnRoutes) bridgeRelease(ctx context.Context, in *bridgeConfirmInput) (*bridgeTransferOutput, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	wallet, err := h.evmDepositWallet(in.SessionInput)
+	if err != nil {
+		return nil, err
+	}
+	tag, err := h.YieldDB.Exec(ctx, `UPDATE loyal_yield.bridge_transfers SET confirmed_at = NULL, updated_at = clock_timestamp()
+WHERE request_id = $1 AND solana_wallet = $2 AND direction = 'in' AND state = 'quoted'`, in.RequestID, wallet.String())
+	if err != nil {
+		return nil, bridgeUnavailable("bridge transfer release", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return nil, earnError(http.StatusNotFound, "bridge_transfer_missing", "No quoted incoming transfer with this id for this wallet.")
+	}
+	t, err := h.bridgeTransfer(ctx, wallet, in.RequestID)
+	if err != nil || t == nil {
+		return nil, bridgeUnavailable("bridge transfer read", err)
+	}
+	return &bridgeTransferOutput{Body: *t}, nil
+}
+
 func (h earnRoutes) bridgeSubmit(ctx context.Context, in *bridgeSubmitInput) (*bridgeTransferOutput, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -428,7 +458,7 @@ var (
 	bridgeOutInFlight    = fmt.Sprintf(`(direction = 'out' AND ((state = 'quoted' AND confirmed_at > clock_timestamp() - make_interval(secs => %d)) OR (state = 'submitted' AND submitted_at > clock_timestamp() - make_interval(secs => %d))))`, int(bridge.OutConfirmWindow.Seconds()), int(bridge.OutSubmittedWindow.Seconds()))
 	bridgeInInFlight     = fmt.Sprintf(`(direction = 'in' AND state IN ('quoted', 'submitted') AND confirmed_at > clock_timestamp() - make_interval(secs => %d))`, int(bridge.LostSubmitWindow.Seconds()))
 	bridgeInFlight       = `(` + bridgeOutInFlight + ` OR ` + bridgeInInFlight + `)`
-	bridgeTransferSelect = `SELECT request_id, chain, asset, amount_in_raw::text, amount_out_raw::text, direction, state, origin_tx, destination_tx, refund_tx, quoted_at, confirmed_at, submitted_at, settled_at, ` + bridgeInFlight + ` AS in_flight
+	bridgeTransferSelect = `SELECT request_id, chain, asset, amount_in_raw::text, amount_out_raw::text, direction, state, origin_tx, destination_tx, refund_tx, quoted_at, confirmed_at, submitted_at, settled_at, coalesce(` + bridgeInFlight + `, false) AS in_flight
 FROM loyal_yield.bridge_transfers`
 )
 

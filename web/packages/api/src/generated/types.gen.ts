@@ -3026,6 +3026,53 @@ export type PostFundingBridgeTransferConfirmResponses = {
 
 export type PostFundingBridgeTransferConfirmResponse = PostFundingBridgeTransferConfirmResponses[keyof PostFundingBridgeTransferConfirmResponses];
 
+export type PostFundingBridgeTransferReleaseData = {
+    body?: never;
+    headers?: {
+        Authorization?: string;
+        Cookie?: string;
+        'X-Forwarded-Host'?: string;
+    };
+    path: {
+        /**
+         * Relay request id from the quote
+         */
+        requestId: string;
+    };
+    query?: never;
+    url: '/api/funding/bridge/transfers/{requestId}/release';
+};
+
+export type PostFundingBridgeTransferReleaseErrors = {
+    /**
+     * Unauthorized
+     */
+    401: RouteError;
+    /**
+     * Forbidden
+     */
+    403: RouteError;
+    /**
+     * Not Found
+     */
+    404: RouteError;
+    /**
+     * Service Unavailable
+     */
+    503: RouteError;
+};
+
+export type PostFundingBridgeTransferReleaseError = PostFundingBridgeTransferReleaseErrors[keyof PostFundingBridgeTransferReleaseErrors];
+
+export type PostFundingBridgeTransferReleaseResponses = {
+    /**
+     * OK
+     */
+    200: BridgeTransfer;
+};
+
+export type PostFundingBridgeTransferReleaseResponse = PostFundingBridgeTransferReleaseResponses[keyof PostFundingBridgeTransferReleaseResponses];
+
 export type PostFundingBridgeSponsorRefusalData = {
     body?: BridgeSponsorRefusalRequest;
     headers?: {
