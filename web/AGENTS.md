@@ -797,10 +797,14 @@ and the sidebar Assets item counts them with a red dot. Only a signed-in wallet 
 account is not a Privy embedded wallet reads the deposit route and balances. The balance is
 the truth of what waits; a transfer the server flags `inFlight` in
 `/api/funding/bridge/transfers` is the truth of what moves and hides its balance. The server
-owns in flight: an incoming transfer is in flight from `/confirm` until it settles, within the
-tracker's 2 h lost-submit window, and quote or confirm for the same chain and asset answers
-409 `bridge_in_flight` with its `requestId`, which the card shows as Bridging…. A send that
-was rejected, refused or reverted posts `/release` so the lane frees at once.
+owns in flight, keyed on the EVM sender that every linked Solana wallet shares: a confirmed
+transfer with no hash for 15 min, a submitted one for 2 h; quote or confirm for the same
+sender, chain and asset answers 409 `bridge_in_flight` with its `requestId`, which the card
+shows as Bridging…, and `/transfers` lists that transfer to every linked wallet. A run that
+ends after confirm with no deposit broadcast posts `/release` with its reason (rejected,
+refused, reverted, or aborted on unmount or wallet change), retried once; a deposit handed to
+the wallet is never released. A finished run whose `requestId` the server stops listing is
+dropped.
 `useIncomingTransfers` owns the reads, one 3 s transfers poll while anything is in flight, a
 balances re-read on window focus at most every 30 s, and every Move; cards only render its
 items, in one chain-then-asset order. Confirm takes the per-chain Web Lock first, re-reads,

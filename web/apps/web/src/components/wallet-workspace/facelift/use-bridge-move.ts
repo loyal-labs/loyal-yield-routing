@@ -4,6 +4,7 @@ import type {
   BridgeBalance,
   BridgeBalancesResponse,
   BridgeQuoteResponse,
+  BridgeReleaseRequest,
   BridgeTransfer,
   BridgeTransfersResponse,
   EvmDepositNetwork,
@@ -56,6 +57,8 @@ const FOCUS_READ_MS = 30_000;
 const RECEIPT_TIMEOUT_MS = 120_000;
 const SEND_TIMEOUT_MS = 120_000;
 const SEND_TIMEOUT = "move_send_timeout";
+const APPROVAL_REVERTED = "move_approval_reverted";
+const RELEASE_TIMEOUT_MS = 10_000;
 
 const SPONSOR_REFUSAL_CODES = new Set([
   "insufficient_funds",
@@ -115,7 +118,7 @@ const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-type SendFailure = "rejected" | "refused" | "timeout" | "other";
+type SendFailure = "rejected" | "refused" | "reverted" | "timeout" | "other";
 
 export function classifySendError(e: unknown): SendFailure {
   const { code, privyErrorCode } = (e ?? {}) as {
@@ -124,6 +127,7 @@ export function classifySendError(e: unknown): SendFailure {
   };
   if (code === 4001) return "rejected";
   if (code === SEND_TIMEOUT) return "timeout";
+  if (code === APPROVAL_REVERTED) return "reverted";
   return [code, privyErrorCode].some(
     (c) => typeof c === "string" && SPONSOR_REFUSAL_CODES.has(c)
   )
@@ -181,6 +185,7 @@ type Run = {
   asset: string;
   amountRaw: bigint;
   requestId: string | null;
+  running: boolean;
   failure: { message: string; requestId: string | null } | null;
 };
 
@@ -234,8 +239,16 @@ function adoptSettled(prev: Incoming, transfers: BridgeTransfer[]): Run[] {
       asset: t.asset,
       amountRaw: BigInt(t.amountInRaw),
       requestId: t.requestId,
+      running: false,
       failure: null,
     }));
+}
+
+function stillListed(runs: Run[], transfers: BridgeTransfer[]): Run[] {
+  const listed = new Set(transfers.map((t) => t.requestId));
+  return runs.filter(
+    (r) => r.running || r.failure || (r.requestId !== null && listed.has(r.requestId))
+  );
 }
 
 function reduceIncoming(state: Incoming, action: IncomingAction): Incoming {
@@ -248,7 +261,10 @@ function reduceIncoming(state: Incoming, action: IncomingAction): Incoming {
         next.balancesAt = action.at;
       }
       if (action.transfers && action.at > prev.transfersAt) {
-        next.runs = [...prev.runs, ...adoptSettled(prev, action.transfers)];
+        next.runs = [
+          ...stillListed(prev.runs, action.transfers),
+          ...adoptSettled(prev, action.transfers),
+        ];
         next.transfers = action.transfers;
         next.transfersAt = action.at;
       }
@@ -424,6 +440,28 @@ async function waitForReceipt(
   return "unknown";
 }
 
+type ReleaseReason = BridgeReleaseRequest["reason"];
+
+function releaseReason(
+  failure: SendFailure | "aborted",
+  depositHandedToWallet: boolean
+): ReleaseReason | null {
+  if (failure === "rejected" || failure === "refused") return failure;
+  if (depositHandedToWallet) return null;
+  return failure === "reverted" ? "reverted" : "aborted";
+}
+
+async function release(requestId: string, reason: ReleaseReason) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const res = await post(
+      transferPath(requestId, "release"),
+      { reason } satisfies BridgeReleaseRequest,
+      AbortSignal.timeout(RELEASE_TIMEOUT_MS)
+    ).catch(() => null);
+    if (res && res.status < 500) return;
+  }
+}
+
 type SendTransaction = ReturnType<typeof useSendTransaction>["sendTransaction"];
 type EvmWallet = ReturnType<typeof useWallets>["wallets"][number];
 
@@ -492,10 +530,6 @@ async function moveLocked(move: Move): Promise<MoveOutcome> {
 
   const calls = quoted.calls ?? [];
   const { wallet } = move;
-  const release = () =>
-    post(transferPath(quoted.requestId, "release"), {}, signal).catch(
-      () => undefined
-    );
   let confirming = false;
   let depositSent = false;
   let sent = false;
@@ -536,24 +570,29 @@ async function moveLocked(move: Move): Promise<MoveOutcome> {
       const receipt = await waitForReceipt(provider, hash, signal);
       signal.throwIfAborted();
       if (receipt === "reverted" && last) {
-        await release();
+        await release(quoted.requestId, "reverted");
         return {
           kind: "failed",
           message: `The transfer reverted. ${move.symbol} stays in your wallet.`,
           requestId: quoted.requestId,
         };
       }
-      if (receipt === "reverted") throw new Error("The approval transaction reverted.");
+      if (receipt === "reverted")
+        throw Object.assign(new Error("The approval transaction reverted."), {
+          code: APPROVAL_REVERTED,
+        });
       if (last) originTx = hash;
       else if (receipt === "unknown") throw new Error("Transaction confirmation timed out");
     }
   } catch (e) {
-    if (signal.aborted) return { kind: "aborted" };
     const refused = inFlightRefusal(e);
-    if (refused) return refused;
+    if (refused && !signal.aborted) return refused;
     const failure = classifySendError(e);
-    if (confirming && (!depositSent || failure === "rejected" || failure === "refused"))
-      await release();
+    const reason = confirming
+      ? releaseReason(signal.aborted ? "aborted" : failure, depositSent)
+      : null;
+    if (reason) await release(quoted.requestId, reason);
+    if (signal.aborted) return { kind: "aborted" };
     if (failure === "rejected") return { kind: "rejected" };
     if (failure === "refused")
       void post(
@@ -725,6 +764,7 @@ export function useIncomingTransfers(walletAddress: string | null) {
           asset: item.asset,
           amountRaw: item.amountRaw,
           requestId: null,
+          running: true,
           failure: null,
         },
       });
@@ -757,16 +797,17 @@ export function useIncomingTransfers(walletAddress: string | null) {
           apply(wallet, { type: "drop", key });
           return;
         }
-        if (outcome.kind === "inFlight")
-          apply(wallet, { type: "patch", key, patch: { requestId: outcome.requestId } });
-        if (outcome.kind === "failed")
-          apply(wallet, {
-            type: "patch",
-            key,
-            patch: {
-              failure: { message: outcome.message, requestId: outcome.requestId },
-            },
-          });
+        apply(wallet, {
+          type: "patch",
+          key,
+          patch:
+            outcome.kind === "failed"
+              ? {
+                  running: false,
+                  failure: { message: outcome.message, requestId: outcome.requestId },
+                }
+              : { running: false, requestId: outcome.requestId },
+        });
         void read(wallet, false);
       } finally {
         active.current.delete(busy);
