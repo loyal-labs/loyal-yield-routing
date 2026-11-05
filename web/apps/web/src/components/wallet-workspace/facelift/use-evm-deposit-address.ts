@@ -130,7 +130,7 @@ export function useEvmDepositAddress(walletAddress: string | null) {
     if (!tron) tronAttemptedRef.current = false;
   }, [info, tron]);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (create = true) => {
     if (!ready || !walletAddress || info || loading || attemptedRef.current) {
       return;
     }
@@ -157,6 +157,7 @@ export function useEvmDepositAddress(walletAddress: string | null) {
         return;
       }
       if (read.networks) patch({ networks: read.networks });
+      if (!create) return;
       let claim: object;
       if (read.kind === "relay_signed") {
         if (!hasPrivyEvmWallet(privyUserRef.current)) {

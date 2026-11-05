@@ -17,6 +17,10 @@ unit=loyal-$family
 dropin=/etc/systemd/system/$unit.service.d/40-verified-release.conf
 releases=/opt/loyal/releases/$family
 bin=$releases/$sha/$binary
+cron_dir=/etc/systemd/system/loyal-web-cron@.service.d
+cron_dropin=$cron_dir/40-verified-release.conf
+cron=no
+if [ "$family" = web ] && [ -d "$cron_dir" ]; then cron=yes; fi
 
 # A dropped ssh session closes the pipe to the driver; the swap must go on.
 # Only tee writes to that pipe, and tee -p keeps writing the log without it.
@@ -128,6 +132,11 @@ if [ "$count" != 0 ]; then
 fi
 
 backup=/root/$unit-40-verified-release.conf.$prev.bak
+cron_backup=/root/loyal-web-cron-40-verified-release.conf.$prev.bak
+restore_cron() {
+	[ "$cron" = yes ] || return 0
+	if [ -f "$cron_backup" ]; then cp -p "$cron_backup" "$cron_dropin"; else rm -f "$cron_dropin"; fi
+}
 rollback() {
 	systemctl stop "$unit" || true
 	count=$(in_flight || echo error)
@@ -135,18 +144,24 @@ rollback() {
 		fail "$1; $unit stopped on $sha with '$count' operation(s) in flight; start $sha again to land them before rolling back to $prev"
 	fi
 	if [ "$mode" = stopped ]; then
-		if cp -p "$backup" "$dropin" && systemctl daemon-reload; then
+		if cp -p "$backup" "$dropin" && restore_cron && systemctl daemon-reload; then
 			fail "$1; rolled back to $prev, left stopped as before the deploy"
 		fi
-	elif cp -p "$backup" "$dropin" && systemctl daemon-reload && systemctl restart "$unit"; then
+	elif cp -p "$backup" "$dropin" && restore_cron && systemctl daemon-reload && systemctl restart "$unit"; then
 		fail "$1; rolled back to $prev"
 	fi
 	fail "$1; ROLLBACK TO $prev FAILED, $unit needs a hand now"
 }
 cp -p "$dropin" "$backup"
+if [ "$cron" = yes ]; then
+	rm -f "$cron_backup"
+	[ ! -f "$cron_dropin" ] || cp -p "$cron_dropin" "$cron_backup"
+fi
 since=$(date '+%Y-%m-%d %H:%M:%S')
 if ! { printf '[Service]\nExecStart=\nExecStart=%s\n' "$bin" >"$dropin.tmp" &&
-	mv -f "$dropin.tmp" "$dropin" && systemctl daemon-reload; }; then
+	mv -f "$dropin.tmp" "$dropin" &&
+	{ [ "$cron" != yes ] || { printf '[Service]\nExecStart=\nExecStart=%s cron %%i\n' "$bin" >"$cron_dropin.tmp" &&
+		mv -f "$cron_dropin.tmp" "$cron_dropin"; }; } && systemctl daemon-reload; }; then
 	rollback "writing the drop-in failed"
 fi
 say "starting $unit ($sha)"

@@ -122,8 +122,9 @@ type InviteRequest struct {
 }
 
 type EarnMaxErrorDetail struct {
-	Code    string `json:"code"`
-	Message string `json:"message,omitempty"`
+	Code      string `json:"code"`
+	Message   string `json:"message,omitempty"`
+	RequestID string `json:"requestId,omitempty" doc:"The bridge transfer already in flight, on bridge_in_flight"`
 }
 
 type routeError struct {
