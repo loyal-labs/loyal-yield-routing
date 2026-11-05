@@ -50,7 +50,7 @@ func New(cfg Config) http.Handler {
 	r.Get("/readyz", ready(cfg.ready()))
 
 	r.Group(func(goAPI chi.Router) {
-		goAPI.Use(servedByGo, onPath(earnMaxAPYPath, limitMobileEarn))
+		goAPI.Use(servedByGo, onPaths(limitMobileEarn, earnMaxAPYPath), onPaths(limitMobileEarn, deskReadPaths...))
 		registerAPI(humachi.New(goAPI, apiConfig()), cfg)
 	})
 	proxied := forward(cfg.Upstream)
@@ -61,11 +61,11 @@ func New(cfg Config) http.Handler {
 	return r
 }
 
-func onPath(path string, wrap func(http.Handler) http.Handler) func(http.Handler) http.Handler {
+func onPaths(wrap func(http.Handler) http.Handler, paths ...string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		wrapped := wrap(next)
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == path {
+			if slices.Contains(paths, r.URL.Path) {
 				wrapped.ServeHTTP(w, r)
 				return
 			}
