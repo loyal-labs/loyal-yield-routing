@@ -57,7 +57,7 @@ func New(cfg Config) http.Handler {
 	proxied := forward(cfg.Upstream)
 	r.Handle(mobileEarnPrefix+"*", limitMobileEarn(proxied))
 	r.Handle("/api/*", proxied)
-	r.Handle("/ingest/*", proxied)
+	r.Handle("/ingest/*", newIngestProxy(mixpanelOrigin))
 	r.Handle("/*", site(cfg))
 	return r
 }
