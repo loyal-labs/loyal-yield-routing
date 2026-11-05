@@ -20,6 +20,27 @@ export type ActivityItem = {
     timestamp: string;
 };
 
+export type AuthSessionMetadata = {
+    expiresAt: string;
+    refreshAfter: string;
+};
+
+export type AuthSessionResponse = {
+    session: AuthSessionMetadata;
+    user: AuthSessionUser;
+};
+
+export type AuthSessionUser = {
+    authMethod: string;
+    displayAddress: string;
+    email?: string;
+    provider?: string;
+    settingsPda?: string;
+    smartAccountAddress?: string;
+    subjectAddress: string;
+    walletAddress?: string;
+};
+
 export type AutodepositCloseConfirmRequest = {
     closeSignature: string;
     cluster: string;
@@ -391,6 +412,34 @@ export type DepositWireSimulationDiagnostics = {
     policyStage: string;
     programId: string;
     settingsPda: string;
+};
+
+export type DeskHolding = {
+    amountRaw: string;
+    kind: string;
+    label: string;
+    liquidityMint: string;
+    market: string | null;
+    marketName: string;
+    observedAt: string;
+    observedSlot: string;
+    provenance: {
+        [key: string]: string;
+    };
+    reserve: string | null;
+    sourceId: string;
+    supplyApyBps: string | null;
+    tokenProgramId: string;
+};
+
+export type DeskHoldingsResponse = {
+    currentTotalAmountRaw: string;
+    currentTotalNominalUsdMicros: string;
+    holdings: Array<DeskHolding> | null;
+    observedAt: string | null;
+    observedSlot: string | null;
+    settingsPda: string | null;
+    smartAccountAddress: string | null;
 };
 
 export type DprepNativeSolItem = {
@@ -2033,6 +2082,26 @@ export type TronDepositAddressResponse = {
     receiveUsdc: string | null;
 };
 
+export type WalletPushError = {
+    error: string;
+    sentTo?: number;
+};
+
+export type WalletPushRequest = {
+    body?: string;
+    data?: {
+        [key: string]: unknown;
+    };
+    title?: string;
+    walletPublicKey?: string;
+    [key: string]: unknown;
+};
+
+export type WalletPushSent = {
+    sentTo: number;
+    success: boolean;
+};
+
 export type WireAddressLookupTable = {
     key: string;
     state: WireAddressLookupTableStateStruct;
@@ -2148,6 +2217,75 @@ export type PostAuthPrivyCompleteResponses = {
 };
 
 export type PostAuthPrivyCompleteResponse = PostAuthPrivyCompleteResponses[keyof PostAuthPrivyCompleteResponses];
+
+export type GetAuthSessionData = {
+    body?: never;
+    headers?: {
+        Authorization?: string;
+        Cookie?: string;
+        'X-Forwarded-Host'?: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/auth/session';
+};
+
+export type GetAuthSessionErrors = {
+    /**
+     * Unauthorized
+     */
+    401: RouteError;
+    /**
+     * Internal Server Error
+     */
+    500: RouteError;
+};
+
+export type GetAuthSessionError = GetAuthSessionErrors[keyof GetAuthSessionErrors];
+
+export type GetAuthSessionResponses = {
+    /**
+     * OK
+     */
+    200: AuthSessionResponse;
+};
+
+export type GetAuthSessionResponse = GetAuthSessionResponses[keyof GetAuthSessionResponses];
+
+export type PostAuthSessionRefreshData = {
+    body?: never;
+    headers?: {
+        Authorization?: string;
+        Cookie?: string;
+        'X-Forwarded-Host'?: string;
+        'X-Forwarded-Proto'?: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/auth/session/refresh';
+};
+
+export type PostAuthSessionRefreshErrors = {
+    /**
+     * Unauthorized
+     */
+    401: RouteError;
+    /**
+     * Internal Server Error
+     */
+    500: RouteError;
+};
+
+export type PostAuthSessionRefreshError = PostAuthSessionRefreshErrors[keyof PostAuthSessionRefreshErrors];
+
+export type PostAuthSessionRefreshResponses = {
+    /**
+     * OK
+     */
+    200: AuthSessionResponse;
+};
+
+export type PostAuthSessionRefreshResponse = PostAuthSessionRefreshResponses[keyof PostAuthSessionRefreshResponses];
 
 export type GetEarnMaxApyData = {
     body?: never;
@@ -3179,6 +3317,46 @@ export type PostPushTokenResponses = {
 
 export type PostPushTokenResponse = PostPushTokenResponses[keyof PostPushTokenResponses];
 
+export type PostWalletPushData = {
+    body?: WalletPushRequest;
+    headers?: {
+        Authorization?: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/push-tokens/debug-send';
+};
+
+export type PostWalletPushErrors = {
+    /**
+     * Bad Request
+     */
+    400: WalletPushError;
+    /**
+     * Unauthorized
+     */
+    401: WalletPushError;
+    /**
+     * Not Found
+     */
+    404: WalletPushError;
+    /**
+     * Internal Server Error
+     */
+    500: WalletPushError;
+};
+
+export type PostWalletPushError = PostWalletPushErrors[keyof PostWalletPushErrors];
+
+export type PostWalletPushResponses = {
+    /**
+     * OK
+     */
+    200: WalletPushSent;
+};
+
+export type PostWalletPushResponse = PostWalletPushResponses[keyof PostWalletPushResponses];
+
 export type GetReferralsData = {
     body?: never;
     headers?: {
@@ -3611,6 +3789,69 @@ export type PostEarnSessionResponses = {
 };
 
 export type PostEarnSessionResponse = PostEarnSessionResponses[keyof PostEarnSessionResponses];
+
+export type GetMobileEarnEarningsData = {
+    body?: never;
+    path?: never;
+    query?: {
+        walletAddress?: string;
+        timezone?: string;
+    };
+    url: '/api/smart-accounts/mobile/earn/earnings';
+};
+
+export type GetMobileEarnEarningsErrors = {
+    /**
+     * Bad Request
+     */
+    400: RouteError;
+    /**
+     * Service Unavailable
+     */
+    503: EarningsError;
+};
+
+export type GetMobileEarnEarningsError = GetMobileEarnEarningsErrors[keyof GetMobileEarnEarningsErrors];
+
+export type GetMobileEarnEarningsResponses = {
+    /**
+     * OK
+     */
+    200: EarningsRangeSet;
+};
+
+export type GetMobileEarnEarningsResponse = GetMobileEarnEarningsResponses[keyof GetMobileEarnEarningsResponses];
+
+export type GetMobileEarnHoldingsData = {
+    body?: never;
+    path?: never;
+    query?: {
+        walletAddress?: string;
+    };
+    url: '/api/smart-accounts/mobile/earn/holdings';
+};
+
+export type GetMobileEarnHoldingsErrors = {
+    /**
+     * Bad Request
+     */
+    400: RouteError;
+    /**
+     * Bad Gateway
+     */
+    502: RouteError;
+};
+
+export type GetMobileEarnHoldingsError = GetMobileEarnHoldingsErrors[keyof GetMobileEarnHoldingsErrors];
+
+export type GetMobileEarnHoldingsResponses = {
+    /**
+     * OK
+     */
+    200: DeskHoldingsResponse;
+};
+
+export type GetMobileEarnHoldingsResponse = GetMobileEarnHoldingsResponses[keyof GetMobileEarnHoldingsResponses];
 
 export type PostAutodepositCloseConfirmData = {
     body?: AutodepositCloseConfirmRequest;
