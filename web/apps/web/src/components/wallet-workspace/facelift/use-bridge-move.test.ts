@@ -129,9 +129,9 @@ async function failSend(failure: unknown, calls = [CALL], confirmStatus = 200) {
       symbol: "USDC",
       wallet: wallets[0] as never,
       sendTransaction: sendTransaction as never,
+      signal: new AbortController().signal,
       onRead: () => undefined,
       onQuoted: () => undefined,
-      onSent: () => undefined,
     });
     return {
       step: outcome.kind,
@@ -180,6 +180,51 @@ test("a confirm the server refused sends nothing and shows the failure", async (
   const result = await failSend(new Error("unreached"), [CALL], 503);
   expect(result.sends).toBe(0);
   expect(result.step).toBe("failed");
+});
+
+test("a sent hash whose receipt cannot be read is still submitted", async () => {
+  const posts: { url: string; body: unknown }[] = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: string, init?: RequestInit) => {
+    posts.push({ url, body: init?.body ? JSON.parse(String(init.body)) : null });
+    if (url.endsWith("/balances"))
+      return new Response(
+        JSON.stringify({
+          balances: [{ chain: "base", asset: "0xusdc", decimals: 6, amountRaw: "5000000" }],
+        })
+      );
+    if (url.endsWith("/transfers")) return new Response(JSON.stringify({ transfers: [] }));
+    return new Response(JSON.stringify({ ...QUOTE, calls: [CALL] }));
+  }) as typeof fetch;
+  sendTransaction.mockReset();
+  sendTransaction.mockImplementationOnce(async () => ({ hash: "0xsent" }));
+  const rpcDown = {
+    ...wallets[0],
+    getEthereumProvider: async () => ({
+      request: async () => {
+        throw new Error("rpc down");
+      },
+    }),
+  };
+  try {
+    const outcome = await moveIncoming({
+      sender: EVM,
+      chain: "base",
+      asset: "0xusdc",
+      symbol: "USDC",
+      wallet: rpcDown as never,
+      sendTransaction: sendTransaction as never,
+      signal: new AbortController().signal,
+      onRead: () => undefined,
+      onQuoted: () => undefined,
+    });
+    expect(outcome.kind).toBe("submitted");
+    expect(posts.filter((p) => p.url.endsWith("/submit")).map((p) => p.body)).toEqual([
+      { originTx: "0xsent" },
+    ]);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 });
 
 test("a wallet call that never settles times out as its own failure", async () => {

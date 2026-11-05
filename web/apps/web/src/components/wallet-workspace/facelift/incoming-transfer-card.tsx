@@ -1,6 +1,6 @@
 "use client";
 
-import { type ReactNode, useId } from "react";
+import { type ReactNode, useEffect, useId, useRef } from "react";
 
 import {
   ScrambleText,
@@ -21,7 +21,7 @@ import {
 const BASE = "/wallet-workspace/facelift";
 const PLACEHOLDER = "asset-placeholder.svg";
 const PILL =
-  "flex min-w-16 shrink-0 items-center justify-center rounded-[40px] bg-foreground px-4 py-2.5 font-medium text-[13px] text-background leading-4 transition-colors enabled:hover:bg-foreground/90 disabled:opacity-40";
+  "flex min-w-16 shrink-0 items-center justify-center rounded-[40px] bg-foreground px-[17px] py-2.5 font-medium text-[13px] text-background leading-4 transition-colors enabled:hover:bg-foreground/90 disabled:opacity-40";
 const STATUS =
   "flex shrink-0 items-center gap-1.5 text-[13px] text-muted-foreground leading-4";
 
@@ -63,6 +63,23 @@ export function IncomingTransferCard({
   const { isBalanceHidden } = useBalanceVisibility();
   const titleId = useId();
   const { status } = item;
+  const cardRef = useRef<HTMLDivElement>(null);
+  const actionRef = useRef<HTMLElement | null>(null);
+  const pressed = useRef(false);
+  const action = (el: HTMLElement | null) => {
+    actionRef.current = el;
+  };
+  const press = () => {
+    pressed.current = true;
+    onConfirm();
+  };
+  useEffect(() => {
+    if (!pressed.current) return;
+    const focused = document.activeElement;
+    if (focused && focused !== document.body && !cardRef.current?.contains(focused))
+      return;
+    actionRef.current?.focus();
+  }, [status.kind]);
   const what = `${fromRaw(item.amountRaw, item.decimals)} ${item.symbol} from ${item.shortName}`;
   const underMinimum =
     item.amountRaw < BigInt(item.minUsd) * BigInt(10) ** BigInt(item.decimals);
@@ -72,7 +89,7 @@ export function IncomingTransferCard({
       : null;
 
   return (
-    <div className="flex w-full items-center rounded-[20px] bg-accent px-4">
+    <div className="flex w-full items-center rounded-[20px] bg-accent px-4" ref={cardRef}>
       <div className="flex shrink-0 items-center py-2 pr-3">
         <span className="relative flex">
           <BridgeIcon file={item.icon ?? PLACEHOLDER} />
@@ -130,18 +147,19 @@ export function IncomingTransferCard({
             aria-label={`Confirm ${what}`}
             className={PILL}
             disabled={underMinimum}
-            onClick={onConfirm}
+            onClick={press}
+            ref={action}
             type="button"
           >
             Confirm
           </button>
         ) : status.kind === "bridging" ? (
-          <span className={STATUS}>
+          <span className={STATUS} ref={action} tabIndex={-1}>
             <Spinner />
             Bridging…
           </span>
         ) : status.kind === "arrived" ? (
-          <span className={STATUS}>
+          <span className={STATUS} ref={action} tabIndex={-1}>
             <ThemedIcon className="size-4" src={`${BASE}/icon-check.svg`} />
             Arrived
           </span>
@@ -151,7 +169,8 @@ export function IncomingTransferCard({
             <button
               aria-label={`Retry ${what}`}
               className={PILL}
-              onClick={onConfirm}
+              onClick={press}
+              ref={action}
               type="button"
             >
               Retry

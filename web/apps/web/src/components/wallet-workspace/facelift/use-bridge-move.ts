@@ -45,13 +45,14 @@ export type IncomingItem = {
     requestId: string;
     state: BridgeTransfer["state"];
     submittedAt: string | null;
+    inFlight: boolean;
   };
   status: IncomingStatus;
 };
 
 const POLL_MS = 3000;
 const ARRIVED_MS = 5000;
-const STALE_SUBMIT_MS = 15 * 60_000;
+const FOCUS_READ_MS = 30_000;
 const RECEIPT_TIMEOUT_MS = 120_000;
 const SEND_TIMEOUT_MS = 120_000;
 const SEND_TIMEOUT = "move_send_timeout";
@@ -83,19 +84,34 @@ async function readJSON<T>(res: Response, fallback: string): Promise<T> {
     | Partial<RouteError>
     | null;
   if (res.ok && body) return body as T;
-  throw new Error(
-    (body && typeof body === "object" && "error" in body && body.error?.message) ||
-      `${fallback} (${res.status}).`
-  );
+  const detail =
+    body && typeof body === "object" && "error" in body ? body.error : undefined;
+  throw Object.assign(new Error(detail?.message || `${fallback} (${res.status}).`), {
+    code: detail?.code,
+    requestId: detail?.requestId,
+  });
 }
 
-const post = (path: string, body: unknown) =>
+function inFlightRefusal(e: unknown): MoveOutcome | null {
+  const { code, requestId } = (e ?? {}) as { code?: unknown; requestId?: unknown };
+  return code === "bridge_in_flight" && typeof requestId === "string"
+    ? { kind: "inFlight", requestId }
+    : null;
+}
+
+const post = (path: string, body: unknown, signal?: AbortSignal) =>
   fetch(path, {
     method: "POST",
     credentials: "include",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
+    signal,
   });
+
+const transferPath = (requestId: string, step: string) =>
+  `/api/funding/bridge/transfers/${encodeURIComponent(requestId)}/${step}`;
+
+const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -138,47 +154,26 @@ function sendFailureCopy(failure: SendFailure, symbol: string, sent: boolean) {
     : "The move did not finish. Please try again.";
 }
 
-const readBalances = async () =>
+const readBalances = async (signal?: AbortSignal) =>
   (
     await readJSON<BridgeBalancesResponse>(
-      await fetch("/api/funding/bridge/balances", { credentials: "include" }),
+      await fetch("/api/funding/bridge/balances", { credentials: "include", signal }),
       "Could not read your EVM balances"
     )
   ).balances ?? [];
 
-const readTransfers = async () =>
+const readTransfers = async (signal?: AbortSignal) =>
   (
     await readJSON<BridgeTransfersResponse>(
-      await fetch("/api/funding/bridge/transfers", { credentials: "include" }),
+      await fetch("/api/funding/bridge/transfers", { credentials: "include", signal }),
       "Could not read the bridge"
     )
   ).transfers ?? [];
 
 const lane = (chain: string, asset: string) => `${chain}:${asset}`;
 
-const submittedSince = (t: BridgeTransfer) =>
-  Date.parse(t.submittedAt ?? t.quotedAt);
-
-function waitingAmount(
-  balances: BridgeBalance[],
-  transfers: BridgeTransfer[],
-  chain: string,
-  asset: string,
-  now: number
-) {
-  const moving = transfers.some(
-    (t) =>
-      t.direction === "in" &&
-      t.state === "submitted" &&
-      lane(t.chain, t.asset) === lane(chain, asset) &&
-      now - submittedSince(t) <= STALE_SUBMIT_MS
-  );
-  if (moving) return BigInt(0);
-  const balance = balances.find(
-    (b) => lane(b.chain, b.asset) === lane(chain, asset)
-  );
-  return balance ? BigInt(balance.amountRaw) : BigInt(0);
-}
+const unsettled = (t: BridgeTransfer) =>
+  t.state === "quoted" || t.state === "submitted";
 
 type Run = {
   key: string;
@@ -186,7 +181,6 @@ type Run = {
   asset: string;
   amountRaw: bigint;
   requestId: string | null;
-  sentAt: number | null;
   failure: { message: string; requestId: string | null } | null;
 };
 
@@ -228,15 +222,11 @@ const emptyIncoming = (wallet: string | null): Incoming => ({
 function adoptSettled(prev: Incoming, transfers: BridgeTransfer[]): Run[] {
   const tracked = new Set(prev.runs.map((r) => r.requestId));
   const watched = new Set(
-    prev.transfers.filter((t) => t.state === "submitted").map((t) => t.requestId)
+    prev.transfers.filter((t) => t.inFlight).map((t) => t.requestId)
   );
   return transfers
     .filter(
-      (t) =>
-        watched.has(t.requestId) &&
-        !tracked.has(t.requestId) &&
-        t.state !== "submitted" &&
-        t.state !== "quoted"
+      (t) => watched.has(t.requestId) && !tracked.has(t.requestId) && !unsettled(t)
     )
     .map((t) => ({
       key: t.requestId,
@@ -244,7 +234,6 @@ function adoptSettled(prev: Incoming, transfers: BridgeTransfer[]): Run[] {
       asset: t.asset,
       amountRaw: BigInt(t.amountInRaw),
       requestId: t.requestId,
-      sentAt: submittedSince(t),
       failure: null,
     }));
 }
@@ -318,9 +307,14 @@ function serverStatus(
 
 function incomingItems(
   state: Incoming,
-  networks: EvmDepositNetwork[],
-  now: number
+  networks: EvmDepositNetwork[]
 ): IncomingItem[] {
+  const order = new Map(
+    networks.flatMap((n) => (n.tokens ?? []).map((t) => lane(n.chain, t.asset)))
+      .map((key, index) => [key, index] as const)
+  );
+  const rank = (item: IncomingItem) =>
+    order.get(lane(item.chain, item.asset)) ?? order.size;
   const describe = (chain: string, asset: string) => {
     const network = networks.find((n) => n.chain === chain);
     const token = network?.tokens?.find((t) => t.asset === asset);
@@ -337,15 +331,6 @@ function incomingItems(
         }
       : null;
   };
-  const holding = new Set(
-    state.balances
-      .filter((b) => BigInt(b.amountRaw) > BigInt(0))
-      .map((b) => lane(b.chain, b.asset))
-  );
-  const stale = (since: number | null, chain: string, asset: string) =>
-    since !== null &&
-    now - since > STALE_SUBMIT_MS &&
-    holding.has(lane(chain, asset));
   const byRequest = new Map(state.transfers.map((t) => [t.requestId, t]));
   const covered = new Set<string>();
   const items: IncomingItem[] = [];
@@ -354,13 +339,13 @@ function incomingItems(
     const shown = describe(run.chain, run.asset);
     if (!shown) continue;
     const server = run.requestId ? byRequest.get(run.requestId) : undefined;
-    const status: IncomingStatus = run.failure
-      ? { kind: "failed", ...run.failure }
-      : server
-      ? serverStatus(server, shown.symbol, shown.shortName)
-      : { kind: "bridging" };
-    const since = server ? submittedSince(server) : run.sentAt;
-    if (status.kind === "bridging" && stale(since, run.chain, run.asset)) continue;
+    if (server && unsettled(server) && !server.inFlight) continue;
+    const status: IncomingStatus =
+      server && !unsettled(server)
+        ? serverStatus(server, shown.symbol, shown.shortName)
+        : run.failure
+        ? { kind: "failed", ...run.failure }
+        : { kind: "bridging" };
     covered.add(lane(run.chain, run.asset));
     items.push({
       ...shown,
@@ -370,6 +355,7 @@ function incomingItems(
         requestId: server.requestId,
         state: server.state,
         submittedAt: server.submittedAt,
+        inFlight: server.inFlight,
       },
       status,
     });
@@ -377,10 +363,9 @@ function incomingItems(
 
   const claimed = new Set(state.runs.map((r) => r.requestId));
   for (const t of state.transfers) {
-    if (t.direction !== "in" || t.state !== "submitted" || claimed.has(t.requestId))
-      continue;
+    if (!t.inFlight || claimed.has(t.requestId)) continue;
     const shown = describe(t.chain, t.asset);
-    if (!shown || stale(submittedSince(t), t.chain, t.asset)) continue;
+    if (!shown) continue;
     covered.add(lane(t.chain, t.asset));
     items.push({
       ...shown,
@@ -390,6 +375,7 @@ function incomingItems(
         requestId: t.requestId,
         state: t.state,
         submittedAt: t.submittedAt,
+        inFlight: t.inFlight,
       },
       status: { kind: "bridging" },
     });
@@ -407,26 +393,33 @@ function incomingItems(
       status: { kind: "waiting" },
     });
   }
-  return items;
+  return items.sort((a, b) => rank(a) - rank(b));
 }
 
 type Receipt = "landed" | "reverted" | "unknown";
 
 async function waitForReceipt(
   provider: { request: (args: { method: string; params?: unknown[] }) => Promise<unknown> },
-  hash: string
+  hash: string,
+  signal: AbortSignal
 ): Promise<Receipt> {
   const deadline = Date.now() + RECEIPT_TIMEOUT_MS;
-  while (Date.now() < deadline) {
-    const receipt = (await settleWithin(
-      provider.request({
-        method: "eth_getTransactionReceipt",
-        params: [hash],
-      })
-    )) as { status?: string } | null;
+  while (Date.now() < deadline && !signal.aborted) {
+    let receipt: { status?: string } | null;
+    try {
+      receipt = (await settleWithin(
+        provider.request({
+          method: "eth_getTransactionReceipt",
+          params: [hash],
+        }),
+        deadline - Date.now()
+      )) as { status?: string } | null;
+    } catch {
+      return "unknown";
+    }
     if (receipt?.status === "0x1") return "landed";
     if (receipt?.status === "0x0") return "reverted";
-    await new Promise((resolve) => setTimeout(resolve, 1500));
+    await pause(1500);
   }
   return "unknown";
 }
@@ -436,7 +429,9 @@ type EvmWallet = ReturnType<typeof useWallets>["wallets"][number];
 
 type MoveOutcome =
   | { kind: "nothing" }
+  | { kind: "aborted" }
   | { kind: "rejected" }
+  | { kind: "inFlight"; requestId: string }
   | { kind: "failed"; message: string; requestId: string | null }
   | { kind: "submitted"; requestId: string; recorded: boolean };
 
@@ -447,48 +442,62 @@ type Move = {
   symbol: string;
   wallet: EvmWallet | undefined;
   sendTransaction: SendTransaction;
+  signal: AbortSignal;
   onRead: (balances: BridgeBalance[], transfers: BridgeTransfer[]) => void;
   onQuoted: (requestId: string, amountRaw: bigint) => void;
-  onSent: () => void;
 };
 
-export function moveIncoming(move: Move): Promise<MoveOutcome> {
+export async function moveIncoming(move: Move): Promise<MoveOutcome> {
   const lockName = `loyal.bridge.move:${move.sender.toLowerCase()}:${move.chain}`;
-  if (!navigator.locks) return moveLocked(move);
-  return navigator.locks.request(lockName, () => moveLocked(move));
+  try {
+    return await (navigator.locks
+      ? navigator.locks.request(lockName, { signal: move.signal }, () =>
+          moveLocked(move)
+        )
+      : moveLocked(move));
+  } catch (e) {
+    if (move.signal.aborted) return { kind: "aborted" };
+    return { kind: "failed", message: errorText(e), requestId: null };
+  }
 }
 
 async function moveLocked(move: Move): Promise<MoveOutcome> {
+  const { signal } = move;
   let quoted: BridgeQuoteResponse;
   try {
     const [balances, transfers] = await Promise.all([
-      readBalances(),
-      readTransfers(),
+      readBalances(signal),
+      readTransfers(signal),
     ]);
     move.onRead(balances, transfers);
-    const amountRaw = waitingAmount(
-      balances,
-      transfers,
-      move.chain,
-      move.asset,
-      Date.now()
-    );
+    const here = lane(move.chain, move.asset);
+    const moving = transfers.find((t) => t.inFlight && lane(t.chain, t.asset) === here);
+    if (moving) return { kind: "inFlight", requestId: moving.requestId };
+    const balance = balances.find((b) => lane(b.chain, b.asset) === here);
+    const amountRaw = balance ? BigInt(balance.amountRaw) : BigInt(0);
     if (amountRaw === BigInt(0)) return { kind: "nothing" };
     quoted = await readJSON<BridgeQuoteResponse>(
-      await post("/api/funding/bridge/quote", {
-        chain: move.chain,
-        asset: move.asset,
-        amountRaw: amountRaw.toString(),
-      }),
+      await post(
+        "/api/funding/bridge/quote",
+        { chain: move.chain, asset: move.asset, amountRaw: amountRaw.toString() },
+        signal
+      ),
       "Could not get a quote"
     );
     move.onQuoted(quoted.requestId, amountRaw);
   } catch (e) {
-    return { kind: "failed", message: errorText(e), requestId: null };
+    if (signal.aborted) return { kind: "aborted" };
+    return inFlightRefusal(e) ?? { kind: "failed", message: errorText(e), requestId: null };
   }
 
   const calls = quoted.calls ?? [];
   const { wallet } = move;
+  const release = () =>
+    post(transferPath(quoted.requestId, "release"), {}, signal).catch(
+      () => undefined
+    );
+  let confirming = false;
+  let depositSent = false;
   let sent = false;
   let originTx: string | null = null;
   try {
@@ -497,13 +506,16 @@ async function moveLocked(move: Move): Promise<MoveOutcome> {
     }
     await settleWithin(wallet.switchChain(quoted.chainId));
     const provider = await settleWithin(wallet.getEthereumProvider());
+    confirming = true;
     await settleWithin(
-      post(
-        `/api/funding/bridge/transfers/${encodeURIComponent(quoted.requestId)}/confirm`,
-        {}
-      ).then((res) => readJSON<BridgeTransfer>(res, "Could not start the move"))
+      post(transferPath(quoted.requestId, "confirm"), {}, signal).then((res) =>
+        readJSON<BridgeTransfer>(res, "Could not start the move")
+      )
     );
     for (const [index, call] of calls.entries()) {
+      signal.throwIfAborted();
+      const last = index === calls.length - 1;
+      depositSent = last;
       const { hash } = await settleWithin(
         move.sendTransaction(
           {
@@ -520,28 +532,34 @@ async function moveLocked(move: Move): Promise<MoveOutcome> {
         )
       );
       sent = true;
-      const receipt = await waitForReceipt(provider, hash);
-      if (index === calls.length - 1) {
-        if (receipt === "reverted")
-          return {
-            kind: "failed",
-            message: `The transfer reverted. ${move.symbol} stays in your wallet.`,
-            requestId: quoted.requestId,
-          };
-        originTx = hash;
-      } else if (receipt === "reverted") {
-        throw new Error("The approval transaction reverted.");
-      } else if (receipt === "unknown") {
-        throw new Error("Transaction confirmation timed out");
+      signal.throwIfAborted();
+      const receipt = await waitForReceipt(provider, hash, signal);
+      signal.throwIfAborted();
+      if (receipt === "reverted" && last) {
+        await release();
+        return {
+          kind: "failed",
+          message: `The transfer reverted. ${move.symbol} stays in your wallet.`,
+          requestId: quoted.requestId,
+        };
       }
+      if (receipt === "reverted") throw new Error("The approval transaction reverted.");
+      if (last) originTx = hash;
+      else if (receipt === "unknown") throw new Error("Transaction confirmation timed out");
     }
   } catch (e) {
+    if (signal.aborted) return { kind: "aborted" };
+    const refused = inFlightRefusal(e);
+    if (refused) return refused;
     const failure = classifySendError(e);
+    if (confirming && (!depositSent || failure === "rejected" || failure === "refused"))
+      await release();
     if (failure === "rejected") return { kind: "rejected" };
     if (failure === "refused")
       void post(
-        `/api/funding/bridge/transfers/${encodeURIComponent(quoted.requestId)}/sponsor-refusal`,
-        { message: errorText(e).slice(0, 500) }
+        transferPath(quoted.requestId, "sponsor-refusal"),
+        { message: errorText(e).slice(0, 500) },
+        signal
       ).catch(() => undefined);
     return {
       kind: "failed",
@@ -556,21 +574,19 @@ async function moveLocked(move: Move): Promise<MoveOutcome> {
       requestId: null,
     };
 
-  move.onSent();
   for (let attempt = 0; attempt < 3; attempt++) {
+    if (signal.aborted) return { kind: "aborted" };
     try {
       await readJSON<BridgeTransfer>(
-        await post(
-          `/api/funding/bridge/transfers/${encodeURIComponent(quoted.requestId)}/submit`,
-          { originTx }
-        ),
+        await post(transferPath(quoted.requestId, "submit"), { originTx }, signal),
         "Could not record the bridge"
       );
       return { kind: "submitted", requestId: quoted.requestId, recorded: true };
     } catch {
-      if (attempt < 2) await new Promise((r) => setTimeout(r, 2000));
+      if (attempt < 2) await pause(2000);
     }
   }
+  if (signal.aborted) return { kind: "aborted" };
   return { kind: "submitted", requestId: quoted.requestId, recorded: false };
 }
 
@@ -614,9 +630,11 @@ export function useIncomingTransfers(walletAddress: string | null) {
     []
   );
   const readAt = useRef(0);
+  const balancesReadAt = useRef(0);
   const read = useCallback(
     async (wallet: string, withBalances: boolean) => {
       const at = ++readAt.current;
+      if (withBalances) balancesReadAt.current = Date.now();
       const [balances, transfers] = await Promise.allSettled([
         withBalances ? readBalances() : Promise.resolve(undefined),
         readTransfers(),
@@ -641,13 +659,31 @@ export function useIncomingTransfers(walletAddress: string | null) {
     if (enabled && walletAddress) void read(walletAddress, true);
   }, [enabled, read, reads, walletAddress]);
 
+  useEffect(() => {
+    if (!enabled || !walletAddress) return;
+    const wallet = walletAddress;
+    const peekBalances = () => {
+      if (document.visibilityState !== "visible") return;
+      if (Date.now() - balancesReadAt.current < FOCUS_READ_MS) return;
+      void read(wallet, true);
+    };
+    window.addEventListener("focus", peekBalances);
+    document.addEventListener("visibilitychange", peekBalances);
+    return () => {
+      window.removeEventListener("focus", peekBalances);
+      document.removeEventListener("visibilitychange", peekBalances);
+    };
+  }, [enabled, read, walletAddress]);
+
   const shown = enabled && state.wallet === walletAddress ? state : null;
   const items = useMemo(
-    () => (shown ? incomingItems(shown, networks, Date.now()) : []),
+    () => (shown ? incomingItems(shown, networks) : []),
     [networks, shown]
   );
 
-  const polling = items.some((i) => i.status.kind === "bridging");
+  const polling = items.some(
+    (i) => i.status.kind === "bridging" || i.transfer?.inFlight
+  );
   useEffect(() => {
     if (!polling || !walletAddress) return;
     const timer = setInterval(() => void read(walletAddress, false), POLL_MS);
@@ -664,10 +700,18 @@ export function useIncomingTransfers(walletAddress: string | null) {
     return () => clearTimeout(timer);
   }, [apply, arrived, walletAddress]);
 
+  const runSignal = useRef<AbortSignal | null>(null);
+  useEffect(() => {
+    const controller = new AbortController();
+    runSignal.current = controller.signal;
+    return () => controller.abort();
+  }, [walletAddress]);
+
   const active = useRef(new Set<string>());
   const confirm = useCallback(
     async (item: IncomingItem) => {
-      if (!sender || !walletAddress) return;
+      const signal = runSignal.current;
+      if (!sender || !walletAddress || !signal || signal.aborted) return;
       const wallet = walletAddress;
       const busy = `${wallet}:${lane(item.chain, item.asset)}`;
       if (active.current.has(busy)) return;
@@ -681,7 +725,6 @@ export function useIncomingTransfers(walletAddress: string | null) {
           asset: item.asset,
           amountRaw: item.amountRaw,
           requestId: null,
-          sentAt: null,
           failure: null,
         },
       });
@@ -695,22 +738,28 @@ export function useIncomingTransfers(walletAddress: string | null) {
             (w) => w.address.toLowerCase() === sender.toLowerCase()
           ),
           sendTransaction,
-          onRead: (balances, transfers) =>
+          signal,
+          onRead: (balances, transfers) => {
+            balancesReadAt.current = Date.now();
             apply(wallet, {
               type: "read",
               at: ++readAt.current,
               balances,
               transfers,
               error: null,
-            }),
+            });
+          },
           onQuoted: (requestId, amountRaw) =>
             apply(wallet, { type: "patch", key, patch: { requestId, amountRaw } }),
-          onSent: () =>
-            apply(wallet, { type: "patch", key, patch: { sentAt: Date.now() } }),
         });
-        if (outcome.kind === "nothing" || outcome.kind === "rejected")
+        if (outcome.kind === "aborted") return;
+        if (outcome.kind === "nothing" || outcome.kind === "rejected") {
           apply(wallet, { type: "drop", key });
-        else if (outcome.kind === "failed")
+          return;
+        }
+        if (outcome.kind === "inFlight")
+          apply(wallet, { type: "patch", key, patch: { requestId: outcome.requestId } });
+        if (outcome.kind === "failed")
           apply(wallet, {
             type: "patch",
             key,
@@ -718,7 +767,7 @@ export function useIncomingTransfers(walletAddress: string | null) {
               failure: { message: outcome.message, requestId: outcome.requestId },
             },
           });
-        else void read(wallet, false);
+        void read(wallet, false);
       } finally {
         active.current.delete(busy);
       }
@@ -732,9 +781,11 @@ export function useIncomingTransfers(walletAddress: string | null) {
     reread();
   }, [retryOnNextLoad]);
 
+  const discoveryError = external && !info ? evm.error : null;
+
   return {
     items,
-    error: shown?.error ?? null,
+    error: discoveryError ?? shown?.error ?? null,
     confirm,
     reload,
   };
