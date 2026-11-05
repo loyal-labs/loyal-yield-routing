@@ -19,6 +19,8 @@ import { NextRequest } from "../../web/node_modules/next/server";
 
 const APP_HOST = "app.askloyal.com";
 const SITE_HOST = "askloyal.com";
+const APEX_HOSTS = [SITE_HOST, `www.${SITE_HOST}`];
+const VERCEL_REDIRECT_CACHE_CONTROL = "public, max-age=0, must-revalidate";
 
 const HEADER_SOURCE_PATHS: Record<string, string> = {
   "/.well-known/apple-app-site-association": "/.well-known/apple-app-site-association",
@@ -64,7 +66,30 @@ type KnownDifference = {
   go: (expected: Outcome, c: LocaleCase) => Outcome | null;
 };
 
+function trailingSlashTarget(target: string): string | null {
+  const url = new URL(target, "http://localhost");
+  return url.pathname.length > 1 && url.pathname.endsWith("/") ? `${url.pathname.slice(0, -1)}${url.search}` : null;
+}
+
 const KNOWN_DIFFERENCES: KnownDifference[] = [
+  {
+    name: "apex /app",
+    reason: "Vercel redirects /app and /app/* on the apex and www hosts to the app host before Next runs",
+    go: (_expected, c) =>
+      APEX_HOSTS.includes(c.host.split(":")[0].toLowerCase()) && /^\/app(\/|$)/i.test(new URL(c.target, "http://localhost").pathname)
+        ? { kind: "redirect", status: 307, location: `https://${APP_HOST}${c.target}`, cookies: [], cacheControl: VERCEL_REDIRECT_CACHE_CONTROL, vary: null }
+        : null,
+  },
+  {
+    name: "trailing slash",
+    reason: "Next's router 308-redirects a trailing-slash path after middleware has continued",
+    go: (expected, c) => {
+      const location = trailingSlashTarget(c.target);
+      return expected.kind === "continue" && location !== null
+        ? { kind: "redirect", status: 308, location, cookies: [], cacheControl: VERCEL_REDIRECT_CACHE_CONTROL, vary: null }
+        : null;
+    },
+  },
   {
     name: "app host root",
     reason: "the Vite SPA routes by pathname, so a server rewrite would render the landing route at /",
@@ -330,8 +355,17 @@ async function compareHeaders(origin: string): Promise<Failure[]> {
       if (want === null && STATIC_SERVER_HEADERS.has(key)) continue;
       if (want !== got) failures.push({ what: `GET ${target} header ${key}`, expected: want, actual: got });
     }
+    const slashLocation = trailingSlashTarget(target);
+    const redirectHeaders = new Set<string>();
+    if (slashLocation !== null) {
+      const got = response.headers.get("location");
+      if (response.status !== 308 || got !== slashLocation) {
+        failures.push({ what: `GET ${target} trailing slash redirect`, expected: { status: 308, location: slashLocation }, actual: { status: response.status, location: got } });
+      }
+      redirectHeaders.add("location").add("refresh");
+    }
     for (const key of response.headers.keys()) {
-      if (!known.has(key) && !(key in GO_ONLY_HEADERS)) {
+      if (!known.has(key) && !(key in GO_ONLY_HEADERS) && !redirectHeaders.has(key)) {
         failures.push({ what: `GET ${target} header ${key} is not sent by next.config.ts`, expected: null, actual: response.headers.get(key) });
       }
     }
