@@ -535,6 +535,51 @@ For RS256, encrypt the PEM the same way with
 Run `systemctl daemon-reload && systemctl restart loyal-web`. To go back to
 proxying, remove the drop-in, daemon-reload and restart.
 
+### Cron jobs and push webhooks (opt-in, owner's go)
+
+The jobs `web/apps/web/vercel.json` schedules run from `loyal-web`:
+
+| Job | Where | Schedule |
+|---|---|---|
+| `smart-account-reconcile` | `loyal-web-cron@smart-account-reconcile.service` | `loyal-web-cron-smart-account-reconcile.timer`, every 15 minutes |
+| `earn-yield-joy` | `loyal-web-cron@earn-yield-joy.service` | `loyal-web-cron-earn-yield-joy.timer`, 15:41 UTC daily |
+| `telemetry-heartbeat` | goroutine in `loyal-web.service`, every 5 minutes from start | none |
+
+The heartbeat needs `OBSERVABILITY_OTLP_ENDPOINT` and `OBSERVABILITY_INGESTION_API_KEY`
+(already installed for the observability routes), else `loyal-web` logs one line and
+sends none. It reports environment `prod`, which the "Web telemetry heartbeat" alert
+accepts beside `production`.
+
+Install the units from `systemd/`, then two drop-ins on the template, in
+`/etc/systemd/system/loyal-web-cron@.service.d/`. `40-verified-release.conf` is
+`activate.sh`'s drop-in for `loyal-web.service` with the same `ExecStart=`
+(`activate.sh` does not write it for the template; repeat it after each web deploy
+until it does). `50-credentials.conf` is loyal-web's own credential lines:
+
+```sh
+{ echo '[Service]'; systemctl cat loyal-web.service | grep '^LoadCredentialEncrypted='; } \
+  > /etc/systemd/system/loyal-web-cron@.service.d/50-credentials.conf
+```
+
+A run needs `WEB_APP_DATABASE_URL` (both jobs) and `WEB_SOLANA_RPC_URL` and
+`SMART_ACCOUNT_SPONSOR_PK` (reconcile), `WEB_YIELD_DATABASE_URL`, `TIMESCALEDB_URL`,
+`MOBILE_PUSH_API_BASE_URL` and `MOBILE_PUSH_API_SECRET` (joy; without the push pair a real
+run exits non-zero rather than spend the one-time campaigns unsent). By hand,
+`loyal-web cron earn-yield-joy --dry-run` prints what a run would push and writes nothing.
+Enable with `systemctl enable --now loyal-web-cron-<job>.timer`. Every run takes a Postgres
+advisory lock on the App database, so a second run of one job exits non-zero while the
+first holds it.
+
+`POST /api/push/mixpanel-cohort` and `POST /api/solana-week/sweep-notify` are served by Go
+only when `MOBILE_PUSH_API_BASE_URL`, `MOBILE_PUSH_API_SECRET`, `WEB_YIELD_DATABASE_URL`
+with INSERT on `loyal_yield.push_campaign_sends` (and USAGE on its id sequence) and the
+route's own secret are installed: `MIXPANEL_COHORT_WEBHOOK_SECRET` for the first,
+`SOLANA_WEEK_NOTIFY_SECRET` for the second (the Next deployment's values). Until then each
+keeps proxying to Next. The retail engine's sweep notice moves to Go by setting
+`RETAIL_SWEEP_NOTIFY_ENDPOINT=https://next.askloyal.com/api/solana-week/sweep-notify`
+(the host whose tunnel reaches `loyal-web`; a path Go does not serve is proxied to Next, so
+the value is safe before the credentials above exist) with the secret unchanged.
+
 ### First install (once)
 
 `activate.sh` reads the running release from the

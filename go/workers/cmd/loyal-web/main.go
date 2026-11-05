@@ -268,6 +268,8 @@ func earn(ctx context.Context, registry *prometheus.Registry, rpcClient *chain.C
 		degraded(timescaleRoutes, errors.New("no TIMESCALEDB_URL pool"))
 	}
 	e.Push = walletPush()
+	e.MixpanelCohortSecret, _ = optionalCredential("Mixpanel cohort push", "MIXPANEL_COHORT_WEBHOOK_SECRET")
+	e.SweepNotifySecret, _ = optionalCredential("sweep notify push", "SOLANA_WEEK_NOTIFY_SECRET")
 	grantCtx, cancel := context.WithTimeout(ctx, grantBound)
 	defer cancel()
 	e.Granted = webapp.CheckEarnGrants(grantCtx, appDB, yieldDB)
@@ -322,6 +324,11 @@ func run(ctx context.Context) error {
 	}
 	registry := prometheus.NewRegistry()
 	cfg.Earn = earn(ctx, registry, rpcClient, appDB, yieldDB, timescaleDB)
+	if cfg.Earn != nil && cfg.Earn.OTLP != nil {
+		go webapp.NewCrons(appDB, *cfg.Earn).RunTelemetryHeartbeat(ctx, cfg.Release, cfg.Environment)
+	} else {
+		degraded("telemetry heartbeat", errors.New("OBSERVABILITY_OTLP_ENDPOINT and OBSERVABILITY_INGESTION_API_KEY are not both installed"))
+	}
 	if address := os.Getenv("LOYAL_METRICS_ADDRESS"); address == "" {
 		degraded("metrics", errors.New("LOYAL_METRICS_ADDRESS is not set"))
 	} else {
@@ -371,12 +378,19 @@ func main() {
 		}
 		return
 	}
-	if len(os.Args) != 1 {
-		fmt.Fprintln(os.Stderr, "usage: loyal-web [openapi]")
+	if len(os.Args) > 1 && os.Args[1] != "cron" {
+		fmt.Fprintln(os.Stderr, "usage: loyal-web [openapi | cron <job>]")
 		os.Exit(2)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if len(os.Args) > 1 {
+		if err := runCron(ctx, os.Args[2:]); err != nil {
+			slog.Error("loyal-web cron", "error", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := run(ctx); err != nil {
 		slog.Error("loyal-web stopped", "error", err)
 		os.Exit(1)

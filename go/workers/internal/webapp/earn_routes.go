@@ -33,6 +33,9 @@ type Earn struct {
 	Granted      map[string]bool
 	Refusals     *SponsorRefusals
 	TestWallets  TestWallets
+
+	MixpanelCohortSecret string
+	SweepNotifySecret    string
 }
 
 type WalletPush struct {
