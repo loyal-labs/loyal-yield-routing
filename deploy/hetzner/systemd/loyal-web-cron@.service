@@ -1,0 +1,62 @@
+# One run of a loyal-web cron job: loyal-web-cron@<job>.service, started by
+# loyal-web-cron-<job>.timer. <job> is smart-account-reconcile or
+# earn-yield-joy, the two jobs web/apps/web/vercel.json used to schedule; the
+# telemetry heartbeat is a goroutine inside loyal-web.service.
+# The binary and the credentials are loyal-web's, so both come from drop-ins
+# (see "Cron jobs" in deploy/hetzner/README.md): 40-verified-release.conf for
+# ExecStart and 50-credentials.conf for the LoadCredentialEncrypted lines.
+# A run that exits non-zero leaves the instance failed, which
+# LoyalUnitDown (loyal-.+\.service) pages on.
+[Unit]
+Description=Loyal web cron %i
+Documentation=https://github.com/loyal-labs/loyal-yield-routing/tree/main/deploy/hetzner
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+# Placeholder release path; the verified-release drop-in overrides it.
+ExecStart=/opt/loyal/bin/loyal-web cron %i
+TimeoutStartSec=10min
+
+Environment=LOYAL_WEB_SOLANA_CLUSTER=mainnet
+
+DynamicUser=yes
+User=loyal-web-cron
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=loyal-web-cron-%i
+
+MemoryMax=256M
+CPUQuota=100%
+Nice=10
+TasksMax=128
+LimitCORE=0
+
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+SystemCallErrorNumber=EPERM
+UMask=0077
+LimitNOFILE=4096

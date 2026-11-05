@@ -16,19 +16,17 @@ import (
 	"net/http"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 )
 
 // cherryJWKS is the SDK's verifyLaunchToken on jose 5.10: an RS256-only
 // compact JWS checked against the remote key set, then the exp, nbf and iat
 // type rules of jwtVerify, then the app_id and origin equality the SDK adds.
-// The key set is cached for ten minutes and refetched on an unknown key at
-// most every thirty seconds, as a long-lived jose RemoteJWKSet does.
+// The key set is fetched for every verification, as the SDK builds a new
+// remote JWKS resolver per call, so a key the issuer removed stops verifying
+// on the next request.
 const (
 	cherryJWKSTimeout  = 5 * time.Second
-	cherryJWKSCooldown = 30 * time.Second
-	cherryJWKSMaxAge   = 10 * time.Minute
 	cherryJWKSMaxBytes = 1 << 20
 	cherryMinModulus   = 2048
 )
@@ -41,10 +39,6 @@ var (
 type cherryJWKS struct {
 	url    string
 	client *http.Client
-
-	mu        sync.Mutex
-	keys      []map[string]any
-	fetchedAt time.Time
 }
 
 func newCherryJWKS(url string) *cherryJWKS {
@@ -137,56 +131,45 @@ func checkJWTTimes(claims map[string]any, now int64) error {
 }
 
 func (s *cherryJWKS) key(ctx context.Context, kid string, hasKID bool) (*rsa.PublicKey, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.keys == nil || time.Since(s.fetchedAt) >= cherryJWKSMaxAge {
-		if err := s.reload(ctx); err != nil {
-			return nil, err
-		}
+	keys, err := s.fetch(ctx)
+	if err != nil {
+		return nil, err
 	}
-	key, err := s.match(kid, hasKID)
-	if errors.Is(err, errCherryNoKey) && time.Since(s.fetchedAt) >= cherryJWKSCooldown {
-		if err := s.reload(ctx); err != nil {
-			return nil, err
-		}
-		return s.match(kid, hasKID)
-	}
-	return key, err
+	return matchCherryKey(keys, kid, hasKID)
 }
 
-func (s *cherryJWKS) reload(ctx context.Context) error {
+func (s *cherryJWKS) fetch(ctx context.Context) ([]map[string]any, error) {
 	ctx, cancel := context.WithTimeout(ctx, cherryJWKSTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.url, nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	response, err := s.client.Do(req)
 	if err != nil {
 		slog.Warn("cherry jwks fetch failed", "error", err)
-		return err
+		return nil, err
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("expected 200 OK from the JWKS response, got %d", response.StatusCode)
+		return nil, fmt.Errorf("expected 200 OK from the JWKS response, got %d", response.StatusCode)
 	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, cherryJWKSMaxBytes))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	var set struct {
 		Keys []map[string]any `json:"keys"`
 	}
 	if err := json.Unmarshal(body, &set); err != nil || set.Keys == nil {
-		return errors.New("JSON Web Key Set malformed")
+		return nil, errors.New("JSON Web Key Set malformed")
 	}
-	s.keys, s.fetchedAt = set.Keys, time.Now()
-	return nil
+	return set.Keys, nil
 }
 
-func (s *cherryJWKS) match(kid string, hasKID bool) (*rsa.PublicKey, error) {
+func matchCherryKey(keys []map[string]any, kid string, hasKID bool) (*rsa.PublicKey, error) {
 	var candidates []map[string]any
-	for _, jwk := range s.keys {
+	for _, jwk := range keys {
 		if jwk["kty"] != "RSA" {
 			continue
 		}

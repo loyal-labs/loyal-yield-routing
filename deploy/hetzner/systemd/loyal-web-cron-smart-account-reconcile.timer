@@ -1,0 +1,12 @@
+# vercel.json: */15 * * * *. A tick missed while the host was down is not
+# replayed; the next one picks up every record still stale.
+[Unit]
+Description=Loyal web cron smart-account-reconcile, every 15 minutes
+
+[Timer]
+Unit=loyal-web-cron@smart-account-reconcile.service
+OnCalendar=*:00/15:00 UTC
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

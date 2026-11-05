@@ -61,7 +61,7 @@ func (b *Bot) directUpdate(ctx context.Context, update *Update) {
 
 func (b *Bot) directTopicCreated(ctx context.Context, update *Update) {
 	message := update.Message
-	if message.From == nil || message.MessageThreadID == nil || message.ForumTopicCreated.Name == "" {
+	if message.From == nil || message.MessageThreadID == 0 || message.ForumTopicCreated.Name == "" {
 		slog.Warn("direct topic created message is missing fields", "update_id", update.UpdateID)
 		return
 	}
@@ -95,7 +95,7 @@ func (b *Bot) directMessage(ctx context.Context, update *Update) {
 	slog.Error("direct message failed", "update_id", update.UpdateID, "error", err)
 	replyCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), sideEffectTimeout)
 	defer cancel()
-	if _, err := b.api.SendTopicMessage(replyCtx, message.Chat.ID, message.MessageThreadID, errorReply); err != nil {
+	if _, err := b.api.Send(replyCtx, message.Chat.ID, errorReply, SendOptions{ThreadID: message.MessageThreadID}); err != nil {
 		slog.Error("direct message error reply failed", "update_id", update.UpdateID, "error", err)
 	}
 }
@@ -121,7 +121,7 @@ func (b *Bot) answerDirectMessage(ctx context.Context, message *Message) error {
 	return b.streamReply(ctx, message.Chat.ID, message.MessageThreadID, threadID, history)
 }
 
-func (b *Bot) streamReply(ctx context.Context, chatID int64, topic *int64, threadID string, history []chatMessage) error {
+func (b *Bot) streamReply(ctx context.Context, chatID int64, topic int64, threadID string, history []chatMessage) error {
 	var full strings.Builder
 	var sent []int64
 	var lastUpdate time.Time
@@ -215,22 +215,22 @@ func newDraftID() int64 {
 	return rand.Int64N(1<<31-1) + 1
 }
 
-func (b *Bot) sendDraft(ctx context.Context, chatID int64, topic *int64, draftID int64, text string) error {
+func (b *Bot) sendDraft(ctx context.Context, chatID int64, topic int64, draftID int64, text string) error {
 	_, err := withRetry(ctx, func() (struct{}, error) {
-		return struct{}{}, b.api.SendMessageDraft(ctx, chatID, topic, draftID, text)
+		return struct{}{}, b.api.SendMessageDraft(ctx, chatID, draftID, text, SendOptions{ThreadID: topic})
 	})
 	return err
 }
 
-func (b *Bot) sendReply(ctx context.Context, chatID int64, topic *int64, text string) (int64, error) {
+func (b *Bot) sendReply(ctx context.Context, chatID int64, topic int64, text string) (int64, error) {
 	return withRetry(ctx, func() (int64, error) {
-		return b.api.SendTopicMessage(ctx, chatID, topic, text)
+		return b.api.Send(ctx, chatID, text, SendOptions{ThreadID: topic})
 	})
 }
 
 func (b *Bot) editReply(ctx context.Context, chatID, messageID int64, text string) error {
 	_, err := withRetry(ctx, func() (struct{}, error) {
-		err := b.api.EditMessageText(ctx, chatID, messageID, text)
+		err := b.api.EditMessageText(ctx, chatID, messageID, text, SendOptions{})
 		var apiErr *APIError
 		if errors.As(err, &apiErr) && apiErr.Code == 400 && strings.Contains(apiErr.Description, "message is not modified") {
 			return struct{}{}, nil

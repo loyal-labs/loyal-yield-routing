@@ -46,23 +46,23 @@ type encryptedContent struct {
 	IV         string `json:"iv"`
 }
 
-func (b *Bot) findThread(ctx context.Context, chatID int64, topic *int64) (string, error) {
+func (b *Bot) findThread(ctx context.Context, chatID int64, topic int64) (string, error) {
 	var id string
 	err := b.db.QueryRow(ctx, `
 		SELECT id::text FROM bot_threads
 		WHERE telegram_chat_id = $1 AND telegram_thread_id IS NOT DISTINCT FROM $2::integer
-		LIMIT 1`, chatID, topic).Scan(&id)
+		LIMIT 1`, chatID, threadColumn(topic)).Scan(&id)
 	return id, err
 }
 
-func (b *Bot) getOrCreateThread(ctx context.Context, userID string, chatID int64, topic *int64, title string) (string, error) {
+func (b *Bot) getOrCreateThread(ctx context.Context, userID string, chatID int64, topic int64, title string) (string, error) {
 	id, err := b.findThread(ctx, chatID, topic)
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = b.db.QueryRow(ctx, `
 			INSERT INTO bot_threads (user_id, telegram_chat_id, telegram_thread_id, title, status)
 			VALUES ($1::uuid, $2, $3::integer, $4, 'active')
 			ON CONFLICT DO NOTHING
-			RETURNING id::text`, userID, chatID, topic, title).Scan(&id)
+			RETURNING id::text`, userID, chatID, threadColumn(topic), title).Scan(&id)
 		if errors.Is(err, pgx.ErrNoRows) {
 			id, err = b.findThread(ctx, chatID, topic)
 		}
@@ -71,6 +71,13 @@ func (b *Bot) getOrCreateThread(ctx context.Context, userID string, chatID int64
 		return "", fmt.Errorf("resolve bot thread: %w", err)
 	}
 	return id, nil
+}
+
+func threadColumn(topic int64) *int64 {
+	if topic == 0 {
+		return nil
+	}
+	return &topic
 }
 
 func (b *Bot) renameThread(ctx context.Context, threadID, title string) error {

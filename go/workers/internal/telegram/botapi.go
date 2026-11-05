@@ -96,31 +96,15 @@ func (a *BotAPI) GetMe(ctx context.Context) (User, error) {
 }
 
 func (a *BotAPI) SendMessage(ctx context.Context, chatID int64, text string) (int64, error) {
-	return a.SendTopicMessage(ctx, chatID, nil, text)
-}
-
-func (a *BotAPI) SendTopicMessage(ctx context.Context, chatID int64, topic *int64, text string) (int64, error) {
-	params := map[string]any{"chat_id": chatID, "text": text}
-	if topic != nil {
-		params["message_thread_id"] = *topic
-	}
 	var sent struct {
 		MessageID int64 `json:"message_id"`
 	}
-	err := a.call(ctx, "sendMessage", params, &sent)
+	err := a.call(ctx, "sendMessage", map[string]any{"chat_id": chatID, "text": text}, &sent)
 	return sent.MessageID, err
 }
 
-func (a *BotAPI) SendMessageDraft(ctx context.Context, chatID int64, topic *int64, draftID int64, text string) error {
-	params := map[string]any{"chat_id": chatID, "draft_id": draftID, "text": text}
-	if topic != nil {
-		params["message_thread_id"] = *topic
-	}
-	return a.call(ctx, "sendMessageDraft", params, nil)
-}
-
-func (a *BotAPI) EditMessageText(ctx context.Context, chatID, messageID int64, text string) error {
-	return a.call(ctx, "editMessageText", map[string]any{"chat_id": chatID, "message_id": messageID, "text": text}, nil)
+func (a *BotAPI) SendMessageDraft(ctx context.Context, chatID, draftID int64, text string, opts SendOptions) error {
+	return a.call(ctx, "sendMessageDraft", opts.apply(map[string]any{"chat_id": chatID, "draft_id": draftID, "text": text}), nil)
 }
 
 func (a *BotAPI) SetMessageReaction(ctx context.Context, chatID, messageID int64, emoji string) error {

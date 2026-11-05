@@ -1,11 +1,13 @@
-package admin
+package r2
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -14,7 +16,7 @@ import (
 	"time"
 )
 
-type R2Config struct {
+type Config struct {
 	Endpoint        *url.URL
 	Bucket          string
 	Prefix          string
@@ -23,7 +25,63 @@ type R2Config struct {
 	SecretAccessKey string
 }
 
-const r2CacheControl = "public, max-age=31536000, immutable"
+type StatusError struct{ Code int }
+
+func (e *StatusError) Error() string { return fmt.Sprintf("r2: upload failed (%d)", e.Code) }
+
+func httpsURL(raw string, allowPath bool) (*url.URL, error) {
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" ||
+		(!allowPath && strings.Trim(parsed.Path, "/") != "") {
+		return nil, fmt.Errorf("want an https URL with a host, got %q", raw)
+	}
+	return parsed, nil
+}
+
+func New(accessKeyID, secretAccessKey, bucket, endpoint, cdnBase, prefix string) (*Config, error) {
+	bucket = strings.TrimSpace(bucket)
+	if bucket == "" || strings.Contains(bucket, "/") {
+		return nil, errors.New("bucket: want a bucket name")
+	}
+	cfg := &Config{AccessKeyID: accessKeyID, SecretAccessKey: secretAccessKey, Bucket: bucket}
+	var err error
+	if cfg.Endpoint, err = httpsURL(endpoint, false); err != nil {
+		return nil, fmt.Errorf("endpoint: %w", err)
+	}
+	if cfg.CDNBase, err = httpsURL(cdnBase, true); err != nil {
+		return nil, fmt.Errorf("CDN base: %w", err)
+	}
+	var segments []string
+	for _, segment := range strings.Split(prefix, "/") {
+		switch segment = strings.TrimSpace(segment); segment {
+		case "":
+		case ".", "..":
+			return nil, errors.New("prefix: contains an invalid path segment")
+		default:
+			segments = append(segments, segment)
+		}
+	}
+	cfg.Prefix = strings.Join(segments, "/")
+	return cfg, nil
+}
+
+func (c *Config) Put(ctx context.Context, key string, body []byte, contentType string) error {
+	request, err := c.request(key, body, contentType)
+	if err != nil {
+		return err
+	}
+	response, err := http.DefaultClient.Do(request.WithContext(ctx))
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode > 299 {
+		return &StatusError{Code: response.StatusCode}
+	}
+	return nil
+}
+
+const cacheControl = "public, max-age=31536000, immutable"
 
 func awsEscape(segment string) string {
 	var out strings.Builder
@@ -46,32 +104,32 @@ func escapeObjectPath(key string) string {
 	return strings.Join(segments, "/")
 }
 
-func (c *R2Config) objectKey(name string) string {
+func (c *Config) Key(name string) string {
 	if c.Prefix == "" {
 		return name
 	}
 	return c.Prefix + "/" + name
 }
 
-func (c *R2Config) objectRequest(key string, body []byte, contentType string) (*http.Request, error) {
+func (c *Config) request(key string, body []byte, contentType string) (*http.Request, error) {
 	target := strings.TrimRight(c.Endpoint.String(), "/") + "/" + awsEscape(c.Bucket) + "/" + escapeObjectPath(key)
 	request, err := http.NewRequest(http.MethodPut, target, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
 	request.Header.Set("Content-Type", contentType)
-	request.Header.Set("Cache-Control", r2CacheControl)
+	request.Header.Set("Cache-Control", cacheControl)
 	sum := sha256.Sum256(body)
 	signV4(request, hex.EncodeToString(sum[:]), c.AccessKeyID, c.SecretAccessKey, "auto", "s3", time.Now().UTC())
 	return request, nil
 }
 
-func (c *R2Config) publicURL(key string) string {
+func (c *Config) PublicURL(key string) string {
 	base := strings.TrimRight(c.CDNBase.String(), "/")
 	return base + "/" + escapeObjectPath(key)
 }
 
-func newObjectID() (string, error) {
+func NewObjectID() (string, error) {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		return "", err
