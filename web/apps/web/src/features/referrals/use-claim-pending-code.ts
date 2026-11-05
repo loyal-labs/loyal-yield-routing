@@ -7,6 +7,7 @@ import { useAuthSession } from "@/contexts/auth-session-context";
 
 import { claimCode } from "./claim";
 import { failureCopy, referralCopy } from "./copy";
+import { referralsEnabled } from "./enabled";
 import { clearPendingCode, readPendingCode } from "./pending-code";
 
 export function useClaimPendingCode(): void {
@@ -15,7 +16,9 @@ export function useClaimPendingCode(): void {
   const claimedFor = useRef<string | null>(null);
 
   useEffect(() => {
-    if (!subject || claimedFor.current === subject) return;
+    if (!subject || !referralsEnabled() || claimedFor.current === subject) {
+      return;
+    }
     claimedFor.current = subject;
     const pending = readPendingCode();
     if (!pending) return;
