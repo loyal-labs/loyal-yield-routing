@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"mime"
-	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -15,6 +14,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/r2"
 )
 
 const (
@@ -204,27 +205,22 @@ func libraryUpload(ctx context.Context, d *Deps, call Call) (*LibraryUploadResul
 	if err != nil {
 		return nil, err
 	}
-	id, err := newObjectID()
+	id, err := r2.NewObjectID()
 	if err != nil {
 		return nil, err
 	}
-	key := d.R2.objectKey("library/" + id + "." + extension)
+	key := d.R2.Key("library/" + id + "." + extension)
 
 	ctx, cancel := context.WithTimeout(ctx, libraryUploadTimeout)
 	defer cancel()
-	request, err := d.R2.objectRequest(key, body, contentType)
-	if err != nil {
-		return nil, err
-	}
-	response, err := http.DefaultClient.Do(request.WithContext(ctx))
-	if err != nil {
+	if err := d.R2.Put(ctx, key, body, contentType); err != nil {
+		var status *r2.StatusError
+		if errors.As(err, &status) {
+			return &LibraryUploadResult{Error: fmt.Sprintf("Upload failed (%d)", status.Code)}, nil
+		}
 		return &LibraryUploadResult{Error: "Upload request failed"}, nil
 	}
-	defer response.Body.Close()
-	if response.StatusCode < 200 || response.StatusCode > 299 {
-		return &LibraryUploadResult{Error: fmt.Sprintf("Upload failed (%d)", response.StatusCode)}, nil
-	}
-	return &LibraryUploadResult{URL: d.R2.publicURL(key)}, nil
+	return &LibraryUploadResult{URL: d.R2.PublicURL(key)}, nil
 }
 
 func uuidArg(call Call, i int) (pgtype.UUID, error) {
