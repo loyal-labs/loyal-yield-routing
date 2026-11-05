@@ -38,6 +38,7 @@ type Facts struct {
 	bridgeRecorded      *prometheus.CounterVec
 	bridgeBatchFailed   *prometheus.CounterVec
 	bridgeDetected      *prometheus.GaugeVec
+	bridgeUnmoved       *prometheus.GaugeVec
 }
 
 func NewFacts(registerer prometheus.Registerer) *Facts {
@@ -130,10 +131,13 @@ func NewFacts(registerer prometheus.Registerer) *Facts {
 		bridgeDetected: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "loyal_bridge_detection_last_success_timestamp_seconds", Help: "Last detection pass that read every batch and inserted every recordable request, by origin chain.",
 		}, []string{"chain"}),
+		bridgeUnmoved: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "loyal_bridge_incoming_unmoved", Help: "Token balances on relay_signed EVM wallets that the last scan found nonzero for 30 minutes with no bridge transfer for their wallet.",
+		}, nil),
 	}
 	registerer.MustRegister(f.withdrawalAttention, f.withdrawalObserved, f.navReported, f.landed, f.failed, f.inflight, f.progress, f.lane, f.payer, f.oldestDue, f.fleetReplans, f.fleetSimulations, f.fleetMovable,
 		f.leverageRoom, f.leverageGap, f.leverageLanded, f.leverageReaction, f.leverageOutages, f.termDebtDays, f.stepNoRoom, f.hold, f.privyGasSpend, f.privyGasRead,
-		f.bridgePolled, f.bridgeAdvanced, f.bridgeSeen, f.bridgeRecorded, f.bridgeBatchFailed, f.bridgeDetected)
+		f.bridgePolled, f.bridgeAdvanced, f.bridgeSeen, f.bridgeRecorded, f.bridgeBatchFailed, f.bridgeDetected, f.bridgeUnmoved)
 	return f
 }
 
@@ -270,6 +274,10 @@ func (f *Facts) BridgeDetectionBatchesFailed(chain string, n int) {
 
 func (f *Facts) BridgeDetectionPassed(chain string) {
 	f.bridgeDetected.WithLabelValues(chain).Set(float64(time.Now().Unix()))
+}
+
+func (f *Facts) BridgeIncomingUnmoved(n int) {
+	f.bridgeUnmoved.WithLabelValues().Set(float64(n))
 }
 
 func (f *Facts) AutodepositOldestDueAge(seconds float64) { f.oldestDue.Set(seconds) }

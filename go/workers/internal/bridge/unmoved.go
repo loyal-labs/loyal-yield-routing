@@ -1,0 +1,214 @@
+package bridge
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"math/big"
+	"net/url"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
+	"golang.org/x/sync/errgroup"
+)
+
+const (
+	unmovedInterval = 10 * time.Minute
+	unmovedDeadline = 3 * time.Minute
+	unmovedAfter    = 30 * time.Minute
+
+	relaySignedAddresses = `SELECT evm_address, array_agg(solana_wallet) FROM loyal_yield.evm_deposit_routes
+WHERE kind = 'relay_signed' GROUP BY evm_address ORDER BY evm_address`
+
+	recentTransferWallets = `SELECT DISTINCT solana_wallet FROM loyal_yield.bridge_transfers
+WHERE greatest(quoted_at, updated_at) > now() - interval '30 minutes'`
+)
+
+// PrivyGet is one GET against Privy's API; path starts at /v1.
+type PrivyGet func(ctx context.Context, path string, query url.Values, out any) error
+
+type unmovedKey struct {
+	address string
+	chain   Chain
+	asset   Asset
+}
+
+type unmovedRoute struct {
+	address string
+	wallets []string
+}
+
+type unmovedRead struct {
+	walletID string
+	balances []Balance
+	err      error
+}
+
+// unmovedWatch holds what a balance cannot say: when the loop first saw it,
+// and the Privy wallet id an address resolved to. A restart forgets both.
+type unmovedWatch struct {
+	walletIDs map[string]string
+	firstSeen map[unmovedKey]time.Time
+}
+
+func (t *Tracker) unmovedEvery(ctx context.Context) {
+	watch := &unmovedWatch{walletIDs: map[string]string{}, firstSeen: map[unmovedKey]time.Time{}}
+	ticker := time.NewTicker(unmovedInterval)
+	defer ticker.Stop()
+	for {
+		pass, cancel := context.WithTimeout(ctx, unmovedDeadline)
+		err := t.unmoved(pass, watch, time.Now(), unmovedAfter)
+		cancel()
+		if err != nil && ctx.Err() == nil {
+			slog.Error("bridge incoming scan failed", "error", engine.ErrorText(err))
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+// unmoved reports every token that has sat on a relay_signed wallet for after
+// with no bridge transfer for any Solana wallet sharing it in that time. The
+// balance is the state: a moved balance drops out of the next pass by itself.
+func (t *Tracker) unmoved(ctx context.Context, w *unmovedWatch, now time.Time, after time.Duration) error {
+	rows, err := t.DB.Query(ctx, relaySignedAddresses)
+	if err != nil {
+		return err
+	}
+	routes, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (unmovedRoute, error) {
+		var r unmovedRoute
+		err := row.Scan(&r.address, &r.wallets)
+		return r, err
+	})
+	if err != nil {
+		return err
+	}
+	if len(routes) == 0 {
+		t.Facts.BridgeIncomingUnmoved(0)
+		return nil
+	}
+	rows, err = t.DB.Query(ctx, recentTransferWallets)
+	if err != nil {
+		return err
+	}
+	recent, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return err
+	}
+
+	reads := make([]unmovedRead, len(routes))
+	var group errgroup.Group
+	group.SetLimit(trackParallel)
+	for i, r := range routes {
+		group.Go(func() error {
+			reads[i].walletID, reads[i].balances, reads[i].err = t.privyBalances(ctx, w.walletIDs[r.address], r.address)
+			return nil
+		})
+	}
+	_ = group.Wait()
+
+	alerts, failed := 0, 0
+	var firstErr error
+	for i, r := range routes {
+		read := reads[i]
+		if read.walletID != "" {
+			w.walletIDs[r.address] = read.walletID
+		}
+		if read.err != nil {
+			failed++
+			if firstErr == nil {
+				firstErr = read.err
+			}
+			continue
+		}
+		inFlight := slices.ContainsFunc(r.wallets, func(wallet string) bool { return slices.Contains(recent, wallet) })
+		for _, b := range read.balances {
+			key := unmovedKey{r.address, b.Chain, b.Asset}
+			if b.AmountRaw.Sign() == 0 {
+				delete(w.firstSeen, key)
+				continue
+			}
+			first, seen := w.firstSeen[key]
+			if !seen {
+				first = now
+				w.firstSeen[key] = now
+			}
+			if inFlight || now.Sub(first) < after {
+				continue
+			}
+			alerts++
+			slog.Warn("bridge incoming unmoved", "address", maskAddress(r.address), "chain", b.Chain, "asset", b.Asset,
+				"amount", decimalAmount(b), "under_min", underMin(b))
+		}
+	}
+	if failed > 0 {
+		slog.Warn("bridge incoming scan incomplete", "failed_addresses", failed, "addresses", len(routes), "error", engine.ErrorText(firstErr))
+	}
+	t.Facts.BridgeIncomingUnmoved(alerts)
+	return nil
+}
+
+// privyBalances returns the wallet id it used even when the balance read
+// failed, so the next pass does not look the address up again.
+func (t *Tracker) privyBalances(ctx context.Context, walletID, address string) (string, []Balance, error) {
+	if walletID == "" {
+		var page struct {
+			Data []struct {
+				ID        string `json:"id"`
+				Address   string `json:"address"`
+				ChainType string `json:"chain_type"`
+			} `json:"data"`
+		}
+		query := url.Values{"address": {address}, "chain_type": {"ethereum"}}
+		if err := t.Privy(ctx, "/v1/wallets", query, &page); err != nil {
+			return "", nil, err
+		}
+		for _, wallet := range page.Data {
+			if wallet.ChainType == "ethereum" && wallet.ID != "" && strings.EqualFold(wallet.Address, address) {
+				walletID = wallet.ID
+				break
+			}
+		}
+		if walletID == "" {
+			return "", nil, fmt.Errorf("privy has no ethereum wallet %s", maskAddress(address))
+		}
+	}
+	queries := PrivyBalanceQueries()
+	pages := make([][]byte, len(queries))
+	for i, query := range queries {
+		var raw json.RawMessage
+		if err := t.Privy(ctx, "/v1/wallets/"+url.PathEscape(walletID)+"/balance", query, &raw); err != nil {
+			return walletID, nil, err
+		}
+		pages[i] = raw
+	}
+	balances, err := ParsePrivyBalances(pages)
+	return walletID, balances, err
+}
+
+func maskAddress(address string) string {
+	if len(address) <= 10 {
+		return address
+	}
+	return address[:6] + "…" + address[len(address)-4:]
+}
+
+func decimalAmount(b Balance) string {
+	amount := new(big.Rat).SetFrac(b.AmountRaw, tenPow(int64(b.Decimals))).FloatString(int(b.Decimals))
+	if !strings.Contains(amount, ".") {
+		return amount
+	}
+	return strings.TrimSuffix(strings.TrimRight(amount, "0"), ".")
+}
+
+func underMin(b Balance) bool {
+	n, ok := Lookup(b.Chain)
+	return ok && n.MinUSD > 0 && b.AmountRaw.Cmp(new(big.Int).Mul(big.NewInt(int64(n.MinUSD)), tenPow(int64(b.Decimals)))) < 0
+}
