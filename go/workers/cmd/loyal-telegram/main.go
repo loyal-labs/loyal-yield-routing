@@ -31,6 +31,7 @@ func envOr(name, fallback string) string {
 func run(ctx context.Context) error {
 	address := envOr("LOYAL_TELEGRAM_ADDRESS", "127.0.0.1:10083")
 	apiBase := envOr("LOYAL_TELEGRAM_BOT_API", "https://api.telegram.org")
+	jupiterSearch := os.Getenv("LOYAL_TELEGRAM_JUPITER_SEARCH")
 	dsn, err := engine.Credential("TELEGRAM_APP_DATABASE_URL")
 	if err != nil {
 		return err
@@ -59,7 +60,7 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("getMe: %w", err)
 	}
-	bot := telegram.New(telegram.Config{DB: pool, API: api, BotUsername: me.Username, WebhookSecret: secret})
+	bot := telegram.New(telegram.Config{DB: pool, API: api, BotUsername: me.Username, WebhookSecret: secret, JupiterSearch: jupiterSearch})
 
 	server := &http.Server{
 		Addr:              address,
