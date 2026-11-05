@@ -24,6 +24,8 @@ var earnOverviewFamily = earnFamily{
 	register: earnRoutes.registerOverview,
 }
 
+var overviewRefreshBudget = budget{every: 3 * time.Second, burst: 3}
+
 const (
 	overviewCooldown    = 15 * time.Second
 	overviewResultTTL   = 2 * time.Second
@@ -89,7 +91,7 @@ func (o *overviewRoutes) register(api huma.API) {
 	})
 	registerWebReads(api, "smart-account-overview-policies", "/api/smart-accounts/overview/policies", func(ctx context.Context, in *overviewPoliciesInput) (*overviewOutput, error) {
 		return o.serve(ctx, in.SessionInput, "smart-account-overview-policies", func(ctx context.Context, settings solana.PublicKey) (any, error) {
-			return overviewLoad(ctx, o.cache, settings.String()+":policies", in.ForceRefresh == "1", overviewResultTTL, func(ctx context.Context) (overviewPolicies, error) { return o.policies(ctx, settings) })
+			return overviewLoad(ctx, o.cache, settings.String()+":policies", in.ForceRefresh == "1" && o.refreshAllowed(settings), overviewResultTTL, func(ctx context.Context) (overviewPolicies, error) { return o.policies(ctx, settings) })
 		}), nil
 	})
 	registerWebReads(api, "smart-account-overview-best-apy-reserves", "/api/smart-accounts/overview/best-apy-reserves", func(ctx context.Context, in *overviewReservesInput) (*overviewOutput, error) {
@@ -108,6 +110,7 @@ func (o *overviewRoutes) register(api huma.API) {
 			if err != nil {
 				return nil, err
 			}
+			bypass = bypass && o.refreshAllowed(settings)
 			highest, given := overviewParseInt(in.AccountUtilization)
 			return overviewLoad(ctx, o.cache, settings.String()+":vaults", bypass, overviewResultTTL, func(ctx context.Context) ([]overviewVault, error) { return o.vaults(ctx, settings, highest, given) })
 		}), nil
@@ -115,6 +118,10 @@ func (o *overviewRoutes) register(api huma.API) {
 	registerWebReads(api, "smart-account-vault-activity", "/api/smart-accounts/vault-activity", func(ctx context.Context, in *overviewActivityInput) (*overviewOutput, error) {
 		return o.serveActivity(ctx, in), nil
 	})
+}
+
+func (o *overviewRoutes) refreshAllowed(settings solana.PublicKey) bool {
+	return o.bridgeQuotes.get(limiterKey{"overview-refresh", "settings", settings.String()}, overviewRefreshBudget, time.Now()).Allow()
 }
 
 func (o *overviewRoutes) principal(ctx context.Context, in SessionInput, timing string) (solana.PublicKey, *overviewOutput) {

@@ -175,7 +175,7 @@ func (o *overviewRoutes) serveActivity(ctx context.Context, in *overviewActivity
 		return overviewFailed()
 	}
 	key := fmt.Sprintf("%s:vault-activity:%d", settings, index)
-	page, err := overviewLoad(ctx, o.cache, key, in.ForceRefresh == "1", overviewActivityTTL, func(ctx context.Context) (overviewActivityPage, error) {
+	page, err := overviewLoad(ctx, o.cache, key, in.ForceRefresh == "1" && o.refreshAllowed(settings), overviewActivityTTL, func(ctx context.Context) (overviewActivityPage, error) {
 		return o.vaultActivity(ctx, vault, overviewActivityLimit)
 	})
 	var limited *overviewRateLimited
@@ -433,6 +433,9 @@ func overviewNormalize(execution chain.Execution, signature string, wallet solan
 	}
 	var net int64
 	if walletIndex >= 0 {
+		if walletIndex >= len(execution.PreLamports) || walletIndex >= len(execution.PostLamports) {
+			return nil
+		}
 		net = int64(execution.PostLamports[walletIndex]) - int64(execution.PreLamports[walletIndex])
 	}
 	if !isSigner && change == nil && abs64(net) < overviewDustLamports {

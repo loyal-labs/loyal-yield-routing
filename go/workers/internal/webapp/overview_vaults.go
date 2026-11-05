@@ -20,6 +20,7 @@ import (
 	"github.com/solana-foundation/solana-go/v2"
 	"github.com/solana-foundation/solana-go/v2/rpc"
 	"golang.org/x/sync/errgroup"
+	"golang.org/x/sync/singleflight"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
@@ -33,6 +34,7 @@ const (
 	overviewDevnetUSDCMint = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
 	overviewUSDCIcon       = "https://coin-images.coingecko.com/coins/images/6319/large/usdc.png"
 	overviewAssetBodyLimit = 1 << 20
+	overviewAssetReads     = 4
 )
 
 type overviewVaultsInput struct {
@@ -96,18 +98,18 @@ type overviewTokenMeta struct {
 }
 
 type overviewAssets struct {
-	gecko   *tokenDetails
+	tokens  *webTokens
 	http    *http.Client
 	rpcURL  string
 	jupiter string
 	mainnet bool
+	flights singleflight.Group
+	metas   ttlCache[overviewTokenMeta]
+	slots   chan struct{}
 }
 
 func newOverviewAssets(h earnRoutes) *overviewAssets {
-	assets := &overviewAssets{http: h.HTTP, jupiter: jupiterSearchURL, mainnet: h.Cluster == Mainnet}
-	if key, _ := engine.OptionalCredential("COINGECKO_API_KEY"); key != "" {
-		assets.gecko = newTokenDetails(key)
-	}
+	assets := &overviewAssets{tokens: h.tokens, http: h.HTTP, jupiter: jupiterSearchURL, mainnet: h.Cluster == Mainnet, slots: make(chan struct{}, overviewAssetReads)}
 	assets.rpcURL, _ = engine.OptionalCredential("WEB_SOLANA_RPC_URL")
 	return assets
 }
@@ -186,7 +188,10 @@ func (o *overviewRoutes) vaults(ctx context.Context, settingsPda solana.PublicKe
 	if err != nil {
 		return nil, err
 	}
-	metas := o.assets.resolve(ctx, decimals)
+	metas, err := o.assets.resolve(ctx, decimals)
+	if err != nil {
+		return nil, err
+	}
 	fetchedAt := time.Now().UnixMilli()
 	out := make([]overviewVault, len(addresses))
 	for i, vault := range addresses {
@@ -259,27 +264,44 @@ func (o *overviewRoutes) mintDecimals(ctx context.Context, holdings [][]overview
 	return decimals, nil
 }
 
-func (a *overviewAssets) resolve(ctx context.Context, decimals map[string]float64) map[string]overviewTokenMeta {
+func (a *overviewAssets) resolve(ctx context.Context, decimals map[string]float64) (map[string]overviewTokenMeta, error) {
 	metas := make(map[string]overviewTokenMeta, len(decimals))
 	var mu sync.Mutex
-	var wg sync.WaitGroup
+	var reads errgroup.Group
 	for mint, places := range decimals {
-		wg.Go(func() {
-			meta := a.meta(ctx, mint, places)
+		reads.Go(func() error {
+			meta, err := a.cachedMeta(ctx, mint, places)
 			mu.Lock()
 			metas[mint] = meta
 			mu.Unlock()
+			return err
 		})
 	}
-	wg.Wait()
-	return metas
+	return metas, reads.Wait()
+}
+
+func (a *overviewAssets) cachedMeta(ctx context.Context, mint string, decimals float64) (overviewTokenMeta, error) {
+	if meta, ok := a.metas.get(mint, time.Now()); ok {
+		return meta, nil
+	}
+	return sharedFlight(ctx, &a.flights, "meta:"+mint, func(ctx context.Context) (overviewTokenMeta, error) {
+		select {
+		case a.slots <- struct{}{}:
+			defer func() { <-a.slots }()
+		case <-ctx.Done():
+			return overviewTokenMeta{}, ctx.Err()
+		}
+		meta := a.meta(ctx, mint, decimals)
+		a.metas.put(mint, meta, time.Now(), tokenDetailCacheTTL)
+		return meta, nil
+	})
 }
 
 func (a *overviewAssets) meta(ctx context.Context, mint string, decimals float64) overviewTokenMeta {
 	if mint == overviewSOLMint {
 		var price *float64
 		if market := a.market(ctx, mint); market != nil {
-			price = overviewPositive(market.priceUSD)
+			price = overviewPositive(market.Market.PriceUSD)
 		}
 		return overviewTokenMeta{asset: overviewAsset{Mint: mint, Symbol: "SOL", Name: "Solana", Decimals: overviewSOLDecimals, IsNative: true}, price: price}
 	}
@@ -291,10 +313,10 @@ func (a *overviewAssets) meta(ctx context.Context, mint string, decimals float64
 	var symbol, name, image *string
 	var price *float64
 	if market != nil {
-		symbol, name, image = overviewTrimmed(market.symbol), overviewTrimmed(market.name), market.imageURL
-		price = overviewPositive(market.priceUSD)
-		if market.decimals != nil {
-			decimals = *market.decimals
+		symbol, name, image = overviewTrimmed(market.Token.Symbol), overviewTrimmed(market.Token.Name), market.Token.LogoURL
+		price = overviewPositive(market.Market.PriceUSD)
+		if market.Token.Decimals != nil {
+			decimals = *market.Token.Decimals
 		}
 	}
 	if price == nil && a.mainnet {
@@ -319,11 +341,15 @@ func (a *overviewAssets) meta(ctx context.Context, mint string, decimals float64
 	return overviewTokenMeta{asset: asset, price: price}
 }
 
-func (a *overviewAssets) market(ctx context.Context, mint string) *geckoToken {
-	if a.gecko == nil {
+func (a *overviewAssets) market(ctx context.Context, mint string) *webTokenMarket {
+	if a.tokens == nil {
 		return nil
 	}
-	return a.gecko.token(ctx, mint)
+	market, err := a.tokens.market(ctx, mint)
+	if err != nil {
+		return nil
+	}
+	return market
 }
 
 func overviewTrimmed(value *string) *string {

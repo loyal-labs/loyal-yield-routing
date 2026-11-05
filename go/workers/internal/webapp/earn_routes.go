@@ -55,6 +55,7 @@ type earnRoutes struct {
 	auth         *Auth
 	appDB        *pgxpool.Pool
 	bridgeQuotes *limiters
+	tokens       *webTokens
 	Earn
 }
 
