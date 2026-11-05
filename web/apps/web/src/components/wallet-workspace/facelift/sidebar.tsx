@@ -28,8 +28,7 @@ import { useEarnForecastApy } from "@/hooks/use-earn-forecast-apy";
 import { useSignInModal } from "@/contexts/sign-in-modal-context";
 import { useCherryRuntime } from "@/features/cherry/client/runtime-context";
 import { useAuthCapability } from "@/lib/auth/capability";
-import { bridgeEnabled } from "@/features/bridge/enabled";
-import { referralsEnabled } from "@/features/referrals/enabled";
+import { useAuthSession } from "@/contexts/auth-session-context";
 import { captureBrowserLoadingMetricAfterPaint } from "@/features/observability/client";
 import {
   splitUsdBalance,
@@ -162,6 +161,7 @@ export function FaceliftSidebar({
   const data = useWalletDesktopData({});
   const { apy: earnApy, isLoaded: isApyLoaded } = useEarnForecastApy();
   const { isHydrated, isSignedIn } = useAuthCapability();
+  const { launched } = useAuthSession();
   const cherryRuntime = useCherryRuntime();
   const { publicKey, wallet } = useWallet();
   const walletIcon =
@@ -368,8 +368,8 @@ export function FaceliftSidebar({
             <button
               className="t-hover flex min-w-0 flex-1 flex-col items-center gap-1 rounded-2xl py-2 enabled:hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40"
               key={action}
-              disabled={action === "bridge" && !(process.env.NODE_ENV === "development" || bridgeEnabled())}
-              title={action === "bridge" && !(process.env.NODE_ENV === "development" || bridgeEnabled()) ? "Coming soon" : undefined}
+              disabled={action === "bridge" && !launched}
+              title={action === "bridge" && !launched ? "Coming soon" : undefined}
               onClick={() => onAssetAction(action)}
               type="button"
             >
@@ -595,7 +595,7 @@ export function FaceliftSidebar({
       </nav>
       )}
 
-        {isSignedOutNav || !referralsEnabled() ? null : (
+        {isSignedOutNav || !launched ? null : (
           <button
             className={`t-hover flex min-h-[60px] w-full items-center rounded-2xl px-4 text-left ${
               activePage === "invite" ? "bg-accent" : "hover:bg-accent"

@@ -67,7 +67,7 @@ import {
 import { usePublicEnv } from "@/contexts/public-env-context";
 import { useSignInModal } from "@/contexts/sign-in-modal-context";
 import { useEarnMax } from "@/features/earn-max";
-import { referralsEnabled } from "@/features/referrals/enabled";
+import { useAuthSession } from "@/contexts/auth-session-context";
 import { useAuthCapability } from "@/lib/auth/capability";
 import type { EarnTransactionItem } from "@/lib/yield-optimization/earn-transactions.client";
 
@@ -111,7 +111,6 @@ function readStoredPage(): WorkspacePage | null {
     return null;
   }
   const stored = localStorage.getItem(PAGE_STORAGE_KEY);
-  if (stored === "invite" && !referralsEnabled()) return null;
   if (stored === "crypto" || stored === "stables") return "assets";
   return WORKSPACE_PAGES.find((page) => page === stored) ?? null;
 }
@@ -144,11 +143,15 @@ export function WorkspaceFaceliftShell() {
   const [chartTab, setChartTab] = useState<ChartTab | null>(null);
   const [activePage, setActivePage] = useState<WorkspacePage>("earn");
   const { isHydrated, isSignedIn } = useAuthCapability();
+  const { launched } = useAuthSession();
   const { open: openSignIn } = useSignInModal();
   const [storedPage] = useState(readStoredPage);
   const hasRestoredPageRef = useRef(false);
   useEffect(() => {
     if (!isHydrated || hasRestoredPageRef.current) {
+      return;
+    }
+    if (storedPage === "invite" && isSignedIn && !launched) {
       return;
     }
     hasRestoredPageRef.current = true;
@@ -159,7 +162,7 @@ export function WorkspaceFaceliftShell() {
       return;
     }
     setActivePage(storedPage);
-  }, [isHydrated, isSignedIn, storedPage]);
+  }, [isHydrated, isSignedIn, launched, storedPage]);
   useEffect(() => {
     localStorage.setItem(PAGE_STORAGE_KEY, activePage);
   }, [activePage]);

@@ -285,7 +285,7 @@ export function useBridgeOut({
   quotedKeyRef.current = current ? key : null;
   const onForm = step.kind === "form";
   const owner = publicKey?.toBase58() ?? "";
-  const lockName = `loyal.bridge.out:${owner}`;
+  const lockName = `loyal-bridge-out:${owner}`;
   const quotable =
     onForm &&
     Boolean(asset) &&

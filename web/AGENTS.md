@@ -781,7 +781,7 @@ on mobile, sharing the Settings animation. Empty wallets show the Receive CTA;
 zero-priced assets with a positive token balance must remain visible.
 
 Receive's Solana tab uses the authenticated wallet address and working copy/QR.
-The sidebar Bridge button is enabled in development and disabled in production until launch. Receive → Other chains, behind the `loyal.bridge` browser opt-in, is the sole entry
+The sidebar Bridge button and Receive → Other chains show when `/api/funding/launch` answers `launched: true` for the signed-in wallet (the server's `LOYAL_TEST_WALLETS` gate, read once into the auth session context as `launched`). Receive → Other chains is the sole entry
 to Bridge In: select a deposit asset, then its source chain; the asset to receive is fixed
 USDC on Solana. Its assets, chains, addresses, minimums and fees come from the server.
 The sidebar Bridge action opens the Bridge Out main pane,

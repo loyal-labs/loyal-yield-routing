@@ -18,7 +18,6 @@ import { usePublicEnv } from "@/contexts/public-env-context";
 import { createAuthApiClient, type AuthApiClient } from "@/lib/auth/client";
 import type { WalletSessionResponse } from "@/features/identity/wallet-session-contracts";
 import { shouldRecheckAuthSession } from "@/contexts/auth-session-refresh";
-import { syncTestWalletFlags } from "@/features/test-wallets";
 import { resetAuthenticatedUser, trackAuthLogout } from "@/lib/core/analytics";
 
 type AuthSessionContextValue = {
@@ -26,6 +25,7 @@ type AuthSessionContextValue = {
   isHydrated: boolean;
   user: AuthSessionUser | null;
   session: WalletSessionResponse["session"] | null;
+  launched: boolean;
   refreshSession: () => Promise<WalletSessionResponse | null>;
   logout: () => Promise<void>;
 };
@@ -43,7 +43,23 @@ export function AuthSessionProvider({ children }: { children: ReactNode }) {
 
   const user = sessionState?.user ?? null;
   const session = sessionState?.session ?? null;
-  syncTestWalletFlags(user?.subjectAddress);
+  const subject = user?.subjectAddress ?? null;
+  const [launch, setLaunch] = useState<{
+    subject: string;
+    launched: boolean;
+  } | null>(null);
+  const launched = launch !== null && launch.subject === subject && launch.launched;
+
+  useEffect(() => {
+    if (!subject) return;
+    let cancelled = false;
+    void authApiClient.getLaunched().then((answer) => {
+      if (!cancelled) setLaunch({ subject, launched: answer });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [authApiClient, subject]);
 
   const readSession = useCallback(
     async (variant: "initial" | "return" | "refresh") => {
@@ -183,10 +199,11 @@ export function AuthSessionProvider({ children }: { children: ReactNode }) {
       isHydrated,
       session,
       user,
+      launched,
       refreshSession,
       logout,
     }),
-    [isHydrated, logout, refreshSession, session, user]
+    [isHydrated, launched, logout, refreshSession, session, user]
   );
 
   return (

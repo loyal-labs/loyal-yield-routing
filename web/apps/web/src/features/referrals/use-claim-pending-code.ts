@@ -7,16 +7,15 @@ import { useAuthSession } from "@/contexts/auth-session-context";
 
 import { claimCode } from "./claim";
 import { failureCopy, referralCopy } from "./copy";
-import { referralsEnabled } from "./enabled";
 import { clearPendingCode, readPendingCode } from "./pending-code";
 
 export function useClaimPendingCode(): void {
-  const { isAuthenticated, user } = useAuthSession();
+  const { isAuthenticated, launched, user } = useAuthSession();
   const subject = isAuthenticated ? user?.subjectAddress : undefined;
   const claimedFor = useRef<string | null>(null);
 
   useEffect(() => {
-    if (!subject || !referralsEnabled() || claimedFor.current === subject) {
+    if (!subject || !launched || claimedFor.current === subject) {
       return;
     }
     claimedFor.current = subject;
@@ -30,5 +29,5 @@ export function useClaimPendingCode(): void {
         earnToast.error(failureCopy[outcome.failure]);
       }
     });
-  }, [subject]);
+  }, [launched, subject]);
 }

@@ -35,7 +35,6 @@ import { useAuthSession } from "@/contexts/auth-session-context";
 import { useSignInModal } from "@/contexts/sign-in-modal-context";
 import { useCherryRuntime } from "@/features/cherry/client/runtime-context";
 import { useAuthCapability } from "@/lib/auth/capability";
-import { referralsEnabled } from "@/features/referrals/enabled";
 import { usePublicEnv } from "@/contexts/public-env-context";
 import {
   splitUsdBalance,
@@ -232,7 +231,7 @@ export function WalletHomePage({
   const publicEnv = usePublicEnv();
   const { apy: earnApy, isLoaded: isApyLoaded } = useEarnForecastApy();
   const { isHydrated, isSignedIn } = useAuthCapability();
-  const { isAuthenticated } = useAuthSession();
+  const { isAuthenticated, launched } = useAuthSession();
   const cherryRuntime = useCherryRuntime();
   const { canDisconnect, disconnectAll: handleDisconnect } =
     useSessionDisconnect();
@@ -675,7 +674,7 @@ export function WalletHomePage({
                     />
                   ) : null}
                 </div>
-                {referralsEnabled() ? (
+                {launched ? (
                   <button
                     className="t-hover mb-2 flex min-h-11 w-full shrink-0 items-center rounded-2xl px-4 text-left hover:bg-accent"
                     onClick={() => onSelectPage("invite")}

@@ -1,3 +1,5 @@
+import type { Get } from "@loyal-labs/api";
+
 import { lifecycleFlowHeaders } from "@/features/observability/client";
 import {
   extractApiErrorMessage,
@@ -53,6 +55,7 @@ export type AuthApiClient = {
   refreshSession(options?: {
     flowId?: string;
   }): Promise<WalletSessionResponse | null>;
+  getLaunched(): Promise<boolean>;
   logout(): Promise<void>;
 };
 
@@ -224,6 +227,19 @@ export function createAuthApiClient(): AuthApiClient {
       }
 
       return parsed.data;
+    },
+
+    async getLaunched() {
+      try {
+        const response = await fetch("/api/funding/launch", {
+          credentials: "include",
+        });
+        if (!response.ok) return false;
+        const body = (await response.json()) as Get["/api/funding/launch"];
+        return body.launched;
+      } catch {
+        return false;
+      }
     },
 
     async refreshSession(options) {
