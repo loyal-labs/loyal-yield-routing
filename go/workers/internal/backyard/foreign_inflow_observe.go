@@ -50,9 +50,12 @@ func observeForeignInflows(ctx context.Context, db foreignInflowStore, c foreign
 		if address == v.strategyATA {
 			balance = s.VoltrStrategyIdleRaw
 		}
-		if balance < 0 || uint64(balance) != checkpoint.BalanceRaw {
+		if balance < 0 {
+			return fmt.Errorf("foreign-inflow observation has negative balance")
+		}
+		if uint64(balance) != checkpoint.BalanceRaw {
 			// Account reads and history may straddle a transaction in the same slot.
-			return fmt.Errorf("foreign-inflow history and observation have not converged")
+			return confirmedObservationUnavailable(fmt.Errorf("foreign-inflow history and observation have not converged"))
 		}
 		if address == v.idleATA {
 			s.AcknowledgedForeignIdleRaw = int64(checkpoint.ForeignRaw)
@@ -88,7 +91,12 @@ func replayForeignInflows(ctx context.Context, db foreignInflowStore, c foreignI
 		}
 	}
 	if checkpoint.Slot > through {
-		return checkpoint, fmt.Errorf("foreign-inflow checkpoint is newer than observation")
+		err := fmt.Errorf("foreign-inflow checkpoint is newer than observation")
+		if stopBefore == "" {
+			return checkpoint, confirmedObservationUnavailable(err)
+		}
+		// A sweep's finalized receipt is fixed; reobserving cannot move it ahead.
+		return checkpoint, err
 	}
 	var pending []chain.Signed
 	var before solana.Signature
@@ -139,6 +147,11 @@ func replayForeignInflows(ctx context.Context, db foreignInflowStore, c foreignI
 		} else {
 			x, err := c.Execution(ctx, row.Signature, commitment)
 			if err != nil {
+				// History proves this identity exists, but a lagging receipt backend
+				// may not serve it yet, including at finalized commitment.
+				if errors.Is(err, chain.ErrNotFound) {
+					return checkpoint, confirmedObservationUnavailable(err)
+				}
 				return checkpoint, err
 			}
 			if x.Slot != row.Slot {
@@ -157,7 +170,7 @@ func replayForeignInflows(ctx context.Context, db foreignInflowStore, c foreignI
 		checkpoint = e.After
 		processed++
 		if processed == 64 && i > 0 {
-			return checkpoint, fmt.Errorf("foreign-inflow history catch-up in progress")
+			return checkpoint, confirmedObservationUnavailable(fmt.Errorf("foreign-inflow history catch-up in progress"))
 		}
 	}
 	if stopBefore != "" {
