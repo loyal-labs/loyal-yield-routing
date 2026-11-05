@@ -49,6 +49,7 @@ const getMultipleAccountsLimit = 100
 
 type Client struct {
 	rpc      *rpc.Client
+	batch    jsonrpc.RPCClient
 	slotRate slotRate
 }
 
@@ -69,7 +70,8 @@ func New(endpoint string, timeout time.Duration) (*Client, error) {
 	if parsed, err := url.Parse(endpoint); err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
 		return nil, errors.New("chain client requires an http or https endpoint")
 	}
-	return &Client{rpc: rpc.NewWithCustomRPCClient(jsonrpc.NewClientWithOpts(endpoint, &jsonrpc.RPCClientOpts{HTTPClient: keyedURLClient(timeout)}))}, nil
+	transport := jsonrpc.NewClientWithOpts(endpoint, &jsonrpc.RPCClientOpts{HTTPClient: keyedURLClient(timeout)})
+	return &Client{rpc: rpc.NewWithCustomRPCClient(transport), batch: transport}, nil
 }
 
 func keyedURLClient(timeout time.Duration) *http.Client {
