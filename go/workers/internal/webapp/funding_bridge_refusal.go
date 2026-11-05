@@ -50,7 +50,7 @@ func (h earnRoutes) registerBridgeRefusal(api huma.API) {
 		Method:      http.MethodPost,
 		Path:        bridgeRefusalPath,
 		Summary:     "Report that Privy refused to sponsor the send of a quoted bridge",
-		Responses:   errorResponses[routeError](api, 400, 401, 404, 429, 503),
+		Responses:   errorResponses[routeError](api, 400, 401, 403, 404, 429, 503),
 	}, h.bridgeSponsorRefusal)
 	documentJSONBody[BridgeSponsorRefusalRequest](api, bridgeRefusalPath)
 }

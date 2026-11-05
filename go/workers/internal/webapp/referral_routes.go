@@ -116,14 +116,14 @@ func (h earnRoutes) registerReferrals(api huma.API) {
 		Method:      http.MethodGet,
 		Path:        referralsPath,
 		Summary:     "The signed-in user's referral code, link, claim window and invited friends",
-		Responses:   errorResponses[routeError](api, 401, 503),
+		Responses:   errorResponses[routeError](api, 401, 403, 503),
 	}, routes.referrals)
 	huma.Register(api, huma.Operation{
 		OperationID: "post-referrals-claim",
 		Method:      http.MethodPost,
 		Path:        referralClaimPath,
 		Summary:     "Bind the signed-in user to the inviter who owns a referral code",
-		Responses:   errorResponses[routeError](api, 400, 401, 429, 503),
+		Responses:   errorResponses[routeError](api, 400, 401, 403, 429, 503),
 	}, routes.claim)
 	documentJSONBody[ReferralClaimRequest](api, referralClaimPath)
 	huma.Register(api, huma.Operation{
@@ -142,6 +142,9 @@ func (h referralRoutes) user(ctx context.Context, in SessionInput) (referral.Use
 	}
 	if err != nil {
 		return referral.User{}, earnUnavailable("referrals session", err, referralsDownCode, referralsDownReason)
+	}
+	if err := admitTestWallet(session.Wallet); err != nil {
+		return referral.User{}, err
 	}
 	user, err := h.store.User(ctx, session.Wallet.String())
 	if errors.Is(err, referral.ErrNoUser) {

@@ -362,7 +362,7 @@ func (h earnRoutes) evmDepositWallet(in SessionInput) (solana.PublicKey, error) 
 	if err != nil {
 		return solana.PublicKey{}, evmDepositUnavailable("evm deposit session", err)
 	}
-	return session.Wallet, nil
+	return session.Wallet, admitTestWallet(session.Wallet)
 }
 
 func (h earnRoutes) evmDepositAddress(ctx context.Context, in *sessionRequest) (*evmDepositOutput, error) {
