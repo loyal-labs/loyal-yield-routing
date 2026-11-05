@@ -1805,6 +1805,64 @@ export type InviteStatus = {
     redeemed: boolean;
 };
 
+export type MobileEarnAutodeposit = {
+    active: boolean;
+    lifecycleStatus: string;
+    periodLengthSeconds: string | null;
+    policyAccount: string;
+    policySeed: string;
+    recurringDelegation: string | null;
+    recurringDelegationExpiryTimestamp: string | null;
+    recurringDelegationNonce: string | null;
+    scheduledSweeps: Array<EarnStateScheduledSweep> | null;
+    startTimestamp: string | null;
+    status: string;
+    vaultIndex: number;
+    walletBalanceFloorRaw: string | null;
+};
+
+export type MobileEarnAutodepositStateResponse = {
+    autodeposit: MobileEarnAutodeposit | null;
+    prepareContext: MobileEarnPrepareContext | null;
+    settingsPda: string | null;
+    smartAccountAddress: string | null;
+};
+
+export type MobileEarnMaxConfig = {
+    delegatedSigner: string;
+    programId: string;
+};
+
+export type MobileEarnMaxResponse = {
+    config?: MobileEarnMaxConfig;
+    operations?: Array<ActivityItem>;
+    performance?: Array<PerformancePoint>;
+    summary?: EarnMaxSummary;
+};
+
+export type MobileEarnPrepareContext = {
+    cluster: string;
+    policySigner: string;
+    programId: string;
+};
+
+export type MobileEarnRefundScanResponse = {
+    scan: EarnPolicyRefundScanResponse | null;
+};
+
+export type MobileEarnStatePosition = {
+    currentAmountRaw: string;
+    currentSupplyApyBps: string | null;
+    principalAmountRaw: string;
+    status: string;
+};
+
+export type MobileEarnStateResponse = {
+    position: MobileEarnStatePosition | null;
+    settingsPda: string | null;
+    smartAccountAddress: string | null;
+};
+
 export type MobileLibraryArticle = {
     contentMarkdown: string;
     coverImageUrl: string;
@@ -4101,6 +4159,73 @@ export type PostEarnSessionResponses = {
 
 export type PostEarnSessionResponse = PostEarnSessionResponses[keyof PostEarnSessionResponses];
 
+export type GetMobileEarnMaxData = {
+    body?: never;
+    path?: never;
+    query?: {
+        action?: string;
+        walletAddress?: string;
+    };
+    url: '/api/smart-accounts/mobile/earn-max';
+};
+
+export type GetMobileEarnMaxErrors = {
+    /**
+     * Bad Request
+     */
+    400: RouteError;
+    /**
+     * Conflict
+     */
+    409: RouteError;
+    /**
+     * Bad Gateway
+     */
+    502: RouteError;
+};
+
+export type GetMobileEarnMaxError = GetMobileEarnMaxErrors[keyof GetMobileEarnMaxErrors];
+
+export type GetMobileEarnMaxResponses = {
+    /**
+     * OK
+     */
+    200: MobileEarnMaxResponse;
+};
+
+export type GetMobileEarnMaxResponse = GetMobileEarnMaxResponses[keyof GetMobileEarnMaxResponses];
+
+export type GetMobileEarnAutodepositStateData = {
+    body?: never;
+    path?: never;
+    query?: {
+        walletAddress?: string;
+    };
+    url: '/api/smart-accounts/mobile/earn/autodeposit/state';
+};
+
+export type GetMobileEarnAutodepositStateErrors = {
+    /**
+     * Bad Request
+     */
+    400: RouteError;
+    /**
+     * Bad Gateway
+     */
+    502: RouteError;
+};
+
+export type GetMobileEarnAutodepositStateError = GetMobileEarnAutodepositStateErrors[keyof GetMobileEarnAutodepositStateErrors];
+
+export type GetMobileEarnAutodepositStateResponses = {
+    /**
+     * OK
+     */
+    200: MobileEarnAutodepositStateResponse;
+};
+
+export type GetMobileEarnAutodepositStateResponse = GetMobileEarnAutodepositStateResponses[keyof GetMobileEarnAutodepositStateResponses];
+
 export type GetMobileEarnEarningsData = {
     body?: never;
     path?: never;
@@ -4163,6 +4288,99 @@ export type GetMobileEarnHoldingsResponses = {
 };
 
 export type GetMobileEarnHoldingsResponse = GetMobileEarnHoldingsResponses[keyof GetMobileEarnHoldingsResponses];
+
+export type GetMobileEarnPolicyRefundsScanData = {
+    body?: never;
+    path?: never;
+    query?: {
+        walletAddress?: string;
+    };
+    url: '/api/smart-accounts/mobile/earn/policy-refunds/scan';
+};
+
+export type GetMobileEarnPolicyRefundsScanErrors = {
+    /**
+     * Bad Request
+     */
+    400: RouteError;
+    /**
+     * Internal Server Error
+     */
+    500: RouteError;
+};
+
+export type GetMobileEarnPolicyRefundsScanError = GetMobileEarnPolicyRefundsScanErrors[keyof GetMobileEarnPolicyRefundsScanErrors];
+
+export type GetMobileEarnPolicyRefundsScanResponses = {
+    /**
+     * OK
+     */
+    200: MobileEarnRefundScanResponse;
+};
+
+export type GetMobileEarnPolicyRefundsScanResponse = GetMobileEarnPolicyRefundsScanResponses[keyof GetMobileEarnPolicyRefundsScanResponses];
+
+export type GetMobileEarnStateData = {
+    body?: never;
+    path?: never;
+    query?: {
+        walletAddress?: string;
+    };
+    url: '/api/smart-accounts/mobile/earn/state';
+};
+
+export type GetMobileEarnStateErrors = {
+    /**
+     * Bad Request
+     */
+    400: RouteError;
+    /**
+     * Bad Gateway
+     */
+    502: RouteError;
+};
+
+export type GetMobileEarnStateError = GetMobileEarnStateErrors[keyof GetMobileEarnStateErrors];
+
+export type GetMobileEarnStateResponses = {
+    /**
+     * OK
+     */
+    200: MobileEarnStateResponse;
+};
+
+export type GetMobileEarnStateResponse = GetMobileEarnStateResponses[keyof GetMobileEarnStateResponses];
+
+export type GetMobileEarnTransactionsData = {
+    body?: never;
+    path?: never;
+    query?: {
+        walletAddress?: string;
+    };
+    url: '/api/smart-accounts/mobile/earn/transactions';
+};
+
+export type GetMobileEarnTransactionsErrors = {
+    /**
+     * Bad Request
+     */
+    400: RouteError;
+    /**
+     * Bad Gateway
+     */
+    502: RouteError;
+};
+
+export type GetMobileEarnTransactionsError = GetMobileEarnTransactionsErrors[keyof GetMobileEarnTransactionsErrors];
+
+export type GetMobileEarnTransactionsResponses = {
+    /**
+     * OK
+     */
+    200: EarnTransactionsResponse;
+};
+
+export type GetMobileEarnTransactionsResponse = GetMobileEarnTransactionsResponses[keyof GetMobileEarnTransactionsResponses];
 
 export type PostAutodepositCloseConfirmData = {
     body?: AutodepositCloseConfirmRequest;

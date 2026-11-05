@@ -51,7 +51,7 @@ func New(cfg Config) http.Handler {
 	r.Get("/readyz", ready(cfg.ready()))
 
 	r.Group(func(goAPI chi.Router) {
-		goAPI.Use(servedByGo, onPaths(limitMobileEarn, earnMaxAPYPath), onPaths(limitMobileEarn, deskReadPaths...))
+		goAPI.Use(servedByGo, onPaths(limitMobileEarn, earnMaxAPYPath), onPaths(limitMobileEarn, deskReadPaths...), onPaths(limitMobileEarn, legacyReadPaths...))
 		registerAPI(humachi.New(goAPI, apiConfig()), cfg)
 	})
 	proxied := forward(cfg.Upstream)
