@@ -1805,6 +1805,10 @@ export type InviteStatus = {
     redeemed: boolean;
 };
 
+export type LaunchResponse = {
+    launched: boolean;
+};
+
 export type MobileLibraryArticle = {
     contentMarkdown: string;
     coverImageUrl: string;
@@ -3149,6 +3153,36 @@ export type PostFundingEvmDepositAddressResponses = {
 };
 
 export type PostFundingEvmDepositAddressResponse = PostFundingEvmDepositAddressResponses[keyof PostFundingEvmDepositAddressResponses];
+
+export type GetFundingLaunchData = {
+    body?: never;
+    headers?: {
+        Authorization?: string;
+        Cookie?: string;
+        'X-Forwarded-Host'?: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/funding/launch';
+};
+
+export type GetFundingLaunchErrors = {
+    /**
+     * Service Unavailable
+     */
+    503: RouteError;
+};
+
+export type GetFundingLaunchError = GetFundingLaunchErrors[keyof GetFundingLaunchErrors];
+
+export type GetFundingLaunchResponses = {
+    /**
+     * OK
+     */
+    200: LaunchResponse;
+};
+
+export type GetFundingLaunchResponse = GetFundingLaunchResponses[keyof GetFundingLaunchResponses];
 
 export type PostFundingTronDepositAddressData = {
     body?: never;

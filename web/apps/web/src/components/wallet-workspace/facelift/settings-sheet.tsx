@@ -10,7 +10,6 @@ import { usePublicEnv } from "@/contexts/public-env-context";
 import { useSignInModal } from "@/contexts/sign-in-modal-context";
 import { useCherryRuntime } from "@/features/cherry/client/runtime-context";
 import { SettingsCodeField } from "@/features/referrals/code-field";
-import { referralsEnabled } from "@/features/referrals/enabled";
 import { useEscapeOverlay } from "./escape-owner";
 import { useSessionDisconnect } from "./use-session-disconnect";
 import { useTheme } from "@/hooks/use-theme";
@@ -123,7 +122,7 @@ export function SettingsSheet({
   updates: PolicyUpdates;
 }) {
   const { isDark, toggleTheme } = useTheme();
-  const { isAuthenticated, user } = useAuthSession();
+  const { isAuthenticated, launched, user } = useAuthSession();
   const { wallet, publicKey } = useWallet();
   const { open: openSignIn } = useSignInModal();
   const { privyAppId, solanaEnv } = usePublicEnv();
@@ -341,7 +340,7 @@ export function SettingsSheet({
                   ) : (
                     policyRow
                   )}
-                  {referralsEnabled() ? <SettingsCodeField /> : null}
+                  {launched ? <SettingsCodeField /> : null}
                 </>
               )}
               <SectionTitle>Preferences</SectionTitle>
