@@ -15,19 +15,23 @@ import (
 )
 
 const (
-	minMessagesForSummary  = 3
-	dailyTriggerType       = "daily"
-	maxSummaryInputChars   = 12_000
-	maxSummaryBullets      = 5
-	maxSummaryBulletChars  = 450
-	maxSummaryOGTextChars  = 110
-	summaryBulletFallback  = "No detailed points available today."
-	summaryBulletTag       = `<tg-emoji emoji-id="5255883309841422076">🔹</tg-emoji>`
-	summaryQualityControl  = int64(-5173720920)
-	summaryWindow          = 24 * time.Hour
-	summaryDailyHourUTC    = 6
-	summaryCommunityBudget = 5 * time.Minute
-	summaryStartParamMax   = 64
+	minMessagesForSummary    = 3
+	dailyTriggerType         = "daily"
+	maxSummaryInputChars     = 12_000
+	maxSummaryBullets        = 5
+	maxSummaryBulletChars    = 450
+	maxSummaryOGTextChars    = 110
+	summaryBulletFallback    = "No detailed points available today."
+	summaryBulletTag         = `<tg-emoji emoji-id="5255883309841422076">🔹</tg-emoji>`
+	summaryQualityControl    = int64(-5173720920)
+	summaryWindow            = 24 * time.Hour
+	summaryDailyHourUTC      = 6
+	summaryCommunityBudget   = 5 * time.Minute
+	summaryCommunityAttempts = 3
+	summaryRetryDelay        = 10 * time.Second
+	summaryRunAttempts       = 3
+	summaryRunRetryDelay     = time.Minute
+	summaryStartParamMax     = 64
 
 	voteLikeEmoji      = "5447485069386090205"
 	voteDislikeEmoji   = "5445146433923616423"
@@ -417,7 +421,11 @@ type SummaryReport struct {
 }
 
 func (b *Bot) RunSummaries(ctx context.Context, now time.Time) (SummaryReport, error) {
-	report := SummaryReport{Errors: []summaryFailure{}, Run: newSummaryRun(now)}
+	return b.runSummaries(ctx, newSummaryRun(now), true)
+}
+
+func (b *Bot) runSummaries(ctx context.Context, run summaryRun, deliverExisting bool) (SummaryReport, error) {
+	report := SummaryReport{Errors: []summaryFailure{}, Run: run}
 	rows, err := b.db.Query(ctx, `SELECT id::text, chat_id, chat_title, summary_notifications_enabled FROM communities WHERE is_active`)
 	if err != nil {
 		return report, err
@@ -449,7 +457,9 @@ func (b *Bot) RunSummaries(ctx context.Context, now time.Time) (SummaryReport, e
 	for _, c := range communities {
 		stats.Processed++
 		communityCtx, cancel := context.WithTimeout(ctx, summaryCommunityBudget)
-		g, err := b.generateOrGetSummary(communityCtx, c.id, c.title, report.Run)
+		g, err := retrySummaryStep(communityCtx, retryGeneration, func() (generation, error) {
+			return b.generateOrGetSummary(communityCtx, c.id, c.title, run)
+		})
 		if err != nil {
 			cancel()
 			fail(c, "generation", "", err)
@@ -464,6 +474,10 @@ func (b *Bot) RunSummaries(ctx context.Context, now time.Time) (SummaryReport, e
 			stats.Generated++
 		case generationExisting:
 			stats.ExistingToday++
+			if !deliverExisting {
+				cancel()
+				continue
+			}
 		}
 		if !c.enabled {
 			stats.SkippedByMasterSwitch++
@@ -471,7 +485,9 @@ func (b *Bot) RunSummaries(ctx context.Context, now time.Time) (SummaryReport, e
 			continue
 		}
 		stats.DeliveryAttempted++
-		d, err := b.sendSummaryByID(communityCtx, g.summaryID)
+		d, err := retrySummaryStep(communityCtx, retryRateLimitedSend, func() (delivery, error) {
+			return b.sendSummaryByID(communityCtx, g.summaryID)
+		})
 		switch {
 		case err != nil:
 			stats.DeliveryFailed++
@@ -493,12 +509,59 @@ func (b *Bot) RunSummaries(ctx context.Context, now time.Time) (SummaryReport, e
 	return report, nil
 }
 
+func retryGeneration(error) (time.Duration, bool) { return summaryRetryDelay, true }
+
+func retryRateLimitedSend(err error) (time.Duration, bool) {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && apiErr.Code == 429 {
+		return time.Duration(max(apiErr.RetryAfter, 1)) * time.Second, true
+	}
+	return 0, false
+}
+
+func retrySummaryStep[T any](ctx context.Context, retryable func(error) (time.Duration, bool), step func() (T, error)) (T, error) {
+	for attempt := 1; ; attempt++ {
+		value, err := step()
+		if err == nil || attempt == summaryCommunityAttempts || ctx.Err() != nil {
+			return value, err
+		}
+		wait, ok := retryable(err)
+		if !ok {
+			return value, err
+		}
+		slog.Warn("community summary step failed, retrying", "attempt", attempt, "error", err)
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return value, err
+		case <-timer.C:
+		}
+	}
+}
+
+func dailySummaryTime(now time.Time) time.Time {
+	now = now.UTC()
+	return time.Date(now.Year(), now.Month(), now.Day(), summaryDailyHourUTC, 0, 0, 0, time.UTC)
+}
+
 func (b *Bot) RunDailySummaries(ctx context.Context) {
+	failures := 0
 	for {
-		now := time.Now().UTC()
-		next := time.Date(now.Year(), now.Month(), now.Day(), summaryDailyHourUTC, 0, 0, 0, time.UTC)
-		if !next.After(now) {
+		now := time.Now()
+		next := dailySummaryTime(now)
+		if !now.Before(next) {
+			err := b.runDueSummaries(ctx, next)
 			next = next.AddDate(0, 0, 1)
+			switch {
+			case err == nil:
+				failures = 0
+			case failures+1 < summaryRunAttempts:
+				failures++
+				next = time.Now().Add(summaryRunRetryDelay)
+			default:
+				failures = 0
+			}
 		}
 		timer := time.NewTimer(time.Until(next))
 		select {
@@ -507,11 +570,15 @@ func (b *Bot) RunDailySummaries(ctx context.Context) {
 			return
 		case <-timer.C:
 		}
-		report, err := b.RunSummaries(ctx, time.Now())
-		if err != nil {
-			slog.Error("daily summaries failed", "error", err)
-			continue
-		}
-		slog.Info("daily summaries done", "ok", report.OK, "stats", report.Stats)
 	}
+}
+
+func (b *Bot) runDueSummaries(ctx context.Context, scheduled time.Time) error {
+	report, err := b.runSummaries(ctx, newSummaryRun(scheduled), false)
+	if err != nil {
+		slog.Error("daily summaries failed", "scheduled", scheduled, "error", err)
+		return err
+	}
+	slog.Info("daily summaries done", "scheduled", scheduled, "ok", report.OK, "stats", report.Stats)
+	return nil
 }

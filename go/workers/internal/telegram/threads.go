@@ -114,12 +114,13 @@ func (b *Bot) addMessage(ctx context.Context, threadID string, sender senderType
 	return id, nil
 }
 
-func (b *Bot) historyForAI(ctx context.Context, threadID string, limit int) ([]chatMessage, error) {
+func (b *Bot) historyForAI(ctx context.Context, threadID, lastUserMessageID string, limit int) ([]chatMessage, error) {
 	rows, err := b.db.Query(ctx, `
 		SELECT id::text, sender_type,
 		       coalesce(encrypted_content->>'ciphertext', ''), coalesce(encrypted_content->>'iv', '')
 		FROM bot_messages WHERE thread_id = $1::uuid
-		ORDER BY created_at DESC LIMIT $2`, threadID, limit)
+		  AND (sender_type <> 'user' OR created_at <= (SELECT created_at FROM bot_messages WHERE id = $3::uuid))
+		ORDER BY id = $3::uuid DESC, created_at DESC LIMIT $2`, threadID, limit, lastUserMessageID)
 	if err != nil {
 		return nil, fmt.Errorf("load thread history: %w", err)
 	}

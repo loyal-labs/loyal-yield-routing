@@ -60,27 +60,27 @@ type inlineHTMLInput struct {
 	ParseMode          string      `json:"parse_mode"`
 }
 
-func (b *Bot) answerInline(ctx context.Context, update *Update, results []inlineArticle) error {
-	if err := b.api.AnswerInlineQuery(ctx, update.InlineQuery.ID, results); err != nil {
+func (b *Bot) answerInline(ctx context.Context, update *Update, results []inlineArticle, personal bool) error {
+	if err := b.api.AnswerInlineQuery(ctx, update.InlineQuery.ID, results, personal); err != nil {
 		return b.sendFailed(update, "inline_query", err)
 	}
 	return nil
 }
 
 func (b *Bot) inline(ctx context.Context, update *Update) error {
-	return b.answerInline(ctx, update, []inlineArticle{})
+	return b.answerInline(ctx, update, []inlineArticle{}, false)
 }
 
 func (b *Bot) inlineSummary(ctx context.Context, update *Update) error {
 	m := summaryInlineQuery.FindStringSubmatch(update.InlineQuery.Query)
 	chatID, err := strconv.ParseInt(m[1], 10, 64)
 	if err != nil {
-		return b.answerInline(ctx, update, []inlineArticle{})
+		return b.answerInline(ctx, update, []inlineArticle{}, true)
 	}
 	var communityID, title string
-	err = b.db.QueryRow(ctx, `SELECT id::text, chat_title FROM communities WHERE chat_id = $1 AND is_active LIMIT 1`, chatID).Scan(&communityID, &title)
+	err = b.db.QueryRow(ctx, `SELECT id::text, chat_title FROM communities WHERE chat_id = $1 AND is_active AND is_public LIMIT 1`, chatID).Scan(&communityID, &title)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return b.answerInline(ctx, update, []inlineArticle{})
+		return b.answerInline(ctx, update, []inlineArticle{}, true)
 	}
 	if err != nil {
 		return err
@@ -108,7 +108,7 @@ func (b *Bot) inlineSummary(ctx context.Context, update *Update) error {
 			Type:                "article",
 		})
 	}
-	return b.answerInline(ctx, update, results)
+	return b.answerInline(ctx, update, results, true)
 }
 
 func (b *Bot) summaryVoteCallback(ctx context.Context, update *Update) error {

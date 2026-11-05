@@ -71,7 +71,7 @@ func New(cfg Config) *Bot {
 	if b.jupiterSearch == "" {
 		b.jupiterSearch = jupiterTokenSearch
 	}
-	b.direct = newChatQueue(directWorkers, directBacklog, directReplyDeadline, b.directUpdate)
+	b.direct = newChatQueue(directWorkers, directBacklog, directReplyDeadline, b.answerDirectMessage)
 	b.summaries = &summaryGenerator{llm: cfg.Redpill, model: cfg.Summaries.Model, maxAttempts: cfg.Summaries.MaxAttempts}
 	b.summaryPeer = cfg.Summaries.PeerOverride
 	b.routes = map[Route]Handler{
@@ -94,8 +94,8 @@ func New(cfg Config) *Bot {
 		RouteCallbackSummaryVote:          b.summaryVoteCallback,
 		RouteBusinessConnection:           b.businessConnection,
 		RouteMyChatMember:                 b.myChatMember,
-		RouteDirectText:                   b.enqueueDirect,
-		RouteDirectTopicCreated:           b.enqueueDirect,
+		RouteDirectText:                   b.directMessage,
+		RouteDirectTopicCreated:           b.directTopicCreated,
 	}
 	return b
 }

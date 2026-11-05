@@ -170,11 +170,7 @@ func run(ctx context.Context, once bool) error {
 		}
 		return nil
 	}
-	defer func() {
-		drainCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		bot.DrainDirectChats(drainCtx)
-	}()
+	defer bot.DrainDirectChats()
 
 	server := &http.Server{
 		Addr:              address,
