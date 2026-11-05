@@ -1,0 +1,8 @@
+[Unit]
+Description=Replica health metrics for node_exporter (subscriptions, Neon slots, pg_wal)
+After=postgresql@18-main.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/loyal-db-replica metrics
+TimeoutStartSec=60

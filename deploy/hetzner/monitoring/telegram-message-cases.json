@@ -318,6 +318,116 @@
   },
   {
     "labels": {
+      "alertname": "LoyalDbReplicaSubscriptionDown",
+      "subscription": "loyal_hz_app",
+      "severity": "page"
+    },
+    "annotations": {
+      "action": "On loyal-db-primary run `loyal-db-replica verify`, then read the postgresql@18-main log for the apply error. A disabled subscription is resumed with ALTER SUBSCRIPTION ... ENABLE. Do not drop it.",
+      "impact": "The Hetzner copy stops following Neon. Neon drops an inactive slot after about 40 hours and the database must then be copied again.",
+      "recovery": "Verify the apply worker is back (`loyal-db-replica verify` shows a fresh last_msg) and the slot lag is falling to 0.",
+      "summary": "Replica subscription loyal_hz_app has no apply worker",
+      "trigger": "The subscription has had no running apply worker on loyal-db-primary for 5 minutes. It is disabled, dropped or crashing."
+    }
+  },
+  {
+    "labels": {
+      "alertname": "LoyalDbReplicaSubscriptionStale",
+      "subscription": "loyal_hz_app",
+      "severity": "page"
+    },
+    "annotations": {
+      "action": "On loyal-db-primary run `loyal-db-replica verify` and read the postgresql@18-main log for connection or apply errors. Check Neon status and that the Neon compute is awake.",
+      "impact": "The apply worker is attached but not receiving from Neon, so the replica falls behind and the slot pins WAL on Neon.",
+      "recovery": "Verify last_msg in `loyal-db-replica verify` is seconds old and stays so.",
+      "summary": "Replica subscription loyal_hz_app has received nothing for 15m",
+      "trigger": "pg_stat_subscription.last_msg_receipt_time is more than 15 minutes old. A healthy walsender sends a keepalive at least every minute."
+    }
+  },
+  {
+    "labels": {
+      "alertname": "LoyalDbNeonSlotInactive",
+      "slot": "loyal_hz_app",
+      "severity": "page"
+    },
+    "annotations": {
+      "action": "Find why the subscription is not connected (`loyal-db-replica verify`, apply worker, Neon reachability) and fix it within hours, not days.",
+      "impact": "Neon removes an inactive slot after about 40 hours. Until then it pins WAL and grows Neon storage; after that the database must be copied again.",
+      "recovery": "Verify the slot is active=true in `loyal-db-replica verify` and its lag is falling.",
+      "summary": "Neon slot loyal_hz_app is inactive",
+      "trigger": "Neon reports the replication slot has no connected consumer for 10 minutes."
+    }
+  },
+  {
+    "labels": {
+      "alertname": "LoyalDbNeonSlotLag",
+      "slot": "loyal_hz_app",
+      "severity": "page"
+    },
+    "annotations": {
+      "action": "Check whether the apply worker is running, the box disk is full, or a large write is in flight (`loyal-db-replica verify`). Do not drop the slot.",
+      "impact": "The replica is far behind and the slot pins that much WAL on Neon storage.",
+      "recovery": "Verify the lag is below 5 GiB and falling.",
+      "summary": "Neon slot loyal_hz_app lags by 1B",
+      "trigger": "confirmed_flush_lsn trails the Neon write position by more than 5 GiB for 10 minutes."
+    }
+  },
+  {
+    "labels": {
+      "alertname": "LoyalDbNeonProbeFailing",
+      "source": "app",
+      "severity": "page"
+    },
+    "annotations": {
+      "action": "On loyal-db-primary run `loyal-db-replica check`. Check Neon status, the Neon URL in /etc/loyal-db/replica and that the compute accepts connections.",
+      "impact": "Slot activity and lag for that source are unknown, so the slot alerts cannot fire.",
+      "recovery": "Verify the metrics file shows loyal_db_neon_probe_success 1 for that source.",
+      "summary": "Cannot read the Neon app slot from loyal-db-primary",
+      "trigger": "The slot query against Neon failed on every run for 15 minutes."
+    }
+  },
+  {
+    "labels": {
+      "alertname": "LoyalDbVolumeLow",
+      "mountpoint": "/srv/postgresql",
+      "severity": "page"
+    },
+    "annotations": {
+      "action": "Look at pg_wal and the archive backlog first (`loyal-db-replica verify`), then the largest relations. Free space before the volume fills; do not delete WAL files by hand.",
+      "impact": "Postgres stops when the volume is full, which also stops the replica.",
+      "recovery": "Verify free space is above 100 GiB and not falling.",
+      "summary": "loyal-db-primary data volume has 1B free",
+      "trigger": "Free space on /srv/postgresql stayed below 100 GiB for 5 minutes."
+    }
+  },
+  {
+    "labels": {
+      "alertname": "LoyalDbWalLarge",
+      "severity": "page"
+    },
+    "annotations": {
+      "action": "Check the pgbackrest archive backlog and Storage Box reachability, and any stalled replication slot (`loyal-db-replica verify`).",
+      "impact": "WAL is not being archived or a slot holds it, and the volume fills.",
+      "recovery": "Verify pg_wal is back below 60 GB and shrinking.",
+      "summary": "loyal-db-primary pg_wal is 1B",
+      "trigger": "pg_wal stayed above 60 GB for 5 minutes."
+    }
+  },
+  {
+    "labels": {
+      "alertname": "LoyalDbReplicaMetricsStale",
+      "severity": "page"
+    },
+    "annotations": {
+      "action": "On loyal-db-primary run `systemctl status loyal-db-replica-metrics.service` and `journalctl -u loyal-db-replica-metrics`. Check node_exporter is scraped (LoyalMonitoringDown for job node).",
+      "impact": "Every replica alert above is blind, so a stopped subscription would go unnoticed.",
+      "recovery": "Verify the last-success timestamp advances every minute.",
+      "summary": "Replica health metrics from loyal-db-primary are not updating",
+      "trigger": "The loyal-db-replica-metrics timer has not completed a run for 10 minutes, or the series is gone."
+    }
+  },
+  {
+    "labels": {
       "alertname": "LoyalMonitoringDown",
       "job": "alertmanager",
       "severity": "page"

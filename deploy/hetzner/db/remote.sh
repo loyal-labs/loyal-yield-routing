@@ -29,9 +29,18 @@ case ${1:-} in
       printf "%s\n" "$DATABASE_URL" | box "umask 077; cat > /etc/loyal-db/replica/app.url"'
     ;;
   install) install ;;
-  setup | catchup | sequences | verify | check)
+  guards)
+    install
+    tar -C "$HERE/units" -cf - . | box 'tar -xf - -C /etc/systemd/system --no-same-owner --no-same-permissions'
+    box 'bash -s' <"$HERE/guards.sh"
+    ;;
+  setup | catchup | sequences | verify | check | metrics)
     install
     box "loyal-db-replica $1"
+    ;;
+  retain)
+    install
+    box "loyal-db-replica retain ${2:-}"
     ;;
   backfill)
     install
@@ -48,5 +57,5 @@ for p in json.load(sys.stdin)["projects"]:
             v = c["metrics"][0]["value"]
             print(p["project_id"], c["timeframe_start"], "avg_cu=%.2f" % (v / 3600))'
     ;;
-  *) echo "usage: $0 urls|install|setup|backfill|catchup|sequences|verify|check|neon-cu [hours]" >&2; exit 2 ;;
+  *) echo "usage: $0 urls|install|guards|setup|backfill|catchup|sequences|verify|check|metrics|retain [--dry-run]|neon-cu [hours]" >&2; exit 2 ;;
 esac

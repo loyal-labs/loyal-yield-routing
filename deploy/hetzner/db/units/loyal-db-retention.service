@@ -1,0 +1,9 @@
+[Unit]
+Description=Keep 62 days of the two Timescale hypertables on the replica
+After=postgresql@18-main.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/loyal-db-replica retain
+TimeoutStartSec=30min
+Nice=10

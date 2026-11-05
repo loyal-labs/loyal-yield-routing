@@ -42,13 +42,9 @@ DDL does not replicate. Apply any migration to `loyal_yield_prod` or `kamino_tim
 
 Neon removes a logical slot that has not acknowledged `flush_lsn` progress for about 40 hours ([Neon docs, Unused replication slots](https://neon.com/docs/guides/logical-replication-neon#unused-replication-slots)). Until then, the stopped slot pins WAL and Neon storage grows with every write. When Neon removes it, the subscription cannot resume. The fix is to drop the database on Hetzner and rerun `setup`, which copies everything again. Hypertable state in `/var/lib/loyal-db-replica/backfill` survives that, but the database it describes does not, so remove that directory too. While a subscriber stays connected, the Neon compute stays awake and does not scale to zero.
 
-`remote.sh check` (`replica.sh` `cmd_check`) exits 1 when a slot is inactive or its lag passes 5 GiB. Nothing on the box pages anyone today. The existing `loyal-db-backup-alert@` unit only writes to the journal. To run the check every 15 minutes on the box:
+Prometheus on loyal-workers pages the Telegram alerts group through `loyal-db-replica metrics` (a textfile on the DB box, written every minute): `LoyalDbReplicaSubscriptionDown` after 5 minutes without an apply worker, `LoyalDbReplicaSubscriptionStale` after 15 minutes without a message, `LoyalDbNeonSlotInactive` after 10 minutes, `LoyalDbNeonSlotLag` above 5 GiB, plus volume under 100 GiB free and `pg_wal` over 60 GB (`deploy/hetzner/README.md`, Replica guards). Neon's 40 hours leave most of the window to act in. `remote.sh check` (`replica.sh` `cmd_check`) is the manual form of the slot check and exits 1 when a slot is inactive or lags more than 5 GiB.
 
-```sh
-systemd-run --unit=loyal-db-replica-check --on-calendar='*:0/15' /usr/local/sbin/loyal-db-replica check
-```
-
-Routing a failed run to an alert channel is a coordinator follow-up.
+Freeze step 5 disables the subscriptions on purpose. Before it, silence `alertname=~"LoyalDbReplica.*|LoyalDbNeon.*"` in Alertmanager (`amtool silence add` on loyal-workers) for the rollback window, and delete the `loyal-db-replica` rule group when the subscriptions are dropped.
 
 ## Before the freeze
 
@@ -105,5 +101,5 @@ After writes land on Hetzner, rolling back loses them. Two choices remain: fix f
 ## After
 
 - Drop the three subscriptions once the window closes. `DROP SUBSCRIPTION` also drops the Neon slot. If you skip this, Neon removes the inactive slots after about 40 hours anyway, and each one pins WAL until then.
-- Neither box runs a Timescale retention job (`timescaledb.max_background_workers = 0`). Keeping 62 days needs a scheduled `drop_chunks`, or background workers turned on with a retention policy.
+- Timescale retention is `loyal-db-retention.timer` on loyal-db-primary: daily at 04:30 UTC it runs `loyal-db-replica retain`, which drops hypertable chunks older than 62 days (`timescaledb.max_background_workers = 0`, so no policy job). It keeps running after cutover.
 - Rescale to cpx51 (owner call D2). It needs a stop of the box. Do it outside a copy, and before the freeze rather than after.
