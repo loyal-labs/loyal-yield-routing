@@ -35,7 +35,7 @@ const MODIFIER_KEYS = ["metaKey", "ctrlKey", "shiftKey", "altKey"] as const;
 
 export default function Link({ href, replace, scroll, prefetch, onClick, onMouseEnter, onFocus, ...rest }: LinkProps) {
   const router = useTanstackRouter();
-  const { kind, url } = classifyHref(href, window.location.origin);
+  const { kind, url } = classifyHref(href, router.origin);
   const navigates = kind === "internal" && !rest.target && !rest.download;
 
   const handleClick = (event: MouseEvent<HTMLAnchorElement>) => {
