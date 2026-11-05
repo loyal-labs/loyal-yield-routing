@@ -103,6 +103,16 @@ type walletAuthRefusalDetail struct {
 func (e *walletAuthRefusal) Error() string  { return e.Detail.Code }
 func (e *walletAuthRefusal) GetStatus() int { return e.status }
 
+func walletInternalFailure(err error) error {
+	var refused *walletAuthRefusal
+	var routeRefused *routeError
+	if errors.As(err, &refused) || errors.As(err, &routeRefused) {
+		return err
+	}
+	slog.Error("wallet auth completion failed", "error", err)
+	return walletRefusal(http.StatusInternalServerError, "internal_error", "Internal error.")
+}
+
 func walletRefusal(status int, code, message string) *walletAuthRefusal {
 	return &walletAuthRefusal{Detail: walletAuthRefusalDetail{Code: code, Message: message}, status: status}
 }
@@ -455,7 +465,7 @@ func (h earnRoutes) walletComplete(ctx context.Context, in *walletAuthInput) (*w
 	}
 	user, err := h.completeWalletAuth(ctx, sha256Hex(proof.challengeToken), wallet)
 	if err != nil {
-		return nil, err
+		return nil, walletInternalFailure(err)
 	}
 	setCookie, err := h.walletSession(in, user)
 	if err != nil {
