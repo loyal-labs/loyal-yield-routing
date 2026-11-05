@@ -8,22 +8,28 @@ import (
 	"time"
 )
 
+type directReply struct {
+	update    *Update
+	threadID  string
+	messageID string
+}
+
 type chatQueue struct {
-	work     func(ctx context.Context, update *Update)
+	work     func(ctx context.Context, reply directReply)
 	deadline time.Duration
 	backlog  int
 	slots    chan struct{}
 	ctx      context.Context
 	stop     context.CancelFunc
 
-	mu      sync.Mutex
-	chats   map[int64][]*Update
-	pending int
-	closed  bool
-	running sync.WaitGroup
+	mu       sync.Mutex
+	chats    map[int64][]directReply
+	reserved int
+	closed   bool
+	running  sync.WaitGroup
 }
 
-func newChatQueue(workers, backlog int, deadline time.Duration, work func(context.Context, *Update)) *chatQueue {
+func newChatQueue(workers, backlog int, deadline time.Duration, work func(context.Context, directReply)) *chatQueue {
 	ctx, stop := context.WithCancel(context.Background())
 	return &chatQueue{
 		work:     work,
@@ -32,28 +38,39 @@ func newChatQueue(workers, backlog int, deadline time.Duration, work func(contex
 		slots:    make(chan struct{}, workers),
 		ctx:      ctx,
 		stop:     stop,
-		chats:    map[int64][]*Update{},
+		chats:    map[int64][]directReply{},
 	}
 }
 
-func (q *chatQueue) enqueue(chatID int64, update *Update) bool {
+func (q *chatQueue) reserve() bool {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	if q.closed || q.pending >= q.backlog {
+	if q.closed || q.reserved >= q.backlog {
 		return false
 	}
-	q.pending++
-	queued, busy := q.chats[chatID]
-	q.chats[chatID] = append(queued, update)
-	if !busy {
-		q.running.Add(1)
-		go q.drainChat(chatID)
-	}
+	q.reserved++
+	q.running.Add(1)
 	return true
 }
 
+func (q *chatQueue) release() {
+	q.mu.Lock()
+	q.reserved--
+	q.mu.Unlock()
+	q.running.Done()
+}
+
+func (q *chatQueue) submit(chatID int64, reply directReply) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	queued, busy := q.chats[chatID]
+	q.chats[chatID] = append(queued, reply)
+	if !busy {
+		go q.drainChat(chatID)
+	}
+}
+
 func (q *chatQueue) drainChat(chatID int64) {
-	defer q.running.Done()
 	for {
 		q.mu.Lock()
 		queued := q.chats[chatID]
@@ -62,36 +79,33 @@ func (q *chatQueue) drainChat(chatID int64) {
 			q.mu.Unlock()
 			return
 		}
-		update := queued[0]
+		reply := queued[0]
 		q.chats[chatID] = queued[1:]
 		q.mu.Unlock()
 
-		q.run(chatID, update)
-
-		q.mu.Lock()
-		q.pending--
-		q.mu.Unlock()
+		q.run(chatID, reply)
+		q.release()
 	}
 }
 
-func (q *chatQueue) run(chatID int64, update *Update) {
+func (q *chatQueue) run(chatID int64, reply directReply) {
 	select {
 	case q.slots <- struct{}{}:
 		defer func() { <-q.slots }()
 	case <-q.ctx.Done():
 	}
 	if q.ctx.Err() != nil {
-		slog.Error("direct chat update dropped at shutdown", "update_id", update.UpdateID, "chat_id", chatID)
+		slog.Error("direct chat reply dropped at shutdown", "update_id", reply.update.UpdateID, "chat_id", chatID)
 		return
 	}
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			slog.Error("direct chat update panicked", "update_id", update.UpdateID, "chat_id", chatID, "panic", recovered, "stack", string(debug.Stack()))
+			slog.Error("direct chat update panicked", "update_id", reply.update.UpdateID, "chat_id", chatID, "panic", recovered, "stack", string(debug.Stack()))
 		}
 	}()
 	ctx, cancel := context.WithTimeout(q.ctx, q.deadline)
 	defer cancel()
-	q.work(ctx, update)
+	q.work(ctx, reply)
 }
 
 func (q *chatQueue) drain(ctx context.Context) {

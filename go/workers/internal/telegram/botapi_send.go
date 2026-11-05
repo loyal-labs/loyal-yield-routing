@@ -81,10 +81,14 @@ func (a *BotAPI) ForwardMessage(ctx context.Context, chatID, fromChatID, message
 	return a.call(ctx, "forwardMessage", map[string]any{"chat_id": chatID, "from_chat_id": fromChatID, "message_id": messageID}, nil)
 }
 
-func (a *BotAPI) AnswerInlineQuery(ctx context.Context, id string, results any) error {
-	return a.call(ctx, "answerInlineQuery", map[string]any{
+func (a *BotAPI) AnswerInlineQuery(ctx context.Context, id string, results any, personal bool) error {
+	params := map[string]any{
 		"inline_query_id": id,
 		"results":         results,
 		"button":          map[string]any{"text": "Loyal Wallet", "web_app": map[string]string{"url": miniAppLink}},
-	}, nil)
+	}
+	if personal {
+		params["is_personal"] = true
+	}
+	return a.call(ctx, "answerInlineQuery", params, nil)
 }
