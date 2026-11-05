@@ -24,7 +24,7 @@ import {
 
 import { useEvmDepositAddress } from "./use-evm-deposit-address";
 
-export type IncomingStatus =
+type IncomingStatus =
   | { kind: "waiting" }
   | { kind: "bridging" }
   | { kind: "arrived" }
@@ -434,13 +434,13 @@ async function waitForReceipt(
 type SendTransaction = ReturnType<typeof useSendTransaction>["sendTransaction"];
 type EvmWallet = ReturnType<typeof useWallets>["wallets"][number];
 
-export type MoveOutcome =
+type MoveOutcome =
   | { kind: "nothing" }
   | { kind: "rejected" }
   | { kind: "failed"; message: string; requestId: string | null }
   | { kind: "submitted"; requestId: string; recorded: boolean };
 
-export type Move = {
+type Move = {
   sender: string;
   chain: string;
   asset: string;
@@ -454,7 +454,7 @@ export type Move = {
 
 export function moveIncoming(move: Move): Promise<MoveOutcome> {
   const lockName = `loyal.bridge.move:${move.sender.toLowerCase()}:${move.chain}`;
-  if (typeof navigator === "undefined" || !navigator.locks) return moveLocked(move);
+  if (!navigator.locks) return moveLocked(move);
   return navigator.locks.request(lockName, () => moveLocked(move));
 }
 
@@ -740,4 +740,4 @@ export function useIncomingTransfers(walletAddress: string | null) {
   };
 }
 
-export type IncomingTransfers = ReturnType<typeof useIncomingTransfers>;
+export type IncomingTransfersState = ReturnType<typeof useIncomingTransfers>;

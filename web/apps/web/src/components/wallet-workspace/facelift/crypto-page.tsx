@@ -25,7 +25,7 @@ import { deriveSwapTokens, selectSwapToken } from "@/components/wallet-sidebar/s
 import { useAuthSession } from "@/contexts/auth-session-context";
 import { BridgeWorkspace } from "./bridge-workspace";
 import { IncomingTransfers } from "./incoming-transfer-card";
-import type { IncomingTransfers as IncomingTransfersState } from "./use-bridge-move";
+import type { IncomingTransfersState } from "./use-bridge-move";
 import { useEscapePage } from "@/components/wallet-workspace/facelift/escape-owner";
 import {
   MiddlePaneSlide,

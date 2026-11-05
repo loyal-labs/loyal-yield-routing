@@ -15,7 +15,7 @@ import { ThemedIcon } from "./themed-icon";
 import {
   fromRaw,
   type IncomingItem,
-  type IncomingTransfers as IncomingTransfersState,
+  type IncomingTransfersState,
 } from "./use-bridge-move";
 
 const BASE = "/wallet-workspace/facelift";
@@ -66,6 +66,10 @@ export function IncomingTransferCard({
   const what = `${fromRaw(item.amountRaw, item.decimals)} ${item.symbol} from ${item.shortName}`;
   const underMinimum =
     item.amountRaw < BigInt(item.minUsd) * BigInt(10) ** BigInt(item.decimals);
+  const explorer =
+    status.kind === "failed" && status.requestId
+      ? relayExplorer(status.requestId)
+      : null;
 
   return (
     <div className="flex w-full items-center rounded-[20px] bg-accent px-4">
@@ -84,15 +88,14 @@ export function IncomingTransferCard({
         {status.kind === "failed" ? (
           <p className="text-[13px] text-muted-foreground leading-4" id={titleId}>
             {status.message}
-            {status.requestId ? (
+            {explorer ? (
               <>
                 {" "}
                 <button
                   className="underline underline-offset-2 transition-colors hover:text-foreground"
                   onClick={() =>
-                    status.requestId &&
                     openTrackedLink(publicEnv, {
-                      href: relayExplorer(status.requestId),
+                      href: explorer,
                       linkText: "View in Explorer",
                       source: "incoming_transfer_failed",
                     })
@@ -111,12 +114,12 @@ export function IncomingTransferCard({
               : "Confirm incoming transfer"}
           </p>
         )}
-        <p className="flex min-w-0 font-medium text-[16px] text-foreground leading-5 tracking-[-0.176px]">
-          <span className="min-w-0 truncate">
+        <p className="flex min-w-0 flex-wrap gap-x-[0.25em] font-medium text-[16px] text-foreground leading-5 tracking-[-0.176px]">
+          <span className="min-w-0 max-w-full truncate">
             <ScrambleText isHidden={isBalanceHidden} text={amountLabel(item)} />
           </span>
-          <span className="shrink-0 whitespace-pre text-tertiary">
-            {` from ${item.shortName}`}
+          <span className="whitespace-nowrap text-tertiary">
+            from {item.shortName}
           </span>
         </p>
       </div>
@@ -191,7 +194,7 @@ export function IncomingTransfers({
         ))}
         {error ? (
           <Enter>
-            <div className="flex w-full items-center gap-3 rounded-[20px] bg-accent py-3 pr-4 pl-4">
+            <div className="flex w-full items-center gap-3 rounded-[20px] bg-accent px-4 py-3">
               <p className="min-w-0 flex-1 text-[13px] text-muted-foreground leading-4" role="status">
                 {error}
               </p>
