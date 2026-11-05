@@ -28,6 +28,7 @@ type Earn struct {
 	Relay        *bridge.Relay
 	OTLP         *OTLP
 	Privy        *Privy
+	WalletAuth   *WalletAuth
 	Timescale    *pgxpool.Pool
 	Push         *WalletPush
 	Granted      map[string]bool

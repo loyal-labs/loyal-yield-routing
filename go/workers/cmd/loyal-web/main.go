@@ -256,6 +256,16 @@ func earn(ctx context.Context, registry *prometheus.Registry, rpcClient *chain.C
 		}
 		e.Privy = &webapp.Privy{AppID: strings.TrimSpace(appID), AppSecret: strings.TrimSpace(appSecret), CookieParentDomains: domains}
 	}
+	capSecret, okCap := optionalCredential("wallet sign-in", "CAP_SECRET")
+	if okSecret && okCap && strings.TrimSpace(capSecret) != "" {
+		domains := webapp.ParseCookieParentDomains(os.Getenv("AUTH_COOKIE_PARENT_DOMAIN"))
+		if len(domains) == 0 {
+			degraded("wallet sign-in", errors.New("AUTH_COOKIE_PARENT_DOMAIN is not set"))
+		}
+		if e.WalletAuth, err = webapp.NewWalletAuth(strings.TrimSpace(capSecret), strings.TrimSpace(secret), strings.TrimSpace(os.Getenv("AUTH_APP_NAME")), domains); err != nil {
+			degraded("wallet sign-in", err)
+		}
+	}
 	if key, ok := optionalCredential("Relay keyed quotes", "RELAY_API_KEY"); ok && key != "" {
 		e.Relay.APIKey = strings.TrimSpace(key)
 	}
