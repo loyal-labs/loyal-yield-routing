@@ -16,7 +16,7 @@ var signerReach = map[string]struct {
 	from  []string
 }{
 	"NewSigner":         {"internal/jwt", []string{"cmd/loyal-web/main.go"}},
-	"Mint":              {"internal/jwt", []string{"internal/webapp/earn_session.go", "internal/webapp/earn_privy.go"}},
+	"Mint":              {"internal/jwt", []string{"internal/webapp/earn_session.go", "internal/webapp/earn_privy.go", "internal/webapp/auth_session_routes.go"}},
 	"NewRealtimeIssuer": {"internal/jwt", []string{"cmd/loyal-web/main.go"}},
 	"IssueRealtime":     {"internal/jwt", []string{"internal/webapp/state_realtime.go"}},
 	"NewSponsor":        {"internal/earnprep", []string{"cmd/loyal-web/main.go"}},
