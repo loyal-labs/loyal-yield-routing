@@ -9,39 +9,49 @@ import type {
   EvmDepositNetwork,
   RouteError,
 } from "@loyal-labs/api";
-import { useSendTransaction, useWallets } from "@privy-io/react-auth";
+import {
+  useSendTransaction,
+  useUser,
+  useWallets,
+} from "@privy-io/react-auth";
 import {
   useCallback,
   useEffect,
   useMemo,
   useReducer,
   useRef,
-  useState,
 } from "react";
 
 import { useEvmDepositAddress } from "./use-evm-deposit-address";
 
-export type IncomingTransfer = {
-  chain: string;
-  shortName: string;
-  chainIcon: string | null;
-  asset: string;
-  symbol: string;
-  icon: string | null;
-  decimals: number;
-  amountRaw: bigint;
-  minUsd: number;
-  requestId: string | null;
-};
-
-export type MoveStep =
-  | { kind: "form" }
-  | { kind: "sending" }
-  | { kind: "bridging"; requestId: string }
-  | { kind: "filled"; transfer: BridgeTransfer }
+export type IncomingStatus =
+  | { kind: "waiting" }
+  | { kind: "bridging" }
+  | { kind: "arrived" }
   | { kind: "failed"; message: string; requestId: string | null };
 
+export type IncomingItem = {
+  key: string;
+  chain: string;
+  asset: string;
+  amountRaw: bigint;
+  decimals: number;
+  minUsd: number;
+  symbol: string;
+  shortName: string;
+  icon: string | null;
+  chainIcon: string | null;
+  transfer?: {
+    requestId: string;
+    state: BridgeTransfer["state"];
+    submittedAt: string | null;
+  };
+  status: IncomingStatus;
+};
+
 const POLL_MS = 3000;
+const ARRIVED_MS = 5000;
+const STALE_SUBMIT_MS = 15 * 60_000;
 const RECEIPT_TIMEOUT_MS = 120_000;
 const SEND_TIMEOUT_MS = 120_000;
 const SEND_TIMEOUT = "move_send_timeout";
@@ -144,102 +154,268 @@ const readTransfers = async () =>
     )
   ).transfers ?? [];
 
-type MoveRead = {
-  wallet: string | null;
-  balances: BridgeBalance[];
-  transfers: BridgeTransfer[];
+const lane = (chain: string, asset: string) => `${chain}:${asset}`;
+
+const submittedSince = (t: BridgeTransfer) =>
+  Date.parse(t.submittedAt ?? t.quotedAt);
+
+function waitingAmount(
+  balances: BridgeBalance[],
+  transfers: BridgeTransfer[],
+  chain: string,
+  asset: string,
+  now: number
+) {
+  const moving = transfers.some(
+    (t) =>
+      t.direction === "in" &&
+      t.state === "submitted" &&
+      lane(t.chain, t.asset) === lane(chain, asset) &&
+      now - submittedSince(t) <= STALE_SUBMIT_MS
+  );
+  if (moving) return BigInt(0);
+  const balance = balances.find(
+    (b) => lane(b.chain, b.asset) === lane(chain, asset)
+  );
+  return balance ? BigInt(balance.amountRaw) : BigInt(0);
+}
+
+type Run = {
+  key: string;
+  chain: string;
+  asset: string;
+  amountRaw: bigint;
+  requestId: string | null;
+  sentAt: number | null;
+  failure: { message: string; requestId: string | null } | null;
 };
 
-export function useBridgeMoveBalances(
-  enabled: boolean,
-  networks: EvmDepositNetwork[],
-  wallet: string | null
-) {
-  const [read, setRead] = useState<MoveRead | null>(null);
-  const [reads, reload] = useReducer((n: number) => n + 1, 0);
-  const hasNetworks = networks.length > 0;
-  useEffect(() => {
-    if (!enabled || !hasNetworks) return;
-    let live = true;
-    void Promise.all([readBalances(), readTransfers().catch(() => [])])
-      .then(([balances, transfers]) => {
-        if (live) setRead({ wallet, balances, transfers });
-      })
-      .catch(() => {
-        if (live) setRead({ wallet, balances: [], transfers: [] });
-      });
-    return () => {
-      live = false;
-    };
-  }, [enabled, hasNetworks, wallet, reads]);
+type Incoming = {
+  wallet: string | null;
+  balances: BridgeBalance[];
+  balancesAt: number;
+  transfers: BridgeTransfer[];
+  transfersAt: number;
+  error: string | null;
+  runs: Run[];
+};
 
-  const shown = enabled && read?.wallet === wallet ? read : null;
-  const incoming = useMemo(() => {
-    const row = (
-      chain: string,
-      asset: string,
-      amountRaw: bigint,
-      requestId: string | null
-    ): IncomingTransfer[] => {
-      const network = networks.find((n) => n.chain === chain);
-      const token = network?.tokens?.find((t) => t.asset === asset);
-      if (!network || !token || amountRaw === BigInt(0)) return [];
-      return [
-        {
-          chain,
-          shortName: network.shortName,
-          chainIcon: network.icon,
-          asset,
-          symbol: token.symbol,
-          icon: token.icon,
-          decimals: token.decimals,
-          amountRaw,
-          minUsd: network.minUsd,
-          requestId,
-        },
-      ];
-    };
-    const bridging = (shown?.transfers ?? []).filter(
-      (t) => t.state === "submitted"
-    );
-    const moving = new Set(bridging.map((t) => `${t.chain}:${t.asset}`));
-    return [
-      ...bridging.flatMap((t) =>
-        row(t.chain, t.asset, BigInt(t.amountInRaw), t.requestId)
-      ),
-      ...(shown?.balances ?? [])
-        .filter((b) => !moving.has(`${b.chain}:${b.asset}`))
-        .flatMap((b) => row(b.chain, b.asset, BigInt(b.amountRaw), null)),
-    ];
-  }, [networks, shown]);
-  return { incoming, reload };
-}
+type IncomingEvent =
+  | {
+      type: "read";
+      at: number;
+      balances?: BridgeBalance[];
+      transfers?: BridgeTransfer[];
+      error?: string | null;
+    }
+  | { type: "run"; run: Run }
+  | { type: "patch"; key: string; patch: Partial<Run> }
+  | { type: "drop"; key: string }
+  | { type: "settle" };
 
-export function useIncomingTransfers(walletAddress: string | null) {
-  const evm = useEvmDepositAddress(walletAddress);
-  const { info, load, retryOnNextLoad } = evm;
-  const [peeks, peek] = useReducer((n: number) => n + 1, 0);
-  useEffect(() => {
-    void load(false);
-  }, [load, peeks]);
-  const sender = info?.kind === "relay_signed" ? info.address : null;
-  const { incoming, reload } = useBridgeMoveBalances(
-    sender !== null,
-    evm.networks,
-    walletAddress
+type IncomingAction = IncomingEvent & { wallet: string };
+
+const emptyIncoming = (wallet: string | null): Incoming => ({
+  wallet,
+  balances: [],
+  balancesAt: 0,
+  transfers: [],
+  transfersAt: 0,
+  error: null,
+  runs: [],
+});
+
+function adoptSettled(prev: Incoming, transfers: BridgeTransfer[]): Run[] {
+  const tracked = new Set(prev.runs.map((r) => r.requestId));
+  const watched = new Set(
+    prev.transfers.filter((t) => t.state === "submitted").map((t) => t.requestId)
   );
-  const refresh = useCallback(() => {
-    retryOnNextLoad();
-    peek();
-    reload();
-  }, [reload, retryOnNextLoad]);
-  return { sender, transfers: sender ? incoming : [], reload: refresh };
+  return transfers
+    .filter(
+      (t) =>
+        watched.has(t.requestId) &&
+        !tracked.has(t.requestId) &&
+        t.state !== "submitted" &&
+        t.state !== "quoted"
+    )
+    .map((t) => ({
+      key: t.requestId,
+      chain: t.chain,
+      asset: t.asset,
+      amountRaw: BigInt(t.amountInRaw),
+      requestId: t.requestId,
+      sentAt: submittedSince(t),
+      failure: null,
+    }));
 }
+
+function reduceIncoming(state: Incoming, action: IncomingAction): Incoming {
+  const prev = state.wallet === action.wallet ? state : emptyIncoming(action.wallet);
+  switch (action.type) {
+    case "read": {
+      const next = { ...prev };
+      if (action.balances && action.at > prev.balancesAt) {
+        next.balances = action.balances;
+        next.balancesAt = action.at;
+      }
+      if (action.transfers && action.at > prev.transfersAt) {
+        next.runs = [...prev.runs, ...adoptSettled(prev, action.transfers)];
+        next.transfers = action.transfers;
+        next.transfersAt = action.at;
+      }
+      if (action.error !== undefined) next.error = action.error;
+      return next;
+    }
+    case "run":
+      return {
+        ...prev,
+        runs: [
+          ...prev.runs.filter(
+            (r) =>
+              r.key !== action.run.key &&
+              lane(r.chain, r.asset) !== lane(action.run.chain, action.run.asset)
+          ),
+          action.run,
+        ],
+      };
+    case "patch":
+      return {
+        ...prev,
+        runs: prev.runs.map((r) =>
+          r.key === action.key ? { ...r, ...action.patch } : r
+        ),
+      };
+    case "drop":
+      return { ...prev, runs: prev.runs.filter((r) => r.key !== action.key) };
+    case "settle": {
+      const filled = new Set(
+        prev.transfers.filter((t) => t.state === "filled").map((t) => t.requestId)
+      );
+      return {
+        ...prev,
+        runs: prev.runs.filter((r) => !r.requestId || !filled.has(r.requestId)),
+      };
+    }
+  }
+}
+
+function serverStatus(
+  t: BridgeTransfer,
+  symbol: string,
+  shortName: string
+): IncomingStatus {
+  if (t.state === "filled") return { kind: "arrived" };
+  if (t.state === "refunded")
+    return {
+      kind: "failed",
+      message: `Relay refunded ${symbol} to your ${shortName} wallet.`,
+      requestId: t.requestId,
+    };
+  if (t.state === "failed")
+    return { kind: "failed", message: "The bridge failed.", requestId: t.requestId };
+  return { kind: "bridging" };
+}
+
+function incomingItems(
+  state: Incoming,
+  networks: EvmDepositNetwork[],
+  now: number
+): IncomingItem[] {
+  const describe = (chain: string, asset: string) => {
+    const network = networks.find((n) => n.chain === chain);
+    const token = network?.tokens?.find((t) => t.asset === asset);
+    return network && token
+      ? {
+          chain,
+          asset,
+          decimals: token.decimals,
+          minUsd: network.minUsd,
+          symbol: token.symbol,
+          shortName: network.shortName,
+          icon: token.icon,
+          chainIcon: network.icon,
+        }
+      : null;
+  };
+  const holding = new Set(
+    state.balances
+      .filter((b) => BigInt(b.amountRaw) > BigInt(0))
+      .map((b) => lane(b.chain, b.asset))
+  );
+  const stale = (since: number | null, chain: string, asset: string) =>
+    since !== null &&
+    now - since > STALE_SUBMIT_MS &&
+    holding.has(lane(chain, asset));
+  const byRequest = new Map(state.transfers.map((t) => [t.requestId, t]));
+  const covered = new Set<string>();
+  const items: IncomingItem[] = [];
+
+  for (const run of state.runs) {
+    const shown = describe(run.chain, run.asset);
+    if (!shown) continue;
+    const server = run.requestId ? byRequest.get(run.requestId) : undefined;
+    const status: IncomingStatus = run.failure
+      ? { kind: "failed", ...run.failure }
+      : server
+      ? serverStatus(server, shown.symbol, shown.shortName)
+      : { kind: "bridging" };
+    const since = server ? submittedSince(server) : run.sentAt;
+    if (status.kind === "bridging" && stale(since, run.chain, run.asset)) continue;
+    covered.add(lane(run.chain, run.asset));
+    items.push({
+      ...shown,
+      key: run.key,
+      amountRaw: server ? BigInt(server.amountInRaw) : run.amountRaw,
+      transfer: server && {
+        requestId: server.requestId,
+        state: server.state,
+        submittedAt: server.submittedAt,
+      },
+      status,
+    });
+  }
+
+  const claimed = new Set(state.runs.map((r) => r.requestId));
+  for (const t of state.transfers) {
+    if (t.direction !== "in" || t.state !== "submitted" || claimed.has(t.requestId))
+      continue;
+    const shown = describe(t.chain, t.asset);
+    if (!shown || stale(submittedSince(t), t.chain, t.asset)) continue;
+    covered.add(lane(t.chain, t.asset));
+    items.push({
+      ...shown,
+      key: t.requestId,
+      amountRaw: BigInt(t.amountInRaw),
+      transfer: {
+        requestId: t.requestId,
+        state: t.state,
+        submittedAt: t.submittedAt,
+      },
+      status: { kind: "bridging" },
+    });
+  }
+
+  for (const b of state.balances) {
+    const amountRaw = BigInt(b.amountRaw);
+    const shown = describe(b.chain, b.asset);
+    if (!shown || amountRaw === BigInt(0) || covered.has(lane(b.chain, b.asset)))
+      continue;
+    items.push({
+      ...shown,
+      key: `${state.wallet}:${b.chain}:${b.asset}:${amountRaw}`,
+      amountRaw,
+      status: { kind: "waiting" },
+    });
+  }
+  return items;
+}
+
+type Receipt = "landed" | "reverted" | "unknown";
 
 async function waitForReceipt(
   provider: { request: (args: { method: string; params?: unknown[] }) => Promise<unknown> },
   hash: string
-) {
+): Promise<Receipt> {
   const deadline = Date.now() + RECEIPT_TIMEOUT_MS;
   while (Date.now() < deadline) {
     const receipt = (await settleWithin(
@@ -248,179 +424,320 @@ async function waitForReceipt(
         params: [hash],
       })
     )) as { status?: string } | null;
-    if (receipt?.status === "0x1") return;
-    if (receipt?.status === "0x0") throw new Error("The approval transaction reverted.");
+    if (receipt?.status === "0x1") return "landed";
+    if (receipt?.status === "0x0") return "reverted";
     await new Promise((resolve) => setTimeout(resolve, 1500));
   }
-  throw new Error("Transaction confirmation timed out");
+  return "unknown";
 }
 
-export function useBridgeMove(
-  transfer: IncomingTransfer,
-  sender: string,
-  onSubmitted: () => void
-) {
+type SendTransaction = ReturnType<typeof useSendTransaction>["sendTransaction"];
+type EvmWallet = ReturnType<typeof useWallets>["wallets"][number];
+
+export type MoveOutcome =
+  | { kind: "nothing" }
+  | { kind: "rejected" }
+  | { kind: "failed"; message: string; requestId: string | null }
+  | { kind: "submitted"; requestId: string; recorded: boolean };
+
+export type Move = {
+  sender: string;
+  chain: string;
+  asset: string;
+  symbol: string;
+  wallet: EvmWallet | undefined;
+  sendTransaction: SendTransaction;
+  onRead: (balances: BridgeBalance[], transfers: BridgeTransfer[]) => void;
+  onQuoted: (requestId: string, amountRaw: bigint) => void;
+  onSent: () => void;
+};
+
+export function moveIncoming(move: Move): Promise<MoveOutcome> {
+  const lockName = `loyal.bridge.move:${move.sender.toLowerCase()}:${move.chain}`;
+  if (typeof navigator === "undefined" || !navigator.locks) return moveLocked(move);
+  return navigator.locks.request(lockName, () => moveLocked(move));
+}
+
+async function moveLocked(move: Move): Promise<MoveOutcome> {
+  let quoted: BridgeQuoteResponse;
+  try {
+    const [balances, transfers] = await Promise.all([
+      readBalances(),
+      readTransfers(),
+    ]);
+    move.onRead(balances, transfers);
+    const amountRaw = waitingAmount(
+      balances,
+      transfers,
+      move.chain,
+      move.asset,
+      Date.now()
+    );
+    if (amountRaw === BigInt(0)) return { kind: "nothing" };
+    quoted = await readJSON<BridgeQuoteResponse>(
+      await post("/api/funding/bridge/quote", {
+        chain: move.chain,
+        asset: move.asset,
+        amountRaw: amountRaw.toString(),
+      }),
+      "Could not get a quote"
+    );
+    move.onQuoted(quoted.requestId, amountRaw);
+  } catch (e) {
+    return { kind: "failed", message: errorText(e), requestId: null };
+  }
+
+  const calls = quoted.calls ?? [];
+  const { wallet } = move;
+  let sent = false;
+  let originTx: string | null = null;
+  try {
+    if (!wallet || calls.length === 0) {
+      throw new Error("Your EVM wallet is not ready. Please try again.");
+    }
+    await settleWithin(wallet.switchChain(quoted.chainId));
+    const provider = await settleWithin(wallet.getEthereumProvider());
+    await settleWithin(
+      post(
+        `/api/funding/bridge/transfers/${encodeURIComponent(quoted.requestId)}/confirm`,
+        {}
+      ).then((res) => readJSON<BridgeTransfer>(res, "Could not start the move"))
+    );
+    for (const [index, call] of calls.entries()) {
+      const { hash } = await settleWithin(
+        move.sendTransaction(
+          {
+            to: call.to,
+            data: call.data,
+            value: BigInt(call.value),
+            chainId: quoted.chainId,
+          },
+          {
+            sponsor: true,
+            address: wallet.address,
+            uiOptions: { showWalletUIs: index === 0 },
+          }
+        )
+      );
+      sent = true;
+      const receipt = await waitForReceipt(provider, hash);
+      if (index === calls.length - 1) {
+        if (receipt === "reverted")
+          return {
+            kind: "failed",
+            message: `The transfer reverted. ${move.symbol} stays in your wallet.`,
+            requestId: quoted.requestId,
+          };
+        originTx = hash;
+      } else if (receipt === "reverted") {
+        throw new Error("The approval transaction reverted.");
+      } else if (receipt === "unknown") {
+        throw new Error("Transaction confirmation timed out");
+      }
+    }
+  } catch (e) {
+    const failure = classifySendError(e);
+    if (failure === "rejected") return { kind: "rejected" };
+    if (failure === "refused")
+      void post(
+        `/api/funding/bridge/transfers/${encodeURIComponent(quoted.requestId)}/sponsor-refusal`,
+        { message: errorText(e).slice(0, 500) }
+      ).catch(() => undefined);
+    return {
+      kind: "failed",
+      message: sendFailureCopy(failure, move.symbol, sent),
+      requestId: sent ? quoted.requestId : null,
+    };
+  }
+  if (!originTx)
+    return {
+      kind: "failed",
+      message: sendFailureCopy("other", move.symbol, sent),
+      requestId: null,
+    };
+
+  move.onSent();
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      await readJSON<BridgeTransfer>(
+        await post(
+          `/api/funding/bridge/transfers/${encodeURIComponent(quoted.requestId)}/submit`,
+          { originTx }
+        ),
+        "Could not record the bridge"
+      );
+      return { kind: "submitted", requestId: quoted.requestId, recorded: true };
+    } catch {
+      if (attempt < 2) await new Promise((r) => setTimeout(r, 2000));
+    }
+  }
+  return { kind: "submitted", requestId: quoted.requestId, recorded: false };
+}
+
+const isExternalSolanaWallet = (
+  user: ReturnType<typeof useUser>["user"],
+  address: string | null
+) =>
+  user?.linkedAccounts.some(
+    (a) =>
+      a.type === "wallet" &&
+      a.chainType === "solana" &&
+      a.address === address &&
+      a.walletClientType !== "privy" &&
+      a.walletClientType !== "privy-v2"
+  ) ?? false;
+
+export function useIncomingTransfers(walletAddress: string | null) {
+  const { user } = useUser();
   const { sendTransaction } = useSendTransaction();
   const { wallets } = useWallets();
-  const [step, setStep] = useState<MoveStep>(
-    transfer.requestId
-      ? { kind: "bridging", requestId: transfer.requestId }
-      : { kind: "form" }
-  );
-  const busyRef = useRef(false);
-  const lockName = `loyal.bridge.move:${sender.toLowerCase()}:${transfer.chain}`;
-
-  const move = useCallback(
-    async (quoted: BridgeQuoteResponse) => {
-      const calls = quoted.calls ?? [];
-      setStep({ kind: "sending" });
-      const wallet = wallets.find(
-        (w) => w.address.toLowerCase() === sender.toLowerCase()
-      );
-      let sent = false;
-      let originTx: string | null = null;
-      try {
-        if (!wallet || calls.length === 0) {
-          throw new Error("Your EVM wallet is not ready. Please try again.");
-        }
-        await settleWithin(wallet.switchChain(quoted.chainId));
-        const provider = await settleWithin(wallet.getEthereumProvider());
-        await settleWithin(
-          post(
-            `/api/funding/bridge/transfers/${encodeURIComponent(quoted.requestId)}/confirm`,
-            {}
-          ).then((res) => readJSON<BridgeTransfer>(res, "Could not start the move"))
-        );
-        for (const [index, call] of calls.entries()) {
-          const { hash } = await settleWithin(
-            sendTransaction(
-              {
-                to: call.to,
-                data: call.data,
-                value: BigInt(call.value),
-                chainId: quoted.chainId,
-              },
-              {
-                sponsor: true,
-                address: wallet.address,
-                uiOptions: { showWalletUIs: index === 0 },
-              }
-            )
-          );
-          sent = true;
-          if (index < calls.length - 1) await waitForReceipt(provider, hash);
-          else originTx = hash;
-        }
-      } catch (e) {
-        const failure = classifySendError(e);
-        if (failure === "rejected") {
-          setStep({ kind: "form" });
-          return;
-        }
-        if (failure === "refused")
-          void post(
-            `/api/funding/bridge/transfers/${encodeURIComponent(quoted.requestId)}/sponsor-refusal`,
-            { message: errorText(e).slice(0, 500) }
-          ).catch(() => undefined);
-        setStep({
-          kind: "failed",
-          message: sendFailureCopy(failure, transfer.symbol, sent),
-          requestId: null,
-        });
-        return;
-      }
-      if (!originTx) return;
-      setStep({ kind: "bridging", requestId: quoted.requestId });
-      for (let attempt = 0; attempt < 3; attempt++) {
-        try {
-          await readJSON<BridgeTransfer>(
-            await post(
-              `/api/funding/bridge/transfers/${encodeURIComponent(quoted.requestId)}/submit`,
-              { originTx }
-            ),
-            "Could not record the bridge"
-          );
-          break;
-        } catch {
-          if (attempt < 2) await new Promise((r) => setTimeout(r, 2000));
-        }
-      }
-      onSubmitted();
-    },
-    [onSubmitted, sendTransaction, sender, transfer.symbol, wallets]
-  );
-
-  const confirm = useCallback(async () => {
-    if (busyRef.current) return;
-    busyRef.current = true;
-    setStep({ kind: "sending" });
-    try {
-      const quoted = await readJSON<BridgeQuoteResponse>(
-        await post("/api/funding/bridge/quote", {
-          chain: transfer.chain,
-          asset: transfer.asset,
-          amountRaw: transfer.amountRaw.toString(),
-        }),
-        "Could not get a quote"
-      );
-      if (!navigator.locks) {
-        await move(quoted);
-        return;
-      }
-      await navigator.locks.request(
-        lockName,
-        { ifAvailable: true },
-        async (lock: Lock | null) => {
-          if (lock) await move(quoted);
-          else
-            setStep({
-              kind: "failed",
-              message: "A move is already running in another tab.",
-              requestId: null,
-            });
-        }
-      );
-    } catch (e) {
-      setStep({ kind: "failed", message: errorText(e), requestId: null });
-    } finally {
-      busyRef.current = false;
-    }
-  }, [lockName, move, transfer.amountRaw, transfer.asset, transfer.chain]);
-
-  const reset = useCallback(() => setStep({ kind: "form" }), []);
-
-  const bridging = step.kind === "bridging" ? step : null;
+  const external = isExternalSolanaWallet(user, walletAddress);
+  const evm = useEvmDepositAddress(external ? walletAddress : null);
+  const { info, load, networks, retryOnNextLoad } = evm;
+  const [peeks, peek] = useReducer((n: number) => n + 1, 0);
   useEffect(() => {
-    if (!bridging) return;
-    let live = true;
-    const poll = async () => {
-      try {
-        const settled = (await readTransfers()).find(
-          (t) => t.requestId === bridging.requestId
-        );
-        if (!live || !settled) return;
-        if (settled.state === "filled")
-          setStep({ kind: "filled", transfer: settled });
-        else if (settled.state === "refunded" || settled.state === "failed")
-          setStep({
-            kind: "failed",
-            message:
-              settled.state === "refunded"
-                ? `Relay refunded ${transfer.symbol} to your ${transfer.shortName} wallet.`
-                : "The bridge failed.",
-            requestId: settled.requestId,
-          });
-      } catch {
-        return;
-      }
-    };
-    const timer = setInterval(() => void poll(), POLL_MS);
-    void poll();
-    return () => {
-      live = false;
-      clearInterval(timer);
-    };
-  }, [bridging, transfer.shortName, transfer.symbol]);
+    void load(false);
+  }, [load, peeks]);
+  const sender =
+    external && info?.kind === "relay_signed" ? info.address : null;
+  const enabled = sender !== null && networks.length > 0;
 
-  return { step, confirm, reset };
+  const [state, dispatch] = useReducer(reduceIncoming, null, () =>
+    emptyIncoming(null)
+  );
+  const walletRef = useRef(walletAddress);
+  walletRef.current = walletAddress;
+  const apply = useCallback(
+    (wallet: string, event: IncomingEvent) => {
+      if (walletRef.current === wallet) dispatch({ ...event, wallet });
+    },
+    []
+  );
+  const readAt = useRef(0);
+  const read = useCallback(
+    async (wallet: string, withBalances: boolean) => {
+      const at = ++readAt.current;
+      const [balances, transfers] = await Promise.allSettled([
+        withBalances ? readBalances() : Promise.resolve(undefined),
+        readTransfers(),
+      ]);
+      apply(wallet, {
+        type: "read",
+        at,
+        balances: balances.status === "fulfilled" ? balances.value : undefined,
+        transfers: transfers.status === "fulfilled" ? transfers.value : undefined,
+        error: !withBalances
+          ? undefined
+          : balances.status === "rejected"
+          ? errorText(balances.reason)
+          : null,
+      });
+    },
+    [apply]
+  );
+
+  const [reads, reread] = useReducer((n: number) => n + 1, 0);
+  useEffect(() => {
+    if (enabled && walletAddress) void read(walletAddress, true);
+  }, [enabled, read, reads, walletAddress]);
+
+  const shown = enabled && state.wallet === walletAddress ? state : null;
+  const items = useMemo(
+    () => (shown ? incomingItems(shown, networks, Date.now()) : []),
+    [networks, shown]
+  );
+
+  const polling = items.some((i) => i.status.kind === "bridging");
+  useEffect(() => {
+    if (!polling || !walletAddress) return;
+    const timer = setInterval(() => void read(walletAddress, false), POLL_MS);
+    return () => clearInterval(timer);
+  }, [polling, read, walletAddress]);
+
+  const arrived = items.some((i) => i.status.kind === "arrived");
+  useEffect(() => {
+    if (!arrived || !walletAddress) return;
+    const timer = setTimeout(() => {
+      apply(walletAddress, { type: "settle" });
+      reread();
+    }, ARRIVED_MS);
+    return () => clearTimeout(timer);
+  }, [apply, arrived, walletAddress]);
+
+  const active = useRef(new Set<string>());
+  const confirm = useCallback(
+    async (item: IncomingItem) => {
+      if (!sender || !walletAddress) return;
+      const wallet = walletAddress;
+      const busy = `${wallet}:${lane(item.chain, item.asset)}`;
+      if (active.current.has(busy)) return;
+      active.current.add(busy);
+      const { key } = item;
+      apply(wallet, {
+        type: "run",
+        run: {
+          key,
+          chain: item.chain,
+          asset: item.asset,
+          amountRaw: item.amountRaw,
+          requestId: null,
+          sentAt: null,
+          failure: null,
+        },
+      });
+      try {
+        const outcome = await moveIncoming({
+          sender,
+          chain: item.chain,
+          asset: item.asset,
+          symbol: item.symbol,
+          wallet: wallets.find(
+            (w) => w.address.toLowerCase() === sender.toLowerCase()
+          ),
+          sendTransaction,
+          onRead: (balances, transfers) =>
+            apply(wallet, {
+              type: "read",
+              at: ++readAt.current,
+              balances,
+              transfers,
+              error: null,
+            }),
+          onQuoted: (requestId, amountRaw) =>
+            apply(wallet, { type: "patch", key, patch: { requestId, amountRaw } }),
+          onSent: () =>
+            apply(wallet, { type: "patch", key, patch: { sentAt: Date.now() } }),
+        });
+        if (outcome.kind === "nothing" || outcome.kind === "rejected")
+          apply(wallet, { type: "drop", key });
+        else if (outcome.kind === "failed")
+          apply(wallet, {
+            type: "patch",
+            key,
+            patch: {
+              failure: { message: outcome.message, requestId: outcome.requestId },
+            },
+          });
+        else void read(wallet, false);
+      } finally {
+        active.current.delete(busy);
+      }
+    },
+    [apply, read, sendTransaction, sender, walletAddress, wallets]
+  );
+
+  const reload = useCallback(() => {
+    retryOnNextLoad();
+    peek();
+    reread();
+  }, [retryOnNextLoad]);
+
+  return {
+    items,
+    error: shown?.error ?? null,
+    confirm,
+    reload,
+  };
 }
+
+export type IncomingTransfers = ReturnType<typeof useIncomingTransfers>;

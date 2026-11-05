@@ -10,7 +10,7 @@ import {
 import { usePublicEnv } from "@/contexts/public-env-context";
 import { openTrackedLink } from "@/lib/core/analytics";
 
-const relayExplorer = (requestId: string) =>
+export const relayExplorer = (requestId: string) =>
   `https://relay.link/transaction/${requestId}`;
 
 function ExplorerButton({ href, source }: { href: string; source: string }) {

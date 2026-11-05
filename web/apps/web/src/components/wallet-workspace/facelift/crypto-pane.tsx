@@ -398,11 +398,7 @@ export function CryptoPane({
           </div>
         </div>
 
-        {incoming ? (
-          <div className="flex w-full shrink-0 flex-col gap-2 p-2">
-            {incoming}
-          </div>
-        ) : null}
+        {incoming}
 
         <div className="flex w-full flex-1 flex-col p-2">
           {isEmpty ? (

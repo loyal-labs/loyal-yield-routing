@@ -24,8 +24,8 @@ import {
 import { deriveSwapTokens, selectSwapToken } from "@/components/wallet-sidebar/swap-tokens";
 import { useAuthSession } from "@/contexts/auth-session-context";
 import { BridgeWorkspace } from "./bridge-workspace";
-import { IncomingTransferCard } from "./incoming-transfer-card";
-import type { useIncomingTransfers } from "./use-bridge-move";
+import { IncomingTransfers } from "./incoming-transfer-card";
+import type { IncomingTransfers as IncomingTransfersState } from "./use-bridge-move";
 import { useEscapePage } from "@/components/wallet-workspace/facelift/escape-owner";
 import {
   MiddlePaneSlide,
@@ -92,7 +92,7 @@ export function CryptoPage({
   onReceive,
   requestedAction,
 }: {
-  incoming: ReturnType<typeof useIncomingTransfers>;
+  incoming: IncomingTransfersState;
   navigationNonce: number;
   onBack: () => void;
   onReceive: () => void;
@@ -101,7 +101,6 @@ export function CryptoPage({
 }) {
   const publicEnv = usePublicEnv();
   const { isHydrated, isSignedIn } = useAuthCapability();
-  const { sender, transfers } = incoming;
 
   const data = useWalletDesktopData({});
   const swapVisibleBalances = useMemo(
@@ -539,18 +538,7 @@ export function CryptoPage({
             <CryptoPane
               balanceFraction={pageBalance.balanceFraction}
               balanceWhole={pageBalance.balanceWhole}
-              incoming={
-                sender && transfers.length > 0
-                  ? transfers.map((transfer) => (
-                      <IncomingTransferCard
-                        key={`${transfer.chain}:${transfer.asset}`}
-                        onSettled={incoming.reload}
-                        sender={sender}
-                        transfer={transfer}
-                      />
-                    ))
-                  : null
-              }
+              incoming={<IncomingTransfers incoming={incoming} />}
               isBalanceRevealed={isWalletDataRevealed}
               isEmpty={isWalletDataRevealed && !hasAssets}
               onReceive={onReceive}

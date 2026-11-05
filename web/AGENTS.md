@@ -793,11 +793,16 @@ USDC on Solana. Its assets, chains, addresses, minimums and fees come from the s
 Deposits to a `relay_signed` route (an external Solana wallet) stop on the user's Privy
 embedded EVM wallet until they press Confirm on Assets. Assets shows one "Confirm incoming
 transfer" card per nonzero balance from `/api/funding/bridge/balances` above the asset list,
-and the sidebar Assets item counts them with a red dot. The shell reads the balances once per
-load, again when Receive closes and after each Move. Confirm quotes the whole balance and runs
-the sponsored Move in `use-bridge-move.ts`; the card then shows bridging, filled or failed. A
-submitted transfer from `/api/funding/bridge/transfers` restores the bridging card after a
-reload. A balance under its chain's `minUsd` shows the minimum with Confirm disabled.
+and the sidebar Assets item counts them with a red dot. Only a signed-in wallet whose Solana
+account is not a Privy embedded wallet reads the deposit route and balances. The balance is
+the truth of what waits; a submitted transfer from `/api/funding/bridge/transfers` is the
+truth of what moves, and hides its balance for 15 minutes. `useIncomingTransfers` owns the
+reads, one 3 s transfers poll while anything bridges, and every Move; cards only render its
+items. Confirm takes the per-chain Web Lock first, re-reads, and quotes the fresh balance, so
+a second tab or a second asset on the same chain waits and then finds nothing to move. The
+origin transaction must land before `/submit`. The card row shows Bridging…, Arrived or
+Failed with Retry. A failed balances read keeps transfers and shows an inline Retry. A
+balance under its chain's `minUsd` shows the minimum with Confirm disabled.
 `privy_autobridge` routes make no balances request. The card is the only Move entry point.
 The sidebar Bridge action opens the Bridge Out main pane,
 with send-asset, receive-asset → chain, and recipient selectors. It shares the

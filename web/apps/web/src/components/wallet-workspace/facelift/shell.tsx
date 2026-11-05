@@ -471,7 +471,7 @@ export function WorkspaceFaceliftShell() {
           earnMaxBalanceUsd={earnMax.view.balanceUsd}
           flashedShortcut={flashedShortcut}
           incomingTransfers={
-            incoming.transfers.filter((t) => t.requestId === null).length
+            incoming.items.filter((i) => i.status.kind === "waiting").length
           }
           isEarnBalanceLoading={isPositionLoading}
           isEarnMaxBalanceLoading={earnMax.view.isLoading}
