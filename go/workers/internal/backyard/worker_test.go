@@ -208,6 +208,56 @@ func TestWorkerRetriesObservation(t *testing.T) {
 	}
 }
 
+func TestWorkerDefersForeignRPCFailureWithoutPublishingIncompleteObservation(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		err   error
+		retry bool
+	}{
+		{"lagging history", fmt.Errorf("getSignaturesForAddress: %w", chain.ErrBehind), true},
+		{"unavailable receipt", fmt.Errorf("getTransaction: %w", chain.ErrUnavailable), true},
+		{"lost writer", errWriterSessionLost, false},
+		{"invalid history", errors.New("foreign-inflow anchor identity mismatch"), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			journal := &stubProductionJournal{journal: reconciledJournal()}
+			reads := 0
+			state := productionObserveState{
+				routeKey: productionRouteKey, journal: journal,
+				batch: productionConfirmedBatch(t, 77, nil), identity: pinnedIdentityObservation,
+				foreignInflows: func(context.Context, *Snapshot) error {
+					reads++
+					if reads == 1 {
+						return tc.err
+					}
+					return nil
+				},
+			}
+			worker := &Worker{interval: time.Millisecond}
+			err := worker.runTicks(ctx, func(ctx context.Context) error {
+				observation, err := state.observe(ctx)
+				if err != nil {
+					if observation.Snapshot.Fresh || journal.positionSnapshotWrites != 0 {
+						t.Fatal("failed foreign-inflow read published an incomplete observation")
+					}
+					return err
+				}
+				cancel()
+				return nil
+			})
+			if tc.retry {
+				if !errors.Is(err, context.Canceled) || reads != 2 || journal.positionSnapshotWrites != 1 {
+					t.Fatalf("worker did not recover after fresh evidence: reads=%d snapshots=%d err=%v", reads, journal.positionSnapshotWrites, err)
+				}
+			} else if !errors.Is(err, tc.err) || reads != 1 || journal.positionSnapshotWrites != 0 {
+				t.Fatalf("non-RPC fault was hidden: reads=%d snapshots=%d err=%v", reads, journal.positionSnapshotWrites, err)
+			}
+		})
+	}
+}
+
 func TestWorkerRetriesPreparationBeforeRecordingOrBuilding(t *testing.T) {
 	t.Parallel()
 	manifest := readyWorkerManifest(t)
