@@ -11,15 +11,20 @@ import (
 )
 
 func (b *Bot) ensureUser(ctx context.Context, telegramID int64, username *string, displayName string) (string, error) {
+	return b.resolveUser(ctx, telegramID, username, displayName, true)
+}
+
+func (b *Bot) resolveUser(ctx context.Context, telegramID int64, username *string, displayName string, backfillAvatar bool) (string, error) {
 	var id string
-	err := b.db.QueryRow(ctx, `SELECT id::text FROM users WHERE telegram_id = $1`, telegramID).Scan(&id)
+	var hasAvatar bool
+	err := b.db.QueryRow(ctx, `SELECT id::text, COALESCE(avatar_url, '') <> '' FROM users WHERE telegram_id = $1`, telegramID).Scan(&id, &hasAvatar)
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = b.db.QueryRow(ctx, `
 			INSERT INTO users (telegram_id, username, display_name) VALUES ($1, $2, $3)
 			ON CONFLICT DO NOTHING
-			RETURNING id::text`, telegramID, username, displayName).Scan(&id)
+			RETURNING id::text, COALESCE(avatar_url, '') <> ''`, telegramID, username, displayName).Scan(&id, &hasAvatar)
 		if errors.Is(err, pgx.ErrNoRows) {
-			err = b.db.QueryRow(ctx, `SELECT id::text FROM users WHERE telegram_id = $1`, telegramID).Scan(&id)
+			err = b.db.QueryRow(ctx, `SELECT id::text, COALESCE(avatar_url, '') <> '' FROM users WHERE telegram_id = $1`, telegramID).Scan(&id, &hasAvatar)
 		}
 	}
 	if err != nil {
@@ -27,6 +32,11 @@ func (b *Bot) ensureUser(ctx context.Context, telegramID int64, username *string
 	}
 	if _, err := b.db.Exec(ctx, `INSERT INTO user_settings (user_id) VALUES ($1::uuid) ON CONFLICT DO NOTHING`, id); err != nil {
 		return "", fmt.Errorf("ensure user settings: %w", err)
+	}
+	if !hasAvatar && backfillAvatar {
+		if err := b.backfillAvatar(ctx, telegramID, id); err != nil {
+			return "", err
+		}
 	}
 	return id, nil
 }
@@ -40,7 +50,7 @@ func (b *Bot) disableNotifications(ctx context.Context, from User) error {
 	default:
 		name = fmt.Sprintf("Telegram User %d", from.ID)
 	}
-	userID, err := b.ensureUser(ctx, from.ID, from.username(), name)
+	userID, err := b.resolveUser(ctx, from.ID, from.username(), name, false)
 	if err != nil {
 		return err
 	}

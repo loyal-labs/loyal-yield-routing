@@ -21,6 +21,7 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/admin"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/r2"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/webserve"
 )
 
@@ -58,16 +59,7 @@ func openOptional(ctx context.Context, name string, maxConnections int32, extra 
 	return pool, nil
 }
 
-func httpsURL(name string, allowPath bool) (*url.URL, error) {
-	parsed, err := url.Parse(os.Getenv(name))
-	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" ||
-		(!allowPath && strings.Trim(parsed.Path, "/") != "") {
-		return nil, fmt.Errorf("%s: want an https URL with a host", name)
-	}
-	return parsed, nil
-}
-
-func r2Config() (*admin.R2Config, error) {
+func r2Config() (*r2.Config, error) {
 	id, err := engine.OptionalCredential("R2_ACCESS_KEY_ID")
 	if err != nil {
 		return nil, err
@@ -80,27 +72,10 @@ func r2Config() (*admin.R2Config, error) {
 	if id == "" || secret == "" || bucket == "" || os.Getenv("LOYAL_ADMIN_R2_ENDPOINT") == "" || os.Getenv("LOYAL_ADMIN_CDN_BASE_URL") == "" {
 		return nil, nil
 	}
-	cfg := &admin.R2Config{AccessKeyID: id, SecretAccessKey: secret, Bucket: bucket}
-	if strings.Contains(bucket, "/") {
-		return nil, errors.New("LOYAL_ADMIN_R2_BUCKET: want a bucket name")
+	cfg, err := r2.New(id, secret, bucket, os.Getenv("LOYAL_ADMIN_R2_ENDPOINT"), os.Getenv("LOYAL_ADMIN_CDN_BASE_URL"), os.Getenv("LOYAL_ADMIN_R2_PREFIX"))
+	if err != nil {
+		return nil, fmt.Errorf("LOYAL_ADMIN_R2_*: %w", err)
 	}
-	if cfg.Endpoint, err = httpsURL("LOYAL_ADMIN_R2_ENDPOINT", false); err != nil {
-		return nil, err
-	}
-	if cfg.CDNBase, err = httpsURL("LOYAL_ADMIN_CDN_BASE_URL", true); err != nil {
-		return nil, err
-	}
-	var prefix []string
-	for _, segment := range strings.Split(os.Getenv("LOYAL_ADMIN_R2_PREFIX"), "/") {
-		switch segment = strings.TrimSpace(segment); segment {
-		case "":
-		case ".", "..":
-			return nil, errors.New("LOYAL_ADMIN_R2_PREFIX: contains an invalid path segment")
-		default:
-			prefix = append(prefix, segment)
-		}
-	}
-	cfg.Prefix = strings.Join(prefix, "/")
 	return cfg, nil
 }
 
