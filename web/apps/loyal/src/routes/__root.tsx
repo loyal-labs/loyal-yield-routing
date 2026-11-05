@@ -8,8 +8,10 @@ import { XPixelBootstrap } from "@/components/analytics/x-pixel-bootstrap";
 import { PublicEnvProvider } from "@/contexts/public-env-context";
 import { storeLinkCode } from "@/features/referrals/pending-code";
 import { createPublicEnv } from "@/lib/core/config/public";
+import { JsonLd } from "@/lib/seo/json-ld";
 
 import { rootHead } from "../next-compat/metadata";
+import { siteJsonLd } from "../site-json-ld";
 
 const resolvedEnv = createPublicEnv(process.env);
 const publicEnv =
@@ -18,13 +20,14 @@ const publicEnv =
     : resolvedEnv;
 
 export const Route = createRootRoute({
-  beforeLoad: () => {
-    storeLinkCode(new URLSearchParams(window.location.search).get("ref"));
+  beforeLoad: ({ location }) => {
+    storeLinkCode(new URLSearchParams(location.searchStr).get("ref"));
   },
   head: () => rootHead(),
   component: () => (
     <>
       <HeadContent />
+      <JsonLd data={siteJsonLd} />
       <PublicEnvProvider value={publicEnv}>
         <XPixelBootstrap />
         <Outlet />
