@@ -139,19 +139,6 @@ func buildAuth(appDB *pgxpool.Pool, sessionGranted bool) (*webapp.Auth, *chain.C
 	return auth, rpcClient, err
 }
 
-func granted(ctx context.Context, pool *pgxpool.Pool, routes string, grants []webapp.Grant) bool {
-	missing, err := webapp.MissingGrants(ctx, pool, grants)
-	switch {
-	case err != nil:
-		slog.Warn(routes+" not served by Go: grant check failed", "error", err)
-	case len(missing) > 0:
-		slog.Warn(routes+" not served by Go: role lacks grants", "missing", missing)
-	default:
-		return true
-	}
-	return false
-}
-
 type grantVerdicts struct{ Content, Stats, Session, EarnMax, Push, PushSend, Yield bool }
 
 func checkGrants(ctx context.Context, appDB, yieldDB *pgxpool.Pool) grantVerdicts {
@@ -174,7 +161,7 @@ func checkGrants(ctx context.Context, appDB, yieldDB *pgxpool.Pool) grantVerdict
 		{&v.Yield, yieldDB, "Earn MAX route state", webapp.YieldGrants},
 	} {
 		if c.pool != nil {
-			wg.Go(func() { *c.ok = granted(ctx, c.pool, c.routes, c.grants) })
+			wg.Go(func() { *c.ok = webapp.GrantsHeld(ctx, c.pool, c.routes, c.grants) })
 		}
 	}
 	wg.Wait()
@@ -414,6 +401,6 @@ func main() {
 	}
 }
 
-var grantBound = 8 * time.Second
+var grantBound = 15 * time.Second
 
 const timescaleRoutes = "Earn earnings, state and deposit prepare"

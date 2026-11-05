@@ -1,9 +1,10 @@
 # Locally managed tunnel loyal-workers, set up as robinx-prod's: Cloudflare
 # serves askloyal.com, www, app, next, admin, admin-next, stats, stats-next and
 # the Telegram webhook on tgbot.askloyal.com, and cloudflared carries them to
-# loyal-web, loyal-admin, loyal-stats and loyal-telegram on loopback. The apex,
-# www and app hosts' /_next/ assets still come from the Vercel deployment, for
-# the pages loyal-web proxies. No httpHostHeader on admin: its CSRF check
+# loyal-web, loyal-admin, loyal-stats and loyal-telegram on loopback. backend
+# is served too (since Nov 5 2026, a proxied CNAME to this tunnel). The apex,
+# www, app and backend hosts' /_next/ assets come from loyal-frontend.vercel.app,
+# for the pages loyal-web proxies. No httpHostHeader on admin: its CSRF check
 # compares Origin with Host.
 # The credentials file is the one `cloudflared tunnel create` wrote; it lives
 # only on the host (deploy/hetzner/README.md, "Web (loyal-web)").
@@ -17,24 +18,31 @@ ingress:
     service: http_status:404
   - hostname: askloyal.com
     path: ^/_next/
-    service: https://backend.askloyal.com
+    service: https://loyal-frontend.vercel.app
     originRequest:
-      httpHostHeader: backend.askloyal.com
+      httpHostHeader: loyal-frontend.vercel.app
   - hostname: askloyal.com
     service: http://127.0.0.1:10080
   - hostname: www.askloyal.com
     path: ^/_next/
-    service: https://backend.askloyal.com
+    service: https://loyal-frontend.vercel.app
     originRequest:
-      httpHostHeader: backend.askloyal.com
+      httpHostHeader: loyal-frontend.vercel.app
   - hostname: www.askloyal.com
     service: http://127.0.0.1:10080
   - hostname: app.askloyal.com
     path: ^/_next/
-    service: https://backend.askloyal.com
+    service: https://loyal-frontend.vercel.app
     originRequest:
-      httpHostHeader: backend.askloyal.com
+      httpHostHeader: loyal-frontend.vercel.app
   - hostname: app.askloyal.com
+    service: http://127.0.0.1:10080
+  - hostname: backend.askloyal.com
+    path: ^/_next/
+    service: https://loyal-frontend.vercel.app
+    originRequest:
+      httpHostHeader: loyal-frontend.vercel.app
+  - hostname: backend.askloyal.com
     service: http://127.0.0.1:10080
   - hostname: next.askloyal.com
     service: http://127.0.0.1:10080

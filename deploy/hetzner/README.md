@@ -535,9 +535,12 @@ For RS256, encrypt the PEM the same way with
 Run `systemctl daemon-reload && systemctl restart loyal-web`. To go back to
 proxying, remove the drop-in, daemon-reload and restart.
 
-### Cron jobs and push webhooks (opt-in, owner's go)
+### Cron jobs and push webhooks
 
-The jobs `web/apps/web/vercel.json` schedules run from `loyal-web`:
+Both timers were installed and enabled on loyal-workers on Nov 5 2026 (14:00 PST), and
+`web/apps/web/vercel.json` no longer schedules them.
+
+The jobs `web/apps/web/vercel.json` used to schedule run from `loyal-web`:
 
 | Job | Where | Schedule |
 |---|---|---|
@@ -563,8 +566,8 @@ until it does). `50-credentials.conf` is loyal-web's own credential lines:
 
 A run needs `WEB_APP_DATABASE_URL` (both jobs) and `WEB_SOLANA_RPC_URL` and
 `SMART_ACCOUNT_SPONSOR_PK` (reconcile), `WEB_YIELD_DATABASE_URL`, `TIMESCALEDB_URL`,
-`MOBILE_PUSH_API_BASE_URL` and `MOBILE_PUSH_API_SECRET` (joy; without the push pair a real
-run exits non-zero rather than spend the one-time campaigns unsent). By hand,
+and no push API pair: joy sends through loyal-web's in-process wallet push sender and needs
+the push-send grants (checkCrons PushSend). By hand,
 `loyal-web cron earn-yield-joy --dry-run` prints what a run would push and writes nothing.
 Enable with `systemctl enable --now loyal-web-cron-<job>.timer`. Every run takes a Postgres
 advisory lock on the App database, so a second run of one job exits non-zero while the
@@ -970,12 +973,22 @@ shows that role as unconfigured.
 
 Since Nov 5 2026 12:39 PST `askloyal.com` and `www.askloyal.com` are proxied
 CNAMEs to the loyal-workers tunnel, served by loyal-web (prerendered pages and
-the Go API routes; anything else proxies to `backend.askloyal.com`, and `/_next/`
+the Go API routes; anything else proxies to `loyal-frontend.vercel.app`, and `/_next/`
 assets go straight to the Vercel deployment). The apex keeps its Google MX, SPF
 and site-verification records. The apex CNAME was created through the
 Cloudflare API, not `tunnel route dns`, so the MX and TXT records stay put.
 Rollback: replace the apex CNAME with `A 216.198.79.1` (DNS only, TTL 600) and
 point `www` back at `CNAME 43e72ea85637f02c.vercel-dns-017.com` (DNS only).
+
+## Backend (backend.askloyal.com)
+
+Since Nov 5 2026 `backend.askloyal.com` is a proxied CNAME to the loyal-workers
+tunnel, created with `cloudflared tunnel route dns --overwrite-dns loyal-workers backend.askloyal.com`.
+It is served by loyal-web; paths Go does not serve are proxied to
+`loyal-frontend.vercel.app`, and its `/_next/` assets come from there too. Old
+mobile builds call this host directly. Rollback: `CNAME 43e72ea85637f02c.vercel-dns-017.com`
+(DNS only). Set `LOYAL_WEB_UPSTREAM` back to the Vercel alias only if
+`loyal-frontend.vercel.app` stops answering.
 
 ## Telegram (loyal-telegram)
 
@@ -1009,8 +1022,8 @@ the Vite build of `web/apps/dashboard` embedded in a Go binary that answers
 `/api/earn/stats` (the snapshot reader loyal-web uses) and the partner-facing
 `/api/earn/vaults` itself, read-only. It listens on `127.0.0.1:10082`; the
 tunnel serves it at `stats-next.askloyal.com` and, once DNS moves,
-`stats.askloyal.com`. The snapshot row is written by the telegram app's Vercel
-cron, which this move does not touch.
+`stats.askloyal.com`. loyal-stats writes the snapshot row itself every minute; the telegram
+app's Vercel cron is gone.
 
 | Credential name | File in `/etc/credstore.encrypted/` | Grants |
 |---|---|---|
