@@ -318,7 +318,7 @@
   },
   {
     "labels": {
-      "address": "0xbd03…8179",
+      "address": "0xbd03e1f47c2a9b6d0e53f8a14c7d26b9d5c48179",
       "alertname": "LoyalBridgeIncomingUnmoved",
       "asset": "usdt",
       "chain": "ethereum",
@@ -328,13 +328,13 @@
       "action": "Read the retail engine's 'bridge incoming unmoved' log line for this address. The user must press Confirm on Assets to move it, or support moves or refunds it.",
       "impact": "A user's funds sit on their EVM wallet and never reach their Solana balance until the user moves them or support does.",
       "recovery": "Confirm the next scan reads the address and its series is gone; a stale series does not prove recovery.",
-      "summary": "25 usdt left unmoved on 0xbd03…8179 (ethereum)",
+      "summary": "25 usdt left unmoved on 0xbd03e1f47c2a9b6d0e53f8a14c7d26b9d5c48179 (ethereum)",
       "trigger": "A relay_signed EVM wallet held at least 0.1 units of a token with no inbound transfer confirmed for its wallet in the last 30 minutes, and the balance stayed for 30 minutes."
     }
   },
   {
     "labels": {
-      "address": "0xbd03…8179",
+      "address": "0xbd03e1f47c2a9b6d0e53f8a14c7d26b9d5c48179",
       "alertname": "LoyalBridgeIncomingStranded",
       "asset": "usdt",
       "chain": "ethereum",
@@ -344,7 +344,7 @@
       "action": "The UI cannot move an amount under the chain minimum. Support refunds it or the user tops it up to the minimum; read the 'bridge incoming unmoved' log line with under_min=true for the amount.",
       "impact": "The balance is too small for the Move screen to bridge, so it stays on the EVM wallet until support acts.",
       "recovery": "Confirm the next scan reads the address and its series is gone; a stale series does not prove recovery.",
-      "summary": "5 usdt on 0xbd03…8179 (ethereum) is under the chain minimum and cannot be moved",
+      "summary": "5 usdt on 0xbd03e1f47c2a9b6d0e53f8a14c7d26b9d5c48179 (ethereum) is under the chain minimum and cannot be moved",
       "trigger": "A relay_signed EVM wallet held at least 0.1 units of a token below its chain's minimum for 30 minutes with no inbound transfer confirmed for its wallet."
     }
   },

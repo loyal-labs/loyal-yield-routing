@@ -81,7 +81,7 @@ func (t *Tracker) unmoved(ctx context.Context, walletIDs map[string]string) erro
 	}
 	for address := range walletIDs {
 		if !live[address] {
-			t.Facts.BridgeIncomingHeld(maskAddress(address), nil)
+			t.Facts.BridgeIncomingHeld(strings.ToLower(address), nil)
 			delete(walletIDs, address)
 		}
 	}
@@ -133,7 +133,7 @@ func (t *Tracker) unmoved(ctx context.Context, walletIDs map[string]string) erro
 					"amount", decimalAmount(b), "under_min", underMin(b))
 			}
 		}
-		t.Facts.BridgeIncomingHeld(maskAddress(r.address), held)
+		t.Facts.BridgeIncomingHeld(strings.ToLower(r.address), held)
 	}
 	if failed > 0 {
 		slog.Warn("bridge incoming scan incomplete", "failed_addresses", failed, "addresses", len(routes), "error", engine.ErrorText(firstErr))
