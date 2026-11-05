@@ -18,6 +18,7 @@ const (
 	holdStopped      HoldReason = "stopped"
 
 	holdSpendingLimit HoldReason = "spending_limit"
+	holdPriceLimit    HoldReason = "price_limit"
 )
 
 type PreSendHold struct {

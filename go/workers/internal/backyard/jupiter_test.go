@@ -116,18 +116,18 @@ func TestJupiterBuilderPinsBothExactEdgesAndPacketBoundary(t *testing.T) {
 func TestJupiterValidatorAcceptsOnlySharedDialectsAndExactCustodies(t *testing.T) {
 	t.Parallel()
 	instruction := jupiterTestInstruction(SwapStableToCollateralStep, 100, 99)
-	if _, err := validateJupiterInstructionForRoute(rwa, instruction, SwapStableToCollateralStep, 100, 99, 98, PrimeUSDCLaneID); err != nil {
+	if _, err := validateJupiterInstructionForRoute(rwa, instruction, SwapStableToCollateralStep, 100, 99, 98, PrimeUSDCLaneID, 0); err != nil {
 		t.Fatal(err)
 	}
 	instruction.Accounts[2].Pubkey = previousBackyardVault
-	if _, err := validateJupiterInstructionForRoute(rwa, instruction, SwapStableToCollateralStep, 100, 99, 98, PrimeUSDCLaneID); err == nil {
+	if _, err := validateJupiterInstructionForRoute(rwa, instruction, SwapStableToCollateralStep, 100, 99, 98, PrimeUSDCLaneID, 0); err == nil {
 		t.Fatal("accepted drifted/prior custody")
 	}
 	instruction = jupiterTestInstruction(SwapStableToCollateralStep, 100, 99)
 	data, _ := base64.StdEncoding.DecodeString(instruction.Data)
 	data[0] ^= 1
 	instruction.Data = base64.StdEncoding.EncodeToString(data)
-	if _, err := validateJupiterInstructionForRoute(rwa, instruction, SwapStableToCollateralStep, 100, 99, 98, PrimeUSDCLaneID); err == nil {
+	if _, err := validateJupiterInstructionForRoute(rwa, instruction, SwapStableToCollateralStep, 100, 99, 98, PrimeUSDCLaneID, 0); err == nil {
 		t.Fatal("accepted arbitrary Jupiter dialect")
 	}
 }
@@ -168,11 +168,11 @@ func TestJupiterFreshSwapIsBoundedAndRejectsCompanionInstructions(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := freshSwapForRoute(context.Background(), rwa, client, PrimeUSDCLaneID, SwapStableToCollateralStep, 100, 32); err != nil {
+	if _, _, err := freshSwapForRoute(context.Background(), rwa, client, PrimeUSDCLaneID, SwapStableToCollateralStep, 100, 32, 0); err != nil {
 		t.Fatal(err)
 	}
 	companion = true
-	if _, _, err := freshSwapForRoute(context.Background(), rwa, client, PrimeUSDCLaneID, SwapStableToCollateralStep, 100, 32); err == nil {
+	if _, _, err := freshSwapForRoute(context.Background(), rwa, client, PrimeUSDCLaneID, SwapStableToCollateralStep, 100, 32, 0); err == nil {
 		t.Fatal("accepted a setup instruction outside the policy contract")
 	}
 }
@@ -183,7 +183,7 @@ func TestJupiterAcceptsCanonicalSystemProgramAccount(t *testing.T) {
 	instruction.Accounts = append(instruction.Accounts, jupiter.AccountMeta{
 		Pubkey: "11111111111111111111111111111111",
 	})
-	if _, err := validateJupiterInstructionForRoute(rwa, instruction, SwapStableToCollateralStep, 100, 95, 94, PrimeUSDCLaneID); err != nil {
+	if _, err := validateJupiterInstructionForRoute(rwa, instruction, SwapStableToCollateralStep, 100, 95, 94, PrimeUSDCLaneID, 0); err != nil {
 		t.Fatal(err)
 	}
 	key, err := decodeKey("11111111111111111111111111111111")

@@ -56,6 +56,10 @@ func assessWithdrawalHealth(v *Vault, o Observation, decision Decision, tickErr 
 	if errors.As(tickErr, &unpriced) {
 		h.Reason = "held:unpriced_lane:" + unpriced.lane
 	}
+	var hold *PreSendHold
+	if withdrawalShortfallRaw(s) > 0 && errors.As(tickErr, &hold) && hold.Reason == holdPriceLimit {
+		h.Reason = "withdrawal_price_limit"
+	}
 	return h, true
 }
 

@@ -227,6 +227,7 @@ type decisionEvidence struct {
 	ValuationSource string `json:"valuationSource,omitempty"`
 	ValuationSlot   int64  `json:"valuationSlot,omitempty"`
 	AmountRaw       int64  `json:"amountRaw"`
+	MaxSlippageBPS  uint16 `json:"maxSlippageBps,omitempty"`
 	Reason          string `json:"reason"`
 	ObservationID   string `json:"observationId"`
 	ObservationSlot int64  `json:"observationSlot"`
@@ -247,6 +248,7 @@ func restorePersistedDecision(expectedEffects []byte, action Action, idempotency
 	decision := Decision{
 		Action: action, IdempotencyKey: idempotencyKey, StrategyKey: strategyKey,
 		AmountRaw: envelope.Decision.AmountRaw, Reason: envelope.Decision.Reason,
+		MaxSlippageBPS: envelope.Decision.MaxSlippageBPS,
 	}
 	if err := decision.Validate(); err != nil {
 		return Decision{}, err
@@ -259,7 +261,8 @@ func newDecisionEvidence(observation Observation, decision Decision, manifestSHA
 	return decisionEvidence{
 		ValuationSource: source, ValuationSlot: slot,
 		AmountRaw: decision.AmountRaw, Reason: decision.Reason,
-		ObservationID: observation.Snapshot.ObservationID, ObservationSlot: observation.Snapshot.Slot,
+		MaxSlippageBPS: decision.MaxSlippageBPS,
+		ObservationID:  observation.Snapshot.ObservationID, ObservationSlot: observation.Snapshot.Slot,
 		ManifestSHA256: manifestSHA256,
 		StrategyKey:    decision.StrategyKey,
 	}
