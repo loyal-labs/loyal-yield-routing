@@ -102,7 +102,7 @@ func (b *Bot) answer(ctx context.Context, update *Update, text string, alert boo
 	if text == "" {
 		err = b.api.AnswerCallbackQuery(ctx, update.CallbackQuery.ID)
 	} else {
-		err = b.api.AnswerCallback(ctx, update.CallbackQuery.ID, text, alert)
+		err = b.api.AnswerCallback(ctx, update.CallbackQuery.ID, text, alert, 0)
 	}
 	if err != nil {
 		slog.Warn("telegram callback answer failed", "update_id", update.UpdateID, "error", err)

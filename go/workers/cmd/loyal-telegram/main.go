@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"regexp"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -62,7 +64,38 @@ func publicBase() (*url.URL, error) {
 	return parsed, nil
 }
 
-func run(ctx context.Context) error {
+func summaryConfig() (telegram.SummaryConfig, error) {
+	key, err := engine.OptionalCredential("REDPILL_AI_API_KEY")
+	if err != nil {
+		return telegram.SummaryConfig{}, err
+	}
+	cfg := telegram.SummaryConfig{
+		RedpillBase: envOr("LOYAL_TELEGRAM_REDPILL_API", "https://api.redpill.ai/v1"),
+		RedpillKey:  key,
+		Model:       envOr("AX_SUMMARY_MODEL_DEFAULT", envOr("SUMMARY_AX_MODEL", "z-ai/glm-4.7")),
+		MaxAttempts: 3,
+	}
+	if raw := os.Getenv("AX_SUMMARY_MAX_ATTEMPTS"); raw != "" {
+		if cfg.MaxAttempts, err = strconv.Atoi(raw); err != nil || cfg.MaxAttempts < 1 {
+			return cfg, errors.New("AX_SUMMARY_MAX_ATTEMPTS: want a positive integer")
+		}
+	}
+	from, to := os.Getenv("TELEGRAM_SUMMARY_PEER_OVERRIDE_FROM"), os.Getenv("TELEGRAM_SUMMARY_PEER_OVERRIDE_TO")
+	if (from == "") != (to == "") {
+		return cfg, errors.New("TELEGRAM_SUMMARY_PEER_OVERRIDE_FROM and _TO: set both or neither")
+	}
+	if from != "" {
+		a, errA := strconv.ParseInt(from, 10, 64)
+		b, errB := strconv.ParseInt(to, 10, 64)
+		if errA != nil || errB != nil {
+			return cfg, errors.New("TELEGRAM_SUMMARY_PEER_OVERRIDE_FROM and _TO: want chat ids")
+		}
+		cfg.PeerOverride = &[2]int64{a, b}
+	}
+	return cfg, nil
+}
+
+func run(ctx context.Context, once bool) error {
 	address := envOr("LOYAL_TELEGRAM_ADDRESS", "127.0.0.1:10083")
 	apiBase := envOr("LOYAL_TELEGRAM_BOT_API", "https://api.telegram.org")
 	jupiterSearch := os.Getenv("LOYAL_TELEGRAM_JUPITER_SEARCH")
@@ -93,6 +126,10 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	summaries, err := summaryConfig()
+	if err != nil {
+		return err
+	}
 	pool, err := db.OpenLazy(ctx, dsn, 8)
 	if err != nil {
 		return fmt.Errorf("TELEGRAM_APP_DATABASE_URL: %w", err)
@@ -109,8 +146,21 @@ func run(ctx context.Context) error {
 	bot := telegram.New(telegram.Config{
 		DB: pool, API: api, BotUsername: me.Username, WebhookSecret: secret,
 		BotID: me.ID, R2: storage, LibraryUploadToken: uploadToken, PublicBase: base,
-		JupiterSearch: jupiterSearch,
+		JupiterSearch: jupiterSearch, Summaries: summaries,
 	})
+	if once {
+		report, err := bot.RunSummaries(ctx, time.Now())
+		if err != nil {
+			return err
+		}
+		if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {
+			return err
+		}
+		if len(report.Errors) > 0 {
+			return fmt.Errorf("summaries: %d errors", len(report.Errors))
+		}
+		return nil
+	}
 
 	server := &http.Server{
 		Addr:              address,
@@ -121,6 +171,11 @@ func run(ctx context.Context) error {
 	cleanupCtx, stopCleanup := context.WithCancel(ctx)
 	var cleanup sync.WaitGroup
 	cleanup.Go(func() { bot.RunHelperCleanup(cleanupCtx) })
+	if summaries.RedpillKey == "" {
+		slog.Warn("REDPILL_AI_API_KEY not set; daily summaries off")
+	} else {
+		cleanup.Go(func() { bot.RunDailySummaries(cleanupCtx) })
+	}
 	defer func() {
 		stopCleanup()
 		cleanup.Wait()
@@ -147,13 +202,14 @@ func run(ctx context.Context) error {
 
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
-	if len(os.Args) != 1 {
-		fmt.Fprintln(os.Stderr, "usage: loyal-telegram")
+	once := len(os.Args) == 2 && os.Args[1] == "summaries-once"
+	if len(os.Args) != 1 && !once {
+		fmt.Fprintln(os.Stderr, "usage: loyal-telegram [summaries-once]")
 		os.Exit(2)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if err := run(ctx); err != nil {
+	if err := run(ctx, once); err != nil {
 		slog.Error("loyal-telegram stopped", "error", err)
 		os.Exit(1)
 	}

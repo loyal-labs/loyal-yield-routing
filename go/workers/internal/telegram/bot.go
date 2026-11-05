@@ -31,6 +31,15 @@ type Config struct {
 	LibraryUploadToken string
 	PublicBase         *url.URL
 	JupiterSearch      string
+	Summaries          SummaryConfig
+}
+
+type SummaryConfig struct {
+	RedpillBase  string
+	RedpillKey   string
+	Model        string
+	MaxAttempts  int
+	PeerOverride *[2]int64
 }
 
 type Bot struct {
@@ -47,6 +56,9 @@ type Bot struct {
 
 	http          *http.Client
 	jupiterSearch string
+
+	summaries   *summaryGenerator
+	summaryPeer *[2]int64
 }
 
 func New(cfg Config) *Bot {
@@ -56,6 +68,10 @@ func New(cfg Config) *Bot {
 	if b.jupiterSearch == "" {
 		b.jupiterSearch = jupiterTokenSearch
 	}
+	if cfg.Summaries.RedpillKey != "" {
+		b.summaries = &summaryGenerator{llm: newSummaryLLM(cfg.Summaries.RedpillBase, cfg.Summaries.RedpillKey), model: cfg.Summaries.Model, maxAttempts: cfg.Summaries.MaxAttempts}
+	}
+	b.summaryPeer = cfg.Summaries.PeerOverride
 	b.routes = map[Route]Handler{
 		RouteCommandStart:                 b.start,
 		RouteCommandSettings:              b.settings,
@@ -70,6 +86,10 @@ func New(cfg Config) *Bot {
 		RouteCallbackUserSettings:         b.userSettingsCallback,
 		RouteCommunityText:                b.communityText,
 		RouteCallbackOther:                b.answerCallback,
+		RouteCommandSummary:               b.summaryCommand,
+		RouteInlineSummary:                b.inlineSummary,
+		RouteInline:                       b.inline,
+		RouteCallbackSummaryVote:          b.summaryVoteCallback,
 		RouteBusinessConnection:           b.businessConnection,
 		RouteMyChatMember:                 b.myChatMember,
 	}
@@ -82,6 +102,8 @@ func (b *Bot) Handler() http.Handler {
 	mux.HandleFunc("POST /telegram/webhook", b.webhook)
 	mux.HandleFunc("POST /api/telegram/webhook", b.webhook)
 	b.registerOps(mux)
+	mux.HandleFunc("GET /api/og/share-summary", ogShareSummary)
+	mux.HandleFunc("GET /api/og/share", ogShare)
 	return mux
 }
 
