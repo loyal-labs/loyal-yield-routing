@@ -14,6 +14,7 @@ import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 
 import { runBridgeOutPreflight } from "./bridge-out-preflight";
+import { bridgeIconFile } from "./bridge-icons";
 import { settleWithin, toRaw } from "./use-bridge-move";
 
 export type OutToken = BridgeDestination["tokens"] extends
@@ -184,7 +185,17 @@ export function useBridgeDestinations() {
       )
       .then((body) => {
         if (live)
-          setState({ destinations: body.destinations ?? [], error: null });
+          setState({
+            destinations: body.destinations?.map((destination) => ({
+              ...destination,
+              icon: bridgeIconFile(destination.chain, destination.icon) ?? "",
+              tokens: destination.tokens?.map((token) => ({
+                ...token,
+                icon: bridgeIconFile(token.asset, token.icon) ?? "",
+              })) ?? null,
+            })) ?? [],
+            error: null,
+          });
       })
       .catch((e) => {
         if (live) setState({ destinations: null, error: errorText(e) });

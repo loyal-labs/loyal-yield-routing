@@ -60,13 +60,13 @@ var Assets = map[Asset]AssetInfo{
 	USDT:  {"USDT", "Tether USD", true, "usdt.png"},
 	PYUSD: {"PYUSD", "PayPal USD", true, "pyusd.svg"},
 	USDG:  {"USDG", "Global Dollar", true, "usdg.svg"},
-	DAI:   {"DAI", "Dai", true, ""},
-	USDe:  {"USDe", "Ethena USDe", true, ""},
+	DAI:   {"DAI", "Dai", true, "dai.png"},
+	USDe:  {"USDe", "Ethena USDe", true, "usde.png"},
 	USDS:  {"USDS", "USDS", true, "usds.png"},
-	FDUSD: {"FDUSD", "First Digital USD", true, ""},
-	RLUSD: {"RLUSD", "Ripple USD", true, ""},
-	USD1:  {"USD1", "World Liberty Financial USD", true, ""},
-	USDT0: {"USDT0", "USDT0", true, ""},
+	FDUSD: {"FDUSD", "First Digital USD", true, "fdusd.png"},
+	RLUSD: {"RLUSD", "Ripple USD", true, "rlusd.png"},
+	USD1:  {"USD1", "World Liberty Financial USD", true, "usd1.jpg"},
+	USDT0: {"USDT0", "USDT0", true, "usdt0.jpg"},
 }
 
 func init() {
@@ -229,7 +229,7 @@ var Networks = []Network{
 		{USDS, "0x6491c05a82219b8d1479057361ff1654749b876b", 18, StablesV2},
 		{DAI, "0xda10009cbd5d07dd0cecc66161fc93d7c9000da1", 18, StablesV2},
 	}},
-	{Chain: Optimism, Name: "OP Mainnet", Short: "Optimism", ChainID: 10, Tokens: []Token{
+	{Chain: Optimism, Name: "OP Mainnet", Short: "Optimism", Icon: "optimism.png", ChainID: 10, Tokens: []Token{
 		{USDC, "0x0b2c639c533813f4aa9d7837caf62653d097ff85", 6, StablesV1},
 		{USDT, "0x94b008aa00579c1307b0ef2c499ad98a8ce58e58", 6, StablesV1},
 		{USDT0, "0x01bff41798a0bcf287b996046ca68b395dbc1071", 6, StablesV2},
@@ -240,18 +240,18 @@ var Networks = []Network{
 		{USDT, "0xc2132d05d31c914a87c6611c10748aeb04b58e8f", 6, Legacy13},
 		{DAI, "0x8f3cf7ad23cd3cadbd9735aff958023239c6a063", 18, StablesV2},
 	}},
-	{Chain: Monad, Name: "Monad", Short: "Monad", ChainID: 143, Tokens: []Token{
+	{Chain: Monad, Name: "Monad", Short: "Monad", Icon: "monad.png", ChainID: 143, Tokens: []Token{
 		{USDC, "0x754704bc059f8c67012fed69bc8a327a5aafb603", 6, StablesV1},
 		{USDT, "0xe7cd86e13ac4309349f30b3435a9d337750fc82d", 6, StablesV1},
 	}},
-	{Chain: Tempo, Name: "Tempo", Short: "Tempo", ChainID: 4217, Tokens: []Token{
+	{Chain: Tempo, Name: "Tempo", Short: "Tempo", Icon: "tempo.png", ChainID: 4217, Tokens: []Token{
 		{USDCe, "0x20c000000000000000000000b9537d11c60e8b50", 6, StablesV1},
 		{USDT, "0x20c00000000000000000000014f22ca97301eb73", 6, StablesV1},
 	}},
-	{Chain: Robinhood, Name: "Robinhood Chain", Short: "Robinhood", ChainID: 4663, Tokens: []Token{
+	{Chain: Robinhood, Name: "Robinhood Chain", Short: "Robinhood", Icon: "robinhood.webp", ChainID: 4663, Tokens: []Token{
 		{USDG, "0x5fc5360d0400a0fd4f2af552add042d716f1d168", 6, StablesV1},
 	}},
-	{Chain: MegaETH, Name: "MegaETH", Short: "MegaETH", ChainID: 4326, Tokens: []Token{
+	{Chain: MegaETH, Name: "MegaETH", Short: "MegaETH", Icon: "megaeth.png", ChainID: 4326, Tokens: []Token{
 		{USDT, "0xb8ce59fc3717ada4c02eadf9682a9e934f625ebb", 6, StablesV1},
 	}},
 }

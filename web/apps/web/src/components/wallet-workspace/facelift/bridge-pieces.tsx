@@ -41,7 +41,7 @@ export function BridgeIcon({
   size?: number;
 }) {
   return (
-    <span className="relative shrink-0" style={{ width: size, height: size }}>
+    <span className="relative shrink-0 rounded-full bg-white" style={{ width: size, height: size }}>
       {size === 36 ? (
         <TokenIconSwap src={`${BASE}/receive/${file}`} />
       ) : (
@@ -58,7 +58,7 @@ export function BridgeIcon({
         // eslint-disable-next-line @next/next/no-img-element
         <img
           alt=""
-          className="absolute right-0 bottom-0 size-4 rounded-full border-2 border-card"
+          className="absolute right-0 bottom-0 size-4 rounded-full border-2 border-card bg-white"
           height={16}
           src={`${BASE}/receive/${badge}`}
           width={16}
@@ -225,7 +225,8 @@ export function BridgeCta({
 export function useBridgePickerFocus(
   panelRef: RefObject<HTMLElement | null>,
   open: boolean,
-  desktop: boolean
+  desktop: boolean,
+  view?: string
 ) {
   useEffect(() => {
     if (!open) return;
@@ -266,7 +267,7 @@ export function useBridgePickerFocus(
       cancelAnimationFrame(frame);
       window.removeEventListener("keydown", trapFocus, true);
     };
-  }, [panelRef, open, desktop]);
+  }, [panelRef, open, desktop, view]);
 }
 
 export function BridgePickerHeader({

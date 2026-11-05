@@ -1,6 +1,5 @@
 "use client";
 
-import dynamic from "next/dynamic";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { WalletReconnectPrompt } from "@/components/auth/wallet-reconnect-prompt";
@@ -67,6 +66,7 @@ import {
 import { usePublicEnv } from "@/contexts/public-env-context";
 import { useSignInModal } from "@/contexts/sign-in-modal-context";
 import { useEarnMax } from "@/features/earn-max";
+import { InviteDialog } from "@/features/referrals/invite-dialog";
 import { useAuthSession } from "@/contexts/auth-session-context";
 import { useAuthCapability } from "@/lib/auth/capability";
 import type { EarnTransactionItem } from "@/lib/yield-optimization/earn-transactions.client";
@@ -80,14 +80,6 @@ export type WorkspacePage =
   | "wallet";
 
 type MiddleView = "earn" | "deposit" | "withdraw" | "autodeposit" | "autoswap";
-
-const InvitePage = dynamic(
-  () =>
-    import("@/features/referrals/invite-page").then(
-      (module) => module.InvitePage
-    ),
-  { loading: () => <WorkspacePaneSkeleton /> }
-);
 
 const PAGE_STORAGE_KEY = "loyal:workspace-page";
 const EARN_MAX_VISIBLE = true;
@@ -135,6 +127,7 @@ export function WorkspaceFaceliftShell() {
   const [isChartExpanded, setIsChartExpanded] = useState(false);
   // Settings shares the desktop rail overlay and mobile sheet entrypoints.
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isInviteOpen, setIsInviteOpen] = useState(false);
   const [settingsView, setSettingsView] = useState<"settings" | "policies">("settings");
   const openSettings = () => { setSettingsView("settings"); setIsSettingsOpen(true); };
   const openPolicies = () => { setSettingsView("policies"); setIsSettingsOpen(true); };
@@ -161,11 +154,15 @@ export function WorkspaceFaceliftShell() {
     if (!isSignedIn && storedPage !== "earnmax") {
       return;
     }
-    setActivePage(storedPage);
+    if (storedPage === "invite") {
+      setIsInviteOpen(true);
+    } else {
+      setActivePage(storedPage);
+    }
   }, [isHydrated, isSignedIn, launched, storedPage]);
   useEffect(() => {
-    if (activePage === "invite" && !launched) setActivePage("earn");
-  }, [activePage, launched]);
+    if (!isSignedIn || !launched) setIsInviteOpen(false);
+  }, [isSignedIn, launched]);
   useEffect(() => {
     localStorage.setItem(PAGE_STORAGE_KEY, activePage);
   }, [activePage]);
@@ -275,6 +272,10 @@ export function WorkspaceFaceliftShell() {
       openSignIn();
       return;
     }
+    if (page === "invite") {
+      if (launched) setIsInviteOpen(true);
+      return;
+    }
     setActivePage(
       page === "activity" && activePage === "activity" ? "earn" : page
     );
@@ -294,6 +295,7 @@ export function WorkspaceFaceliftShell() {
         return;
       }
       if (
+        isInviteOpen ||
         event.metaKey ||
         event.ctrlKey ||
         event.altKey ||
@@ -409,6 +411,10 @@ export function WorkspaceFaceliftShell() {
         />
         <EarnApprovalSheet approval={earnData.actions.pendingApproval} />
         <EarnToastHost />
+        <InviteDialog
+          isOpen={isInviteOpen && isSignedIn && launched}
+          onClose={() => setIsInviteOpen(false)}
+        />
         <ReceiveSheet
           isOpen={isReceiveOpen}
           onClose={() => setIsReceiveOpen(false)}
@@ -513,8 +519,6 @@ export function WorkspaceFaceliftShell() {
               settingsPda={earnData.settingsPda}
               walletAddress={earnData.walletAddress}
             />
-          ) : activePage === "invite" ? (
-            <InvitePage onBack={() => handleSelectPage("wallet")} />
           ) : EARN_MAX_VISIBLE && activePage === "earnmax" ? (
             <EarnMaxWorkspace
               policyUpdateCount={policyUpdates.earnMaxCount}
