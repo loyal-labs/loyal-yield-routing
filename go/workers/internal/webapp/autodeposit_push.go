@@ -1,19 +1,12 @@
 package webapp
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
-	"net/http"
-	"strings"
 	"time"
 )
 
-// Wallet push bridge. Expo push tokens register per wallet on the app
-// backend, so Earn delivers pushes through its authenticated send endpoint.
-// The confirm ops send the mobile wallet push themselves (EARN.md, Decided).
 type autodepositWalletPush struct {
 	Body  string `json:"body"`
 	Title string `json:"title"`
@@ -25,36 +18,10 @@ func (p *WalletPush) send(ctx context.Context, walletAddress string, payload aut
 	if p == nil {
 		return
 	}
-	baseURL, secret := p.BaseURL, p.Secret
-	body, err := json.Marshal(map[string]string{
-		"body":            payload.Body,
-		"title":           payload.Title,
-		"walletPublicKey": walletAddress,
-	})
-	if err != nil {
-		return
-	}
 	ctx, cancel := context.WithTimeout(ctx, autodepositPushSendTimeout)
 	defer cancel()
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		strings.TrimRight(baseURL, "/")+"/api/push-tokens/debug-send", bytes.NewReader(body))
-	if err != nil {
-		return
-	}
-	request.Header.Set("Authorization", "Bearer "+secret)
-	request.Header.Set("Content-Type", "application/json")
-	// A 404 means no devices registered for this wallet (web-only user).
-	response, err := http.DefaultClient.Do(request)
-	if err != nil {
+	if _, err := p.sendToWallet(ctx, walletAddress, payload.Title, payload.Body, nil); err != nil {
 		slog.WarnContext(ctx, "[wallet-push] push send failed", "errorMessage", err.Error(), "walletAddress", walletAddress)
-		return
-	}
-	defer func() { _ = response.Body.Close() }()
-	if response.StatusCode < 200 || response.StatusCode > 299 {
-		if response.StatusCode != http.StatusNotFound {
-			slog.WarnContext(ctx, "[wallet-push] push send rejected",
-				"status", response.StatusCode, "walletAddress", walletAddress)
-		}
 	}
 }
 
