@@ -38,7 +38,7 @@ import {
 
 const FIXTURES = join(
   import.meta.dir,
-  "../../../../crates/squads-test-harness/fixtures",
+  "../../../../crates/squads-test-harness/fixtures"
 );
 const SQUADS = new PublicKey("SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG");
 const SETTINGS = new PublicKey("6YiPBScD6WZKkM4YRp9ui33W79zynP2hNsGQhMY8z9it");
@@ -132,8 +132,8 @@ claimState.set(
   tokenAccount(
     new PublicKey("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"),
     authority,
-    AUTHORITY_USDC_RAW,
-  ),
+    AUTHORITY_USDC_RAW
+  )
 );
 claimState.set(user.receipt.toBase58(), {
   data: receipt,
@@ -201,7 +201,7 @@ async function sign(build: VoltrPlanBuilder, connection: Connection) {
     signature: Buffer.from(transaction.signatures[0]!),
     wire,
     lookupTables: transaction.message.addressTableLookups.map((lookup) =>
-      lookup.accountKey.toBase58(),
+      lookup.accountKey.toBase58()
     ),
   };
 }
@@ -224,8 +224,8 @@ const vectors = json("voltr-deposit-lp-vectors.json") as {
 };
 const minted = BigInt(
   vectors.vectors.find(
-    (v) => BigInt(v.amountRaw) === DEPOSIT_RAW && BigInt(v.unixTs) === NOW,
-  )!.lpMinted,
+    (v) => BigInt(v.amountRaw) === DEPOSIT_RAW && BigInt(v.unixTs) === NOW
+  )!.lpMinted
 );
 
 async function deposit(lpMin: bigint, lpMax: bigint) {
@@ -249,7 +249,7 @@ async function deposit(lpMin: bigint, lpMax: bigint) {
   const quote = parseEarnMaxDepositQuote(body);
   const signed = await sign(
     async (context) => voltrDepositPlan(context, quote, NOW),
-    connectionOver(accounts),
+    connectionOver(accounts)
   );
   return { quote: body, ...signed };
 }
@@ -289,7 +289,15 @@ const depositFixture = {
 const claim = await sign(
   async (context) =>
     voltrClaimPlan(connectionOver(claimState), context, consent),
-  connectionOver(claimState),
+  connectionOver(claimState)
+);
+const publicPlan = await voltrClaimPlan(connectionOver(claimState), {
+  authority,
+  owner: owner.publicKey,
+});
+const publicClaim = await sign(
+  async () => publicPlan,
+  connectionOver(claimState)
 );
 const claimFixture = {
   generatedBy:
@@ -304,6 +312,12 @@ const claimFixture = {
   preexistingUsdcRaw: AUTHORITY_USDC_RAW.toString(),
   receiptBase64: RECEIPT_BASE64,
   ...encode(claim),
+  publicClaim: {
+    ...encode(publicClaim),
+    floorRaw: (
+      publicPlan.vault[1]!.data.readBigUInt64LE(1) - AUTHORITY_USDC_RAW
+    ).toString(),
+  },
 };
 
 const outputs: [string, unknown][] = [

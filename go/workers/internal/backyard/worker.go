@@ -379,7 +379,7 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 			return err
 		}
 	}
-	record, err := w.runtime.recordDecision(ctx, w.routeKey, observation, decision, w.manifest.SHA256, releaseRequestOf(observation.Snapshot, decision, request))
+	record, err := w.runtime.recordDecision(ctx, w.routeKey, observation, decision, w.manifest.SHA256, releaseRequestOf(w.manifest.vault, observation.Snapshot, decision, request))
 	if err != nil {
 		w.noteHold(observation.Snapshot, decision.StrategyKey, err)
 		return err
@@ -415,7 +415,7 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 // demand of receipts that can bear its cost. Waiting receipts keep their own
 // reason; they neither block the sale for others nor enlarge it.
 func (w *Worker) admitWithdrawalFunding(ctx context.Context, observation *Observation, decision *Decision) (bool, error) {
-	if w.runtime.admitWithdrawalDemand == nil || !ordinaryWithdrawalCostRequired(observation.Snapshot, *decision) || !costBearingWithdrawalAction(*decision) {
+	if w.manifest.vault == rwa || w.runtime.admitWithdrawalDemand == nil || !ordinaryWithdrawalCostRequired(observation.Snapshot, *decision) || !costBearingWithdrawalAction(*decision) {
 		return false, nil
 	}
 	admitted, err := w.runtime.admitWithdrawalDemand(ctx, *observation)

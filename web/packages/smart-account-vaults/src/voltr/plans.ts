@@ -55,6 +55,7 @@ export type VoltrPlan = {
     settings: string;
   };
   lifecycleFence?: boolean;
+  withdrawalReceiptBytes?: Uint8Array;
 };
 
 type PlanContext = { authority: PublicKey; owner: PublicKey };
@@ -88,7 +89,7 @@ export type VoltrWithdrawalConsent = {
 };
 
 export function voltrWithdrawalConsentMessage(
-  c: VoltrWithdrawalConsent,
+  c: VoltrWithdrawalConsent
 ): Uint8Array {
   return new TextEncoder().encode(
     JSON.stringify([
@@ -102,7 +103,7 @@ export function voltrWithdrawalConsentMessage(
       c.destination,
       c.requestSignature,
       String(c.requestInstruction),
-    c.policySeed,
+      c.policySeed,
       c.lpRaw,
       c.referenceUsdcRaw,
       c.referenceSlot,
@@ -112,7 +113,7 @@ export function voltrWithdrawalConsentMessage(
       c.version,
       c.nonce,
       c.expiresAt,
-    ]),
+    ])
   );
 }
 
@@ -123,8 +124,8 @@ export class VoltrWithdrawalConsentError extends Error {
       code === "waiting_price"
         ? "This withdrawal is below your approved minimum. Wait or approve a new minimum."
         : code === "expired"
-          ? "Your withdrawal approval expired. Review and approve a new minimum."
-          : "Review and approve a minimum USDC amount before claiming.",
+        ? "Your withdrawal approval expired. Review and approve a new minimum."
+        : "Review and approve a minimum USDC amount before claiming."
     );
     this.name = "VoltrWithdrawalConsentError";
     this.code = code;
@@ -154,7 +155,7 @@ function pinnedTotalValue(quote: EarnMaxDepositQuote): bigint {
 export function voltrDepositPlan(
   { authority, owner }: PlanContext,
   quote: EarnMaxDepositQuote,
-  nowSec = BigInt(Math.floor(Date.now() / 1000)),
+  nowSec = BigInt(Math.floor(Date.now() / 1000))
 ): VoltrPlan {
   const user = voltrUserAccounts(authority);
   const amount = quote.amountRaw;
@@ -182,13 +183,13 @@ export function voltrDepositPlan(
         owner,
         user.assetAta,
         authority,
-        VOLTR_ASSET_MINT,
+        VOLTR_ASSET_MINT
       ),
       createAssociatedTokenAccountIdempotentInstruction(
         owner,
         user.lpAta,
         authority,
-        VOLTR_LP_MINT,
+        VOLTR_LP_MINT
       ),
       createTransferCheckedInstruction(
         getAssociatedTokenAddressSync(VOLTR_ASSET_MINT, owner),
@@ -196,7 +197,7 @@ export function voltrDepositPlan(
         user.assetAta,
         owner,
         amount,
-        VOLTR_ASSET_DECIMALS,
+        VOLTR_ASSET_DECIMALS
       ),
       assertAccountBytes(VOLTR_VAULT, quote.vaultPins),
       assertMintSupply(VOLTR_LP_MINT, {
@@ -239,7 +240,7 @@ export function voltrDepositPlan(
 export async function voltrRequestWithdrawalPlan(
   connection: Connection,
   { authority, owner }: PlanContext,
-  amountRaw: bigint | "max",
+  amountRaw: bigint | "max"
 ): Promise<VoltrPlan> {
   const position = await readVoltrPosition(connection, authority);
   if (position.withdrawal) {
@@ -271,7 +272,7 @@ export async function voltrRequestWithdrawalPlan(
               owner,
               user.escrowLpAta,
               user.receipt,
-              VOLTR_LP_MINT,
+              VOLTR_LP_MINT
             ),
           ]),
       ...(position.authorityLamports >= needed
@@ -300,7 +301,7 @@ export class VoltrClaimLiquidityError extends Error {
     super(
       reason === "insufficient_liquidity"
         ? "The vault does not have enough available USDC to pay this withdrawal yet. Check again later."
-        : "Vault liquidity could not be verified. Check status before claiming.",
+        : "Vault liquidity could not be verified. Check status before claiming."
     );
     this.name = "VoltrClaimLiquidityError";
   }
@@ -332,20 +333,23 @@ export function voltrClaimHeld(code: unknown): VoltrClaimHeldError | null {
 export async function voltrClaimPlan(
   connection: Connection,
   { authority, owner }: PlanContext,
-  consent?: VoltrWithdrawalConsent,
+  consent?: VoltrWithdrawalConsent
 ): Promise<VoltrPlan> {
-  if (!consent) throw new VoltrWithdrawalConsentError("needs_consent");
   if (
-    consent.owner !== owner.toBase58() ||
-    consent.authority !== authority.toBase58() ||
-    consent.destination !== owner.toBase58() ||
-    consent.cluster !== "mainnet-beta" ||
-    consent.program !== VOLTR_PROGRAM_ID.toBase58() ||
-    consent.vault !== VOLTR_VAULT.toBase58()
+    consent &&
+    (consent.owner !== owner.toBase58() ||
+      consent.authority !== authority.toBase58() ||
+      consent.destination !== owner.toBase58() ||
+      consent.cluster !== "mainnet-beta" ||
+      consent.program !== VOLTR_PROGRAM_ID.toBase58() ||
+      consent.vault !== VOLTR_VAULT.toBase58())
   ) {
     throw new VoltrWithdrawalConsentError("needs_consent");
   }
-  if (BigInt(consent.expiresAt) <= BigInt(Math.floor(Date.now() / 1000))) {
+  if (
+    consent &&
+    BigInt(consent.expiresAt) <= BigInt(Math.floor(Date.now() / 1000))
+  ) {
     throw new VoltrWithdrawalConsentError("expired");
   }
   const position = await readVoltrPosition(connection, authority);
@@ -355,8 +359,16 @@ export async function voltrClaimPlan(
     throw new Error("Earn MAX withdrawal is not claimable yet.");
   }
   if (blocked) throw new VoltrClaimLiquidityError(blocked);
-  const floor = BigInt(consent.minClaimUsdcRaw);
-  if (floor <= BigInt(0) || BigInt(consent.lpRaw) !== pending.escrowedLpRaw) {
+  // The wallet approves the current payout; one raw unit covers integer rounding.
+  const floor = consent
+    ? BigInt(consent.minClaimUsdcRaw)
+    : pending.payoutRaw > BigInt(1)
+    ? pending.payoutRaw - BigInt(1)
+    : pending.payoutRaw;
+  if (
+    floor <= BigInt(0) ||
+    (consent && BigInt(consent.lpRaw) !== pending.escrowedLpRaw)
+  ) {
     throw new VoltrWithdrawalConsentError("needs_consent");
   }
   if (pending.payoutRaw < floor)
@@ -370,26 +382,30 @@ export async function voltrClaimPlan(
   if (baseline + floor > MAX_U64)
     throw new VoltrWithdrawalConsentError("needs_consent");
   return {
-    claimProtection: {
-      consent,
-      receiptBytes: pending.receiptBytes,
-      connection,
-      expiresAt: BigInt(consent.expiresAt),
-      maxFeeLamports: BigInt(consent.maxUserFeeLamports),
-      settings: consent.settings,
-    },
+    lifecycleFence: true,
+    withdrawalReceiptBytes: pending.receiptBytes,
+    claimProtection: consent
+      ? {
+          consent,
+          receiptBytes: pending.receiptBytes,
+          connection,
+          expiresAt: BigInt(consent.expiresAt),
+          maxFeeLamports: BigInt(consent.maxUserFeeLamports),
+          settings: consent.settings,
+        }
+      : undefined,
     outer: [
       createAssociatedTokenAccountIdempotentInstruction(
         owner,
         walletAta,
         owner,
-        VOLTR_ASSET_MINT,
+        VOLTR_ASSET_MINT
       ),
       createAssociatedTokenAccountIdempotentInstruction(
         owner,
         assetAta,
         authority,
-        VOLTR_ASSET_MINT,
+        VOLTR_ASSET_MINT
       ),
     ],
     vault: [
@@ -400,7 +416,7 @@ export async function voltrClaimPlan(
         walletAta,
         authority,
         baseline + floor,
-        VOLTR_ASSET_DECIMALS,
+        VOLTR_ASSET_DECIMALS
       ),
     ],
   };
@@ -409,7 +425,7 @@ export async function voltrClaimPlan(
 /** Recover only existing user-owned USDC; never consumes a withdrawal receipt. */
 export async function voltrRecoverClaimRemainderPlan(
   connection: Connection,
-  { authority, owner }: PlanContext,
+  { authority, owner }: PlanContext
 ): Promise<VoltrPlan> {
   const position = await readVoltrPosition(connection, authority);
   if (position.assetRaw <= BigInt(0))
@@ -421,7 +437,7 @@ export async function voltrRecoverClaimRemainderPlan(
         owner,
         walletAta,
         owner,
-        VOLTR_ASSET_MINT,
+        VOLTR_ASSET_MINT
       ),
     ],
     vault: [
@@ -431,7 +447,7 @@ export async function voltrRecoverClaimRemainderPlan(
         walletAta,
         authority,
         position.assetRaw,
-        VOLTR_ASSET_DECIMALS,
+        VOLTR_ASSET_DECIMALS
       ),
     ],
   };

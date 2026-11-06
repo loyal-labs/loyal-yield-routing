@@ -15,23 +15,24 @@ type releaseRequest struct {
 	amount *uint64
 }
 
-func releaseRequestOf(s Snapshot, d Decision, request any) *releaseRequest {
+func releaseRequestOf(v *Vault, s Snapshot, d Decision, request any) *releaseRequest {
 	if requiresNAVForAdd(d) {
 		return &releaseRequest{action: releasecontrol.OptionalAddition}
 	}
 	if !ordinaryWithdrawalCostRequired(s, d) || !costBearingWithdrawalAction(d) {
 		return nil
 	}
-	// Ordinary funding is gated where it charges approved costs; a move that
-	// charges nobody is a cash move like the others above.
 	protected, ok := request.(withdrawalCostRequest)
-	if !ok || protected.cost == nil {
+	if v != rwa && (!ok || protected.cost == nil) {
 		return nil
 	}
 	r := &releaseRequest{action: releasecontrol.OrdinaryFunding}
 	if s.WithdrawalDemandRaw >= 0 {
 		amount := uint64(s.WithdrawalDemandRaw)
 		r.amount = &amount
+	}
+	if !ok || protected.cost == nil {
+		return r
 	}
 	for _, p := range protected.cost.Participants {
 		if p.Wait != "" {

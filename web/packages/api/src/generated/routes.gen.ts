@@ -20,6 +20,7 @@ export type Get = {
   "/api/smart-accounts/earn-max/invite": Types.InviteStatus;
   "/api/smart-accounts/earn-max/release-controls": Types.ReleaseControlsView;
   "/api/smart-accounts/earn-max/summary": Types.EarnMaxSummaryResponse;
+  "/api/smart-accounts/earn-max/withdrawal-claim-readiness": Types.ClaimReadiness;
   "/api/smart-accounts/earn-max/withdrawal-consent": Types.WithdrawalConsentView;
   "/api/smart-accounts/earn-transactions": Types.EarnTransactionsResponse;
   "/api/smart-accounts/mobile/earn-max": Types.MobileEarnMaxResponse;

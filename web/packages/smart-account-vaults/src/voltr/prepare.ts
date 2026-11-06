@@ -169,15 +169,15 @@ export function voltrWithdrawalFence(input: {
 const protectedClaims = new WeakMap<object, VoltrWithdrawalConsent>();
 
 export const EARN_MAX_VOLTR_LOOKUP_TABLE = new PublicKey(
-  "GERDuMq2KXct84sG9JUxuRguqfcPvn71gYXg2p3LLHv4",
+  "GERDuMq2KXct84sG9JUxuRguqfcPvn71gYXg2p3LLHv4"
 );
 
 export async function readEarnMaxVoltrLookupTable(
-  connection: Connection,
+  connection: Connection
 ): Promise<AddressLookupTableAccount> {
   const snapshot = await connection.getAccountInfoAndContext(
     EARN_MAX_VOLTR_LOOKUP_TABLE,
-    { commitment: "confirmed" },
+    { commitment: "confirmed" }
   );
   const account = snapshot.value;
   if (
@@ -199,7 +199,7 @@ export async function readEarnMaxVoltrLookupTable(
 }
 
 export function protectedVoltrClaimConsent(
-  prepared: object,
+  prepared: object
 ): VoltrWithdrawalConsent | null {
   return protectedClaims.get(prepared) ?? null;
 }
@@ -247,13 +247,21 @@ export async function prepareEarnMaxVoltr(input: {
   addressLookupTableAccounts?: AddressLookupTableAccount[];
 }) {
   const { build, client, owner, programId, settingsPda } = input;
-  const settings =
-    await client.sdk.smartAccounts.queries.fetchSettings(settingsPda);
+  const settings = await client.sdk.smartAccounts.queries.fetchSettings(
+    settingsPda
+  );
   if (Number(settings.threshold) > 1 || Number(settings.timeLock) > 0) {
     throw new EarnMaxVoltrPrepareError("multi_signer_unsupported");
   }
   const authority = deriveEarnMaxVoltrAuthority(settingsPda, programId);
-  const { outer, vault, after, claimProtection, lifecycleFence } = await build({
+  const {
+    outer,
+    vault,
+    after,
+    claimProtection,
+    lifecycleFence,
+    withdrawalReceiptBytes,
+  } = await build({
     authority,
     owner,
   });
@@ -266,10 +274,8 @@ export async function prepareEarnMaxVoltr(input: {
           [248, 225, 47, 22, 116, 144, 23, 143],
           [231, 54, 14, 6, 223, 124, 127, 238],
         ].some((discriminator) =>
-          discriminator.every(
-            (byte, index) => instruction.data[index] === byte,
-          ),
-        ),
+          discriminator.every((byte, index) => instruction.data[index] === byte)
+        )
     );
   const tables = input.addressLookupTableAccounts ?? [];
   const defaultTable =
@@ -313,7 +319,7 @@ export async function prepareEarnMaxVoltr(input: {
           settingsPda,
           programId,
           currentPolicySeed,
-          receiptBytes: claimProtection?.receiptBytes,
+          receiptBytes: claimProtection?.receiptBytes ?? withdrawalReceiptBytes,
         })
       : { before: [], after: [] };
   const result = {
@@ -338,15 +344,16 @@ export async function prepareEarnMaxVoltr(input: {
     throw new EarnMaxVoltrPrepareError("transaction_too_large");
   }
   if (claimProtection) {
-    const { blockhash } =
-      await claimProtection.connection.getLatestBlockhash("confirmed");
+    const { blockhash } = await claimProtection.connection.getLatestBlockhash(
+      "confirmed"
+    );
     const transaction = compilePreparedOperation({
       prepared: result,
       blockhash,
     });
     const { value } = await claimProtection.connection.getFeeForMessage(
       transaction.message,
-      "confirmed",
+      "confirmed"
     );
     if (
       value === null ||

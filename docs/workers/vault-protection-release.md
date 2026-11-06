@@ -1,5 +1,15 @@
 # Voltr / Earn MAX protection release
 
+> Public Loyal rollback (2026-11-06): the current web/mobile source no longer
+> requires a separately signed withdrawal minimum or fee budget. Loyal ordinary
+> funding uses the existing 20 bps execution guard instead of consent admission
+> and the zero-incremental-holder-cost floor. The operator funding switch still
+> applies. Backyard retains its separate test settings. Legacy consent/claim
+> records and recovery remain supported. The consent-dependent procedures below
+> apply to legacy clients and the Backyard test path, not new public Loyal claims.
+> See [the rollback decision record](earn-max-public-access-rollback.md).
+
+
 Application verification covers integrated code commit `9448780329e18868e1a32c1d61553d6bcf5ec88d`. Final candidate `90b5ca6ea90c54bcd39b424370e465e92069620b` includes main `57c84f77130addff60dad1426baaef562c0d9973` and passed hosted CI. Production rollout still requires the operational gates below; monitoring verification alone does not approve application deployment. Use the [remaining-protection handoff](../plans/vault-protection-handoff.md) for Looping consent, atomic deposit pricing, admission controls and production canaries.
 
 ## Behavior and limits

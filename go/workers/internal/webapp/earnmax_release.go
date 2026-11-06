@@ -59,7 +59,53 @@ type releaseControlsOutput struct {
 	Body ReleaseControlsView
 }
 
+type ClaimReadiness struct {
+	Ready bool `json:"ready"`
+}
+
+type publicClaimReadinessOutput struct {
+	EarnMaxHeaders
+	Body ClaimReadiness
+}
+
 func (h earnMaxRoutes) registerRelease(api huma.API) {
+	huma.Register(api, huma.Operation{
+		OperationID: "get-earn-max-withdrawal-claim-readiness",
+		Method:      http.MethodGet,
+		Path:        "/api/smart-accounts/earn-max/withdrawal-claim-readiness",
+		Summary:     "Check published vault pricing before a public withdrawal claim",
+		Responses:   errorResponses[routeError](api, 401, 409, 503),
+	}, func(ctx context.Context, in *sessionRequest) (*publicClaimReadinessOutput, error) {
+		p, err := h.auth.Principal(ctx, in.SessionInput)
+		if err != nil {
+			return nil, h.refused(err)
+		}
+		if err := h.admit(); err != nil {
+			return nil, err
+		}
+		if h.cfg.Attempts == nil || h.cfg.Releases == nil {
+			return nil, h.fail(http.StatusServiceUnavailable, "claim_readiness_unavailable", "Withdrawal availability is temporarily unknown.")
+		}
+		authority, err := earnmax.AuthorityOf(p.Settings)
+		if err != nil {
+			return nil, h.unavailable("claim authority", err)
+		}
+		_, reason, err := releasecontrol.Capability(ctx, h.cfg.Releases, earnmax.Vault.String(), releasecontrol.ClaimAttempt, authority.Key().String(), nil)
+		if err != nil {
+			return nil, h.unavailable("claim release control", err)
+		}
+		if reason != "" {
+			return nil, h.fail(http.StatusConflict, reason, "Withdrawal claims are paused for this vault.")
+		}
+		if err := h.cfg.Attempts.CheckNAVPublication(ctx); err != nil {
+			if errors.Is(err, earnmax.ErrClaimWaitingNAVPublication) {
+				return nil, h.fail(http.StatusConflict, earnmax.ErrClaimWaitingNAVPublication.Error(), "Waiting for an updated vault price. Your withdrawal remains pending; try again shortly.")
+			}
+			return nil, h.unavailable("claim published NAV", err)
+		}
+		return &publicClaimReadinessOutput{h.headers, ClaimReadiness{Ready: true}}, nil
+	})
+
 	huma.Register(api, huma.Operation{
 		OperationID: "get-earn-max-release-controls",
 		Method:      http.MethodGet,

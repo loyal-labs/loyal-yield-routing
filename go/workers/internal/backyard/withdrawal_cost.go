@@ -176,7 +176,8 @@ func costBearingWithdrawalAction(d Decision) bool {
 }
 
 func prepareWithdrawalCost(ctx context.Context, database *Database, rpc *chain.Client, view *View, manifest RouteManifest, d Decision, o Observation, request any, effects ExpectedEffects) (any, error) {
-	if !ordinaryWithdrawalCostRequired(o.Snapshot, d) {
+	// Public Loyal withdrawals use the existing 20 bps execution guard, without a separate signed consent.
+	if manifest.vault == rwa || !ordinaryWithdrawalCostRequired(o.Snapshot, d) {
 		return request, nil
 	}
 	request, err := floorWithdrawalSale(request, effects.Sale, o.Snapshot)

@@ -401,3 +401,21 @@ func TestWithdrawalCostDatabaseSigningRefusesConsentReplacedAfterReservation(t *
 		t.Fatalf("signed under a superseded consent: %v", err)
 	}
 }
+
+func TestPublicLoyalFundingDoesNotRequireConsent(t *testing.T) {
+	s := Snapshot{Target: LaneTarget{Rule: ruleWithdrawal}, WithdrawalDemandRaw: 100}
+	d := Decision{Action: DeleverRouteStep, Reason: debtZeroReason, MaxSlippageBPS: 20}
+	request := &StepRequest{}
+	got, err := prepareWithdrawalCost(context.Background(), nil, nil, nil, rwa.manifest, d, Observation{Snapshot: s}, request, ExpectedEffects{})
+	if err != nil || got != request {
+		t.Fatalf("public withdrawal still needs consent: %v", err)
+	}
+	w := Worker{manifest: rwa.manifest, runtime: tickRuntime{admitWithdrawalDemand: func(context.Context, Observation) (admittedWithdrawalDemand, error) {
+		t.Fatal("public demand queried the retired consent gate")
+		return admittedWithdrawalDemand{}, nil
+	}}}
+	o := Observation{Snapshot: s}
+	if narrowed, err := w.admitWithdrawalFunding(context.Background(), &o, &d); err != nil || narrowed || o.Snapshot.WithdrawalDemandRaw != 100 || d.MaxSlippageBPS != 20 {
+		t.Fatalf("public funding changed demand or slippage: %v %v %+v", narrowed, err, d)
+	}
+}

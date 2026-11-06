@@ -398,6 +398,10 @@ export type CapRefusal = {
     success: boolean;
 };
 
+export type ClaimReadiness = {
+    ready: boolean;
+};
+
 export type CrossMintDeleteReadinessRequest = {
     expectedGeneration?: string;
 };
@@ -4421,6 +4425,44 @@ export type PostEarnMaxWithdrawalClaimAttemptResponses = {
 };
 
 export type PostEarnMaxWithdrawalClaimAttemptResponse = PostEarnMaxWithdrawalClaimAttemptResponses[keyof PostEarnMaxWithdrawalClaimAttemptResponses];
+
+export type GetEarnMaxWithdrawalClaimReadinessData = {
+    body?: never;
+    headers?: {
+        Authorization?: string;
+        Cookie?: string;
+        'X-Forwarded-Host'?: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/smart-accounts/earn-max/withdrawal-claim-readiness';
+};
+
+export type GetEarnMaxWithdrawalClaimReadinessErrors = {
+    /**
+     * Unauthorized
+     */
+    401: RouteError;
+    /**
+     * Conflict
+     */
+    409: RouteError;
+    /**
+     * Service Unavailable
+     */
+    503: RouteError;
+};
+
+export type GetEarnMaxWithdrawalClaimReadinessError = GetEarnMaxWithdrawalClaimReadinessErrors[keyof GetEarnMaxWithdrawalClaimReadinessErrors];
+
+export type GetEarnMaxWithdrawalClaimReadinessResponses = {
+    /**
+     * OK
+     */
+    200: ClaimReadiness;
+};
+
+export type GetEarnMaxWithdrawalClaimReadinessResponse = GetEarnMaxWithdrawalClaimReadinessResponses[keyof GetEarnMaxWithdrawalClaimReadinessResponses];
 
 export type GetEarnMaxWithdrawalConsentData = {
     body?: never;

@@ -2,7 +2,6 @@ import {
   earnMaxPending,
   earnMaxPendingMessage,
   earnMaxWithdrawalPending,
-  earnMaxWithdrawalCostView,
   formatEarnMaxWithdrawalAmount,
 } from "@loyal-labs/shared";
 import { Fragment, useEffect, useState } from "react";
@@ -13,25 +12,13 @@ import {
   Pressable,
   StyleSheet,
   Text,
-  TextInput,
   View,
 } from "react-native";
 import { EarnMaxWithdrawalIcon } from "./EarnMaxTransferDestination";
 import { ActivityListSkeleton } from "@/features/activity/ui/ActivityListSkeleton";
 import { useEarnMax } from "./EarnMaxProvider";
 export function EarnMaxActivityList() {
-  const {
-    summary,
-    activity,
-    error,
-    busy,
-    run,
-    refresh,
-    approval,
-    approveWithdrawal,
-  } = useEarnMax();
-  const [minimum, setMinimum] = useState("");
-  const [maxFee, setMaxFee] = useState("");
+  const { summary, activity, error, busy, run, refresh } = useEarnMax();
   const focused = useIsFocused();
   useEffect(() => {
     if (focused) void refresh().catch(() => {});
@@ -40,18 +27,47 @@ export function EarnMaxActivityList() {
   const [checking, setChecking] = useState(false);
   const [checkedAt, setCheckedAt] = useState<Date | null>(null);
   const withdrawal = summary?.withdrawal ?? null;
-  const costs = earnMaxWithdrawalCostView({status:approval?.costStatus??null,approved:approval?.approved??null});
   const healthReason = withdrawal?.health?.reason;
-  const recoverable = summary && "recoverableUsdcRaw" in summary && typeof summary.recoverableUsdcRaw === "string" ? summary.recoverableUsdcRaw : null;
+  const recoverable =
+    summary &&
+    "recoverableUsdcRaw" in summary &&
+    typeof summary.recoverableUsdcRaw === "string"
+      ? summary.recoverableUsdcRaw
+      : null;
   const pending = earnMaxPending(withdrawal);
   useEffect(() => {
     setCheckedAt(null);
     setActionError(null);
-    setMinimum("");setMaxFee("");
-  }, [withdrawal?.requestId,approval?.draft.requestSignature,approval?.draft.policySeed]);
+  }, [withdrawal?.requestId]);
   return (
     <View>
-      {recoverable && BigInt(recoverable) > BigInt(0) ? <View style={styles.pendingRow}><View style={{flex:1,gap:8}}><Text style={styles.subtitle}>{formatEarnMaxWithdrawalAmount(recoverable,"USDC")} remains available in your Earn MAX account.</Text><Pressable accessibilityRole="button" disabled={busy} onPress={async()=>{try{await run({action:"recover_assets"})}catch(error){setActionError(error instanceof Error ? error.message : "Unable to move remaining USDC.")}}}><Text style={styles.title}>Move remaining USDC to wallet</Text></Pressable></View></View> : null}
+      {recoverable && BigInt(recoverable) > BigInt(0) ? (
+        <View style={styles.pendingRow}>
+          <View style={{ flex: 1, gap: 8 }}>
+            <Text style={styles.subtitle}>
+              {formatEarnMaxWithdrawalAmount(recoverable, "USDC")} remains
+              available in your Earn MAX account.
+            </Text>
+            <Pressable
+              accessibilityRole="button"
+              disabled={busy}
+              onPress={async () => {
+                try {
+                  await run({ action: "recover_assets" });
+                } catch (error) {
+                  setActionError(
+                    error instanceof Error
+                      ? error.message
+                      : "Unable to move remaining USDC."
+                  );
+                }
+              }}
+            >
+              <Text style={styles.title}>Move remaining USDC to wallet</Text>
+            </Pressable>
+          </View>
+        </View>
+      ) : null}
       {(error || actionError) && (
         <Text accessibilityRole="alert" style={{ color: "#F9363C" }}>
           {actionError ?? error}
@@ -65,83 +81,18 @@ export function EarnMaxActivityList() {
               Withdrawal · ${(Number(withdrawal.amountRaw) / 1e6).toFixed(2)}
             </Text>
             <Text style={styles.subtitle}>
-              {healthReason === "certified_nav_unavailable" ? "Waiting for an updated vault value. Your request remains pending."
-                : healthReason === "withdrawal_price_limit" ? "Waiting for a price within the approved withdrawal limit."
-                : approval?.reason === "needs_consent" ? "Review and approve a minimum USDC amount to continue."
-                : !approval?.approved
-                ? "Approve a minimum USDC amount to continue."
-                : approval.reason === "waiting_price"
-                  ? "Waiting for your approved minimum. You can wait or approve a lower amount."
-                  : approval.reason === "expired"
-                    ? "Your approval expired. A claim you already signed may still finish. Review and approve before signing again."
-                    : withdrawal.canClaim
+              {healthReason === "certified_nav_unavailable"
+                ? "Waiting for an updated vault value. Your request remains pending."
+                : healthReason === "withdrawal_price_limit"
+                ? "Waiting for a price within the approved withdrawal limit."
+                : withdrawal.canClaim
                 ? "Ready to claim to your wallet."
                 : pending
                 ? earnMaxPendingMessage(pending)
                 : `Available after ${new Date(
-                            withdrawal.readyBy,
+                    withdrawal.readyBy
                   ).toLocaleString()}, subject to vault liquidity.`}
             </Text>
-            {approval?.approved ? (
-              <>
-              <Text style={styles.subtitle}>
-                Approved minimum:{" "}
-                {formatEarnMaxWithdrawalAmount(approval.approved.minClaimUsdcRaw,"USDC")}.
-              </Text>
-              <View accessibilityLabel="Withdrawal costs" style={{gap:4}}>{costs.rows.map(({label,value})=><View key={label} style={{flexDirection:"row",justifyContent:"space-between",gap:12}}><Text style={[styles.subtitle,{flex:1}]}>{label}</Text><Text style={styles.subtitle}>{value??"Unavailable"}</Text></View>)}</View>
-              <Text style={styles.subtitle}>The operator pays its own network fees. Your claim fees are shown separately.</Text>
-              {costs.unknownReason ? <Text style={styles.subtitle}>Some cost details are unavailable or awaiting confirmation. Check status before signing again.</Text>:null}
-              {costs.pending ? <Text style={styles.subtitle}>A claim you signed is pending and may still finish under that approval.</Text>:null}
-              </>
-            ) : null}
-            <Text style={styles.subtitle}>Minimum USDC to receive</Text>
-            <TextInput
-              accessibilityLabel="Minimum USDC to receive"
-              keyboardType="decimal-pad"
-              onChangeText={setMinimum}
-              value={minimum}
-              style={styles.subtitle}
-            />
-            <Text style={styles.subtitle}>Maximum network fees (SOL)</Text>
-            <TextInput
-              accessibilityLabel="Maximum network fees in SOL"
-              keyboardType="decimal-pad"
-              onChangeText={setMaxFee}
-              value={maxFee}
-              style={styles.subtitle}
-            />
-            <Text style={styles.subtitle}>
-              Failed attempts can charge network fees. A claim you already signed
-              may finish under its earlier approval. A new minimum needs a new wallet approval.
-            </Text>
-            <Pressable
-              accessibilityRole="button"
-              disabled={busy}
-              onPress={async () => {
-                try {
-                  const parse = (value: string, decimals: number) => {
-                    if (
-                      !new RegExp(`^\\d+(?:\\.\\d{1,${decimals}})?$`).test(
-                        value,
-                      )
-                    )
-                      throw new Error("Enter valid amounts.");
-                    const [whole, fraction = ""] = value.split(".");
-                    return (
-                      BigInt(whole) * BigInt(10) ** BigInt(decimals) +
-                      BigInt(fraction.padEnd(decimals, "0"))
-                    );
-                  };
-                  await approveWithdrawal(parse(minimum, 6), parse(maxFee, 9));
-                } catch (error) {
-                  setActionError(
-                    error instanceof Error ? error.message : "Approval failed.",
-                  );
-                }
-              }}
-            >
-              <Text style={styles.title}>Approve minimum</Text>
-            </Pressable>
             <Pressable
               accessibilityRole="button"
               accessibilityState={{
@@ -152,12 +103,7 @@ export function EarnMaxActivityList() {
               onPress={async () => {
                 setActionError(null);
                 try {
-                  if (
-                    withdrawal.canClaim &&
-                    approval?.approved &&
-                    !approval.reason
-                  )
-                    await run({ action: "claim" });
+                  if (withdrawal.canClaim) await run({ action: "claim" });
                   else {
                     setChecking(true);
                     setCheckedAt(null);
@@ -167,7 +113,7 @@ export function EarnMaxActivityList() {
                   setActionError(
                     e instanceof Error
                       ? e.message
-                      : "Unable to update withdrawal.",
+                      : "Unable to update withdrawal."
                   );
                 } finally {
                   setChecking(false);
@@ -199,9 +145,7 @@ export function EarnMaxActivityList() {
                   ? "Checking…"
                   : busy
                   ? "Confirming…"
-                    : withdrawal.canClaim &&
-                        approval?.approved &&
-                        !approval.reason
+                  : withdrawal.canClaim
                   ? "Claim"
                   : "Check status"}
               </Text>
@@ -244,8 +188,8 @@ export function EarnMaxActivityList() {
                 if (item.signature)
                   void Linking.openURL(
                     `https://solscan.io/tx/${encodeURIComponent(
-                      item.signature,
-                    )}`,
+                      item.signature
+                    )}`
                   );
               }}
               style={styles.row}
