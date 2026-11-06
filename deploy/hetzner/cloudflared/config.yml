@@ -1,11 +1,11 @@
 # Locally managed tunnel loyal-workers, set up as robinx-prod's: Cloudflare
-# serves askloyal.com, www, app, next, admin, admin-next, stats, stats-next and
-# the Telegram webhook on tgbot.askloyal.com, and cloudflared carries them to
-# loyal-web, loyal-admin, loyal-stats and loyal-telegram on loopback. backend
-# is served too (since Nov 5 2026, a proxied CNAME to this tunnel). The apex,
-# www, app and backend hosts' /_next/ assets come from loyal-frontend.vercel.app,
-# for the pages loyal-web proxies. No httpHostHeader on admin: its CSRF check
-# compares Origin with Host.
+# serves askloyal.com, www, app, next, admin, admin-next, stats, stats-next,
+# backyard and the Telegram webhook on tgbot.askloyal.com, and cloudflared
+# carries them to loyal-web, loyal-admin, loyal-stats and loyal-telegram on
+# loopback. backend is served too (since Nov 5 2026, a proxied CNAME to this
+# tunnel). The apex, www, app and backend hosts' /_next/ assets come from
+# loyal-frontend.vercel.app, for the pages loyal-web proxies. No
+# httpHostHeader on admin: its CSRF check compares Origin with Host.
 # The credentials file is the one `cloudflared tunnel create` wrote; it lives
 # only on the host (deploy/hetzner/README.md, "Web (loyal-web)").
 tunnel: 6db5af77-f25b-40de-85aa-89ff2151a053
@@ -53,5 +53,8 @@ ingress:
   - hostname: stats.askloyal.com
     service: http://127.0.0.1:10082
   - hostname: stats-next.askloyal.com
+    service: http://127.0.0.1:10082
+  # Backyard's read-only Looping vault page, served by loyal-stats.
+  - hostname: backyard.askloyal.com
     service: http://127.0.0.1:10082
   - service: http_status:404

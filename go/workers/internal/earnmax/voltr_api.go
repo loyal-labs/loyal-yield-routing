@@ -33,10 +33,10 @@ type SharePrice struct {
 	TotalValue *float64
 }
 
-func voltrGet(ctx context.Context, path string, out any) error {
+func voltrGet(ctx context.Context, vault, path string, out any) error {
 	ctx, cancel := context.WithTimeout(ctx, voltrTimeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, voltrAPI+Vault.String()+path, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, voltrAPI+vault+path, nil)
 	if err != nil {
 		return fmt.Errorf("%s request is invalid", voltrHost)
 	}
@@ -61,14 +61,20 @@ func voltrGet(ctx context.Context, path string, out any) error {
 	return nil
 }
 
+// FetchSharePrice reads the Earn MAX vault's live share price from Voltr.
 func FetchSharePrice(ctx context.Context) (SharePrice, error) {
+	return FetchVaultSharePrice(ctx, Vault.String())
+}
+
+// FetchVaultSharePrice reads any Voltr vault's live share price.
+func FetchVaultSharePrice(ctx context.Context, vault string) (SharePrice, error) {
 	var body struct {
 		Data struct {
 			SharePrice *float64 `json:"sharePrice"`
 			TotalValue *float64 `json:"totalValue"`
 		} `json:"data"`
 	}
-	if err := voltrGet(ctx, "/share-price", &body); err != nil {
+	if err := voltrGet(ctx, vault, "/share-price", &body); err != nil {
 		return SharePrice{}, err
 	}
 	if body.Data.SharePrice == nil {
@@ -77,7 +83,13 @@ func FetchSharePrice(ctx context.Context) (SharePrice, error) {
 	return SharePrice{PerLP: *body.Data.SharePrice, TotalValue: body.Data.TotalValue}, nil
 }
 
+// FetchDailyStats reads the Earn MAX vault's end-of-day TVL and LP supply.
 func FetchDailyStats(ctx context.Context) ([]DailyStat, error) {
+	return FetchVaultDailyStats(ctx, Vault.String())
+}
+
+// FetchVaultDailyStats reads any Voltr vault's end-of-day TVL and LP supply.
+func FetchVaultDailyStats(ctx context.Context, vault string) ([]DailyStat, error) {
 	var body struct {
 		Vault struct {
 			DailyStats struct {
@@ -87,7 +99,7 @@ func FetchDailyStats(ctx context.Context) ([]DailyStat, error) {
 			} `json:"dailyStats"`
 		} `json:"vault"`
 	}
-	if err := voltrGet(ctx, "", &body); err != nil {
+	if err := voltrGet(ctx, vault, "", &body); err != nil {
 		return nil, err
 	}
 	stats := body.Vault.DailyStats

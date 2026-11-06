@@ -1,7 +1,8 @@
 # Loyal stats (Go). One static binary: the Vite build of web/apps/dashboard
 # is embedded in it and it answers /api/earn/stats and /api/earn/vaults
-# itself, read-only. It listens on loopback only; the tunnel carries
-# stats.askloyal.com and stats-next.askloyal.com to it.
+# itself, read-only, plus /api/backyard for the Backyard page. It listens on
+# loopback only; the tunnel carries stats.askloyal.com, stats-next.askloyal.com
+# and backyard.askloyal.com to it.
 # Releases ship in /opt/loyal/releases/stats/<sha>/loyal-stats and are switched
 # by scripts/deploy-workers.sh through the 40-verified-release.conf drop-in.
 # Credentials come from the loyal-stats credstore (see README); both are required.

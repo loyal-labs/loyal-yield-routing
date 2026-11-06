@@ -1,5 +1,5 @@
 import { ArrowUpRight } from "lucide-react";
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 
 import "./app/globals.css";
@@ -10,6 +10,7 @@ import {
   type WeeklyChartPoint,
 } from "./components/earn-aum-chart";
 import { MetricHelpTooltip } from "./components/metric-help-tooltip";
+import { isBackyardLocation } from "./features/backyard/location";
 
 type EarnStats = {
   aumUsd: number;
@@ -154,4 +155,28 @@ function DashboardHome() {
   );
 }
 
-createRoot(document.getElementById("root")!).render(<DashboardHome />);
+const backyard = isBackyardLocation(window.location);
+if (backyard) {
+  document.title = "Loyal Looping · Backyard";
+  document
+    .querySelector('meta[name="description"]')
+    ?.setAttribute(
+      "content",
+      "Live, read-only view of the Loyal Looping vault on Voltr: share price, APY, positions and every money move."
+    );
+}
+
+// Its own chunk: the stats page never loads the Backyard charts.
+const BackyardPage = lazy(() =>
+  import("./features/backyard").then((m) => ({ default: m.BackyardPage }))
+);
+
+createRoot(document.getElementById("root")!).render(
+  backyard ? (
+    <Suspense fallback={null}>
+      <BackyardPage />
+    </Suspense>
+  ) : (
+    <DashboardHome />
+  )
+);
