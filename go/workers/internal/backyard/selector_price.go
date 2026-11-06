@@ -701,7 +701,11 @@ func (p lanePricer) priceHeldExit(ctx context.Context, b heldExitBasis, slot int
 	if err != nil || destination != fleet.USDCMint {
 		return ExitCost{}, staleHoldFrom(err, "exit_quote_unavailable")
 	}
-	request := jupiter.QuoteRequest{InputMint: source, OutputMint: destination, Amount: b.heldRaw, SlippageBPS: jupiterMaxSlippageBPS, MaxAccounts: 64, InstructionVersion: "V2"}
+	maxAccounts, err := jupiterSwapMaxAccounts(p.manifest.vault, route.Lane, SwapCollateralToStableStep)
+	if err != nil {
+		return ExitCost{}, staleHoldFrom(err, "exit_quote_unavailable")
+	}
+	request := jupiter.QuoteRequest{InputMint: source, OutputMint: destination, Amount: b.heldRaw, SlippageBPS: jupiterMaxSlippageBPS, MaxAccounts: maxAccounts, InstructionVersion: "V2"}
 	if l, ok := findEarnLane(route.Lane); ok {
 		request.Dexes = l.jupiterDexes
 	}

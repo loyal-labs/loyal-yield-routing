@@ -170,11 +170,11 @@ func validateJupiterQuoteForRoute(v *Vault, quote jupiter.Quote, action Action, 
 	}
 	out, err := strconv.ParseUint(quote.OutAmount, 10, 64)
 	if err != nil || out == 0 {
-		return 0, 0, fmt.Errorf("Jupiter quote has invalid output")
+		return 0, 0, jupiterQuoteRejected("invalid_output")
 	}
 	minimum, err := strconv.ParseUint(quote.OtherAmountThreshold, 10, 64)
 	if err != nil || minimum == 0 || minimum > out {
-		return 0, 0, fmt.Errorf("Jupiter quote has invalid threshold")
+		return 0, 0, jupiterQuoteRejected("invalid_threshold")
 	}
 	if maxSlippageBPS > jupiterMaxSlippageBPS {
 		return 0, 0, fmt.Errorf("invalid Jupiter slippage limit")
@@ -184,12 +184,18 @@ func validateJupiterQuoteForRoute(v *Vault, quote jupiter.Quote, action Action, 
 		return 0, 0, holdOf(holdPriceLimit, "jupiter_quote_slippage", nil)
 	}
 	if quote.InputMint != source || quote.OutputMint != destination || quote.InAmount != strconv.FormatUint(amount, 10) ||
-		quote.SwapMode != "ExactIn" ||
-		len(quote.RoutePlan) == 0 || len(quote.RoutePlan) > jupiterMaxRoutePlanLeg || !jupiter.Null(quote.PlatformFee) {
-		return 0, 0, fmt.Errorf("Jupiter quote identity or economics drifted")
+		quote.SwapMode != "ExactIn" || len(quote.RoutePlan) == 0 || !jupiter.Null(quote.PlatformFee) {
+		return 0, 0, jupiterQuoteRejected("identity_drift")
+	}
+	if len(quote.RoutePlan) > jupiterMaxRoutePlanLeg {
+		return 0, 0, jupiterQuoteRejected("route_plan_legs")
 	}
 	return out, minimum, nil
 }
+
+type jupiterQuoteRejected string
+
+func (r jupiterQuoteRejected) Error() string { return "Jupiter quote rejected: " + string(r) }
 
 func validateJupiterInstructionForRoute(v *Vault, value JupiterSwapInstruction, action Action, amount, out, minimum uint64, lane string, maxSlippageBPS uint16) (compiledInstruction, error) {
 	sourceMint, destinationMint, sourceATA, destinationATA, err := jupiterEdgeForRoute(v, action, lane)
