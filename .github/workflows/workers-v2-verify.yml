@@ -8,6 +8,10 @@ on:
       - scripts/verify-workers-v2.sh
       - scripts/check-go-ts-refs.sh
       - scripts/build-svm-fixtures.sh
+      - scripts/prepare-vault-withdrawal-test-db.sh
+      - scripts/clickstack-*
+      - scripts/fixtures/clickstack-*
+      - deploy/hetzner/monitoring/clickstack-*
       - migrations/**
       # The fixtures the backyard Go tests read.
       - docs/evidence/backyard-rwa-go/**
@@ -43,6 +47,16 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  monitoring-contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: python3 scripts/clickstack-vault-alerts_test.py
+      - run: python3 scripts/clickstack-looping-alerts_test.py
+
   changes:
     runs-on: ubuntu-24.04
     outputs:
@@ -64,7 +78,7 @@ jobs:
           else
             echo rust=false >> "$GITHUB_OUTPUT"
           fi
-          if test "$GITHUB_EVENT_NAME" = push || git diff --name-only "$BASE" HEAD | grep -qE '^(go/workers/|migrations/|docs/evidence/backyard-rwa-go/|scripts/(verify-workers-v2\.sh|check-go-ts-refs\.sh|build-svm-fixtures\.sh)$|\.github/workflows/workers-v2-verify\.yml$|Cargo\.(toml|lock)$|rust-toolchain\.toml$|crates/(squads-test-harness|mock-yield-protocols-program|loyal-actions|loyal-solana-env|loyal-hub-abi|loyal-voltr-rwa-nav-adaptor)/)'; then
+          if test "$GITHUB_EVENT_NAME" = push || git diff --name-only "$BASE" HEAD | grep -qE '^(go/workers/|migrations/|docs/evidence/backyard-rwa-go/|scripts/(verify-workers-v2\.sh|check-go-ts-refs\.sh|build-svm-fixtures\.sh|prepare-vault-withdrawal-test-db\.sh)$|\.github/workflows/workers-v2-verify\.yml$|Cargo\.(toml|lock)$|rust-toolchain\.toml$|crates/(squads-test-harness|mock-yield-protocols-program|loyal-actions|loyal-solana-env|loyal-hub-abi|loyal-voltr-rwa-nav-adaptor)/)'; then
             echo workers=true >> "$GITHUB_OUTPUT"
           else
             echo workers=false >> "$GITHUB_OUTPUT"
@@ -83,6 +97,9 @@ jobs:
       EARNMAX_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/earnmax_test?sslmode=disable
       BACKYARD_FOREIGN_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/backyard_foreign_test?sslmode=disable
       EVM_DEPOSIT_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/evm_deposit_ci_test?sslmode=disable
+      BACKYARD_WITHDRAWAL_TEST_DSN: postgres://postgres:postgres@127.0.0.1:5432/vault_cost_test_ci?sslmode=disable
+      EARNMAX_WITHDRAWAL_TEST_DSN: postgres://postgres:postgres@127.0.0.1:5432/vault_cost_test_ci?sslmode=disable
+      VAULT_CONSENT_TEST_ADMIN_DSN: postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable
     services:
       postgres:
         image: postgres:17
@@ -106,6 +123,8 @@ jobs:
           for db in bridge_test earnmax_test backyard_foreign_test evm_deposit_ci_test; do
             psql -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE $db"
           done
+      - name: Prepare withdrawal regressions with production lifecycle constraints
+        run: bash scripts/prepare-vault-withdrawal-test-db.sh
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26.6'
@@ -145,6 +164,10 @@ jobs:
         # The golden tests read only crate files.
         if: needs.changes.outputs.rust == 'true'
         run: cargo test --locked -p loyal-actions -p loyal-voltr-rwa-nav-adaptor golden_
+      - name: Verify withdrawal protection in the pinned SBF harness
+        # Four local cases run; two external capture opt-ins remain ignored.
+        if: needs.changes.outputs.rust == 'true'
+        run: cargo test --locked -p squads-test-harness --test voltr_withdrawal_protection
       - name: Verify offline behavior
         env:
           SVM_HARNESS: ${{ github.workspace }}/target/debug/examples/fleet-local-svm
@@ -161,7 +184,7 @@ jobs:
         run: |
           export GOTOOLCHAIN=local GOENV=off
           export GOMODCACHE="$WORKERS_V2_CACHE_DIR/gomod" GOCACHE="$WORKERS_V2_CACHE_DIR/gobuild"
-          tests="TestBridgeOutQuoteIsNotServedWithoutItsRow TestTrackerStoresEachHashFromTheStatusThatCarriedIt TestForeignInflowStoreCommitsEvidenceAndCursorTogether TestExitLiabilityUsesConfirmedReportAtEachMark TestEvmDepositRelaySignedRefusesEmbeddedWalletWhenPrivyLookupIsEmpty TestEvmDepositConcurrentPostsMakeOnePrivyCreate"
+          tests="TestBridgeOutQuoteIsNotServedWithoutItsRow TestTrackerStoresEachHashFromTheStatusThatCarriedIt TestForeignInflowStoreCommitsEvidenceAndCursorTogether TestExitLiabilityUsesConfirmedReportAtEachMark TestEvmDepositRelaySignedRefusesEmbeddedWalletWhenPrivyLookupIsEmpty TestEvmDepositConcurrentPostsMakeOnePrivyCreate TestWithdrawalCostDatabaseCrossWorkerReservationAndConsentWidening TestWithdrawalCostDatabaseCoveredSaleAndObservationOrdering TestWithdrawalCostDatabaseLoaderUsesActualGenerationAndEscrow TestWithdrawalCostDatabaseSimulationDisclosureCrashRetainsExactWire TestWithdrawalCostDatabaseDisclosedFailureAndManualLandingSatisfyProductionConstraint TestWithdrawalCostDatabaseEngineSweepsWithoutDemandOrNewSigning TestWithdrawalCostDatabaseSweepTimeoutDoesNotStarveLaterWireAndJoins TestWithdrawalAttemptDatabaseFeeReservationSurvivesWideningAndRetries TestWithdrawalConsentStoreConcurrentImmutableVersions TestWithdrawalCostStatusGenerationVersionsAndUnknown"
           log="$RUNNER_TEMP/dbtests.log"
           go test -p 1 -count=1 -v -run "^($(echo $tests | tr ' ' '|'))\$" ./internal/bridge ./internal/backyard ./internal/earnmax ./internal/webapp | tee "$log"
           ! grep -- '--- SKIP' "$log"

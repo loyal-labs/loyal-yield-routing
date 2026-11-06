@@ -26,8 +26,14 @@ func withdrawalConsentTestDB(t *testing.T) *pgxpool.Pool {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.ConnConfig.Host != "127.0.0.1" || config.ConnConfig.Port != 55439 || config.ConnConfig.User != "vault_test" || config.ConnConfig.Database != "postgres" {
-		t.Fatal("test requires the authorized disposable PostgreSQL")
+	localHost := func(host string) bool { return host == "127.0.0.1" || host == "localhost" }
+	if !localHost(config.ConnConfig.Host) || config.ConnConfig.Database != "postgres" {
+		t.Fatal("test requires an explicit local PostgreSQL admin database")
+	}
+	for _, fallback := range config.ConnConfig.Fallbacks {
+		if !localHost(fallback.Host) {
+			t.Fatal("test refuses a nonlocal PostgreSQL fallback")
+		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()

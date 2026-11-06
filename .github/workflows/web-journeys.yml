@@ -5,6 +5,7 @@ on:
       - "web/apps/web/**"
       - "web/apps/admin/src/app/(admin)/journeys/**"
       - "web/packages/smart-account-vaults/**"
+      - "web/packages/shared/**"
       - ".github/workflows/web-journeys.yml"
       - "web/scripts/observability/**"
   workflow_dispatch:
@@ -47,7 +48,7 @@ jobs:
       - run: bun run --cwd packages/loyal-smart-accounts build
       - run: bun run --cwd packages/loyal-actions build
       - run: bun run --cwd packages/solana-instruction-decoder build
-      - run: bun test packages/smart-account-vaults/src/wallet.test.ts --test-name-pattern fresh-wallet
+      - run: bun test packages/smart-account-vaults/src/wallet.test.ts packages/smart-account-vaults/src/voltr/program.test.ts packages/smart-account-vaults/src/voltr/plans.test.ts packages/smart-account-vaults/src/voltr/prepare.test.ts packages/shared/src/earn-max-withdrawal-costs.test.ts
       - run: bun test apps/web/src/features/observability/ apps/web/src/components/wallet-workspace/facelift/use-evm-deposit-address.test.ts
       - run: bunx playwright install --with-deps chromium
         working-directory: web/apps/web
