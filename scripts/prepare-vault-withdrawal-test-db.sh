@@ -46,6 +46,8 @@ files = [Path(name) for name in (
     "migrations/yield/0113_backyard_failure_settles_by_receipt.sql",
     "migrations/yield/0139_earn_max_withdrawal_consent.sql",
     "migrations/yield/0140_earn_max_withdrawal_costs.sql",
+    "migrations/yield/0141_backyard_withdrawal_cost_participants.sql",
+    "migrations/yield/0142_vault_release_controls.sql",
 )]
 sql = b"\n".join(path.read_bytes() for path in files)
 
@@ -73,10 +75,11 @@ validated = psql(target, "SELECT convalidated AND "
                  "to_regclass('loyal_yield.earn_max_withdrawal_consents') IS NOT NULL AND "
                  "to_regclass('loyal_yield.backyard_withdrawal_cost_operations') IS NOT NULL AND "
                  "to_regclass('loyal_yield.backyard_withdrawal_cost_reservations') IS NOT NULL AND "
-                 "to_regclass('loyal_yield.earn_max_withdrawal_claim_attempts') IS NOT NULL "
+                 "to_regclass('loyal_yield.earn_max_withdrawal_claim_attempts') IS NOT NULL AND "
+                 "to_regclass('loyal_yield.vault_release_controls') IS NOT NULL "
                  "FROM pg_constraint WHERE conrelid='loyal_yield.multiply_operations'::regclass "
                  "AND conname='multiply_operations_backyard_lifecycle';")
 if validated != "t":
     refuse("production lifecycle constraint or withdrawal tables missing")
-print("Withdrawal fixture ready: actual 0113 validated; actual 0139/0140 applied")
+print("Withdrawal fixture ready: actual 0113 validated; actual 0139-0142 applied")
 PY
