@@ -1,7 +1,7 @@
-# Backyard family. Separately credentialed engine instance.
+# Backyard test vault only. Independent process and configuration.
 # Secrets: systemd-creds encrypted with the host key; names only here.
 [Unit]
-Description=Loyal Backyard engine (Go)
+Description=Backyard test vault engine (Go)
 Documentation=https://github.com/loyal-labs/loyal-yield-routing/tree/main/deploy/hetzner
 Wants=network-online.target
 After=network-online.target
@@ -26,7 +26,8 @@ LoadCredentialEncrypted=BACKYARD_HELIUS_API_KEY:/etc/credstore.encrypted/loyal-b
 # BACKYARD_LASERSTREAM_ENDPOINT.
 EnvironmentFile=/etc/loyal/loyal-backyard.env
 Environment=LOYAL_WORKER_SCOPE=backyard
-Environment=LOYAL_WORKER_INSTANCE=primary
+Environment=LOYAL_WORKER_INSTANCE=looping
+Environment=BACKYARD_VAULT=looping
 Environment=LOYAL_METRICS_ADDRESS=127.0.0.1:9103
 
 DynamicUser=yes

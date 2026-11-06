@@ -7,19 +7,19 @@
   "searches": [
     {
       "id": "6ab6eeb4df00e17b4af9194e",
-      "where": "ServiceName = 'loyal-backyard' AND LogAttributes['vault'] = 'rwa' AND Body = 'backyard_heartbeat'"
+      "where": "ServiceName IN ('loyal-backyard', 'loyal-earn-max') AND LogAttributes['vault'] = 'rwa' AND Body = 'backyard_heartbeat'"
     },
     {
       "id": "6ab6eeb5df00e17b4af91955",
-      "where": "ServiceName = 'loyal-backyard' AND LogAttributes['vault'] = 'rwa' AND Body = 'backyard_operation_reconciled' AND LogAttributes['action'] = 'REPORT_NAV'"
+      "where": "ServiceName IN ('loyal-backyard', 'loyal-earn-max') AND LogAttributes['vault'] = 'rwa' AND Body = 'backyard_operation_reconciled' AND LogAttributes['action'] = 'REPORT_NAV'"
     },
     {
       "id": "6ab6eeb3df00e17b4af91947",
-      "where": "ServiceName = 'loyal-backyard' AND LogAttributes['vault'] = 'rwa' AND SeverityText = 'warn'"
+      "where": "ServiceName IN ('loyal-backyard', 'loyal-earn-max') AND LogAttributes['vault'] = 'rwa' AND SeverityText = 'warn'"
     },
     {
       "id": "6ab6eeb7df00e17b4af9195c",
-      "where": "ServiceName = 'loyal-backyard' AND LogAttributes['vault'] = 'rwa' AND Body = 'backyard_worker_start'"
+      "where": "ServiceName IN ('loyal-backyard', 'loyal-earn-max') AND LogAttributes['vault'] = 'rwa' AND Body = 'backyard_worker_start'"
     }
   ],
   "alerts": [
@@ -32,7 +32,7 @@
         "source": "saved_search",
         "savedSearchId": "6ab6eeb4df00e17b4af9194e"
       },
-      "message": "rwa vault sent fewer than 2 heartbeats in 5 minutes. Check loyal-backyard.service on loyal-workers, the vault loop, and telemetry ingestion."
+      "message": "rwa vault sent fewer than 2 heartbeats in 5 minutes. Check loyal-earn-max.service on loyal-workers, the vault loop, and telemetry ingestion."
     },
     {
       "id": "6ab6eedadf00e17b4af91998",
@@ -66,7 +66,7 @@
         "thresholdType": "above",
         "interval": "30m"
       },
-      "message": "Repeated RWA vault worker starts in 30 minutes. Check loyal-backyard.service on loyal-workers and the recorded exit causes."
+      "message": "Repeated RWA vault worker starts in 30 minutes. Check loyal-earn-max.service on loyal-workers and the recorded exit causes."
     }
   ],
   "navConfig": {
@@ -74,7 +74,7 @@
     "displayType": "number",
     "connectionId": "6a58601284f8f1d4ff4d12a1",
     "sourceId": "6a58601284f8f1d4ff4d12a5",
-    "sqlTemplate": "WITH fromUnixTimestamp64Milli({endDateMilliseconds:Int64}) AS evaluated_at\nSELECT toUInt8(count() > 0 AND max(Timestamp) >= evaluated_at - INTERVAL 75 MINUTE) AS nav_fresh\nFROM $__sourceTable\nWHERE Timestamp >= evaluated_at - INTERVAL 2 HOUR\n  AND Timestamp <= evaluated_at\n  AND ServiceName = 'loyal-backyard' AND LogAttributes['vault'] = 'rwa' AND Body = 'backyard_operation_reconciled' AND LogAttributes['action'] = 'REPORT_NAV'\nLIMIT 1",
+    "sqlTemplate": "WITH fromUnixTimestamp64Milli({endDateMilliseconds:Int64}) AS evaluated_at\nSELECT toUInt8(count() > 0 AND max(Timestamp) >= evaluated_at - INTERVAL 75 MINUTE) AS nav_fresh\nFROM $__sourceTable\nWHERE Timestamp >= evaluated_at - INTERVAL 2 HOUR\n  AND Timestamp <= evaluated_at\n  AND ServiceName IN ('loyal-backyard', 'loyal-earn-max') AND LogAttributes['vault'] = 'rwa' AND Body = 'backyard_operation_reconciled' AND LogAttributes['action'] = 'REPORT_NAV'\nLIMIT 1",
     "numberFormat": {
       "output": "number",
       "mantissa": 0

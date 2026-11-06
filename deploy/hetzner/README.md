@@ -11,7 +11,12 @@ them from journald to ClickStack.
 |---|---|---|---|
 | `loyal-observer.service` | `loyal-observer` | observer | `127.0.0.1:9101` |
 | `loyal-retail.service` | `loyal-engine` (scope `retail`) | autodeposit, fleet, multiply, lookup | `127.0.0.1:9102` |
-| `loyal-backyard.service` | `loyal-engine` (scope `backyard`) | backyard | `127.0.0.1:9103` |
+| `loyal-backyard.service` | `loyal-engine` (scope `backyard`, vault `looping`) | backyard | `127.0.0.1:9103` |
+| `loyal-earn-max.service` | `loyal-engine` (scope `backyard`, vault `rwa`) | backyard | `127.0.0.1:9105` |
+
+The two vault services share the database, with one writer lock per vault.
+See [the initial vault split](vault-service-split.md) before replacing the older
+combined service. A normal rolling deployment cannot perform that cutover.
 
 ## Build
 
@@ -55,6 +60,7 @@ hands the session to next. Credentials by unit:
 - `loyal-observer`: `HELIUS_API_KEY`, `SOLANA_RPC_URL`, `NEON_DATABASE_URL`, `TIMESCALEDB_URL`
 - `loyal-retail`: `RETAIL_DATABASE_URL`, `RETAIL_TIMESCALE_DATABASE_URL`, `RETAIL_SOLANA_RPC_URL`, `RETAIL_JUPITER_API_KEY`, `RETAIL_DELEGATE_KEYPAIR`, `RETAIL_FEE_PAYER_KEYPAIR`. Add `RETAIL_LOOKUP_MANAGER_KEYPAIR` only for active lookup mode. When the unit writes Autodeposit, add `RETAIL_SWEEP_NOTIFY_ENDPOINT` and `RETAIL_SWEEP_NOTIFY_SECRET` (the app's failed-sweep push; the TS `SOLANA_WEEK_NOTIFY_ENDPOINT` and `SOLANA_WEEK_NOTIFY_SECRET`) in a drop-in, both or neither, as the unit's comment shows. To read Privy gas spend (the `LoyalPrivyGasSpendHigh` and `LoyalPrivyGasSpendStale` alerts) and to scan `relay_signed` wallets for funds left unmoved (`LoyalBridgeIncomingUnmoved`, `LoyalBridgeIncomingStranded`, `LoyalBridgeIncomingScanStale` and `LoyalBridgeIncomingScanFailing`), add `RETAIL_PRIVY_APP_ID` and `RETAIL_PRIVY_APP_SECRET` the same way in a `privy-gas-spend.conf` drop-in, both or neither; they must be the same Privy app as loyal-web's `PRIVY_APP_ID`, since the scan looks up the wallets that app created; both absent means the reader and the scan are off and all six alerts stay silent (the unit logs `bridge incoming unmoved scan disabled: no privy credentials`). The scan also needs SELECT on `loyal_yield.evm_deposit_routes` on `RETAIL_DATABASE_URL`. To record deposits into Tron deposit addresses, add `RETAIL_RELAY_API_KEY` the same way in a `relay-requests.conf` drop-in; absent means detection is off and the unit logs `relay requests disabled: no api key` once at start. Detection and the bridge tracker need SELECT on `loyal_yield.relay_deposit_addresses` and SELECT, INSERT and UPDATE on `loyal_yield.bridge_transfers` (including the `deposit_address` column from 0134) on `RETAIL_DATABASE_URL`. A missing `LoadCredentialEncrypted=` file fails the unit (243/CREDENTIALS), so these optional credentials never go in the unit itself.
 - `loyal-backyard`: `BACKYARD_DATABASE_URL`, `BACKYARD_SOLANA_RPC_URL`, `BACKYARD_POLICY_KEYPAIR`, `JUPITER_API_KEY`, `BACKYARD_HELIUS_API_KEY`. Its selector mode, canary entry and `BACKYARD_LASERSTREAM_ENDPOINT` go in `/etc/loyal/loyal-backyard.env`.
+- `loyal-earn-max`: the same credential names in `/etc/credstore.encrypted/loyal-earn-max/`, and its own `/etc/loyal/loyal-earn-max.env`. `BACKYARD_VAULT=rwa` is pinned in its unit; `loyal-backyard` pins `BACKYARD_VAULT=looping`. Do not override the vault in environment files.
 - Alertmanager: `telegram_bot_token`
 - Alertmanager: `heartbeat_url`, the external dead man's switch that the Watchdog alert pings. Not wired yet: until it exists the heartbeat receiver is empty, and nothing pages if the whole host or monitoring stack is down.
 - Collector: `CLICKSTACK_OTLP_ENDPOINT`, `CLICKSTACK_INGESTION_KEY`
@@ -63,21 +69,23 @@ Then run `systemctl daemon-reload`.
 
 ## Upgrade
 
-Backyard, retail and the observer deploy with `bun run deploy` (next
+Backyard, Loyal Earn MAX, retail and the observer deploy with `bun run deploy` (next
 section).
 
 On a restart, signed and sent rows stay on their operation rows, and the
 next start lands them (`land()`). Restart one unit at a time. Only one writer
-per family runs: with `HoldFamily`, a second process exits and restarts until
-the first one stops.
+per vault runs for Backyard/Loyal Earn MAX; the other families retain their
+family locks. A duplicate vault process waits for that vault's writer to stop.
+A shared lock on the old family key also excludes legacy combined workers.
 
-## Release (Backyard, retail and observer)
+## Release (Backyard, Loyal Earn MAX, retail and observer)
 
 Each family deploys with one command from a Mac clone, and only with the
 owner's go-ahead (implementation lanes never deploy):
 
 ```sh
 bun run deploy backyard [sha] [--migrations-applied] [--stopped]   # sha defaults to origin/main
+bun run deploy earn-max [sha] [--migrations-applied] [--stopped]
 bun run deploy retail [sha] [--migrations-applied] [--stopped]
 bun run deploy observer [sha] [--migrations-applied] [--stopped]
 ```
@@ -85,6 +93,7 @@ bun run deploy observer [sha] [--migrations-applied] [--stopped]
 | Family | Unit | Release binary |
 |---|---|---|
 | `backyard` | `loyal-backyard.service` | `/opt/loyal/releases/backyard/<sha>/loyal-engine` |
+| `earn-max` | `loyal-earn-max.service` | `/opt/loyal/releases/earn-max/<sha>/loyal-engine` |
 | `retail` | `loyal-retail.service` | `/opt/loyal/releases/retail/<sha>/loyal-engine` |
 | `observer` | `loyal-observer.service` | `/opt/loyal/releases/observer/<sha>/loyal-observer` |
 
@@ -115,8 +124,8 @@ is `/var/log/loyal-deploy/<family>-<sha>.log`.
    The same release already active is a no-op. A unit that is not active
    stops the deploy (someone stopped it on purpose) unless the deploy says
    `--stopped`, which in turn requires the unit to be inactive.
-3. Backyard only: gates on `loyal-engine backyard in-flight` of the new
-   release, run under the unit's own `BACKYARD_DATABASE_URL` credential: the
+3. Backyard and Loyal Earn MAX: gates on `loyal-engine backyard in-flight
+   --vault looping` or `--vault rwa` respectively, using the new release, run under the unit's own `BACKYARD_DATABASE_URL` credential: the
    count of operations a restart would resume. It waits up to 120 s for 0,
    stops the unit, and checks again; a nonzero count starts the previous
    release. Retail and the observer have no gate: a stop leaves retail's
@@ -125,9 +134,9 @@ is `/var/log/loyal-deploy/<family>-<sha>.log`.
 4. Backs the drop-in up to
    `/root/loyal-<family>-40-verified-release.conf.<prev>.bak`, points it at
    the new release and starts the unit.
-5. Backyard counts as up when, within 60 s, the unit is active, `NRestarts`
-   is 0 and the journal shows `backyard_worker_start` with lease owner
-   `…sha-<sha>`. Retail and the observer count as up when they are active
+5. Each vault counts as up when, within 60 s, the unit is active, `NRestarts`
+   is 0 and the journal shows `backyard_worker_start` with its selected vault
+   and lease owner `…sha-<sha>`. Retail and the observer count as up when they are active
    with `NRestarts` 0 for 20 s. Otherwise the backup comes back and the
    previous release restarts (Backyard: only with nothing in flight); with
    `--stopped` the unit stays stopped on the previous drop-in.
@@ -190,7 +199,7 @@ only if it runs against the migrated schema.
 
 Roll back with `bun run deploy <family> <prev-sha>`. It keeps the newer
 rules. Only commits that contain `activate.sh` and `install-rules.sh` (and,
-for Backyard, the `in-flight` command) can be deployed this way; an older
+for both vault services, the scoped `in-flight --vault` command) can be deployed this way; an older
 release goes back by hand through the drop-in.
 
 ## Realtime (Rust)

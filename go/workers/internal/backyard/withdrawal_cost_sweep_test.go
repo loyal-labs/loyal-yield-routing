@@ -85,6 +85,19 @@ func TestWithdrawalCostDatabaseEngineSweepsWithoutDemandOrNewSigning(t *testing.
 		t.Fatal(err)
 	}
 	attemptID := insertSweepClaim(t, d, consentID, signed)
+	var beforeClaim, beforeCost, afterClaim, afterCost string
+	read := func(claim, cost *string) {
+		t.Helper()
+		if err := d.pool.QueryRow(ctx, `SELECT a.state,c.state FROM loyal_yield.earn_max_withdrawal_claim_attempts a CROSS JOIN loyal_yield.backyard_withdrawal_cost_operations c WHERE a.attempt_id=$1 AND c.operation_id=$2`, attemptID, op.ID).Scan(claim, cost); err != nil {
+			t.Fatal(err)
+		}
+	}
+	read(&beforeClaim, &beforeCost)
+	newWithdrawalSettlementWorker(d, newFakeChain(t, nil), nil, looping).sweep(ctx)
+	read(&afterClaim, &afterCost)
+	if beforeClaim != afterClaim || beforeCost != afterCost {
+		t.Fatal("Backyard settled Loyal's pending claim or cost")
+	}
 	client := withdrawalSweepRPC(t, receipt, func(string) string { return "failed" })
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	events := newEvents(log, nil, "rwa")
@@ -150,7 +163,7 @@ func TestWithdrawalCostDatabaseSweepTimeoutDoesNotStarveLaterWireAndJoins(t *tes
 		}
 		return "expired"
 	})
-	w := newWithdrawalSettlementWorker(d, client, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	w := newWithdrawalSettlementWorker(d, client, slog.New(slog.NewTextHandler(io.Discard, nil)), rwa)
 	w.batchSize = 1
 	w.attemptTimeout = 20 * time.Millisecond
 	w.interval = time.Millisecond

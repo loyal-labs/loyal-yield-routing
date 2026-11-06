@@ -219,7 +219,7 @@ func TestRouteNAVCadenceRejectsMixedSlotsAndBoundsFutureClockSkew(t *testing.T) 
 func TestViewHoldsEveryRouteObservationAccount(t *testing.T) {
 	t.Parallel()
 	held := map[string]bool{}
-	for _, address := range viewAddresses() {
+	for _, address := range viewAddresses(rwa) {
 		held[address] = true
 	}
 	for _, address := range routeFixedAddresses(rwa) {

@@ -260,9 +260,9 @@ class LoopingTests(unittest.TestCase):
                 self.apply(mutation + '.json')
             self.assertEqual(len(self.server.writes), 3)
 
-    def test_nav_sql_is_exact_rwa_query_with_vault_substitution(self):
+    def test_nav_sql_matches_rwa_with_service_and_vault_substitution(self):
         rwa = json.loads(repair.DEFAULT_MANIFEST.with_name('clickstack-vault-alerts.json').read_text())
-        self.assertEqual(self.plan['dashboard']['tiles'][1]['config'], dict(rwa['navConfig'], sqlTemplate=rwa['navConfig']['sqlTemplate'].replace("= 'rwa'", "= 'looping'")))
+        self.assertEqual(self.plan['dashboard']['tiles'][1]['config'], dict(rwa['navConfig'], sqlTemplate=rwa['navConfig']['sqlTemplate'].replace("= 'rwa'", "= 'looping'").replace("ServiceName IN ('loyal-backyard', 'loyal-earn-max')", "ServiceName = 'loyal-backyard'")))
 
 
 if __name__ == '__main__':

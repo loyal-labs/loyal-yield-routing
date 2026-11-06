@@ -54,7 +54,7 @@ func RunSimulateStep(ctx context.Context, out io.Writer, rpcURL string, client *
 	if err != nil {
 		return err
 	}
-	view, err := OpenView(ctx, cluster, nil)
+	view, err := OpenView(ctx, cluster, nil, vault)
 	if err != nil {
 		return err
 	}

@@ -21,6 +21,7 @@ const (
 )
 
 type EngineConfig struct {
+	Vault       string
 	Database    *Database
 	RPC         *chain.Client
 	View        *View
@@ -50,6 +51,16 @@ func NewEngine(config EngineConfig) (*Engine, error) {
 	if config.Owner == "" {
 		return nil, fmt.Errorf("Backyard engine requires an instance identity")
 	}
+	v, err := findVault(config.Vault)
+	if err != nil {
+		return nil, err
+	}
+	if config.Database != nil && config.Database.vault != v {
+		return nil, fmt.Errorf("Backyard database must own vault %s", v.Name)
+	}
+	if config.View != nil && config.View.vault != v {
+		return nil, fmt.Errorf("Backyard view must observe vault %s", v.Name)
+	}
 	switch config.Selector {
 	case SelectorOff, SelectorLive:
 	default:
@@ -59,20 +70,16 @@ func NewEngine(config EngineConfig) (*Engine, error) {
 		config.Out = io.Discard
 	}
 	e := &Engine{database: config.Database, rpc: config.RPC, view: config.View, owner: config.Owner, config: config.Config, out: config.Out, runtime: config}
-	routeEvents := map[string]*events{}
-	for _, v := range vaults {
-		state := &vaultState{events: newEvents(config.Logger, config.Facts, v.Name)}
-		worker, err := NewWorker(config.Database, config.RPC, config.View, config.Jupiter, config.Config, config.Credentials, v, state)
-		if err != nil {
-			return nil, err
-		}
-		e.workers, e.states = append(e.workers, worker), append(e.states, state)
-		routeEvents[v.RouteKey] = state.events
+	state := &vaultState{events: newEvents(config.Logger, config.Facts, v.Name)}
+	worker, err := NewWorker(config.Database, config.RPC, config.View, config.Jupiter, config.Config, config.Credentials, v, state)
+	if err != nil {
+		return nil, err
 	}
+	e.workers, e.states = []*Worker{worker}, []*vaultState{state}
 	if config.Jupiter == nil {
 		return nil, fmt.Errorf("Backyard engine requires a Jupiter client")
 	}
-	config.Database.events = routeEvents
+	config.Database.events = map[string]*events{v.RouteKey: state.events}
 	return e, nil
 }
 
@@ -99,7 +106,7 @@ func (e *Engine) Run(ctx context.Context) error {
 		e.states[i].events.workerStart(e.owner, worker.manifest.SHA256)
 		lanes[i] = worker
 	}
-	lanes = append(lanes, newWithdrawalSettlementWorker(e.database, e.rpc, e.runtime.Logger))
+	lanes = append(lanes, newWithdrawalSettlementWorker(e.database, e.rpc, e.runtime.Logger, e.workers[0].manifest.vault))
 	return engine.Run(ctx, lanes...)
 }
 

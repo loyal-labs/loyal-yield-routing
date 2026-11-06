@@ -5,14 +5,16 @@ family=${1:-}
 sha=${2:-}
 want=${3:-}
 mode=${4:-running}
-case $family in backyard | retail) binary=loyal-engine ;; observer) binary=loyal-observer ;; telegram) binary=loyal-telegram ;; web) binary=loyal-web ;; admin) binary=loyal-admin ;; stats) binary=loyal-stats ;; *) family=bad ;; esac
+case $family in backyard | earn-max | retail) binary=loyal-engine ;; observer) binary=loyal-observer ;; telegram) binary=loyal-telegram ;; web) binary=loyal-web ;; admin) binary=loyal-admin ;; stats) binary=loyal-stats ;; *) family=bad ;; esac
 case $sha in *[!0-9a-f]* | '') sha=bad ;; esac
 case $want in *[!0-9a-f]* | '') want=bad ;; esac
 case $mode in running | stopped) ;; *) mode=bad ;; esac
 if [ "$family" = bad ] || [ ${#sha} -ne 40 ] || [ ${#want} -ne 64 ] || [ "$mode" = bad ]; then
-	echo "usage: activate.sh backyard|retail|observer|telegram|web|admin|stats <40-hex commit sha> <64-hex sha256> [stopped]" >&2
+	echo "usage: activate.sh backyard|earn-max|retail|observer|telegram|web|admin|stats <40-hex commit sha> <64-hex sha256> [stopped]" >&2
 	exit 2
 fi
+vault=
+case $family in backyard) vault=looping ;; earn-max) vault=rwa ;; esac
 unit=loyal-$family
 dropin=/etc/systemd/system/$unit.service.d/40-verified-release.conf
 releases=/opt/loyal/releases/$family
@@ -72,15 +74,21 @@ if [ "$mode" = stopped ] && [ "$state" = active ]; then
 	fail "--stopped, but $unit is active; nothing changed"
 fi
 
-# Backyard's gate is the new release's own read of the in-flight rows, under
+# Each vault's gate is the new release's own read of its in-flight rows, under
 # the unit's own database credential (its path read from the unit, not here).
 # `systemctl show` prints encrypted credentials as "[unprintable]", so read
 # the unit's own lines. Retail and the observer have no gate: in_flight
 # prints 0.
-if [ "$family" = backyard ]; then
+if [ -n "$vault" ]; then
 	dbcred=$(systemctl cat "$unit" |
 		sed -n 's/^LoadCredentialEncrypted=\(BACKYARD_DATABASE_URL:[^ ]*\)$/\1/p' | tail -n 1)
 	[ -n "$dbcred" ] || fail "no BACKYARD_DATABASE_URL in $unit's LoadCredentialEncrypted"
+	# A legacy binary still runs both vaults; a scoped gate cannot drain it safely.
+	if ! systemd-run --quiet --wait --pipe --collect -p DynamicUser=yes \
+		-p "LoadCredentialEncrypted=$dbcred" \
+		"$releases/$prev/$binary" backyard in-flight --vault "$vault" >/dev/null; then
+		fail "previous release cannot pass the vault-scoped gate; follow vault-service-split.md before deploying"
+	fi
 fi
 web_family=no
 case $family in web) web_family=yes addrvar=LOYAL_WEB_ADDRESS ;; admin) web_family=yes addrvar=LOYAL_ADMIN_ADDRESS ;; stats) web_family=yes addrvar=LOYAL_STATS_ADDRESS ;; esac
@@ -90,16 +98,16 @@ if [ "$web_family" = yes ]; then
 	[ -n "$webaddr" ] || fail "no $addrvar in $unit; cannot check /readyz"
 fi
 in_flight() {
-	if [ "$family" != backyard ]; then
+	if [ -z "$vault" ]; then
 		echo 0
 		return
 	fi
 	systemd-run --quiet --wait --pipe --collect -p DynamicUser=yes \
 		-p "LoadCredentialEncrypted=$dbcred" \
-		"$bin" backyard in-flight </dev/null
+		"$bin" backyard in-flight --vault "$vault" </dev/null
 }
 
-if [ "$family" = backyard ] && [ "$mode" = running ]; then
+if [ -n "$vault" ] && [ "$mode" = running ]; then
 	say "previous release $prev; waiting for no in-flight operation (up to 120 s)"
 	deadline=$(($(date +%s) + 120))
 	while :; do
@@ -168,19 +176,19 @@ say "starting $unit ($sha)"
 systemctl start "$unit" || true
 
 started=no
-if [ "$family" = backyard ]; then
+if [ -n "$vault" ]; then
 	deadline=$(($(date +%s) + 60))
 	while [ "$(date +%s)" -lt "$deadline" ]; do
 		sleep 3
 		[ "$(systemctl is-active "$unit" || true)" = active ] || continue
 		[ "$(systemctl show -p NRestarts --value "$unit")" = 0 ] || break
 		if journalctl -u "$unit" --since "$since" -o cat --no-pager |
-			grep backyard_worker_start | grep -q "sha-$sha"; then
+			grep backyard_worker_start | grep "\"vault\":\"$vault\"" | grep -q "sha-$sha"; then
 			started=yes
 			break
 		fi
 	done
-	up="log its worker start within 60 s without restarting"
+	up="log its worker start for vault=$vault within 60 s without restarting"
 else
 	deadline=$(($(date +%s) + 20))
 	started=yes
