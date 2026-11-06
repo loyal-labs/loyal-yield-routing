@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnmax"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 	"github.com/prometheus/client_golang/prometheus"
@@ -112,4 +114,42 @@ func TestWithdrawalMetricsKeepAttentionAndClockWhenEvidenceUnavailable(t *testin
 	check(1, 1000)
 	e.withdrawalHealthStored(earnmax.WithdrawalHealth{RouteKey: productionRouteKey, Status: "waiting", ObservedAt: now.Add(2 * time.Minute)})
 	check(0, 1120)
+}
+
+// An unavailable valuation refresh simulation makes the confirmed observation
+// temporarily unavailable. The lifecycle defers that, so a selector sample must
+// not count it as a family failure. An unknown error still counts.
+func TestSelectorSampleCountsOnlyFailuresNotObservationLag(t *testing.T) {
+	t.Parallel()
+	registry := prometheus.NewRegistry()
+	e := newEvents(slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil)), engine.NewFacts(registry), "rwa")
+	failed := func() map[string]float64 {
+		families, err := registry.Gather()
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]float64{}
+		for _, family := range families {
+			if family.GetName() != "loyal_family_failed_total" {
+				continue
+			}
+			for _, m := range family.GetMetric() {
+				for _, l := range m.GetLabel() {
+					if l.GetName() == "code" {
+						out[l.GetValue()] = m.GetCounter().GetValue()
+					}
+				}
+			}
+		}
+		return out
+	}
+	lag := confirmedObservationUnavailable(fmt.Errorf("reserve valuation refresh unavailable: %w", staleHoldFrom(chain.ErrUnavailable, "price_refresh_simulation_unavailable")))
+	e.selectorSampleError(fmt.Errorf("shadow confirmed observation unavailable: %w", lag))
+	if got := failed(); len(got) != 0 {
+		t.Fatalf("observation lag counted as a selector failure: %v", got)
+	}
+	e.selectorSampleError(errors.New("unclassified"))
+	if got := failed(); got["selector_evaluate_unavailable"] != 1 {
+		t.Fatalf("an unknown selector error was not counted: %v", got)
+	}
 }
