@@ -12,6 +12,7 @@ import (
 )
 
 type withdrawalSettlementWorker struct {
+	vault                     *Vault
 	database                  *Database
 	chain                     *chain.Client
 	attempts                  *earnmax.WithdrawalAttemptStore
@@ -22,11 +23,15 @@ type withdrawalSettlementWorker struct {
 	lastWarnings              map[string]string
 }
 
-func newWithdrawalSettlementWorker(database *Database, client *chain.Client, log *slog.Logger) *withdrawalSettlementWorker {
+func newWithdrawalSettlementWorker(database *Database, client *chain.Client, log *slog.Logger, vault *Vault) *withdrawalSettlementWorker {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &withdrawalSettlementWorker{database: database, chain: client, attempts: earnmax.NewWithdrawalAttemptStore(database.pool, client), log: log, interval: 10 * time.Second, attemptTimeout: 3 * time.Second, batchSize: 32, lastWarnings: map[string]string{}}
+	w := &withdrawalSettlementWorker{vault: vault, database: database, chain: client, log: log, interval: 10 * time.Second, attemptTimeout: 3 * time.Second, batchSize: 32, lastWarnings: map[string]string{}}
+	if vault == rwa {
+		w.attempts = earnmax.NewWithdrawalAttemptStore(database.pool, client)
+	}
+	return w
 }
 
 func (w *withdrawalSettlementWorker) Run(ctx context.Context) error {
@@ -74,47 +79,49 @@ type withdrawalTerminalCost struct{ id, route string }
 func (w *withdrawalSettlementWorker) sweep(ctx context.Context) {
 	scan, cancel := context.WithTimeout(ctx, 2*time.Second)
 	var ready bool
-	err := w.database.pool.QueryRow(scan, `SELECT to_regclass('loyal_yield.earn_max_withdrawal_claim_attempts') IS NOT NULL AND to_regclass('loyal_yield.backyard_withdrawal_cost_operations') IS NOT NULL`).Scan(&ready)
+	err := w.database.pool.QueryRow(scan, `SELECT (NOT $1 OR to_regclass('loyal_yield.earn_max_withdrawal_claim_attempts') IS NOT NULL) AND to_regclass('loyal_yield.backyard_withdrawal_cost_operations') IS NOT NULL`, w.attempts != nil).Scan(&ready)
 	cancel()
 	if err != nil {
-		w.warning(ctx, rwa.RouteKey, withdrawalSettlementError(err))
+		w.warning(ctx, w.vault.RouteKey, withdrawalSettlementError(err))
 		return
 	}
 	if !ready {
-		w.warning(ctx, rwa.RouteKey, "withdrawal_accounting_schema_unavailable")
+		w.warning(ctx, w.vault.RouteKey, "withdrawal_accounting_schema_unavailable")
 		return
 	}
 	failures := map[string]string{}
 	observed := map[string]bool{}
-	if w.lastWarnings[rwa.RouteKey] == "withdrawal_accounting_schema_unavailable" {
-		w.warning(ctx, rwa.RouteKey, "")
+	if w.lastWarnings[w.vault.RouteKey] == "withdrawal_accounting_schema_unavailable" {
+		w.warning(ctx, w.vault.RouteKey, "")
 	}
-	scan, cancel = context.WithTimeout(ctx, 2*time.Second)
-	ids, err := w.attempts.PendingAttempts(scan, w.attemptCursor, w.batchSize)
-	cancel()
-	if err != nil {
-		observed[rwa.RouteKey] = true
-		failures[rwa.RouteKey] = withdrawalSettlementError(err)
-	} else {
-		if len(ids) == 0 {
-			w.attemptCursor = ""
-		}
-		for _, id := range ids {
+	if w.attempts != nil {
+		scan, cancel = context.WithTimeout(ctx, 2*time.Second)
+		ids, err := w.attempts.PendingAttempts(scan, w.attemptCursor, w.batchSize)
+		cancel()
+		if err != nil {
 			observed[rwa.RouteKey] = true
-			if ctx.Err() != nil {
-				return
+			failures[rwa.RouteKey] = withdrawalSettlementError(err)
+		} else {
+			if len(ids) == 0 {
+				w.attemptCursor = ""
 			}
-			attempt, stop := context.WithTimeout(ctx, w.attemptTimeout)
-			err := w.attempts.Reconcile(attempt, id)
-			stop()
-			w.attemptCursor = id
-			if err != nil {
-				failures[rwa.RouteKey] = withdrawalSettlementError(err)
+			for _, id := range ids {
+				observed[rwa.RouteKey] = true
+				if ctx.Err() != nil {
+					return
+				}
+				attempt, stop := context.WithTimeout(ctx, w.attemptTimeout)
+				err := w.attempts.Reconcile(attempt, id)
+				stop()
+				w.attemptCursor = id
+				if err != nil {
+					failures[rwa.RouteKey] = withdrawalSettlementError(err)
+				}
 			}
 		}
 	}
 	scan, cancel = context.WithTimeout(ctx, 2*time.Second)
-	rows, err := w.database.pool.Query(scan, `SELECT c.operation_id,o.route_key FROM loyal_yield.backyard_withdrawal_cost_operations c JOIN loyal_yield.multiply_operations o USING(operation_id) WHERE c.state IN ('reserved','unknown') AND o.status IN ('failed','reconciled','manual_recovery') AND c.operation_id>$1 ORDER BY c.operation_id LIMIT $2`, w.costCursor, w.batchSize)
+	rows, err := w.database.pool.Query(scan, `SELECT c.operation_id,o.route_key FROM loyal_yield.backyard_withdrawal_cost_operations c JOIN loyal_yield.multiply_operations o USING(operation_id) WHERE c.state IN ('reserved','unknown') AND o.status IN ('failed','reconciled','manual_recovery') AND c.operation_id>$1 AND o.route_key=$3 ORDER BY c.operation_id LIMIT $2`, w.costCursor, w.batchSize, w.vault.RouteKey)
 	var costs []withdrawalTerminalCost
 	if err == nil {
 		for rows.Next() {
@@ -131,8 +138,8 @@ func (w *withdrawalSettlementWorker) sweep(ctx context.Context) {
 	}
 	cancel()
 	if err != nil {
-		observed[rwa.RouteKey] = true
-		failures[rwa.RouteKey] = withdrawalSettlementError(err)
+		observed[w.vault.RouteKey] = true
+		failures[w.vault.RouteKey] = withdrawalSettlementError(err)
 	} else {
 		if len(costs) == 0 {
 			w.costCursor = ""

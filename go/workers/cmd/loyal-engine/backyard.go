@@ -20,6 +20,10 @@ import (
 )
 
 func runBackyard(ctx context.Context, owner string, facts *engine.Facts, metrics engine.Lane) error {
+	vault := os.Getenv("BACKYARD_VAULT")
+	if _, err := backyard.RouteKey(vault); err != nil {
+		return fmt.Errorf("BACKYARD_VAULT must explicitly select rwa or looping: %w", err)
+	}
 	cfg, err := backyardRuntimeConfig()
 	if err != nil {
 		return err
@@ -43,7 +47,7 @@ func runBackyard(ctx context.Context, owner string, facts *engine.Facts, metrics
 	if laserstream.APIKey, err = engine.Credential("BACKYARD_HELIUS_API_KEY"); err != nil {
 		return err
 	}
-	database, err := backyard.OpenDatabase(ctx, engine.DirectDSN(cfg.DatabaseURL))
+	database, err := backyard.OpenDatabase(ctx, engine.DirectDSN(cfg.DatabaseURL), vault)
 	if err != nil {
 		return err
 	}
@@ -52,11 +56,12 @@ func runBackyard(ctx context.Context, owner string, facts *engine.Facts, metrics
 	if err != nil {
 		return err
 	}
-	view, err := backyard.OpenView(ctx, cluster, laserstream)
+	view, err := backyard.OpenView(ctx, cluster, laserstream, vault)
 	if err != nil {
 		return err
 	}
 	lane, err := backyard.NewEngine(backyard.EngineConfig{
+		Vault:    vault,
 		Database: database, RPC: cluster, View: view, Credentials: credentials, Config: backyard.DefaultConfig(), Owner: owner,
 		Out: os.Stdout, Logger: slog.Default(), Facts: facts, Jupiter: cfg.Jupiter,
 		Selector: selector,
@@ -110,16 +115,34 @@ func backyardSelectorMode() (backyard.SelectorMode, error) {
 	return "", errors.New("BACKYARD_RWA_SELECTOR_LIVE must be 0 or 1")
 }
 
-const backyardUsage = `usage: loyal-engine backyard [in-flight | simulate-step --vault <vault> --lane <lane> --dir up|down --amount-raw <n> | selector-evaluate --vault <vault> [--execute] | clear-hold --vault <vault> --reason "<text>" | exit-lane --vault <vault> --lane <lane> (--by <operator> [--equity-zero] | --clear) | release-control show|set ...]`
+const backyardUsage = `usage: loyal-engine backyard [in-flight [--vault <vault>] | simulate-step --vault <vault> --lane <lane> --dir up|down --amount-raw <n> | selector-evaluate --vault <vault> [--execute] | clear-hold --vault <vault> --reason "<text>" | exit-lane --vault <vault> --lane <lane> (--by <operator> [--equity-zero] | --clear) | release-control show|set ...]`
+
+func backyardInFlightRoutes(args []string) ([]string, error) {
+	if len(args) == 0 {
+		return backyard.RouteKeys(), nil
+	}
+	if len(args) != 2 || args[0] != "--vault" {
+		return nil, errors.New(backyardUsage)
+	}
+	route, err := backyard.RouteKey(args[1])
+	if err != nil {
+		return nil, err
+	}
+	return []string{route}, nil
+}
 
 func runBackyardOperator(ctx context.Context, args []string, out io.Writer) error {
-	if len(args) == 1 && args[0] == "in-flight" {
+	if len(args) > 0 && args[0] == "in-flight" {
+		routes, err := backyardInFlightRoutes(args[1:])
+		if err != nil {
+			return err
+		}
 		url, err := engine.Credential("BACKYARD_DATABASE_URL")
 		if err != nil {
 			return err
 		}
 		total := 0
-		for _, routeKey := range backyard.RouteKeys() {
+		for _, routeKey := range routes {
 			count, err := backyard.CountNonterminal(ctx, url, routeKey)
 			if err != nil {
 				return err

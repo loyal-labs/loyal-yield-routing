@@ -64,6 +64,7 @@ const PositionSnapshotInsert = `INSERT INTO loyal_yield.multiply_position_snapsh
 type Database struct {
 	pool   *pgxpool.Pool
 	writer bool
+	vault  *Vault
 	events map[string]*events
 }
 
@@ -71,22 +72,26 @@ var errWriterSessionLost = errors.New("writer session lost")
 
 const writerLockKey = `hashtextextended('loyal-family:'||$1, 0)`
 
-// OpenDatabase opens the Backyard writer: one database session that takes
-// Backyard's one-writer lock (the family advisory lock) when it connects,
+// OpenDatabase opens one vault's writer: one database session that takes
+// that vault's advisory lock when it connects,
 // waiting while another process holds it, and keeps it for the session's life.
 // Every read and write of the engine goes through that session. The pool
 // never opens a second one: once the session ends, every later call fails with
 // errWriterSessionLost, the engine exits, and its supervisor restarts it into
 // a fresh wait.
-func OpenDatabase(ctx context.Context, databaseURL engine.DirectDSN) (*Database, error) {
-	return openWriter(ctx, string(databaseURL), true)
+func OpenDatabase(ctx context.Context, databaseURL engine.DirectDSN, vault string) (*Database, error) {
+	return openWriter(ctx, string(databaseURL), vault, true)
 }
 
-func openOperatorWriter(ctx context.Context, databaseURL string) (*Database, error) {
-	return openWriter(ctx, databaseURL, false)
+func openOperatorWriter(ctx context.Context, databaseURL, vault string) (*Database, error) {
+	return openWriter(ctx, databaseURL, vault, false)
 }
 
-func openWriter(ctx context.Context, databaseURL string, wait bool) (*Database, error) {
+func openWriter(ctx context.Context, databaseURL, vault string, wait bool) (*Database, error) {
+	v, err := findVault(vault)
+	if err != nil {
+		return nil, err
+	}
 	if databaseURL == "" {
 		return nil, fmt.Errorf("database URL is required")
 	}
@@ -112,16 +117,21 @@ func openWriter(ctx context.Context, databaseURL string, wait bool) (*Database, 
 	}
 	family := string(engine.FamilyBackyard)
 	config.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
-		if wait {
-			_, err := conn.Exec(ctx, `SELECT pg_advisory_lock(`+writerLockKey+`)`, family)
-			return err
-		}
-		var held bool
-		if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock(`+writerLockKey+`)`, family).Scan(&held); err != nil {
-			return err
-		}
-		if !held {
-			return fmt.Errorf("%s: %w", family, engine.ErrFamilyHeld)
+		// Shared legacy lock excludes old binaries that still own both vaults.
+		for _, lock := range []struct{ key, suffix string }{{family, "_shared"}, {family + ":" + v.RouteKey, ""}} {
+			if wait {
+				if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock`+lock.suffix+`(`+writerLockKey+`)`, lock.key); err != nil {
+					return err
+				}
+			} else {
+				var held bool
+				if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock`+lock.suffix+`(`+writerLockKey+`)`, lock.key).Scan(&held); err != nil {
+					return err
+				}
+				if !held {
+					return fmt.Errorf("%s/%s: %w", family, vault, engine.ErrFamilyHeld)
+				}
+			}
 		}
 		return nil
 	}
@@ -130,13 +140,13 @@ func openWriter(ctx context.Context, databaseURL string, wait bool) (*Database, 
 		return nil, fmt.Errorf("open Backyard database: %w", err)
 	}
 	if wait {
-		_, _ = fmt.Fprintln(os.Stdout, "backyard-rwa-worker: waiting for the Backyard writer lock")
+		_, _ = fmt.Fprintf(os.Stdout, "backyard-rwa-worker: waiting for writer lock vault=%s\n", vault)
 	}
 	if err := pool.Ping(ctx); err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("open Backyard database: %w", err)
 	}
-	return &Database{pool: pool, writer: true}, nil
+	return &Database{pool: pool, writer: true, vault: v}, nil
 }
 
 // inTx runs fn in one transaction. ctx bounds fn's statements; begin, commit
@@ -200,7 +210,8 @@ func (d *Database) Close() {
 		if conn, err := d.pool.Acquire(context.Background()); err == nil {
 			session := conn.Hijack()
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			_, _ = session.Exec(ctx, `SELECT pg_advisory_unlock(`+writerLockKey+`)`, string(engine.FamilyBackyard))
+			_, _ = session.Exec(ctx, `SELECT pg_advisory_unlock(`+writerLockKey+`)`, string(engine.FamilyBackyard)+":"+d.vault.RouteKey)
+			_, _ = session.Exec(ctx, `SELECT pg_advisory_unlock_shared(`+writerLockKey+`)`, string(engine.FamilyBackyard))
 			_ = session.Close(ctx)
 			cancel()
 		}

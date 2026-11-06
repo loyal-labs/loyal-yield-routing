@@ -1,0 +1,70 @@
+# Loyal Earn MAX vault only. Independent process and configuration.
+# Secrets: systemd-creds encrypted with the host key; names only here.
+[Unit]
+Description=Loyal Earn MAX vault engine (Go)
+Documentation=https://github.com/loyal-labs/loyal-yield-routing/tree/main/deploy/hetzner
+Wants=network-online.target
+After=network-online.target
+# Never give up restarting; restart loops are an alert, not a stop.
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+ExecStart=/opt/loyal/bin/loyal-engine
+Restart=always
+RestartSec=5s
+# A stop leaves signed rows on the operation table; the next start lands them.
+TimeoutStopSec=60s
+
+LoadCredentialEncrypted=BACKYARD_DATABASE_URL:/etc/credstore.encrypted/loyal-earn-max/BACKYARD_DATABASE_URL
+LoadCredentialEncrypted=BACKYARD_SOLANA_RPC_URL:/etc/credstore.encrypted/loyal-earn-max/BACKYARD_SOLANA_RPC_URL
+LoadCredentialEncrypted=BACKYARD_POLICY_KEYPAIR:/etc/credstore.encrypted/loyal-earn-max/BACKYARD_POLICY_KEYPAIR
+LoadCredentialEncrypted=JUPITER_API_KEY:/etc/credstore.encrypted/loyal-earn-max/JUPITER_API_KEY
+LoadCredentialEncrypted=BACKYARD_HELIUS_API_KEY:/etc/credstore.encrypted/loyal-earn-max/BACKYARD_HELIUS_API_KEY
+
+# Non-secret: BACKYARD_RWA_SELECTOR_LIVE, BACKYARD_RWA_PILOT_CANARY_ENTRY,
+# BACKYARD_LASERSTREAM_ENDPOINT.
+EnvironmentFile=/etc/loyal/loyal-earn-max.env
+Environment=LOYAL_WORKER_SCOPE=backyard
+Environment=LOYAL_WORKER_INSTANCE=rwa
+Environment=BACKYARD_VAULT=rwa
+Environment=LOYAL_METRICS_ADDRESS=127.0.0.1:9105
+
+DynamicUser=yes
+User=loyal-earn-max
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=loyal-earn-max
+
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+SystemCallErrorNumber=EPERM
+UMask=0077
+LimitNOFILE=65536
+CPUWeight=1000
+IOWeight=1000
+
+[Install]
+WantedBy=multi-user.target

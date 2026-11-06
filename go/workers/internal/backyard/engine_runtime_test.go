@@ -173,9 +173,10 @@ func TestNewEngineFailsClosedWithoutInjectedDependencies(t *testing.T) {
 	validOwner := "worker:backyard:backyard-eu-1:sha-" + commit
 	unpinned := ed25519.NewKeyFromSeed([]byte(bytes32(1)))
 	base := EngineConfig{
-		Database:    &Database{pool: &pgxpool.Pool{}},
+		Vault:       rwa.Name,
+		Database:    &Database{pool: &pgxpool.Pool{}, vault: rwa},
 		RPC:         &chain.Client{},
-		View:        &View{},
+		View:        &View{vault: rwa},
 		Credentials: Credentials{key: unpinned},
 		Config:      DefaultConfig(),
 		Owner:       validOwner,
@@ -192,6 +193,10 @@ func TestNewEngineFailsClosedWithoutInjectedDependencies(t *testing.T) {
 		mutate func(*EngineConfig)
 		want   string
 	}{
+		"missing vault":        {func(c *EngineConfig) { c.Vault = "" }, "no Backyard vault"},
+		"unknown vault":        {func(c *EngineConfig) { c.Vault = "both" }, "no Backyard vault"},
+		"other database":       {func(c *EngineConfig) { c.Database = &Database{vault: looping} }, "database must own vault"},
+		"other view":           {func(c *EngineConfig) { c.View = &View{vault: looping} }, "view must observe vault"},
 		"missing database":     {func(c *EngineConfig) { c.Database = nil }, ""},
 		"missing rpc":          {func(c *EngineConfig) { c.RPC = nil }, ""},
 		"missing view":         {func(c *EngineConfig) { c.View = nil }, ""},

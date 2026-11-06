@@ -28,6 +28,7 @@ import (
 // view is complete only through S, the previous confirmed slot, and writes
 // above S wait until S reaches their slot.
 type View struct {
+	vault     *Vault
 	rpc       *chain.Client
 	connector stream.Connector
 	fixed     []string
@@ -100,13 +101,17 @@ const (
 // one-shot commands plan from, labelled with its newest read slot: decoders
 // treat any slot an account carries above the label as the future, and each
 // read is the finalized state of its own slot, all within a second.
-func OpenView(ctx context.Context, client *chain.Client, connector stream.Connector) (*View, error) {
-	fixed := viewAddresses()
-	seed, err := readViewSeed(ctx, client, fixed)
+func OpenView(ctx context.Context, client *chain.Client, connector stream.Connector, vault string) (*View, error) {
+	selected, err := findVault(vault)
 	if err != nil {
 		return nil, err
 	}
-	v := &View{rpc: client, connector: connector, fixed: fixed, ctx: ctx, now: time.Now,
+	fixed := viewAddresses(selected)
+	seed, err := readViewSeed(ctx, client, fixed, selected)
+	if err != nil {
+		return nil, err
+	}
+	v := &View{vault: selected, rpc: client, connector: connector, fixed: fixed, ctx: ctx, now: time.Now,
 		accounts: seed.accounts, receipts: seed.receipts, advanced: make(chan struct{}), seedLow: seed.low, seedHigh: seed.high}
 	if connector == nil {
 		v.through = v.seedHigh
@@ -117,22 +122,20 @@ func OpenView(ctx context.Context, client *chain.Client, connector stream.Connec
 }
 
 // viewAddresses is every fixed account a vault's route-catalog lane observes,
-// prices, builds or admits against, for every vault, plus the pinned program
+// prices, builds or admits against, plus the pinned program
 // identity accounts. The stream bills by the byte, so no oracle or AMM pool
 // is among them.
-func viewAddresses() []string {
+func viewAddresses(v *Vault) []string {
 	addresses := []string{reportTicketPDA, budgetClockAddress, voltr.ProgramID.String(), fsj27Program, voltrProgramDataAddress, adaptorProgramDataAddress,
 		backyardDelegate, solana.SysVarRentPubkey.String(), solana.SystemProgramID.String(), fleet.USDCMint, budgetSOLReserve, budgetWrappedSOLMint}
-	for _, v := range vaults {
-		metadata, _ := kamino.UserMetadataAddress(kaminoKey(v.squads))
-		addresses = append(addresses, v.Adaptor, v.squads, metadata.String())
-		for _, route := range v.routes {
-			addresses = append(append(addresses, pinnedRouteNAVAddressesForRoute(v, route)...),
-				route.Kamino.Market, route.Kamino.Obligation, route.CollateralCustody, route.DebtCustody, route.CollateralLiquiditySupply, route.DebtLiquiditySupply, route.DebtFeeReceiver, route.Kamino.CollateralMint, route.Kamino.DebtMint,
-				route.CollateralReceiptMint, route.CollateralReceiptSupply, route.CollateralFarm, route.ObligationCollateralFarm, route.DebtFarm, route.ObligationDebtFarm)
-			if hastraLane(route) {
-				addresses = append(addresses, hastra.StakePriceConfig.String())
-			}
+	metadata, _ := kamino.UserMetadataAddress(kaminoKey(v.squads))
+	addresses = append(addresses, v.Adaptor, v.squads, metadata.String())
+	for _, route := range v.routes {
+		addresses = append(append(addresses, pinnedRouteNAVAddressesForRoute(v, route)...),
+			route.Kamino.Market, route.Kamino.Obligation, route.CollateralCustody, route.DebtCustody, route.CollateralLiquiditySupply, route.DebtLiquiditySupply, route.DebtFeeReceiver, route.Kamino.CollateralMint, route.Kamino.DebtMint,
+			route.CollateralReceiptMint, route.CollateralReceiptSupply, route.CollateralFarm, route.ObligationCollateralFarm, route.DebtFarm, route.ObligationDebtFarm)
+		if hastraLane(route) {
+			addresses = append(addresses, hastra.StakePriceConfig.String())
 		}
 	}
 	return uniqueNonzero(addresses)
@@ -144,7 +147,7 @@ type viewSeed struct {
 	low, high uint64
 }
 
-func readViewSeed(ctx context.Context, client *chain.Client, fixed []string) (viewSeed, error) {
+func readViewSeed(ctx context.Context, client *chain.Client, fixed []string, vault *Vault) (viewSeed, error) {
 	seed := viewSeed{accounts: map[string]viewAccount{}, receipts: map[string]uint64{}, low: math.MaxUint64}
 	held := func(account ConfirmedAccount, slot uint64) {
 		seed.accounts[account.Address] = viewAccount{ConfirmedAccount: account, slot: slot, session: viewSeedSession}
@@ -171,15 +174,13 @@ func readViewSeed(ctx context.Context, client *chain.Client, fixed []string) (vi
 			}
 		}
 	}
-	for _, vault := range vaults {
-		slot, read, err := client.ProgramAccounts(ctx, voltr.ProgramID, voltr.WithdrawalReceiptFilters(solanaKey(vault.VoltrVault)), rpc.CommitmentFinalized, 0)
-		if err != nil {
-			return viewSeed{}, unavailable(err)
-		}
-		for _, account := range read {
-			held(confirmedAccount(account.Key.String(), &account), slot)
-			seed.receipts[account.Key.String()] = receiptFiltered
-		}
+	slot, read, err := client.ProgramAccounts(ctx, voltr.ProgramID, voltr.WithdrawalReceiptFilters(solanaKey(vault.VoltrVault)), rpc.CommitmentFinalized, 0)
+	if err != nil {
+		return viewSeed{}, unavailable(err)
+	}
+	for _, account := range read {
+		held(confirmedAccount(account.Key.String(), &account), slot)
+		seed.receipts[account.Key.String()] = receiptFiltered
 	}
 	return seed, nil
 }
@@ -195,17 +196,13 @@ func (v *View) request(from uint64) *pb.SubscribeRequest {
 	v.mu.Unlock()
 	slices.Sort(addresses)
 	accounts := map[string]*pb.SubscribeRequestFilterAccounts{viewAccountsFilter: {Account: addresses}}
-	for _, vault := range vaults {
-		// A filter's memcmps all hold: each vault's receipts are a filter of
-		// their own.
-		discovery := &pb.SubscribeRequestFilterAccounts{Owner: []string{voltr.ProgramID.String()}}
-		for _, filter := range voltr.WithdrawalReceiptFilters(solanaKey(vault.VoltrVault)) {
-			discovery.Filters = append(discovery.Filters, &pb.SubscribeRequestFilterAccountsFilter{Filter: &pb.SubscribeRequestFilterAccountsFilter_Memcmp{
-				Memcmp: &pb.SubscribeRequestFilterAccountsFilterMemcmp{Offset: filter.Memcmp.Offset, Data: &pb.SubscribeRequestFilterAccountsFilterMemcmp_Bytes{Bytes: filter.Memcmp.Bytes}},
-			}})
-		}
-		accounts[viewReceiptsFilter(vault)] = discovery
+	discovery := &pb.SubscribeRequestFilterAccounts{Owner: []string{voltr.ProgramID.String()}}
+	for _, filter := range voltr.WithdrawalReceiptFilters(solanaKey(v.vault.VoltrVault)) {
+		discovery.Filters = append(discovery.Filters, &pb.SubscribeRequestFilterAccountsFilter{Filter: &pb.SubscribeRequestFilterAccountsFilter_Memcmp{
+			Memcmp: &pb.SubscribeRequestFilterAccountsFilterMemcmp{Offset: filter.Memcmp.Offset, Data: &pb.SubscribeRequestFilterAccountsFilterMemcmp_Bytes{Bytes: filter.Memcmp.Bytes}},
+		}})
 	}
+	accounts[viewReceiptsFilter(v.vault)] = discovery
 	byCommitment, confirmed := true, pb.CommitmentLevel_CONFIRMED
 	return &pb.SubscribeRequest{
 		Accounts:   accounts,

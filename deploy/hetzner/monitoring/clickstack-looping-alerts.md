@@ -7,7 +7,7 @@ This separate dashboard and its two alerts cover `ServiceName = 'loyal-backyard'
 | Heartbeat count | 5 minutes ending at evaluation time | Below 2, every 5 minutes |
 | NAV fresh (1/0) | Latest reconciled REPORT_NAV within 75 minutes; scan 2 hours | Below 1, every 5 minutes |
 
-Both SQL queries aggregate without grouping and return one row. Empty input gives heartbeat `count() = 0`; NAV is zero because `count() > 0` is false. The NAV SQL is the reviewed RWA query with only the vault value changed. This measures report age, not exit-price validity.
+Both SQL queries aggregate without grouping and return one row. Empty input gives heartbeat `count() = 0`; NAV is zero because `count() > 0` is false. The NAV SQL is the reviewed RWA query with its own service and vault filters. This measures report age, not exit-price validity.
 
 ## Review and apply
 

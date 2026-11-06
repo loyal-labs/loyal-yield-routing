@@ -6,6 +6,8 @@ on:
     paths:
       - go/workers/**
       - scripts/verify-workers-v2.sh
+      - scripts/activate-vaults_test.py
+      - deploy/hetzner/activate.sh
       - scripts/check-go-ts-refs.sh
       - scripts/build-svm-fixtures.sh
       - scripts/prepare-vault-withdrawal-test-db.sh
@@ -78,7 +80,7 @@ jobs:
           else
             echo rust=false >> "$GITHUB_OUTPUT"
           fi
-          if test "$GITHUB_EVENT_NAME" = push || git diff --name-only "$BASE" HEAD | grep -qE '^(go/workers/|migrations/|docs/evidence/backyard-rwa-go/|scripts/(verify-workers-v2\.sh|check-go-ts-refs\.sh|build-svm-fixtures\.sh|prepare-vault-withdrawal-test-db\.sh)$|\.github/workflows/workers-v2-verify\.yml$|Cargo\.(toml|lock)$|rust-toolchain\.toml$|crates/(squads-test-harness|mock-yield-protocols-program|loyal-actions|loyal-solana-env|loyal-hub-abi|loyal-voltr-rwa-nav-adaptor)/)'; then
+          if test "$GITHUB_EVENT_NAME" = push || git diff --name-only "$BASE" HEAD | grep -qE '^(go/workers/|migrations/|deploy/hetzner/activate\.sh$|docs/evidence/backyard-rwa-go/|scripts/(activate-vaults_test\.py|verify-workers-v2\.sh|check-go-ts-refs\.sh|build-svm-fixtures\.sh|prepare-vault-withdrawal-test-db\.sh)$|\.github/workflows/workers-v2-verify\.yml$|Cargo\.(toml|lock)$|rust-toolchain\.toml$|crates/(squads-test-harness|mock-yield-protocols-program|loyal-actions|loyal-solana-env|loyal-hub-abi|loyal-voltr-rwa-nav-adaptor)/)'; then
             echo workers=true >> "$GITHUB_OUTPUT"
           else
             echo workers=false >> "$GITHUB_OUTPUT"
@@ -125,6 +127,8 @@ jobs:
           done
       - name: Prepare withdrawal regressions with production lifecycle constraints
         run: bash scripts/prepare-vault-withdrawal-test-db.sh
+      - name: Vault service deployment gates
+        run: python3 scripts/activate-vaults_test.py
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26.6'

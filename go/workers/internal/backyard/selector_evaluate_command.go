@@ -41,7 +41,7 @@ func RunSelectorEvaluate(ctx context.Context, out io.Writer, config RuntimeConfi
 	if err != nil {
 		return staleHoldFrom(err, "selector_evaluate_rpc_unavailable")
 	}
-	view, err := OpenView(ctx, rpc, nil)
+	view, err := OpenView(ctx, rpc, nil, vault)
 	if err != nil {
 		return staleHoldFrom(err, "selector_evaluate_rpc_unavailable")
 	}
@@ -166,7 +166,7 @@ func sanitizedSelectorEvaluateFailure(err error) string {
 }
 
 func selectorEvaluateExecute(ctx context.Context, out io.Writer, deps selectorEvaluateDeps) error {
-	database, err := openOperatorWriter(ctx, deps.databaseURL)
+	database, err := openOperatorWriter(ctx, deps.databaseURL, deps.manifest.vault.Name)
 	if errors.Is(err, engine.ErrFamilyHeld) {
 		return staleHoldFrom(err, "selector_evaluate_writer_lock_unavailable")
 	}

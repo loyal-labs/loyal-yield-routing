@@ -181,7 +181,7 @@ func streamView(t *testing.T) (*View, *chain.Client, *fakeLaserStream) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	client, connector := seedChain(t, 77, viewRouteBatch(t, nil)), &fakeLaserStream{}
-	view, err := OpenView(ctx, client, connector)
+	view, err := OpenView(ctx, client, connector, rwa.Name)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,7 +192,7 @@ func streamView(t *testing.T) (*View, *chain.Client, *fakeLaserStream) {
 // fixtureView is a view without a stream: the start-up read of a fake chain.
 func fixtureView(t *testing.T, rpc *chain.Client) *View {
 	t.Helper()
-	view, err := OpenView(context.Background(), rpc, nil)
+	view, err := OpenView(context.Background(), rpc, nil, rwa.Name)
 	if err != nil {
 		t.Fatal(err)
 	}
