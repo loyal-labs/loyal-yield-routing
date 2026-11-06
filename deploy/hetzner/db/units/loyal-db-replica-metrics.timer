@@ -1,5 +1,5 @@
 [Unit]
-Description=Write replica health metrics every minute
+Description=Write the pg_wal size metric every minute
 
 [Timer]
 OnBootSec=1min

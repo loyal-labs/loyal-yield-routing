@@ -1,5 +1,5 @@
 [Unit]
-Description=Replica health metrics for node_exporter (subscriptions, Neon slots, pg_wal)
+Description=pg_wal size for node_exporter
 After=postgresql@18-main.service
 
 [Service]

@@ -235,7 +235,22 @@ func (e *events) selectorUnavailable(code string) {
 }
 
 func (e *events) selectorSampleError(err error) {
-	e.selectorSampleFailed(sanitizedSelectorEvaluateFailure(err))
+	if e == nil {
+		return
+	}
+	code, msg, held := sanitizedSelectorEvaluateFailure(err), "backyard_selector_sample_failed", ""
+	var hold *PreSendHold
+	if errors.As(err, &hold) && hold.cause != nil {
+		held = chain.Scrub(hold.cause.Error())
+	}
+	deferred := errors.Is(err, errConfirmedObservationUnavailable)
+	if deferred {
+		msg = "backyard_selector_sample_deferred"
+	}
+	e.log.Warn(msg, "code", code, "hold", holdDetail(err), "hold_cause", held, "detail", chain.Scrub(err.Error()))
+	if !deferred {
+		e.selectorSampleFailed(code)
+	}
 }
 
 func (e *events) selectorSampleFailed(code string) {

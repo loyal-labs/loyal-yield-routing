@@ -34,17 +34,9 @@ deploy/hetzner/db/remote.sh neon-cu 6   # hourly average CU per Neon project, la
 - The initial copy writes WAL faster than pgbackrest archives it to the Storage Box. On Nov 5 the copy generated about 2.3 GB/min and the archiver pushed about 2 GB/min. The `.ready` backlog sits in `pg_wal` on the 492 GB volume. `backfill` waits whenever more than 512 segments (8 GB) are still unarchived, so it only runs while the archiver keeps up. `verify` prints the backlog on its first line. The pgbackrest repo is the Storage Box `u679742` (1 TB, 820 GB free on Nov 5), not the volume.
 - Sync workers are bounded at 2 per subscription (`max_sync_workers_per_subscription = 2` in `conf.d/zz-replica.conf`). Parallel apply is off (`streaming = on`, spill to disk). This also keeps the Neon yield project inside `max_replication_slots = 10`: 2 Neon internal slots, 2 subscription slots, up to 4 tablesync slots.
 
-## Migration rule while the replica runs
+## After the cutover
 
-DDL does not replicate. Apply any migration to `loyal_yield_prod` or `kamino_timescale` on Hetzner first when it adds columns or tables, then on Neon. Apply drops on Neon first, then on Hetzner. A new table in yield or app needs `ALTER SUBSCRIPTION loyal_hz_<src> REFRESH PUBLICATION` on Hetzner after it exists on both sides. A new plain table in Timescale also needs `ALTER PUBLICATION loyal_hz ADD TABLE` on Neon, which is the owner's call. A new hypertable needs a line in `HYPERTABLES` in `replica.sh`. A migration that breaks apply stops the subscription. It shows as `last_msg` growing in `verify` and in the Postgres log.
-
-## Neon slot risk
-
-Neon removes a logical slot that has not acknowledged `flush_lsn` progress for about 40 hours ([Neon docs, Unused replication slots](https://neon.com/docs/guides/logical-replication-neon#unused-replication-slots)). Until then, the stopped slot pins WAL and Neon storage grows with every write. When Neon removes it, the subscription cannot resume. The fix is to drop the database on Hetzner and rerun `setup`, which copies everything again. Hypertable state in `/var/lib/loyal-db-replica/backfill` survives that, but the database it describes does not, so remove that directory too. While a subscriber stays connected, the Neon compute stays awake and does not scale to zero.
-
-Prometheus on loyal-workers pages the Telegram alerts group through `loyal-db-replica metrics` (a textfile on the DB box, written every minute): `LoyalDbReplicaSubscriptionDown` after 5 minutes without an apply worker, `LoyalDbReplicaSubscriptionStale` after 15 minutes without a message, `LoyalDbNeonSlotInactive` after 10 minutes, `LoyalDbNeonSlotLag` above 5 GiB, plus volume under 100 GiB free and `pg_wal` over 60 GB (`deploy/hetzner/README.md`, Replica guards). Neon's 40 hours leave most of the window to act in. `remote.sh check` (`replica.sh` `cmd_check`) is the manual form of the slot check and exits 1 when a slot is inactive or lags more than 5 GiB.
-
-`cutover.sh switch` disables the subscriptions on purpose. `cutover.sh freeze` first adds a 7-day Alertmanager silence on `alertname=~"LoyalDbReplica.*|LoyalDbNeon.*"`. `cutover.sh pause-neon` drops the subscriptions. From then on, `replica.sh metrics` stops writing subscription and slot series for them, so those alerts resolve and the rule group can stay.
+Replication is retired. `cutover.sh freeze` added a 7-day Alertmanager silence on `alertname=~"LoyalDbReplica.*|LoyalDbNeon.*"` and `cutover.sh pause-neon` dropped the subscriptions and their Neon slots. The subscription and Neon slot alerts and the metric timer series behind them are removed from `deploy/hetzner/monitoring/loyal.rules.yml`. Apply migrations to loyal-db-primary only. Neon projects are paused (endpoints disabled), not deleted. `loyal-db-replica metrics` now writes only `loyal_db_pg_wal_bytes`, which `LoyalDbWalLarge` reads next to `LoyalDbVolumeLow`.
 
 ## Cutover
 
