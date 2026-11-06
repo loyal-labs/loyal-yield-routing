@@ -1,0 +1,42 @@
+{
+  "vault": "HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA",
+  "lpMint": "6tNheTBYSpQkfMLhcczKgmTLSGffK54npKMG1WQR2tvb",
+  "authority": "17C4yJ1b3Tca3gcXiMb1jvyKmCKSb8e1URxZHrCmsSg",
+  "lpAta": "81WxLEKniE2tHtTN752UYzbeR6ZuvHCmnyRDsuvXxBRb",
+  "amountRaw": "250000000",
+  "certifiedSlot": "465888518",
+  "notAfterSlot": "465888550",
+  "expiresAt": "1793920761",
+  "vaultPins": [
+    {
+      "offset": 168,
+      "hex": "e4c65e4f29000000"
+    },
+    {
+      "offset": 448,
+      "hex": "0000000000000000"
+    },
+    {
+      "offset": 512,
+      "hex": "00000000000000000000280000000000"
+    },
+    {
+      "offset": 568,
+      "hex": "67ebec6a00000000000000000000000023200100000000000000000000000000"
+    },
+    {
+      "offset": 616,
+      "hex": "e803000000000000cdae946bb73176010000000000000000"
+    },
+    {
+      "offset": 672,
+      "hex": "3e13a00000000000da0eed6a00000000"
+    }
+  ],
+  "lpSupplyRaw": "478526648",
+  "lpBaselineRaw": "0",
+  "lpMinRaw": "671669",
+  "lpMaxRaw": "671669",
+  "supplyMaxRaw": "479198317",
+  "certificateId": "golden"
+}

@@ -55,6 +55,9 @@ func TestReleaseControlDefaultDenyCASAndAdmissionFence(t *testing.T) {
 	if _, err := Set(ctx, pool, Change{Vault: vault, Action: OptionalAddition, State: Open, Reason: "x", Operator: "ops", MaxAmountRaw: &cap}); err == nil {
 		t.Fatal("cap accepted on an action without an amount")
 	}
+	if c, err := Set(ctx, pool, Change{Vault: vault, Action: OptionalAddition, State: Open, Reason: "x", Operator: "ops"}); err != nil || c.Version != 1 {
+		t.Fatalf("optional additions could not be opened: %+v %v", c, err)
+	}
 	c, err := Set(ctx, pool, open)
 	if err != nil || c.Version != 1 {
 		t.Fatalf("create: %+v %v", c, err)
@@ -102,7 +105,7 @@ func TestReleaseControlDefaultDenyCASAndAdmissionFence(t *testing.T) {
 		t.Fatalf("held control admitted funding: %v", err)
 	}
 	var versions int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM loyal_yield.vault_release_control_history WHERE vault=$1`, vault).Scan(&versions); err != nil || versions != 2 {
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM loyal_yield.vault_release_control_history WHERE vault=$1 AND action=$2`, vault, string(OrdinaryFunding)).Scan(&versions); err != nil || versions != 2 {
 		t.Fatalf("history lost a version: %d %v", versions, err)
 	}
 	if _, err := pool.Exec(ctx, `DELETE FROM loyal_yield.vault_release_control_history WHERE vault=$1`, vault); err == nil {

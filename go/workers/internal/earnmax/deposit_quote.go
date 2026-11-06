@@ -36,10 +36,9 @@ type VaultPin struct {
 	Hex    string `json:"hex"`
 }
 
-// depositPinnedRanges are the vault bytes the LP bounds depend on: total
-// value, fee terms through dead weight and high-water mark, and the locked
-// profit report.
-var depositPinnedRanges = [][2]int{{168, 176}, {512, 624}, {672, 688}}
+// depositPinnedRanges are the vault bytes the LP bounds depend on; the client
+// refuses a quote that leaves any of its VOLTR_DEPOSIT_PRICING_RANGES unpinned.
+var depositPinnedRanges = [][2]int{{168, 176}, {448, 456}, {512, 528}, {568, 600}, {616, 640}, {672, 688}}
 
 type DepositQuote struct {
 	Vault         string     `json:"vault"`
@@ -57,6 +56,7 @@ type DepositQuote struct {
 	LPMaxRaw      string     `json:"lpMaxRaw"`
 	SupplyMaxRaw  string     `json:"supplyMaxRaw"`
 	CertificateID string     `json:"certificateId"`
+	expiresUnix   int64
 }
 
 type DepositQuoter struct {
@@ -106,10 +106,6 @@ func (q *DepositQuoter) Quote(ctx context.Context, authority solana.PublicKey, a
 		baseline = binary.LittleEndian.Uint64(a.Data[64:72])
 	}
 	chainNow := time.Unix(int64(binary.LittleEndian.Uint64(accounts[4].Data[32:40])), 0)
-	pins := make([]VaultPin, len(depositPinnedRanges))
-	for i, r := range depositPinnedRanges {
-		pins[i] = VaultPin{Offset: r[0], Hex: hex.EncodeToString(accounts[0].Data[r[0]:r[1]])}
-	}
 
 	tx, err := q.db.Begin(ctx)
 	if err != nil {
@@ -146,25 +142,11 @@ func (q *DepositQuoter) Quote(ctx context.Context, authority solana.PublicKey, a
 	if lockedProfit != strconv.FormatUint(vault.LastUpdatedLockedProfitRaw, 10) || lastReport != strconv.FormatUint(vault.LastLockedProfitReportUnix, 10) || NAVDriftOutsideTolerance(nav, vault.TotalValueRaw) {
 		return DepositQuote{}, &DepositRefusal{DepositWaitingNAVPublication}
 	}
-	expires := validUntil.Truncate(time.Second)
-	lpMax, err := vault.DepositLP(supply, assetDecimals, lpDecimals, amountRaw, chainNow)
+	quote, err := newDepositQuote(depositState{Authority: authority, LPATA: lpATA, VaultData: accounts[0].Data, Vault: vault, SupplyRaw: supply, AssetDecimals: assetDecimals, LPDecimals: lpDecimals, BaselineRaw: baseline}, amountRaw, chainNow, validUntil, certifiedSlot, maxSlot)
 	if err != nil {
 		return DepositQuote{}, err
 	}
-	// Fee LP accrues with time, so the mint only falls until the quote expires.
-	lpMin, err := vault.DepositLP(supply, assetDecimals, lpDecimals, amountRaw, chainNow.Add(max(expires.Sub(chainNow), 0)+time.Second))
-	if err != nil {
-		return DepositQuote{}, err
-	}
-	if supply > ^uint64(0)-lpMax || baseline > ^uint64(0)-lpMax {
-		return DepositQuote{}, errors.New("deposit LP bounds overflow")
-	}
-	quote := DepositQuote{
-		Vault: Vault.String(), LPMint: LPMint.String(), Authority: authority.String(), LPATA: lpATA.String(),
-		AmountRaw: strconv.FormatUint(amountRaw, 10), CertifiedSlot: strconv.FormatInt(certifiedSlot, 10), NotAfterSlot: strconv.FormatInt(maxSlot, 10),
-		ExpiresAt: expires.UTC().Format(time.RFC3339), VaultPins: pins, LPSupplyRaw: strconv.FormatUint(supply, 10), LPBaselineRaw: strconv.FormatUint(baseline, 10),
-		LPMinRaw: strconv.FormatUint(lpMin, 10), LPMaxRaw: strconv.FormatUint(lpMax, 10), SupplyMaxRaw: strconv.FormatUint(supply+lpMax, 10),
-	}
+	expires := time.Unix(quote.expiresUnix, 0)
 	body, err := json.Marshal(quote)
 	if err != nil {
 		return DepositQuote{}, err
@@ -179,4 +161,44 @@ func (q *DepositQuoter) Quote(ctx context.Context, authority solana.PublicKey, a
 		return DepositQuote{}, err
 	}
 	return quote, tx.Commit(ctx)
+}
+
+type depositState struct {
+	Authority, LPATA          solana.PublicKey
+	VaultData                 []byte
+	Vault                     voltr.Vault
+	SupplyRaw, BaselineRaw    uint64
+	AssetDecimals, LPDecimals uint8
+}
+
+// newDepositQuote prices one deposit against the observed vault state. Fee LP
+// accrues with time and raises the LP each asset unit buys, so the mint is
+// smallest at the observed chain time and largest when the quote expires.
+func newDepositQuote(st depositState, amountRaw uint64, chainNow, validUntil time.Time, certifiedSlot, maxSlot int64) (DepositQuote, error) {
+	if len(st.VaultData) < depositPinnedRanges[len(depositPinnedRanges)-1][1] {
+		return DepositQuote{}, errors.New("deposit vault data too short")
+	}
+	pins := make([]VaultPin, len(depositPinnedRanges))
+	for i, r := range depositPinnedRanges {
+		pins[i] = VaultPin{Offset: r[0], Hex: hex.EncodeToString(st.VaultData[r[0]:r[1]])}
+	}
+	expires := validUntil.Truncate(time.Second)
+	lpMin, err := st.Vault.DepositLP(st.SupplyRaw, st.AssetDecimals, st.LPDecimals, amountRaw, chainNow)
+	if err != nil {
+		return DepositQuote{}, err
+	}
+	lpMax, err := st.Vault.DepositLP(st.SupplyRaw, st.AssetDecimals, st.LPDecimals, amountRaw, chainNow.Add(max(expires.Sub(chainNow), 0)+time.Second))
+	if err != nil {
+		return DepositQuote{}, err
+	}
+	if st.SupplyRaw > ^uint64(0)-lpMax || st.BaselineRaw > ^uint64(0)-lpMax {
+		return DepositQuote{}, errors.New("deposit LP bounds overflow")
+	}
+	return DepositQuote{
+		Vault: Vault.String(), LPMint: LPMint.String(), Authority: st.Authority.String(), LPATA: st.LPATA.String(),
+		AmountRaw: strconv.FormatUint(amountRaw, 10), CertifiedSlot: strconv.FormatInt(certifiedSlot, 10), NotAfterSlot: strconv.FormatInt(maxSlot, 10),
+		ExpiresAt: strconv.FormatInt(expires.Unix(), 10), VaultPins: pins, LPSupplyRaw: strconv.FormatUint(st.SupplyRaw, 10), LPBaselineRaw: strconv.FormatUint(st.BaselineRaw, 10),
+		LPMinRaw: strconv.FormatUint(lpMin, 10), LPMaxRaw: strconv.FormatUint(lpMax, 10), SupplyMaxRaw: strconv.FormatUint(st.SupplyRaw+lpMax, 10),
+		expiresUnix: expires.Unix(),
+	}, nil
 }

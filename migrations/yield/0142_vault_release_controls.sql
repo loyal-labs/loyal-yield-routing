@@ -6,7 +6,7 @@ CREATE TABLE loyal_yield.vault_release_controls (
     reason TEXT NOT NULL CHECK (reason <> ''),
     operator TEXT NOT NULL CHECK (operator <> ''),
     allowed_owners TEXT[] CHECK (allowed_owners IS NULL OR action <> 'optional_addition'),
-    max_amount_raw BIGINT CHECK (max_amount_raw >= 0 AND action <> 'optional_addition'),
+    max_amount_raw BIGINT CHECK (max_amount_raw IS NULL OR (max_amount_raw >= 0 AND action <> 'optional_addition')),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (vault, action)
 );

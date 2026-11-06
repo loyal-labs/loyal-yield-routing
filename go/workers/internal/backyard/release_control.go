@@ -22,20 +22,27 @@ func releaseRequestOf(s Snapshot, d Decision, request any) *releaseRequest {
 	if !ordinaryWithdrawalCostRequired(s, d) || !costBearingWithdrawalAction(d) {
 		return nil
 	}
+	// Ordinary funding is gated where it charges approved costs; a move that
+	// charges nobody is a cash move like the others above.
+	protected, ok := request.(withdrawalCostRequest)
+	if !ok || protected.cost == nil {
+		return nil
+	}
 	r := &releaseRequest{action: releasecontrol.OrdinaryFunding}
 	if s.WithdrawalDemandRaw >= 0 {
 		amount := uint64(s.WithdrawalDemandRaw)
 		r.amount = &amount
 	}
-	if protected, ok := request.(withdrawalCostRequest); ok && protected.cost != nil {
-		for _, p := range protected.cost.Participants {
-			owner := p.User
-			if owner == "" {
-				owner = p.Consent.Authority
-			}
-			if owner != "" && !slices.Contains(r.owners, owner) {
-				r.owners = append(r.owners, owner)
-			}
+	for _, p := range protected.cost.Participants {
+		if p.Wait != "" {
+			continue
+		}
+		owner := p.User
+		if owner == "" {
+			owner = p.Consent.Authority
+		}
+		if owner != "" && !slices.Contains(r.owners, owner) {
+			r.owners = append(r.owners, owner)
 		}
 	}
 	return r
