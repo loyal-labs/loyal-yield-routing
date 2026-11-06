@@ -283,6 +283,7 @@ func (p lanePricer) priceStep(ctx context.Context, accounts []ConfirmedAccount, 
 		return c, costOutage(stageInputs, err)
 	}
 	c.QuotedTotalMicros = quotedTotal
+	c.purchasedCollateralRaw = bought
 	return c, nil
 }
 
@@ -484,6 +485,7 @@ func (p lanePricer) priceMove(ctx context.Context, o Observation, source *Snapsh
 		}
 		q.BorrowReceiveRaw, q.BorrowFeeRaw, q.BorrowValueRaw, q.ProceedsValueRaw = borrow, fee, uint64(debt), uint64(proceeds)
 	}
+
 	reserve, err := decodeKaminoReserve(accountAt(accounts, route.Kamino.CollateralReserve), route.Kamino.CollateralMint, route.Kamino)
 	if err != nil {
 		return q, err
@@ -592,6 +594,24 @@ func (p lanePricer) priceMove(ctx context.Context, o Observation, source *Snapsh
 	}
 	if q.CostRaw >= q.EquityRaw {
 		return q, staleHold("selector_move_cost_exceeds_equity")
+	}
+	if source == nil && p.manifest.vault.CheckInvestmentExits {
+		projected := bought
+		for i := range steps {
+			projected, err = investmentSum(projected, stepCosts[i].purchasedCollateralRaw)
+			if err != nil {
+				return q, err
+			}
+		}
+		liability, err := investmentSum(q.BorrowReceiveRaw, q.BorrowFeeRaw)
+		if err != nil {
+			return q, err
+		}
+		exit, err := p.priceInvestmentExit(ctx, o, route, accounts, slot, projected, liability)
+		q.InvestmentExit = &exit
+		if err != nil {
+			return q, err
+		}
 	}
 	raw, err := json.Marshal(struct {
 		Quote          MoveQuote

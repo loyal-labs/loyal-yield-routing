@@ -11,12 +11,13 @@ import (
 )
 
 type leverageStepCost struct {
-	BorrowFeeMicros      usdMicros `json:"borrowFeeMicros"`
-	EntrySwapCostMicros  usdMicros `json:"entrySwapLossMicros"`
-	UnwindSwapCostMicros usdMicros `json:"exitSwapLossMicros"`
-	NetworkMicros        usdMicros `json:"networkMicros"`
-	TotalMicros          usdMicros `json:"totalMicros"`
-	QuotedTotalMicros    usdMicros `json:"quotedTotalMicros"`
+	purchasedCollateralRaw uint64
+	BorrowFeeMicros        usdMicros `json:"borrowFeeMicros"`
+	EntrySwapCostMicros    usdMicros `json:"entrySwapLossMicros"`
+	UnwindSwapCostMicros   usdMicros `json:"exitSwapLossMicros"`
+	NetworkMicros          usdMicros `json:"networkMicros"`
+	TotalMicros            usdMicros `json:"totalMicros"`
+	QuotedTotalMicros      usdMicros `json:"quotedTotalMicros"`
 }
 
 type usdMicros int64
