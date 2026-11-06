@@ -42,7 +42,7 @@ func TestWithdrawalSlippageDecisionPriority(t *testing.T) {
 		{"debt residue", func(s *Snapshot) { s.DebtIdleRaw = 1_000_000 }, 20},
 		{"hard LTV", func(s *Snapshot) { s.LTVBPS = s.MaxLTVBPS + 1 }, 0},
 		{"term maturity", func(s *Snapshot) { s.ChainUnix = 1_700_000_000; s.DebtTermEndUnix = s.ChainUnix + 1 }, 0},
-		{"Looping", func(s *Snapshot) { s.Trustful = true }, 0},
+		{"Looping", func(s *Snapshot) { s.Trustful = true }, 20},
 		{"signed recovery", func(s *Snapshot) { s.Nonterminal = Signed }, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -67,6 +67,9 @@ func assessWithdrawalHealth(v *Vault, o Observation, decision Decision, tickErr 
 		(hold.Reason == holdPriceLimit || holdCause(hold) == "withdrawal_waiting_price") {
 		h.Status, h.Reason = "waiting", "withdrawal_price_limit"
 	}
+	if h.Status != "operator_attention" && withdrawalShortfallRaw(s) > 0 && errors.As(tickErr, &hold) && holdCause(hold) == "execution_waiting_interval" {
+		h.Status, h.Reason = "waiting", "withdrawal_in_progress"
+	}
 	return h, true
 }
 

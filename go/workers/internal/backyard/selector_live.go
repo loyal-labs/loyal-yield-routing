@@ -91,6 +91,10 @@ func collectSelectorQuotes(ctx context.Context, rpc *chain.Client, view *View, c
 			out[i].EntryBlockedReason = cashBlocked
 		} else {
 			maximum := min(strategyTwoBridgeLegCapRaw, uint64(s.TotalVaultNAVRaw-buffer), idle-uint64(buffer))
+			if manifest.vault.ProtectExecution {
+				// Price the small entry we can actually execute, including leverage.
+				maximum = min(maximum, executionEntryLimit(manifest.vault, market.Lane))
+			}
 			if policy.DiversifyNewCash {
 				limits := newAllocationLimits(s, o.lanes, policy, market.Lane)
 				room := limits.ProviderRoomRaw

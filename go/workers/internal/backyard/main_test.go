@@ -9,6 +9,7 @@ import (
 )
 
 var productionRWAPolicy = rwa.selectorPolicy()
+var productionLoopingPolicy = looping.selectorPolicy()
 
 func TestMain(m *testing.M) {
 	chain.LandResendEvery = time.Millisecond
@@ -19,5 +20,8 @@ func TestMain(m *testing.M) {
 	rwa.EconomicHorizon = selectorHorizon
 	// Historical lifecycle fixtures predate admission limits; new policy tests opt in.
 	rwa.DiversifyNewCash = false
+	looping.DiversifyNewCash, looping.IdleBufferBPS, looping.EconomicHorizon = false, 0, selectorHorizon
+	// Historical replay fixtures retain their original trade sizes and timing.
+	rwa.ProtectExecution, looping.ProtectExecution = false, false
 	os.Exit(m.Run())
 }
