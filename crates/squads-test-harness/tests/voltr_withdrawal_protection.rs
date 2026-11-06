@@ -1,3 +1,5 @@
+mod voltr_capture;
+
 use loyal_actions::{
     compile_squads_inner_instruction,
     create_deployed_semantic_program_interaction_policy_instruction as create_semantic_program_interaction_policy_instruction,
@@ -147,7 +149,7 @@ fn pinned_squads_accountdata_checks_generation_before_real_system_cpi() {
     println!("EPHEMERAL_GUARD_CREATE_ENFORCE_REMOVE_PASSED");
 }
 
-fn close_recreate_floor(proceeds: u64) {
+fn baseline_plus_floor(proceeds: u64) {
     let mut c = create_funded_squads_test_context()
         .unwrap()
         .expect("pinned Squads SBF fixture required");
@@ -157,34 +159,12 @@ fn close_recreate_floor(proceeds: u64) {
         spl_associated_token_account::get_associated_token_address(&c.vault, &USDC_MINT);
     let owner_ata = spl_associated_token_account::get_associated_token_address(&wallet, &USDC_MINT);
     let reserve = Pubkey::new_unique();
-    seed_spl_token_account(&mut c.svm, authority_ata, USDC_MINT, c.vault, 100);
+    let baseline = 100;
+    seed_spl_token_account(&mut c.svm, authority_ata, USDC_MINT, c.vault, baseline);
     seed_spl_token_account(&mut c.svm, owner_ata, USDC_MINT, wallet, 0);
     seed_spl_token_account(&mut c.svm, reserve, USDC_MINT, c.vault, 1000);
     let minimum = 50;
     let inner = vec![
-        spl_token::instruction::transfer(
-            &spl_token::id(),
-            &authority_ata,
-            &owner_ata,
-            &c.vault,
-            &[],
-            100,
-        )
-        .unwrap(),
-        spl_token::instruction::close_account(
-            &spl_token::id(),
-            &authority_ata,
-            &wallet,
-            &c.vault,
-            &[],
-        )
-        .unwrap(),
-        spl_associated_token_account::instruction::create_associated_token_account(
-            &c.vault,
-            &c.vault,
-            &USDC_MINT,
-            &spl_token::id(),
-        ),
         spl_token::instruction::transfer(
             &spl_token::id(),
             &reserve,
@@ -194,13 +174,15 @@ fn close_recreate_floor(proceeds: u64) {
             proceeds,
         )
         .unwrap(),
-        spl_token::instruction::transfer(
+        spl_token::instruction::transfer_checked(
             &spl_token::id(),
             &authority_ata,
+            &USDC_MINT,
             &owner_ata,
             &c.vault,
             &[],
-            minimum,
+            baseline + minimum,
+            USDC_DECIMALS,
         )
         .unwrap(),
     ];
@@ -215,25 +197,25 @@ fn close_recreate_floor(proceeds: u64) {
     if proceeds < minimum {
         println!("MINIMUM_REJECTED {:?}", result.as_ref().err());
         result.expect_err("old USDC cannot satisfy new proceeds floor");
-        assert_eq!(get_spl_token_amount(&c.svm, authority_ata), 100);
+        assert_eq!(get_spl_token_amount(&c.svm, authority_ata), baseline);
         assert_eq!(get_spl_token_amount(&c.svm, owner_ata), 0);
         assert_eq!(get_spl_token_amount(&c.svm, reserve), 1000);
     } else {
-        result.expect("real SPL close/recreate and minimum transfer succeed");
+        result.expect("baseline plus floor transfer succeeds on new proceeds");
         assert_eq!(
             get_spl_token_amount(&c.svm, authority_ata),
             proceeds - minimum
         );
-        assert_eq!(get_spl_token_amount(&c.svm, owner_ata), 100 + minimum);
+        assert_eq!(get_spl_token_amount(&c.svm, owner_ata), baseline + minimum);
     }
 }
 #[test]
-fn close_recreate_minimum_accepts_new_proceeds() {
-    close_recreate_floor(60);
+fn baseline_plus_floor_accepts_new_proceeds() {
+    baseline_plus_floor(60);
 }
 #[test]
-fn close_recreate_minimum_rejects_old_cash_subsidy_and_rolls_back() {
-    close_recreate_floor(40);
+fn baseline_plus_floor_rejects_old_cash_subsidy_and_rolls_back() {
+    baseline_plus_floor(40);
 }
 
 #[test]
@@ -271,18 +253,11 @@ fn settings_state_after_unrelated_owner_sync() {
 }
 
 #[test]
-#[ignore = "requires explicit public program/account captures"]
 fn actual_voltr_request_cancel_recreation_and_claim_floor() {
     use base64::Engine;
     use solana_sdk::{clock::Clock, instruction::Instruction};
     use std::str::FromStr;
-    let capture = std::path::Path::new(
-        "/Users/user/loyal/reports/vault-protection-2026-11-05/program-capture",
-    );
-    assert!(
-        capture.join("voltr.so").exists(),
-        "external public Voltr capture required"
-    );
+    let capture = voltr_capture::path("voltr");
     let mut c = squads_test_harness::create_funded_squads_test_context_with_config(
         squads_test_harness::FundedSquadsTestConfig {
             vault_index: 2,
@@ -453,37 +428,16 @@ fn actual_voltr_request_cancel_recreation_and_claim_floor() {
         ],
     };
     let inner = vec![
-        spl_token::instruction::transfer(
-            &spl_token::id(),
-            &user_asset,
-            &owner_asset,
-            &authority,
-            &[],
-            100,
-        )
-        .unwrap(),
-        spl_token::instruction::close_account(
-            &spl_token::id(),
-            &user_asset,
-            &owner,
-            &authority,
-            &[],
-        )
-        .unwrap(),
-        spl_associated_token_account::instruction::create_associated_token_account(
-            &authority,
-            &authority,
-            &USDC_MINT,
-            &spl_token::id(),
-        ),
         claim,
-        spl_token::instruction::transfer(
+        spl_token::instruction::transfer_checked(
             &spl_token::id(),
             &user_asset,
+            &USDC_MINT,
             &owner_asset,
             &authority,
             &[],
-            10,
+            110,
+            USDC_DECIMALS,
         )
         .unwrap(),
     ];
@@ -607,122 +561,27 @@ fn actual_voltr_request_cancel_recreation_and_claim_floor() {
     );
 }
 
-#[test]
-#[ignore = "requires explicit public program/account captures and TS signed wire fixture"]
-fn production_ts_signed_wire_executes_real_voltr_and_squads() {
+fn claim_setup() -> (litesvm::LiteSVM, serde_json::Value, Vec<u8>) {
     use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
-    use solana_sdk::{
-        clock::Clock,
-        signature::{Keypair, SeedDerivable},
-        transaction::VersionedTransaction,
-    };
-    use std::{path::Path, str::FromStr};
-    let capture =
-        Path::new("/Users/user/loyal/reports/vault-protection-2026-11-05/program-capture");
-    let fixture: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(
-            std::env::var("VOLTR_CLAIM_WIRE_FIXTURE")
-                .unwrap_or_else(|_| "/private/tmp/vault-claim-guard/ts-claim-wire.json".to_owned()),
-        )
-        .unwrap(),
-    )
-    .unwrap();
-    let key = |field: &str| Pubkey::from_str(fixture[field].as_str().unwrap()).unwrap();
-    use sha2::{Digest, Sha256};
-    for (name, expected) in [
-        (
-            "squads.so",
-            "1c95bd7be140589d2aec38a85d7ecfe70ec69639277f622c898f821ab1d636fa",
-        ),
-        (
-            "voltr.so",
-            "bf1c1831b3d6350f4340badb942bd2e7bfaca4aa89276cb65e8480aa30d44c56",
-        ),
-    ] {
-        assert_eq!(
-            format!(
-                "{:x}",
-                Sha256::digest(std::fs::read(capture.join(name)).unwrap())
-            ),
-            expected,
-            "public capture changed; requalify its deployed version"
-        );
-    }
-    let owner = Keypair::from_seed(&[7; 32]).unwrap();
-    assert_eq!(owner.pubkey(), key("owner"));
-    let mut svm = squads_test_harness::new_litesvm()
-        .with_blockhash_check(false)
-        .with_sigverify(true);
-    svm.add_program(
-        squads_test_harness::SQUADS_SMART_ACCOUNT_PROGRAM_ID,
-        &std::fs::read(capture.join("squads.so")).unwrap(),
-    )
-    .unwrap();
-    let voltr = Pubkey::from_str("vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8").unwrap();
-    svm.add_program(voltr, &std::fs::read(capture.join("voltr.so")).unwrap())
-        .unwrap();
-    svm.airdrop(&owner.pubkey(), 10_000_000_000).unwrap();
-    squads_test_harness::seed_squads_program_config(
-        &mut svm,
-        owner.pubkey(),
-        squads_test_harness::squads_test_treasury(),
-        15,
-    );
-    let create = squads_test_harness::create_squads_smart_account_instruction(
-        owner.pubkey(),
-        owner.pubkey(),
-        16,
-    );
-    squads_test_harness::try_send_instructions(&mut svm, &[create], &owner, &[])
-        .expect("create fixture Settings with actual Squads SBF");
+    let fixture = voltr_capture::json("voltr/claim-wire.json");
+    let mut svm = voltr_capture::captured_svm(1_000_000_000, 1_793_920_731);
+    let owner = voltr_capture::owner();
+    assert_eq!(owner.pubkey(), voltr_capture::key(&fixture["owner"]));
     assert_eq!(
-        squads_test_harness::derive_squads_settings(16).0,
-        key("settings")
+        squads_test_harness::derive_squads_settings(voltr_capture::SETTINGS_SEED).0,
+        voltr_capture::key(&fixture["settings"])
     );
-    let authority = key("authority");
-    svm.airdrop(&authority, fixture["authorityLamports"].as_u64().unwrap())
-        .unwrap();
-    let globals: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(capture.join("voltr-accounts.json")).unwrap())
-            .unwrap();
-    for (address, value) in globals["addresses"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .zip(globals["result"]["value"].as_array().unwrap())
-    {
-        if value.is_null() {
-            continue;
-        }
-        svm.set_account(
-            Pubkey::from_str(address.as_str().unwrap()).unwrap(),
-            Account {
-                lamports: value["lamports"].as_u64().unwrap(),
-                owner: Pubkey::from_str(value["owner"].as_str().unwrap()).unwrap(),
-                data: BASE64.decode(value["data"][0].as_str().unwrap()).unwrap(),
-                executable: false,
-                rent_epoch: 0,
-            },
-        )
-        .unwrap();
-    }
-    let vault = Pubkey::from_str("HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA").unwrap();
-    let lp = Pubkey::find_program_address(&[b"vault_lp_mint", vault.as_ref()], &voltr).0;
+    let authority = voltr_capture::key(&fixture["authority"]);
+    let lp = voltr_capture::pda(b"vault_lp_mint");
     let receipt = Pubkey::find_program_address(
         &[
             b"request_withdraw_vault_receipt",
-            vault.as_ref(),
+            voltr_capture::VAULT.as_ref(),
             authority.as_ref(),
         ],
-        &voltr,
+        &voltr_capture::VOLTR,
     )
     .0;
-    let ata = |owner: &Pubkey, mint: &Pubkey| {
-        spl_associated_token_account::get_associated_token_address(owner, mint)
-    };
-    let source = ata(&authority, &USDC_MINT);
-    let destination = ata(&owner.pubkey(), &USDC_MINT);
-    let escrow = ata(&receipt, &lp);
     let receipt_data = BASE64
         .decode(fixture["receiptBase64"].as_str().unwrap())
         .unwrap();
@@ -731,50 +590,63 @@ fn production_ts_signed_wire_executes_real_voltr_and_squads() {
         Account {
             lamports: svm.minimum_balance_for_rent_exemption(receipt_data.len()),
             data: receipt_data.clone(),
-            owner: voltr,
+            owner: voltr_capture::VOLTR,
             executable: false,
             rent_epoch: 0,
         },
     )
     .unwrap();
-    seed_spl_token_account(&mut svm, source, USDC_MINT, authority, 500);
-    seed_spl_token_account(&mut svm, escrow, lp, receipt, 100);
-    let idle_auth =
-        Pubkey::find_program_address(&[b"vault_asset_idle_auth", vault.as_ref()], &voltr).0;
+    let baseline: u64 = fixture["preexistingUsdcRaw"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
     seed_spl_token_account(
         &mut svm,
-        ata(&idle_auth, &USDC_MINT),
+        voltr_capture::ata(&authority, &USDC_MINT),
+        USDC_MINT,
+        authority,
+        baseline,
+    );
+    seed_spl_token_account(
+        &mut svm,
+        voltr_capture::ata(&receipt, &lp),
+        lp,
+        receipt,
+        100,
+    );
+    let idle_auth = voltr_capture::pda(b"vault_asset_idle_auth");
+    seed_spl_token_account(
+        &mut svm,
+        voltr_capture::ata(&idle_auth, &USDC_MINT),
         USDC_MINT,
         idle_auth,
         1_000_000_000,
     );
-    for table in fixture["lookupTables"].as_array().unwrap() {
-        let data = BASE64
-            .decode(table["dataBase64"].as_str().unwrap())
-            .unwrap();
-        svm.set_account(
-            Pubkey::from_str(table["address"].as_str().unwrap()).unwrap(),
-            Account {
-                lamports: svm.minimum_balance_for_rent_exemption(data.len()),
-                data,
-                owner: solana_sdk::address_lookup_table::program::ID,
-                executable: false,
-                rent_epoch: 0,
-            },
-        )
-        .unwrap();
-    }
-    let mut clock = svm.get_sysvar::<Clock>();
-    clock.slot = 1_000_000_000;
-    clock.unix_timestamp = 1_793_920_731;
-    svm.set_sysvar(&clock);
-    let wire = BASE64
-        .decode(fixture["wireBase64"].as_str().unwrap())
-        .unwrap();
-    assert!(wire.len() <= 1232);
-    let transaction: VersionedTransaction = bincode::deserialize(&wire).unwrap();
-    assert_eq!(bincode::serialize(&transaction).unwrap(), wire);
-    let policy = loyal_actions::derive_action_account(&key("settings"), 1).0;
+    (svm, fixture, receipt_data)
+}
+
+#[test]
+fn production_ts_signed_claim_wire_executes_real_voltr_and_squads() {
+    let (mut svm, fixture, receipt_data) = claim_setup();
+    let owner = voltr_capture::owner();
+    let authority = voltr_capture::key(&fixture["authority"]);
+    let lp = voltr_capture::pda(b"vault_lp_mint");
+    let receipt = Pubkey::find_program_address(
+        &[
+            b"request_withdraw_vault_receipt",
+            voltr_capture::VAULT.as_ref(),
+            authority.as_ref(),
+        ],
+        &voltr_capture::VOLTR,
+    )
+    .0;
+    let source = voltr_capture::ata(&authority, &USDC_MINT);
+    let destination = voltr_capture::ata(&owner.pubkey(), &USDC_MINT);
+    let escrow = voltr_capture::ata(&receipt, &lp);
+    let (wire, transaction) = voltr_capture::wire(&fixture);
+    let policy =
+        loyal_actions::derive_action_account(&voltr_capture::key(&fixture["settings"]), 1).0;
     for offset in [72, 80, 96] {
         let mut changed = svm.get_account(&receipt).unwrap();
         changed.data[offset] ^= 1;
@@ -805,14 +677,25 @@ fn production_ts_signed_wire_executes_real_voltr_and_squads() {
         .iter()
         .any(|line| line.contains("Instruction: WithdrawVault")));
     let mut restored = svm.get_account(&receipt).unwrap();
-    restored.owner = voltr;
+    restored.owner = voltr_capture::VOLTR;
     svm.set_account(receipt, restored).unwrap();
+
+    let baseline: u64 = fixture["preexistingUsdcRaw"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let floor: u64 = fixture["consent"]["minClaimUsdcRaw"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
     let mut too_high = transaction.clone();
-    let instructions = match &mut too_high.message {
-        solana_sdk::message::VersionedMessage::V0(m) => &mut m.instructions,
-        _ => panic!("production fixture must be v0"),
+    let solana_sdk::message::VersionedMessage::V0(message) = &mut too_high.message else {
+        panic!("production fixture must be v0");
     };
-    let owner_data = &mut instructions
+    let owner_data = &mut message
+        .instructions
         .iter_mut()
         .find(|ix| ix.data.len() > 11 && ix.data[8..11] == [2, 1, 0])
         .expect("owner sync transaction")
@@ -820,31 +703,33 @@ fn production_ts_signed_wire_executes_real_voltr_and_squads() {
     let at = owner_data.len() - 9;
     assert_eq!(
         u64::from_le_bytes(owner_data[at..at + 8].try_into().unwrap()),
-        100
+        baseline + floor
     );
-    owner_data[at..at + 8].copy_from_slice(&101u64.to_le_bytes());
-    let message = too_high.message.serialize();
-    too_high.signatures[0] = owner.sign_message(&message);
+    owner_data[at..at + 8].copy_from_slice(&(baseline + floor + 1).to_le_bytes());
+    voltr_capture::resign(&mut too_high);
     let failure = svm
         .send_transaction(too_high)
-        .expect_err("actual Voltr payout cannot satisfy floor101");
+        .expect_err("actual Voltr payout cannot satisfy floor plus one");
     assert!(failure
         .meta
         .logs
         .iter()
         .any(|line| line.contains("insufficient funds")));
-    assert_eq!(get_spl_token_amount(&svm, source), 500);
+    assert_eq!(get_spl_token_amount(&svm, source), baseline);
     assert_eq!(get_spl_token_amount(&svm, escrow), 100);
     assert!(svm.get_account(&destination).is_none());
     assert!(svm
         .get_account(&policy)
         .map(|a| a.lamports == 0)
         .unwrap_or(true));
+
+    let dust = 7;
+    seed_spl_token_account(&mut svm, source, USDC_MINT, authority, baseline + dust);
     let result = svm.send_transaction(transaction).expect(
-        "unchanged signed TS production wire executes actual programs and real captured ALT",
+        "unchanged signed TS claim wire executes after a dust donation to the authority ATA",
     );
-    assert_eq!(get_spl_token_amount(&svm, destination), 600);
-    assert_eq!(get_spl_token_amount(&svm, source), 0);
+    assert_eq!(get_spl_token_amount(&svm, destination), baseline + floor);
+    assert_eq!(get_spl_token_amount(&svm, source), dust);
     assert!(svm
         .get_account(&receipt)
         .map(|a| a.lamports == 0)
@@ -853,5 +738,10 @@ fn production_ts_signed_wire_executes_real_voltr_and_squads() {
         .get_account(&policy)
         .map(|a| a.lamports == 0)
         .unwrap_or(true));
-    println!("EXACT_TS_PRODUCTION_WIRE_PASSED bytes={} CU={} signature_verified=true blockhash_check=false captured_real_ALT=true owner_USDC=600 policy_closed=true receipt_closed=true",wire.len(),result.compute_units_consumed);
+    println!(
+        "EXACT_TS_CLAIM_WIRE_PASSED bytes={} CU={} signature_verified=true captured_real_ALT=true donated_dust={dust} owner_USDC={} authority_USDC={dust}",
+        wire.len(),
+        result.compute_units_consumed,
+        baseline + floor
+    );
 }

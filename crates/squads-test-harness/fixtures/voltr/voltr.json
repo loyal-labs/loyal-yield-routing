@@ -1,0 +1,11 @@
+{
+  "captured_at": "2026-11-05T23:16:37.399638+00:00",
+  "rpc": "https://api.mainnet-beta.solana.com",
+  "program": "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8",
+  "programdata": "3fiAyUjktZkZf6hcbBPy6U6UdkMdEFoToS4sjtzAd5az",
+  "program_owner": "BPFLoaderUpgradeab1e11111111111111111111111",
+  "context_slot": 465887294,
+  "deployed_slot": 445223838,
+  "bytes": 1059751,
+  "sha256": "bf1c1831b3d6350f4340badb942bd2e7bfaca4aa89276cb65e8480aa30d44c56"
+}

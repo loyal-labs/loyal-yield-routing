@@ -1,7 +1,5 @@
 import {
   createAssociatedTokenAccountIdempotentInstruction,
-  createAssociatedTokenAccountInstruction,
-  createCloseAccountInstruction,
   createTransferCheckedInstruction,
   getAssociatedTokenAddressSync,
 } from "@solana/spl-token";
@@ -13,14 +11,29 @@ import {
 } from "@solana/web3.js";
 
 import {
+  type EarnMaxDepositQuote,
+  EarnMaxDepositQuoteError,
+} from "./deposit-quote";
+import {
+  assertAccountBytes,
+  assertAccountU64,
+  assertClockSlot,
+  assertClockUnixTimestamp,
+  assertMintSupply,
+  assertTokenAmount,
+  IntegerOperator,
+} from "./lighthouse";
+import {
   depositVaultInstruction,
   readVoltrPosition,
   requestWithdrawVaultInstruction,
   VOLTR_ASSET_DECIMALS,
   VOLTR_ASSET_MINT,
+  VOLTR_DEPOSIT_PRICING_RANGES,
   VOLTR_LP_MINT,
   VOLTR_PROGRAM_ID,
   VOLTR_VAULT,
+  VOLTR_VAULT_TOTAL_VALUE_OFFSET,
   voltrClaimBlockReason,
   type VoltrClaimBlockReason,
   voltrUserAccounts,
@@ -28,10 +41,11 @@ import {
 } from "./program";
 
 /** `outer` is wallet-signed and runs first; `vault` runs as the index-2
- * smart-account vault inside one executeTransactionSyncV2. */
+ * smart-account vault inside one executeTransactionSyncV2; `after` runs last. */
 export type VoltrPlan = {
   outer: TransactionInstruction[];
   vault: TransactionInstruction[];
+  after?: TransactionInstruction[];
   claimProtection?: {
     consent: VoltrWithdrawalConsent;
     receiptBytes: Uint8Array;
@@ -117,11 +131,51 @@ export class VoltrWithdrawalConsentError extends Error {
   }
 }
 
+const MAX_U64 = (BigInt(1) << BigInt(64)) - BigInt(1);
+
+function pinnedTotalValue(quote: EarnMaxDepositQuote): bigint {
+  const pinned = new Map<number, number>();
+  for (const pin of quote.vaultPins)
+    pin.bytes.forEach((byte, i) => pinned.set(pin.offset + i, byte));
+  for (const [start, end] of VOLTR_DEPOSIT_PRICING_RANGES)
+    for (let at = start; at < end; at++)
+      if (!pinned.has(at)) throw new EarnMaxDepositQuoteError("invalid_quote");
+  let value = BigInt(0);
+  for (let i = 7; i >= 0; i--)
+    value =
+      (value << BigInt(8)) |
+      BigInt(pinned.get(VOLTR_VAULT_TOTAL_VALUE_OFFSET + i) ?? 0);
+  return value;
+}
+
+/** Official deposit: Lighthouse asserts the certified pricing basis before the
+ * deposit and the certified LP and supply bounds after it, in one transaction.
+ * Direct Voltr deposits outside this client are not covered. */
 export function voltrDepositPlan(
   { authority, owner }: PlanContext,
-  amountRaw: bigint,
+  quote: EarnMaxDepositQuote,
+  nowSec = BigInt(Math.floor(Date.now() / 1000)),
 ): VoltrPlan {
   const user = voltrUserAccounts(authority);
+  const amount = quote.amountRaw;
+  const totalValue = pinnedTotalValue(quote);
+  if (
+    !quote.vault.equals(VOLTR_VAULT) ||
+    !quote.lpMint.equals(VOLTR_LP_MINT) ||
+    !quote.authority.equals(authority) ||
+    !quote.lpAta.equals(user.lpAta) ||
+    amount <= BigInt(0) ||
+    quote.lpMinRaw <= BigInt(0) ||
+    quote.lpMinRaw > quote.lpMaxRaw ||
+    quote.lpBaselineRaw + quote.lpMaxRaw > MAX_U64 ||
+    quote.supplyMaxRaw < quote.lpSupplyRaw + quote.lpMinRaw ||
+    totalValue + amount > MAX_U64 ||
+    quote.notAfterSlot < quote.certifiedSlot
+  )
+    throw new EarnMaxDepositQuoteError("invalid_quote");
+  if (quote.expiresAt <= nowSec)
+    throw new EarnMaxDepositQuoteError("quote_expired");
+  const { equal, greaterThanOrEqual, lessThanOrEqual } = IntegerOperator;
   return {
     outer: [
       createAssociatedTokenAccountIdempotentInstruction(
@@ -141,11 +195,44 @@ export function voltrDepositPlan(
         VOLTR_ASSET_MINT,
         user.assetAta,
         owner,
-        amountRaw,
+        amount,
         VOLTR_ASSET_DECIMALS,
       ),
+      assertAccountBytes(VOLTR_VAULT, quote.vaultPins),
+      assertMintSupply(VOLTR_LP_MINT, {
+        operator: equal,
+        value: quote.lpSupplyRaw,
+      }),
+      assertTokenAmount(user.lpAta, [
+        { operator: equal, value: quote.lpBaselineRaw },
+      ]),
+      assertClockSlot({ operator: lessThanOrEqual, value: quote.notAfterSlot }),
+      assertClockUnixTimestamp({
+        operator: lessThanOrEqual,
+        value: quote.expiresAt,
+      }),
     ],
-    vault: [depositVaultInstruction(authority, amountRaw)],
+    vault: [depositVaultInstruction(authority, amount)],
+    after: [
+      assertTokenAmount(user.lpAta, [
+        {
+          operator: greaterThanOrEqual,
+          value: quote.lpBaselineRaw + quote.lpMinRaw,
+        },
+        {
+          operator: lessThanOrEqual,
+          value: quote.lpBaselineRaw + quote.lpMaxRaw,
+        },
+      ]),
+      assertMintSupply(VOLTR_LP_MINT, {
+        operator: lessThanOrEqual,
+        value: quote.supplyMaxRaw,
+      }),
+      assertAccountU64(VOLTR_VAULT, VOLTR_VAULT_TOTAL_VALUE_OFFSET, {
+        operator: equal,
+        value: totalValue + amount,
+      }),
+    ],
   };
 }
 
@@ -253,7 +340,12 @@ export async function voltrClaimPlan(
     throw new VoltrWithdrawalConsentError("waiting_price");
   const walletAta = getAssociatedTokenAddressSync(VOLTR_ASSET_MINT, owner);
   const assetAta = voltrUserAccounts(authority).assetAta;
-  const rent = await connection.getMinimumBalanceForRentExemption(165);
+  // USDC already in the authority ATA is the baseline: the payout transfer
+  // moves baseline plus floor, so only new proceeds can meet the floor and a
+  // later donation can only add to what the owner receives.
+  const baseline = position.assetAtaExists ? position.assetRaw : BigInt(0);
+  if (baseline + floor > MAX_U64)
+    throw new VoltrWithdrawalConsentError("needs_consent");
   return {
     claimProtection: {
       consent,
@@ -270,47 +362,21 @@ export async function voltrClaimPlan(
         owner,
         VOLTR_ASSET_MINT,
       ),
-      ...(position.authorityLamports >= rent
-        ? []
-        : [
-            SystemProgram.transfer({
-              fromPubkey: owner,
-              toPubkey: authority,
-              lamports: rent - position.authorityLamports,
-            }),
-          ]),
-    ],
-    vault: [
-      ...(position.assetAtaExists
-        ? [
-            ...(position.assetRaw > BigInt(0)
-              ? [
-                  createTransferCheckedInstruction(
-                    assetAta,
-                    VOLTR_ASSET_MINT,
-                    walletAta,
-                    authority,
-                    position.assetRaw,
-                    VOLTR_ASSET_DECIMALS,
-                  ),
-                ]
-              : []),
-            createCloseAccountInstruction(assetAta, authority, authority),
-          ]
-        : []),
-      createAssociatedTokenAccountInstruction(
-        authority,
+      createAssociatedTokenAccountIdempotentInstruction(
+        owner,
         assetAta,
         authority,
         VOLTR_ASSET_MINT,
       ),
+    ],
+    vault: [
       unprotectedWithdrawVaultInstruction(authority),
       createTransferCheckedInstruction(
-        voltrUserAccounts(authority).assetAta,
+        assetAta,
         VOLTR_ASSET_MINT,
         walletAta,
         authority,
-        floor,
+        baseline + floor,
         VOLTR_ASSET_DECIMALS,
       ),
     ],

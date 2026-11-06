@@ -164,10 +164,10 @@ jobs:
         # The golden tests read only crate files.
         if: needs.changes.outputs.rust == 'true'
         run: cargo test --locked -p loyal-actions -p loyal-voltr-rwa-nav-adaptor golden_
-      - name: Verify withdrawal protection in the pinned SBF harness
-        # Four local cases run; two external capture opt-ins remain ignored.
+      - name: Verify Voltr deposit pricing and withdrawal protection in the SBF harness
+        # Executes the committed TS-signed wires on captured mainnet Squads, Voltr and Lighthouse.
         if: needs.changes.outputs.rust == 'true'
-        run: cargo test --locked -p squads-test-harness --test voltr_withdrawal_protection
+        run: cargo test --locked -p squads-test-harness --test voltr_withdrawal_protection --test voltr_deposit_pricing
       - name: Verify offline behavior
         env:
           SVM_HARNESS: ${{ github.workspace }}/target/debug/examples/fleet-local-svm

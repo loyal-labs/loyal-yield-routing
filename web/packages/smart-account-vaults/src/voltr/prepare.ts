@@ -253,7 +253,7 @@ export async function prepareEarnMaxVoltr(input: {
     throw new EarnMaxVoltrPrepareError("multi_signer_unsupported");
   }
   const authority = deriveEarnMaxVoltrAuthority(settingsPda, programId);
-  const { outer, vault, claimProtection, lifecycleFence } = await build({
+  const { outer, vault, after, claimProtection, lifecycleFence } = await build({
     authority,
     owner,
   });
@@ -323,6 +323,7 @@ export async function prepareEarnMaxVoltr(input: {
       ...fence.before,
       ...prepared.instructions,
       ...fence.after,
+      ...(after ?? []),
     ],
   };
   try {

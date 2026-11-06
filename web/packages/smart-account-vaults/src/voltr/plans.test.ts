@@ -1,10 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import {
-  AccountLayout,
-  TOKEN_PROGRAM_ID,
-  decodeTransferCheckedInstruction,
-  ASSOCIATED_TOKEN_PROGRAM_ID,
-} from "@solana/spl-token";
+import { AccountLayout, TOKEN_PROGRAM_ID } from "@solana/spl-token";
 import { Connection, Keypair, type AccountInfo } from "@solana/web3.js";
 import { voltrClaimPlan, type VoltrWithdrawalConsent } from "./plans";
 import {
@@ -104,39 +99,6 @@ describe("protected Voltr claim instruction contract (not runtime qualification)
         consent,
       ),
     ).rejects.toMatchObject({ code: "waiting_price" });
-  });
-  test("exact floor sweeps old cash then closes/recreates before claim", async () => {
-    const plan = await voltrClaimPlan(
-      fixture(BigInt(100), BigInt(500)),
-      { authority, owner },
-      consent,
-    );
-    expect(plan.vault).toHaveLength(5);
-    expect(decodeTransferCheckedInstruction(plan.vault[0]).data.amount).toBe(
-      BigInt(500),
-    );
-    expect(plan.vault[1].data[0]).toBe(9);
-    expect(plan.vault[2].programId.equals(ASSOCIATED_TOKEN_PROGRAM_ID)).toBe(
-      true,
-    );
-    expect(plan.vault[2].data.length).toBe(0);
-    expect(plan.vault[2].keys[0].pubkey.equals(authority)).toBe(true);
-    expect(plan.vault[3].programId.equals(VOLTR_PROGRAM_ID)).toBe(true);
-    expect(decodeTransferCheckedInstruction(plan.vault[4]).data.amount).toBe(
-      BigInt(100),
-    );
-  });
-  test("absent ATA uses nonidempotent creation before claim", async () => {
-    const plan = await voltrClaimPlan(
-      fixture(BigInt(100), BigInt(0), false),
-      { authority, owner },
-      consent,
-    );
-    expect(plan.vault).toHaveLength(3);
-    expect(plan.vault[0].programId.equals(ASSOCIATED_TOKEN_PROGRAM_ID)).toBe(
-      true,
-    );
-    expect(plan.vault[0].data.length).toBe(0);
   });
   test("missing, expired and mismatched LP approval cannot prepare a claim", async () => {
     await expect(
