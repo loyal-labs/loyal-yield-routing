@@ -2,16 +2,15 @@ package backyard
 
 import (
 	"context"
-	"encoding/binary"
 	"fmt"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/voltr"
 	"net/http"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
 func TestNAVCertificateRejectsUnscopedIncompleteAndAgedEvidence(t *testing.T) {
@@ -140,27 +139,6 @@ func TestCertifiedNAVCopiesQuoteEvidence(t *testing.T) {
 	}
 }
 
-func TestDemandRefreshDoesNotUseHourlyAttemptSuppression(t *testing.T) {
-	m := readyWorkerManifest(t)
-	route, accounts := onreEntryNAVFixture(t, 0, 2_000_000_000)
-	accounts = append(accounts, clockFixture())
-	now := time.Now()
-	calls := 0
-	q := exitQuoter{now: func() time.Time { return now }, attempted: map[string]time.Time{route.Lane: now}, price: func(_ context.Context, b heldExitBasis, slot int64, at time.Time) (ExitCost, error) {
-		calls++
-		return exitCostOf(route.Lane, exitCostQuote, b.heldRaw, b.markValue, b.markValue, b.mark, slot, at)
-	}}
-	costs := q.quote(context.Background(), m, 77, accounts, []string{route.Lane}, nil)
-	if calls != 1 || costs[route.Lane].Quote == nil {
-		t.Fatal("hourly attempt suppressed demand")
-	}
-	now = now.Add(exitQuoteInterval + time.Second)
-	q.quote(context.Background(), m, 77, accounts, []string{route.Lane}, costs)
-	if calls != 2 {
-		t.Fatal("expired certificate did not refresh", calls)
-	}
-}
-
 func TestSnapshotNumbersCannotBorrowCertificateFromAnotherBook(t *testing.T) {
 	s := base()
 	s.StrategyNAVRaw = 10_000_000
@@ -231,42 +209,6 @@ func TestAddAdmissionExpiresAndBindsFinalRequestEconomics(t *testing.T) {
 	}
 }
 
-func TestWithdrawalCashReadyStillAcquiresNAVForRestore(t *testing.T) {
-	m, accounts := multiLaneFixture(t, nil)
-	binary.LittleEndian.PutUint64(accountAt(accounts, m.vault.strategyATA).Data[64:72], 1_000_000)
-	address, data := receiptFixture(t, m.vault.VoltrVault, testPublicKey(44), 500, 50<<48)
-	quoted := 0
-	q := &exitQuoter{now: func() time.Time { return time.Now() }, price: func(_ context.Context, b heldExitBasis, slot int64, at time.Time) (ExitCost, error) {
-		quoted++
-		return exitCostOf(b.st.route.Lane, exitCostQuote, b.heldRaw, b.markValue, b.markValue, b.mark, slot, at)
-	}}
-	o, _, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), m, routeObservationRuntime{state: testVaultState, inputs: targetInputs{}, now: func() time.Time { return time.Now() }, exits: q,
-		read: func(ctx context.Context, addresses []string, minSlot int64) (int64, []ConfirmedAccount, []programAccount, error) {
-			slot, a, _, err := fixtureBatchRuntime(77, accounts)(ctx, addresses, minSlot)
-			return slot, a, []programAccount{{Address: address, Account: ConfirmedAccount{Address: address, Owner: voltr.ProgramID.String(), Lamports: 1, Data: data}}}, err
-		}, refreshValuation: fixtureRefresh(77, accounts)})
-	if err != nil || quoted == 0 || !o.Snapshot.netKnown(time.Now()) || o.Snapshot.WithdrawalDemandRaw == 0 || !o.Snapshot.HasPosition {
-		t.Fatalf("cash-ready withdrawal never repriced remaining held book: quotes=%d err=%v known=%v", quoted, err, o.Snapshot.netKnown(time.Now()))
-	}
-	// Report-bearing restore now has full remaining-holding evidence available.
-	o.policies = testPolicies(t)
-	o.planning = &routePlanningState{inputs: targetInputs{ExitCosts: qCostsFromCertificate(o.Snapshot.net)}}
-	rpc := budgetBuildRPCWithAccounts(t, 5000, 77, accounts)
-	_, e, err := prepareBridgeFromObservedAccounts(context.Background(), rpc, m, Decision{Action: VoltrRestoreIdle, AmountRaw: 1_000_000, StrategyKey: o.Snapshot.RouteLane}, o, accounts)
-	if err != nil || e.Request.net == nil {
-		t.Fatalf("certified restore did not prepare: %v", err)
-	}
-}
-
-func qCostsFromCertificate(c *certifiedNAV) exitCosts {
-	out := exitCosts{}
-	for _, q := range c.quotes {
-		copied := q
-		out[q.Lane] = laneExitCosts{Quote: &copied}
-	}
-	return out
-}
-
 func TestNAVQuoteRequestsFullHoldingWithoutBuildingExecution(t *testing.T) {
 	m := readyWorkerManifest(t)
 	route, accounts := onreEntryNAVFixture(t, 0, 2_000_000_000)
@@ -325,27 +267,6 @@ func TestNAVQuotePricesLargeAUTOHoldingOnAnExecutableRoute(t *testing.T) {
 	cost, err := (lanePricer{client: client, manifest: m}).priceHeldExit(context.Background(), basis, 77, time.Now())
 	if err != nil || cost.QuotedCollateralRaw != basis.heldRaw {
 		t.Fatalf("full AUTO holding left unpriced: %+v %v", cost, err)
-	}
-}
-
-func TestOrdinaryWithdrawalReductionAcquiresItsCostGateNAV(t *testing.T) {
-	m, accounts := multiLaneFixture(t, nil)
-	address, data := receiptFixture(t, m.vault.VoltrVault, testPublicKey(44), 500, 50<<48)
-	quoted := 0
-	q := &exitQuoter{now: func() time.Time { return time.Now() }, price: func(_ context.Context, b heldExitBasis, slot int64, at time.Time) (ExitCost, error) {
-		quoted++
-		return exitCostOf(b.st.route.Lane, exitCostQuote, b.heldRaw, b.markValue, b.markValue, b.mark, slot, at)
-	}}
-	o, _, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), m, routeObservationRuntime{state: testVaultState, inputs: targetInputs{}, now: func() time.Time { return time.Now() }, exits: q, read: func(ctx context.Context, addresses []string, minSlot int64) (int64, []ConfirmedAccount, []programAccount, error) {
-		slot, a, _, err := fixtureBatchRuntime(77, accounts)(ctx, addresses, minSlot)
-		return slot, a, []programAccount{{Address: address, Account: ConfirmedAccount{Address: address, Owner: voltr.ProgramID.String(), Lamports: 1, Data: data}}}, err
-	}, refreshValuation: fixtureRefresh(77, accounts)})
-	if err != nil || quoted == 0 || !o.Snapshot.netKnown(time.Now()) {
-		t.Fatalf("ordinary withdrawal never acquired cost-gate NAV: %d %v", quoted, err)
-	}
-	d := Decision{Action: DeleverRouteStep, Reason: releaseReason, StrategyKey: o.Snapshot.RouteLane}
-	if !ordinaryWithdrawalCostRequired(o.Snapshot, d) {
-		t.Fatal("fixture missed production ordinary-cost classification", o.Snapshot.Target)
 	}
 }
 

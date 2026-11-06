@@ -167,7 +167,20 @@ func TestWithdrawalAttemptDatabaseFeeReservationSurvivesWideningAndRetries(t *te
 func TestClaimWaitsWhilePublishedValueExceedsCertifiedNAV(t *testing.T) {
 	now := time.Now()
 	nav := &certifiedVaultNAV{totalRaw: 10_000_000_000, certifiedSlot: 100, maxSlot: 132, validUntil: now.Add(30 * time.Second)}
-	if err := claimPricePublished(nav, now, 110, 10_000_000_000+15_000_000); err != ErrClaimWaitingNAVPublication {
+	if err := claimPricePublished(nav, now, 10_000_000_000+15_000_000); err != ErrClaimWaitingNAVPublication {
 		t.Fatalf("claim admitted 15 bps above certified NAV: %v", err)
+	}
+}
+
+// A certificate covers 32 slots, about seven seconds, but lives 30 seconds:
+// a claim bound by the slots would wait on most ticks.
+func TestClaimAdmittedWhileCertificateLives(t *testing.T) {
+	now := time.Now()
+	nav := &certifiedVaultNAV{totalRaw: 10_000_000_000, certifiedSlot: 100, maxSlot: 132, validUntil: now.Add(30 * time.Second)}
+	if err := claimPricePublished(nav, now, 10_000_000_000); err != nil {
+		t.Fatalf("claim at the certified NAV refused while the certificate lives: %v", err)
+	}
+	if err := claimPricePublished(nav, nav.validUntil, 10_000_000_000); err != ErrClaimWaitingNAVPublication {
+		t.Fatalf("claim admitted on an expired certificate: %v", err)
 	}
 }

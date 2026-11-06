@@ -43,8 +43,15 @@ func readCertifiedVaultNAV(ctx context.Context, q rowQuerier) (*certifiedVaultNA
 	return &c, nil
 }
 
-func (c *certifiedVaultNAV) validAt(now time.Time, slot uint64) bool {
-	return c != nil && now.Before(c.validUntil) && int64(slot) >= c.certifiedSlot && int64(slot) <= c.maxSlot
+// depositValidAt bounds a deposit by the slots the on-chain guard accepts.
+func (c *certifiedVaultNAV) depositValidAt(now time.Time, slot uint64) bool {
+	return c.claimValidAt(now) && int64(slot) >= c.certifiedSlot && int64(slot) <= c.maxSlot
+}
+
+// claimValidAt bounds a claim by the certificate's lifetime alone: the claim
+// pays at the published total value, which claimPricePublished checks.
+func (c *certifiedVaultNAV) claimValidAt(now time.Time) bool {
+	return c != nil && now.Before(c.validUntil)
 }
 
 // depositPricePublished bounds the published total value a deposit mints at.
@@ -56,8 +63,8 @@ func depositPricePublished(nav uint64, v voltr.Vault) bool {
 
 // claimPricePublished refuses a claim that a published total value above
 // certified NAV would overpay.
-func claimPricePublished(nav *certifiedVaultNAV, now time.Time, slot, totalValueRaw uint64) error {
-	if !nav.validAt(now, slot) || NAVExceeds(totalValueRaw, nav.totalRaw, NAVPublicationBandBPS) {
+func claimPricePublished(nav *certifiedVaultNAV, now time.Time, totalValueRaw uint64) error {
+	if !nav.claimValidAt(now) || NAVExceeds(totalValueRaw, nav.totalRaw, NAVPublicationBandBPS) {
 		return ErrClaimWaitingNAVPublication
 	}
 	return nil
@@ -67,7 +74,7 @@ func (s *WithdrawalAttemptStore) claimNAVPublished(ctx context.Context) error {
 	if s.chain == nil {
 		return ErrWithdrawalClaimWireUnqualified
 	}
-	slot, accounts, err := s.chain.Accounts(ctx, []solana.PublicKey{Vault}, rpc.CommitmentConfirmed, 0)
+	_, accounts, err := s.chain.Accounts(ctx, []solana.PublicKey{Vault}, rpc.CommitmentConfirmed, 0)
 	if err != nil {
 		return err
 	}
@@ -82,5 +89,5 @@ func (s *WithdrawalAttemptStore) claimNAVPublished(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return claimPricePublished(nav, time.Now(), slot, vault.TotalValueRaw)
+	return claimPricePublished(nav, time.Now(), vault.TotalValueRaw)
 }

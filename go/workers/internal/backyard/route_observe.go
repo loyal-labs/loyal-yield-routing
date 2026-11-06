@@ -108,6 +108,11 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 	if err != nil {
 		return Observation{}, nil, err
 	}
+	if runtime.exits != nil {
+		quoteCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		runtime.exits.refresh(quoteCtx, manifest, runtime.inputs.ExitCosts)
+		cancel()
+	}
 	addresses := routeFixedAddresses(v)
 	slot, accounts, receipts, err := runtime.read(ctx, addresses, runtime.minSlot)
 	if err != nil {
@@ -204,6 +209,9 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 			runtime.state.events.noteCause(holdDetail(refreshErr))
 		}
 	}
+	if runtime.exits != nil {
+		runtime.inputs.ExitCosts = runtime.exits.merged(runtime.inputs.ExitCosts)
+	}
 	views := make([]Observation, 0, len(viewLanes))
 	for _, lane := range viewLanes {
 		route, err := v.route(lane)
@@ -224,21 +232,13 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 		s := o.Snapshot
 		urgent = urgent || s.HasPosition && (s.LTVBPS >= hardLTVBPS(s.LiquidationThresholdBPS, s.MaxLTVBPS) || termDebtUnknown(s) || s.DebtTermEndUnix > 0 && s.DebtTermEndUnix <= s.ChainUnix)
 	}
-	if runtime.exits != nil && !urgent {
-		quoteCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-		runtime.inputs.ExitCosts = runtime.exits.quote(quoteCtx, manifest, slot, accounts, valued, runtime.inputs.ExitCosts)
-		cancel()
-		for i := range views {
-			route, _ := v.route(views[i].Snapshot.RouteLane)
-			updated, hold, err := observeLaneView(ctx, manifest, runtime, slot, accounts, route, held, valued, demand, fingerprint, refreshExhausted)
-			if err != nil || hold != nil {
-				if hold != nil {
-					return *hold, accounts, nil
-				}
-				return Observation{}, nil, err
-			}
-			views[i] = updated
+	if runtime.exits != nil {
+		// An urgent book acts next tick without first waiting on quotes.
+		quoted := valued
+		if urgent {
+			quoted = nil
 		}
+		runtime.exits.observed(manifest, slot, accounts, quoted)
 	}
 	var allowance *StageAllowance
 	if views[0].Snapshot.SquadsIdleRaw > 0 && runtime.stageAllowance != nil {

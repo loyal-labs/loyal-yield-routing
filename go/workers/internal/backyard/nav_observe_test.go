@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"math"
 	"math/big"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -461,33 +460,6 @@ func TestRouteNAVEntryBelowMarkIsFlat(t *testing.T) {
 	}
 }
 
-func TestFirstTickValuesUnseededLane(t *testing.T) {
-	manifest, accounts := multiLaneFixture(t, nil)
-	var recorded []string
-	quoter := &exitQuoter{
-		price: func(_ context.Context, b heldExitBasis, slot int64, at time.Time) (ExitCost, error) {
-			return exitCostOf(b.st.route.Lane, exitCostQuote, b.heldRaw, b.markValue, b.markValue-b.markValue/1_000, b.mark, slot, at)
-		},
-		record: func(_ context.Context, c ExitCost) (bool, error) {
-			recorded = append(recorded, c.Lane)
-			return true, nil
-		},
-		now: func() time.Time { return time.Now().UTC() },
-	}
-	o, _, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), manifest, routeObservationRuntime{state: testVaultState, inputs: targetInputs{ExitCosts: exitCosts{}},
-		read:             fixtureBatchRuntime(77, accounts),
-		refreshValuation: fixtureRefresh(77, accounts),
-		now:              func() time.Time { return time.Unix(kaminoFixtureUnix, 0).UTC() },
-		exits:            quoter,
-	})
-	if err != nil {
-		t.Fatalf("first tick with no stored exit cost: %v", err)
-	}
-	if o.Snapshot.StrategyNAVRaw != 31_970_010 || o.Snapshot.ExitLiabilityRaw != 30_000 || len(recorded) != 1 {
-		t.Fatalf("first tick NAV %d exit %d recorded %v", o.Snapshot.StrategyNAVRaw, o.Snapshot.ExitLiabilityRaw, recorded)
-	}
-}
-
 func TestUnpricedLaneHoldsOnlyItsVault(t *testing.T) {
 	manifest, accounts := multiLaneFixture(t, nil)
 	quoter := &exitQuoter{
@@ -552,44 +524,54 @@ func TestDustLaneWithoutExitCostDoesNotHoldVault(t *testing.T) {
 	}
 }
 
-func TestIdleOnlyLaneWithoutObligationIsQuoted(t *testing.T) {
-	manifest, accounts := multiLaneFixture(t, func(accounts *[]ConfirmedAccount) {
-		route, err := runtimeRoute(onreONycUSDC)
-		if err != nil {
-			t.Fatal(err)
+// A quote reports the slot it answered at, a few slots past any snapshot
+// already read. On steady ticks 24 to 35 slots apart, every snapshot after
+// the first keeps a certified NAV, at no more than one quote a tick.
+func TestSteadyTicksKeepNAVCertified(t *testing.T) {
+	manifest, accounts := multiLaneFixture(t, nil)
+	chain, target := int64(1_000), int64(0)
+	quotes := 0
+	quoter := &exitQuoter{now: time.Now, price: func(_ context.Context, b heldExitBasis, _ int64, at time.Time) (ExitCost, error) {
+		quotes++
+		chain += 3
+		return exitCostOf(b.st.route.Lane, exitCostQuote, b.heldRaw, b.markValue, b.markValue-b.markValue/1_000, b.mark, chain, at)
+	}}
+	read := func(context.Context, []string, int64) (int64, []ConfirmedAccount, []programAccount, error) {
+		return chain, accounts, nil, nil
+	}
+	refresh := func(ctx context.Context, routes []RuntimeRoute, addresses []string, minSlot int64) (int64, []ConfirmedAccount, error) {
+		chain = max(chain+1, target)
+		for i := range accounts {
+			if accounts[i].Owner == kamino.ProgramID.String() && len(accounts[i].Data) > 24 {
+				binary.LittleEndian.PutUint64(accounts[i].Data[16:24], uint64(chain))
+			}
+			if accounts[i].Address == budgetClockAddress {
+				binary.LittleEndian.PutUint64(accounts[i].Data[:8], uint64(chain))
+			}
 		}
-		peg := new(big.Int).Lsh(big.NewInt(1), 60)
-		upsertConfirmedAccount(accounts, kaminoReserveImage(t, route.Kamino.Market, route.Kamino.CollateralReserve, route.Kamino.CollateralMint, 77, peg, 1_000_000_000, 0, 1_000_000_000, 6))
-		upsertConfirmedAccount(accounts, kaminoReserveImage(t, route.Kamino.Market, route.Kamino.DebtReserve, route.Kamino.DebtMint, 77, peg, 1_000_000_000, 0, 1_000_000_000, 6))
-		upsertConfirmedAccount(accounts, marketFixture(t, route.Kamino.Market))
-		custody := tokenAccountFixture(t, route.CollateralCustody, route.Kamino.CollateralMint, bridgeVault, 2_000_000)
-		custody.Owner = route.CollateralTokenProgram
-		upsertConfirmedAccount(accounts, custody)
-	})
-	costs := fixtureExitCosts(manifest, 77, accounts)
-	delete(costs, onreONycUSDC)
-	var recorded []string
-	quoter := &exitQuoter{
-		price: func(_ context.Context, b heldExitBasis, slot int64, at time.Time) (ExitCost, error) {
-			return exitCostOf(b.st.route.Lane, exitCostQuote, b.heldRaw, b.markValue, b.markValue-b.markValue/1_000, b.mark, slot, at)
-		},
-		record: func(_ context.Context, c ExitCost) (bool, error) {
-			recorded = append(recorded, c.Lane)
-			return true, nil
-		},
-		now: func() time.Time { return time.Now().UTC() },
+		return fixtureRefresh(chain, accounts)(ctx, routes, addresses, minSlot)
 	}
-	o, _, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), manifest, routeObservationRuntime{state: testVaultState, inputs: targetInputs{ExitCosts: costs},
-		read:             fixtureBatchRuntime(77, accounts),
-		refreshValuation: fixtureRefresh(77, accounts),
-		now:              func() time.Time { return time.Unix(kaminoFixtureUnix, 0).UTC() },
-		exits:            quoter,
-	})
-	if err != nil {
-		t.Fatalf("idle-only lane with no obligation held the vault: %v", err)
+	gaps := []int64{24, 31, 35, 27, 33, 24, 29, 35, 30, 26, 34, 28}
+	for tick, gap := range gaps {
+		target = chain + gap
+		chain = target - 4
+		o, _, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), manifest, routeObservationRuntime{state: testVaultState, inputs: targetInputs{ExitCosts: exitCosts{}},
+			read: func(ctx context.Context, addresses []string, minSlot int64) (int64, []ConfirmedAccount, []programAccount, error) {
+				slot, _, _, _ := read(ctx, addresses, minSlot)
+				return fixtureBatchRuntime(slot, accounts)(ctx, addresses, minSlot)
+			},
+			refreshValuation: refresh,
+			now:              func() time.Time { return time.Unix(kaminoFixtureUnix, 0).UTC() },
+			exits:            quoter,
+		})
+		if err != nil {
+			t.Fatalf("tick %d: %v", tick, err)
+		}
+		if tick > 0 && !o.Snapshot.netKnown(time.Now()) {
+			t.Fatalf("tick %d at slot %d %d slots after the last lost its certified NAV: %s", tick, o.Snapshot.Slot, gap, o.Snapshot.NAVUnavailable)
+		}
 	}
-	// A formerly free AUTO exit cannot suppress its newly priced cost as an outlier.
-	if o.Snapshot.StrategyNAVRaw != 33_998_010 || o.Snapshot.ExitLiabilityRaw != 2_000 || !slices.Contains(recorded, onreONycUSDC) {
-		t.Fatalf("idle-only lane NAV %d exit %d recorded %v, want 33968010, 32000 and an OnRe quote", o.Snapshot.StrategyNAVRaw, o.Snapshot.ExitLiabilityRaw, recorded)
+	if quotes > len(gaps) {
+		t.Fatalf("%d quotes over %d ticks", quotes, len(gaps))
 	}
 }

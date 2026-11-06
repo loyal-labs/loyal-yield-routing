@@ -28,10 +28,14 @@ func (c ExitCost) validAt(now time.Time, slot int64) bool {
 func (e exitCosts) applicable(m RouteManifest, slot int64, now time.Time) exitCosts {
 	out := exitCosts{}
 	for lane, costs := range e {
-		if q := costs.Quote; q != nil && q.validAt(now, slot) && q.scopedTo(m, lane) {
-			copied, scope := *q, *q.scope
-			copied.scope = &scope
-			out[lane] = laneExitCosts{Quote: &copied}
+		valid := func(q *ExitCost) *ExitCost {
+			if q != nil && q.validAt(now, slot) && q.scopedTo(m, lane) {
+				return q.cloned()
+			}
+			return nil
+		}
+		if c := (laneExitCosts{Quote: valid(costs.Quote), Pending: valid(costs.Pending)}); c.Quote != nil || c.Pending != nil {
+			out[lane] = c
 		}
 	}
 	return out
@@ -189,20 +193,4 @@ func bindBridgeRequest(r BridgeBuildRequest) BridgeBuildRequest {
 
 func (c ExitCost) scopedTo(m RouteManifest, lane string) bool {
 	return c.scope != nil && c.Lane == lane && c.scope.vault == m.vault.squads && c.scope.manifest == m.SHA256 && c.scope.path == quotePath(m, lane)
-}
-func (e exitCosts) candidates(m RouteManifest, slot int64, now time.Time) exitCosts {
-	out := exitCosts{}
-	for lane, costs := range e {
-		q := costs.Quote
-		if q == nil || !q.scopedTo(m, lane) || q.Slot-slot > min(observationLagSlots(), adaptorMaxReportAgeSlots) || !q.validAt(now, max(slot, q.Slot)) {
-			continue
-		}
-		copied, scope := *q, *q.scope
-		copied.scope = &scope
-		out[lane] = laneExitCosts{Quote: &copied}
-	}
-	return out
-}
-func (c ExitCost) pendingFor(m RouteManifest, slot int64, now time.Time, b heldExitBasis) bool {
-	return c.Slot > slot && c.Slot-slot <= min(observationLagSlots(), adaptorMaxReportAgeSlots) && c.scopedTo(m, b.st.route.Lane) && c.fresh(b.heldRaw, b.mark) && c.scope.usdc == b.usdc && c.validAt(now, c.Slot)
 }

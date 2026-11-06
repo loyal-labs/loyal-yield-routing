@@ -515,7 +515,7 @@ func stepUpBorrowWithinCap(st stepState, borrow uint64) (uint64, error) {
 }
 
 func quoteEntryExit(ctx context.Context, p lanePricer, record func(context.Context, ExitCost) (bool, error), costs exitCosts, entry heldExitBasis, slot int64, at time.Time) error {
-	if c := costs[entry.st.route.Lane]; c.Quote != nil && c.Quote.fresh(entry.heldRaw, entry.mark) && c.Quote.validAt(time.Now(), slot) && c.Quote.scope.vault == p.manifest.vault.squads && c.Quote.scope.manifest == p.manifest.SHA256 && c.Quote.scope.usdc == entry.usdc {
+	if c, ok := costs.applicable(p.manifest, slot, time.Now()).at(entry.st.route.Lane, entry.heldRaw, entry.mark); ok && c.scope.usdc == entry.usdc {
 		return nil
 	}
 	cost, err := p.priceHeldExit(ctx, entry, slot, at)
