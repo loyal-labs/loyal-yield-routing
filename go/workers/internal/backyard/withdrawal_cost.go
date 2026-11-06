@@ -2,6 +2,7 @@ package backyard
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnmax"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/voltr"
 )
 
@@ -177,6 +179,10 @@ func prepareWithdrawalCost(ctx context.Context, database *Database, rpc *chain.C
 	if !ordinaryWithdrawalCostRequired(o.Snapshot, d) {
 		return request, nil
 	}
+	request, err := floorWithdrawalSale(request, effects.Sale, o.Snapshot)
+	if err != nil {
+		return nil, err
+	}
 	total, incremental, err := withdrawalOperationCost(request, effects, o.Snapshot)
 	if err != nil {
 		return nil, err
@@ -211,7 +217,99 @@ func prepareWithdrawalCost(ctx context.Context, database *Database, rpc *chain.C
 	if err := p.allocate(total, incremental); err != nil {
 		return nil, err
 	}
+	if p.IncrementalOtherHolders > 0 {
+		return nil, staleHold("withdrawal_cost_charges_holders")
+	}
 	return withdrawalCostRequest{request, p}, nil
+}
+
+// floorWithdrawalSale raises the sale's on-chain minimum output to the
+// proceeds the certified NAV already assumes, so a worse fill fails the
+// transaction instead of charging holders who are not withdrawing.
+func floorWithdrawalSale(request any, sale *ExpectedSale, s Snapshot) (any, error) {
+	if sale == nil {
+		return request, nil
+	}
+	allowance, err := withdrawalSaleAllowance(s, *sale)
+	if err != nil {
+		return nil, err
+	}
+	target := sale.MarkValueRaw - min(allowance, sale.MarkValueRaw)
+	switch r := request.(type) {
+	case JupiterSwapRequest, HastraConversionRequest:
+		return floorWithdrawalConversion(r, *sale, target)
+	case StepRequest:
+		if r.Swap == nil && r.Hastra == nil {
+			return r, nil
+		}
+		conversion, err := floorWithdrawalConversion(r.conversion(), *sale, target)
+		if err != nil {
+			return nil, err
+		}
+		if swap, ok := conversion.(JupiterSwapRequest); ok {
+			r.Swap = &swap
+		}
+		return r, nil
+	}
+	return request, nil
+}
+
+func floorWithdrawalConversion(conversion any, sale ExpectedSale, target uint64) (any, error) {
+	switch c := conversion.(type) {
+	case JupiterSwapRequest:
+		data, err := base64.StdEncoding.Strict().DecodeString(c.Instruction.Data)
+		if err != nil {
+			return nil, staleHoldFrom(err, "withdrawal_sale_cost_unavailable")
+		}
+		args, err := jupiter.DecodeSharedAccountsRouteV2Args(data)
+		if err != nil || args.QuotedOutAmount == 0 || args.SlippageBPS > jupiterMaxSlippageBPS {
+			return nil, staleHoldFrom(err, "withdrawal_sale_cost_unavailable")
+		}
+		least, ok, err := leastProceedsRaw(sale, target, args.QuotedOutAmount)
+		if err != nil {
+			return nil, staleHoldFrom(err, "withdrawal_sale_cost_unavailable")
+		}
+		if !ok {
+			return nil, withdrawalCostWait(earnmax.WithdrawalWaitingPrice)
+		}
+		room := new(big.Int).SetUint64(args.QuotedOutAmount - least)
+		room.Mul(room, big.NewInt(10_000)).Quo(room, new(big.Int).SetUint64(args.QuotedOutAmount))
+		slippage := min(args.SlippageBPS, uint16(room.Uint64()))
+		binary.LittleEndian.PutUint16(data[jupiter.V2SlippageOffset:], slippage)
+		c.Instruction.Data = base64.StdEncoding.EncodeToString(data)
+		c.MinimumOutputRaw = jupiterOutputFloor(args.QuotedOutAmount, slippage)
+		return c, nil
+	case HastraConversionRequest:
+		value, err := sale.proceedsValue(c.OutputRaw)
+		if err != nil {
+			return nil, staleHoldFrom(err, "withdrawal_sale_cost_unavailable")
+		}
+		if value < target {
+			return nil, withdrawalCostWait(earnmax.WithdrawalWaitingPrice)
+		}
+		return c, nil
+	}
+	return conversion, nil
+}
+
+func leastProceedsRaw(sale ExpectedSale, target, ceiling uint64) (uint64, bool, error) {
+	if value, err := sale.proceedsValue(ceiling); err != nil || value < target {
+		return 0, false, err
+	}
+	low, high := uint64(0), ceiling
+	for low < high {
+		mid := low + (high-low)/2
+		value, err := sale.proceedsValue(mid)
+		if err != nil {
+			return 0, false, err
+		}
+		if value >= target {
+			high = mid
+		} else {
+			low = mid + 1
+		}
+	}
+	return low, true, nil
 }
 
 func withdrawalOperationCost(request any, effects ExpectedEffects, s Snapshot) (earnmax.USDCRaw, earnmax.USDCRaw, error) {
@@ -252,24 +350,33 @@ func withdrawalOperationCost(request any, effects ExpectedEffects, s Snapshot) (
 	if proceeds < effects.Sale.MarkValueRaw {
 		loss = effects.Sale.MarkValueRaw - proceeds
 	}
-	// Only the matching scoped full-holding quote contributes an allowance.
-	allowance := uint64(0)
-	if s.net != nil {
-		for _, q := range s.net.quotes {
-			if q.Lane == effects.Sale.Lane && q.MarkSF == effects.Sale.MarkSF && q.QuotedCollateralRaw >= effects.Sale.SoldRaw {
-				n := new(big.Int).Mul(new(big.Int).SetUint64(effects.Sale.MarkValueRaw), new(big.Int).SetUint64(uint64(q.BPS)))
-				n.Quo(n, new(big.Int).SetUint64(uint64(microBPSWhole)))
-				if !n.IsUint64() {
-					return 0, 0, staleHold("withdrawal_cost_overflow")
-				}
-				allowance = n.Uint64()
-			}
-		}
+	allowance, err := withdrawalSaleAllowance(s, *effects.Sale)
+	if err != nil {
+		return 0, 0, err
 	}
 	if loss > uint64(math.MaxInt64) {
 		return 0, 0, staleHold("withdrawal_cost_overflow")
 	}
 	return earnmax.USDCRaw(loss), earnmax.USDCRaw(loss - min(loss, allowance)), nil
+}
+
+// withdrawalSaleAllowance is the exit cost the certified NAV already deducts
+// for the sale; only the matching scoped full-holding quote contributes.
+func withdrawalSaleAllowance(s Snapshot, sale ExpectedSale) (uint64, error) {
+	allowance := uint64(0)
+	if s.net != nil {
+		for _, q := range s.net.quotes {
+			if q.Lane == sale.Lane && q.MarkSF == sale.MarkSF && q.QuotedCollateralRaw >= sale.SoldRaw {
+				n := new(big.Int).Mul(new(big.Int).SetUint64(sale.MarkValueRaw), new(big.Int).SetUint64(uint64(q.BPS)))
+				n.Quo(n, new(big.Int).SetUint64(uint64(microBPSWhole)))
+				if !n.IsUint64() {
+					return 0, staleHold("withdrawal_cost_overflow")
+				}
+				allowance = n.Uint64()
+			}
+		}
+	}
+	return allowance, nil
 }
 
 type withdrawalReceiptSet struct {

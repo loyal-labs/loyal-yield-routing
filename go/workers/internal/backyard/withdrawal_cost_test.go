@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -59,6 +60,31 @@ func TestWithdrawalCostCountsEconomicExpenseAndAllowanceOnce(t *testing.T) {
 	c := earnmax.WithdrawalConsent{ReferenceUSDC: "1000", MinClaimUSDC: "990"}
 	if withdrawalCostLimits(c, 4, 3, 3) != nil || withdrawalCostLimits(c, 4, 3, 4) == nil {
 		t.Fatal("cumulative approved total cost not enforced")
+	}
+}
+
+func TestOrdinaryWithdrawalSaleNeverFillsBelowNAVAllowance(t *testing.T) {
+	mark := kamino.ScaledFraction{1}
+	s := Snapshot{Target: LaneTarget{Rule: ruleWithdrawal}, WithdrawalDemandRaw: 1_000_000, net: &certifiedNAV{quotes: []ExitCost{
+		{Lane: "allowed", MarkSF: mark, QuotedCollateralRaw: 1_000_000, BPS: microBPSWhole / 100},
+		{Lane: "par", MarkSF: mark, QuotedCollateralRaw: 1_000_000}}}}
+	d := Decision{Action: SwapCollateralToStableStep, Reason: releaseReason}
+	sale := func(lane string, quoted uint64) (any, error) {
+		request := JupiterSwapRequest{Action: d.Action, AmountRaw: 100_000, QuotedOutputRaw: quoted, MinimumOutputRaw: jupiterOutputFloor(quoted, 50), Instruction: jupiterTestInstruction(d.Action, 100_000, quoted)}
+		effects := ExpectedEffects{Sale: &ExpectedSale{Lane: lane, MarkSF: mark, SoldRaw: 100_000, MarkValueRaw: 1_000_000}}
+		return prepareWithdrawalCost(context.Background(), nil, nil, nil, RouteManifest{}, d, Observation{Snapshot: s}, request, effects)
+	}
+	var hold *PreSendHold
+	if _, err := sale("allowed", 985_000); !errors.As(err, &hold) || holdCause(hold) != "withdrawal_waiting_price" {
+		t.Fatalf("sale below the NAV allowance did not wait: %v", err)
+	}
+	got, err := sale("par", 1_000_000)
+	if err != nil {
+		t.Fatalf("sale at the NAV price refused: %v", err)
+	}
+	swap, _ := got.(JupiterSwapRequest)
+	if floor, err := jupiterInstructionWireFloor(swap.Instruction); err != nil || floor < 1_000_000 || swap.MinimumOutputRaw < 1_000_000 {
+		t.Fatalf("sale may fill below NAV-implied proceeds: wire floor %d minimum %d err %v", floor, swap.MinimumOutputRaw, err)
 	}
 }
 
