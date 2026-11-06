@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnmax"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/releasecontrol"
 )
@@ -70,7 +71,7 @@ func (h earnMaxRoutes) registerWithdrawalConsents(api huma.API) {
 		}
 		draft, err := h.cfg.Reader.WithdrawalConsentDraft(ctx, p.Wallet, p.Settings)
 		if err != nil {
-			return nil, h.fail(http.StatusConflict, "withdrawal_generation_unavailable", "The active withdrawal could not be verified. Refresh before approving.")
+			return nil, h.withdrawalRefused("withdrawal consent draft", err, "withdrawal_generation_unavailable", "The active withdrawal could not be verified. Refresh before approving.")
 		}
 		approved, err := h.cfg.Consents.Latest(ctx, draft.Authority, draft.WithdrawalGeneration)
 		if err != nil {
@@ -125,7 +126,7 @@ func (h earnMaxRoutes) registerWithdrawalConsents(api huma.API) {
 			return nil, h.fail(http.StatusBadRequest, "invalid_withdrawal_consent", err.Error())
 		}
 		if err := h.cfg.Reader.VerifyWithdrawalGeneration(ctx, consent); err != nil {
-			return nil, h.fail(http.StatusConflict, "withdrawal_generation_changed", "Withdrawal changed. Refresh and approve again.")
+			return nil, h.withdrawalRefused("withdrawal consent generation", err, "withdrawal_generation_changed", "Withdrawal changed. Refresh and approve again.")
 		}
 		id, err := h.cfg.Consents.Accept(ctx, consent)
 		if err != nil {
@@ -189,7 +190,7 @@ func (h earnMaxRoutes) registerWithdrawalClaimAttempts(api huma.API) {
 			return nil, h.fail(http.StatusConflict, "withdrawal_consent_changed", "Approval changed. Refresh and sign again.")
 		}
 		if err := h.cfg.Reader.VerifyWithdrawalGeneration(ctx, body.Consent); err != nil {
-			return nil, h.fail(http.StatusConflict, "withdrawal_generation_changed", "Withdrawal changed. Refresh and approve again.")
+			return nil, h.withdrawalRefused("withdrawal claim generation", err, "withdrawal_generation_changed", "Withdrawal changed. Refresh and approve again.")
 		}
 		attemptID, err := h.cfg.Attempts.Reserve(ctx, body.Consent, wire, body.Signature, body.Blockhash, body.LastValidBlockHeight, fee)
 		if err != nil {
@@ -205,11 +206,19 @@ func (h earnMaxRoutes) registerWithdrawalClaimAttempts(api huma.API) {
 			if refusal := (*releasecontrol.Refusal)(nil); errors.As(err, &refusal) {
 				return nil, h.fail(http.StatusConflict, refusal.Reason, "Withdrawal claims are paused for this vault.")
 			}
-			return nil, h.fail(http.StatusConflict, "withdrawal_claim_not_reserved", "This claim could not be reserved. Check status before signing another transaction.")
+			return nil, h.withdrawalRefused("withdrawal claim reserve", err, "withdrawal_claim_not_reserved", "This claim could not be reserved. Check status before signing another transaction.")
 		}
 		out := &withdrawalAttemptOutput{EarnMaxHeaders: h.headers}
 		out.Body.AttemptID = attemptID
 		return out, nil
 	})
 	documentJSONBody[withdrawalClaimAttempt](api, path)
+}
+
+func (h earnMaxRoutes) withdrawalRefused(step string, err error, code, message string) error {
+	if errors.Is(err, chain.ErrUnavailable) {
+		return h.unavailable(step, err)
+	}
+	slog.Warn("earn max withdrawal refused", "step", step, "code", code, "error", chain.Scrub(err.Error()))
+	return h.fail(http.StatusConflict, code, message)
 }

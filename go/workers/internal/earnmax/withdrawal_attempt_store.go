@@ -137,7 +137,7 @@ func (s *WithdrawalAttemptStore) Reserve(ctx context.Context, c WithdrawalConsen
 	if err := s.claimNAVPublished(ctx); err != nil {
 		return "", err
 	}
-	if err := s.qualifyWithdrawalClaim(ctx, c, &a); err != nil {
+	if _, err := retryTransient(ctx, func() (struct{}, error) { return struct{}{}, s.qualifyWithdrawalClaim(ctx, c, &a) }); err != nil {
 		return "", err
 	}
 	return s.reserveValidated(ctx, c, a)

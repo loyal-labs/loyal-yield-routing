@@ -41,7 +41,9 @@ func ReadWithdrawalRequest(ctx context.Context, source WithdrawalGenerationSourc
 	const maxPages = 4
 	var before solana.Signature
 	for page := 0; page < maxPages; page++ {
-		rows, err := source.History(ctx, user.Receipt, pageSize, before, rpc.CommitmentConfirmed, atLeast)
+		rows, err := retryTransient(ctx, func() ([]chain.Signed, error) {
+			return source.History(ctx, user.Receipt, pageSize, before, rpc.CommitmentConfirmed, atLeast)
+		})
 		if err != nil {
 			return CurrentWithdrawalRequest{}, err
 		}
@@ -49,7 +51,9 @@ func ReadWithdrawalRequest(ctx context.Context, source WithdrawalGenerationSourc
 			if row.Failed {
 				continue
 			}
-			ex, err := source.Execution(ctx, row.Signature, rpc.CommitmentConfirmed)
+			ex, err := retryTransient(ctx, func() (chain.Execution, error) {
+				return source.Execution(ctx, row.Signature, rpc.CommitmentConfirmed)
+			})
 			if err != nil {
 				return CurrentWithdrawalRequest{}, err
 			}
@@ -171,7 +175,10 @@ func (r *Reader) VerifyWithdrawalGeneration(ctx context.Context, c WithdrawalCon
 }
 
 func (r *Reader) withdrawalPolicySeed(ctx context.Context, settings, owner solana.PublicKey, atLeast uint64) (uint64, error) {
-	_, accounts, err := r.chain.Accounts(ctx, []solana.PublicKey{settings}, rpc.CommitmentConfirmed, atLeast)
+	accounts, err := retryTransient(ctx, func() ([]*chain.Account, error) {
+		_, accounts, err := r.chain.Accounts(ctx, []solana.PublicKey{settings}, rpc.CommitmentConfirmed, atLeast)
+		return accounts, err
+	})
 	if err != nil {
 		return 0, err
 	}
