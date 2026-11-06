@@ -43,6 +43,7 @@ func TestCashNAVDoesNotDependOnEntryMarket(t *testing.T) {
 			s.Obligation = p.Obligation
 			for _, present := range []bool{true, false} {
 				s.Obligation = observedObligation(present)
+				s.net = fixtureSnapshotCertificate(s)
 				if d := Decide(s); d.Action != StageSquadsToVoltr || d.AmountRaw != s.SquadsIdleRaw {
 					t.Fatalf("unavailable entry market trapped cash: %+v", d)
 				}

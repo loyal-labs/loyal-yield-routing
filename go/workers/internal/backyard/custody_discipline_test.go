@@ -158,3 +158,26 @@ func TestRefreshRequiresEmptyStrategyCustody(t *testing.T) {
 		t.Fatalf("non-USDC refresh accepted mismatched staged evidence: %+v", got)
 	}
 }
+
+// A stage the restore cannot follow (no certified NAV) overwrote the journaled
+// staged amount, so the next tick latched custody_mismatch ahead of the
+// hard-LTV delever.
+func TestUncertifiedStageNeverBlocksHardLTVDelever(t *testing.T) {
+	t.Parallel()
+	s := base()
+	s.net, s.NAVUnavailable = nil, exitUnpriced
+	s.HasPosition = true
+	s.PositionCollateralRaw, s.PositionCollateralValueRaw = 100, 100
+	s.PositionDebtRaw, s.PositionDebtValueRaw, s.LTVBPS = 40, 40, 4000
+	s.VoltrStrategyIdleRaw, s.StagedAmountKnown, s.StagedAmountRaw = 5, true, 5
+	s.SquadsIdleRaw = 3
+	if first := Decide(targeted(s)); first.Action == StageSquadsToVoltr {
+		s.VoltrStrategyIdleRaw += first.AmountRaw
+		s.StagedAmountRaw = first.AmountRaw
+		s.SquadsIdleRaw -= first.AmountRaw
+	}
+	s.PositionDebtRaw, s.PositionDebtValueRaw, s.LTVBPS = 70, 70, 7000
+	if got := Decide(targeted(s)); got.Action != DeleverRouteStep || got.Reason != hardLTVDeleverReason {
+		t.Fatalf("hard LTV did not delever: %+v", got)
+	}
+}
