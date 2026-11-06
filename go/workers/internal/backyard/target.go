@@ -645,7 +645,7 @@ func outboundStep(s Snapshot, t LaneTarget, d func(Action, string, int64) Decisi
 		if amount == 0 {
 			return d(Hold, string(holdSpendingLimit), 0), true
 		}
-		if s.Trustful && !s.netKnown(time.Now()) {
+		if !s.netKnown(time.Now()) {
 			return d(Hold, exitUnpriced, 0), true
 		}
 		return d(StageSquadsToVoltr, outboundStageReason, amount), true
@@ -671,11 +671,6 @@ func outboundStep(s Snapshot, t LaneTarget, d func(Action, string, int64) Decisi
 
 func inboundStep(s Snapshot, t LaneTarget, hard int64, d func(Action, string, int64) Decision) Decision {
 	if !s.netKnown(time.Now()) {
-		if !s.Trustful && s.SquadsIdleRaw > 0 && !laneInFlight(s) {
-			if amount := s.StageAllowance.cap(s.SquadsIdleRaw); amount > 0 {
-				return d(StageSquadsToVoltr, returnCashReason, amount)
-			}
-		}
 		return d(Hold, exitUnpriced, 0)
 	}
 	if s.SquadsIdleRaw > 0 && s.NewAllocation != nil {

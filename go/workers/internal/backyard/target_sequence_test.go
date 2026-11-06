@@ -655,7 +655,9 @@ func TestStageWaitsForAllowanceReset(t *testing.T) {
 		return Decision{Action: action, Reason: reason, AmountRaw: amount}
 	}
 	snapshot := func(now int64) Snapshot {
-		return Snapshot{SquadsIdleRaw: idle, StageAllowance: &StageAllowance{RemainingRaw: 0, MaxRaw: 200_000_000_000, ResetAt: reset + day, ObservedAt: now}}
+		s := Snapshot{Slot: 9, SquadsIdleRaw: idle, StageAllowance: &StageAllowance{RemainingRaw: 0, MaxRaw: 200_000_000_000, ResetAt: reset + day, ObservedAt: now}}
+		s.net = fixtureSnapshotCertificate(s)
+		return s
 	}
 	held, _ := outboundStep(snapshot(reset+day/2), LaneTarget{}, d)
 	if held.Action != Hold || held.Reason != "spending_limit" || held.AmountRaw != 0 {

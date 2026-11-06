@@ -156,6 +156,7 @@ func TestPerformanceFeeLegacyHWMBlocksOnlyEconomicSelector(t *testing.T) {
 	in.Snapshot.LastReportAgeSeconds = 0
 	in.Snapshot.WithdrawalDemandRaw = 1_000_001
 	in.Snapshot.SquadsIdleRaw = 1
+	in.Snapshot.net = fixtureSnapshotCertificate(in.Snapshot)
 	if got := Decide(in.Snapshot); got.Action != StageSquadsToVoltr {
 		t.Fatalf("economic HWM gate blocked withdrawal: %+v", got)
 	}
