@@ -45,7 +45,7 @@ func TestPhase2WithdrawalDemandKeepsTerminalIdleCovered(t *testing.T) {
 	snapshot := Snapshot{
 		ObservationID: "maple-terminal", Slot: 43, RouteKind: RouteKind,
 		RouteLane: MapleSyrupUSDCLaneID, StrategyKey: MapleSyrupUSDCLaneID, Fresh: true,
-		WithdrawalDemandRaw: 1, StrategyNAVRaw: 2_793_180,
+		WithdrawalDemandRaw: 1, StrategyNAVRaw: 2_793_180, PriorReportedNAVRaw: 2_793_180,
 		VoltrIdleRaw: 2_793_180, CollateralIdleRaw: 0,
 		LiquidationThresholdBPS: 8_000, MaxLTVBPS: 8_000}
 

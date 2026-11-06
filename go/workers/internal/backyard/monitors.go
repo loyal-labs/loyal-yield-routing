@@ -100,8 +100,11 @@ func trustfulReportDue(s Snapshot) bool {
 		s.LastReportAgeSeconds >= int64(routineNAVReportInterval.Seconds()))
 }
 
+// Spacing only rate-limits small drift; a stale price past the anomaly band
+// is published at once.
 func navDriftReportDue(s Snapshot) bool {
-	return navDriftOutsideBand(s) && s.LastReportAgeSeconds >= navDriftReportSpacingSeconds
+	return navDriftOutsideBand(s) && (s.LastReportAgeSeconds >= navDriftReportSpacingSeconds ||
+		earnmax.NAVOutside(uint64(s.StrategyNAVRaw), uint64(s.PriorReportedNAVRaw), earnmax.NAVAnomalyBPS))
 }
 
 func navDriftOutsideBand(s Snapshot) bool {

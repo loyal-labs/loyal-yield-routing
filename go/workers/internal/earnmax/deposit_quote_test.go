@@ -115,4 +115,7 @@ func TestDepositWaitsWhileCertifiedNAVExceedsPublishedValuePastIssuanceFee(t *te
 	if depositPricePublished(nav, v) {
 		t.Fatalf("deposit priced %d bps below certified NAV on a %d bps issuance fee", v.IssuanceFeeBPS+5, v.IssuanceFeeBPS)
 	}
+	if within := v.TotalValueRaw + v.TotalValueRaw*(uint64(v.IssuanceFeeBPS)-5)/10_000; !depositPricePublished(within, v) {
+		t.Fatalf("deposit refused %d bps below certified NAV on a %d bps issuance fee", v.IssuanceFeeBPS-5, v.IssuanceFeeBPS)
+	}
 }
