@@ -23,6 +23,7 @@ type Vault struct {
 	IdleBufferCapRaw              int64
 	EconomicHorizon               time.Duration
 	DiversifyNewCash              bool
+	ProtectExecution              bool
 
 	squads, cash                               string
 	protocol, idleAuth, idleATA, lpMint        string
@@ -36,11 +37,12 @@ type Vault struct {
 var rwa = newVault(Vault{Name: "rwa", VoltrVault: "HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA",
 	Strategy: "DCpR24Eb6xCWxDyaZvCBTkadkxCB2vkqJN1EfYNWtLxY", Adaptor: fsj27Program, SquadsIndex: 0,
 	RouteKey: "rwa-multiply:ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh", AdminPerformanceFeeBPS: 0, IssuanceFeeBPS: 40,
-	IdleBufferRaw: 5_000_000_000, IdleBufferBPS: 1000, IdleBufferCapRaw: 25_000_000_000, EconomicHorizon: 7 * 24 * time.Hour, DiversifyNewCash: true})
+	IdleBufferRaw: 5_000_000_000, IdleBufferBPS: 1000, IdleBufferCapRaw: 25_000_000_000, EconomicHorizon: 7 * 24 * time.Hour, DiversifyNewCash: true, ProtectExecution: true})
 
 var looping = newVault(Vault{Name: "looping", VoltrVault: "GrHZD15bMiUwrVPsmBwz8GRoQeDZN6wNEQVdW8k8SxV1",
 	Strategy: "GUCvzfn1hqThWp5uQNF7CqoxC1XckCPTjsRGKVXHPxu1", Adaptor: voltr.TrustfulProgramID.String(), SquadsIndex: 2,
-	RouteKey: "backyard:6HTfVjwk5FfW4GH67hmEen7VHeURdB5EJj6E429qTrUY", AdminPerformanceFeeBPS: 0, IssuanceFeeBPS: 0, IdleBufferRaw: 0})
+	RouteKey: "backyard:6HTfVjwk5FfW4GH67hmEen7VHeURdB5EJj6E429qTrUY", AdminPerformanceFeeBPS: 0, IssuanceFeeBPS: 0,
+	IdleBufferBPS: 1000, IdleBufferCapRaw: 25_000_000_000, EconomicHorizon: 7 * 24 * time.Hour, DiversifyNewCash: true, ProtectExecution: true})
 
 var vaults = []*Vault{rwa, looping}
 

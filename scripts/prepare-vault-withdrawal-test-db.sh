@@ -48,6 +48,7 @@ files = [Path(name) for name in (
     "migrations/yield/0140_earn_max_withdrawal_costs.sql",
     "migrations/yield/0141_backyard_withdrawal_cost_participants.sql",
     "migrations/yield/0142_vault_release_controls.sql",
+    "migrations/yield/0143_backyard_direct_withdrawals.sql",
 )]
 sql = b"\n".join(path.read_bytes() for path in files)
 
@@ -81,5 +82,5 @@ validated = psql(target, "SELECT convalidated AND "
                  "AND conname='multiply_operations_backyard_lifecycle';")
 if validated != "t":
     refuse("production lifecycle constraint or withdrawal tables missing")
-print("Withdrawal fixture ready: actual 0113 validated; actual 0139-0142 applied")
+print("Withdrawal fixture ready: actual 0113 validated; actual 0139-0143 applied")
 PY

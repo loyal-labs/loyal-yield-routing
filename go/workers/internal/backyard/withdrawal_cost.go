@@ -29,6 +29,7 @@ type withdrawalOwnerClass string
 const (
 	withdrawalOwnerSquads      withdrawalOwnerClass = "squads"
 	withdrawalOwnerVaultAdmin  withdrawalOwnerClass = "vault_admin"
+	withdrawalOwnerDirect      withdrawalOwnerClass = "direct"
 	withdrawalOwnerUnsupported withdrawalOwnerClass = "unsupported"
 )
 
@@ -38,6 +39,8 @@ func withdrawalOwnerClassOf(v *Vault, vault voltr.Vault, user solana.PublicKey) 
 		return withdrawalOwnerSquads
 	case user == vault.Admin:
 		return withdrawalOwnerVaultAdmin
+	case v.VoltrVault == looping.VoltrVault:
+		return withdrawalOwnerDirect
 	}
 	return withdrawalOwnerUnsupported
 }
@@ -70,7 +73,7 @@ func (r withdrawalCostParticipant) identity() (string, error) {
 	if r.consented() {
 		return r.Consent.Digest()
 	}
-	if r.Receipt == "" || r.User == "" || r.EscrowLP == 0 || (r.class() != withdrawalOwnerVaultAdmin) == (r.Wait == "") {
+	if r.Receipt == "" || r.User == "" || r.EscrowLP == 0 || (r.class() != withdrawalOwnerVaultAdmin && r.class() != withdrawalOwnerDirect) == (r.Wait == "") {
 		return "", fmt.Errorf("withdrawal participant identity incomplete")
 	}
 	return sha256Bytes([]byte(fmt.Sprintf("backyard-withdrawal-participant/v1|%s|%s|%s|%d", r.class(), r.Receipt, r.User, r.EscrowLP))), nil
@@ -176,13 +179,19 @@ func costBearingWithdrawalAction(d Decision) bool {
 }
 
 func prepareWithdrawalCost(ctx context.Context, database *Database, rpc *chain.Client, view *View, manifest RouteManifest, d Decision, o Observation, request any, effects ExpectedEffects) (any, error) {
-	// Public Loyal withdrawals use the existing 20 bps execution guard, without a separate signed consent.
-	if manifest.vault == rwa || !ordinaryWithdrawalCostRequired(o.Snapshot, d) {
+	if !ordinaryWithdrawalCostRequired(o.Snapshot, d) || manifest.vault == rwa && !rwa.ProtectExecution {
 		return request, nil
 	}
 	request, err := floorWithdrawalSale(request, effects.Sale, o.Snapshot)
 	if err != nil {
 		return nil, err
+	}
+	if protectedExecution(manifest.vault, o.Snapshot, d) && executionTrade(d) {
+		request = sealExecutionRequest(request, o.Snapshot)
+	}
+	// Keep the automatic sale floor independent of the public approval flow.
+	if manifest.vault == rwa {
+		return request, nil
 	}
 	total, incremental, err := withdrawalOperationCost(request, effects, o.Snapshot)
 	if err != nil {
