@@ -3,6 +3,7 @@
 import {
   createSmartAccountVaultsClient,
   EarnMaxVoltrPrepareError,
+  fetchEarnMaxDepositQuote,
   isVoltrOperationVisible,
   prepareEarnMaxVoltr,
   sendPreparedWithWallet,
@@ -454,7 +455,15 @@ export function useEarnMaxVoltr(input: {
       close: async () => true,
       cancelWithdrawal: async () => false,
       deposit: (amountRaw) =>
-        run("deposit", async (context) => voltrDepositPlan(context, amountRaw)),
+        run("deposit", async (context) =>
+          voltrDepositPlan(
+            context,
+            await fetchEarnMaxDepositQuote(
+              (path, init) => fetch(path, { ...init, credentials: "include" }),
+              amountRaw,
+            ),
+          ),
+        ),
       requestWithdrawal: (amountRaw) =>
         run("request_withdrawal", (context) =>
           voltrRequestWithdrawalPlan(connection, context, amountRaw),

@@ -171,8 +171,18 @@ async function main(): Promise<number> {
 
   let prepared: Awaited<ReturnType<typeof sdk.prepareEarnMaxVoltr>>;
   try {
+    const quote = await sdk.fetchEarnMaxDepositQuote(
+      (path, init) =>
+        fetch(new URL(path, base), {
+          ...init,
+          redirect: "error",
+          signal: AbortSignal.timeout(20_000),
+          headers: { ...init.headers, Authorization: `Bearer ${session.token}` },
+        }),
+      amountRaw,
+    );
     prepared = await sdk.prepareEarnMaxVoltr({
-      build: async (context) => sdk.voltrDepositPlan(context, amountRaw),
+      build: async (context) => sdk.voltrDepositPlan(context, quote),
       client: sdk.createSmartAccountVaultsClient({ connection, programId }),
       owner,
       programId,

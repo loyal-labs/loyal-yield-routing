@@ -91,21 +91,13 @@ func qualifyProtectedWithdrawalClaim(ctx context.Context, client *chain.Client, 
 	if current != seed || accounts[4] != nil {
 		return errors.New("claim settings generation or fresh policy changed")
 	}
-	rent, err := client.RentExempt(ctx, 165)
-	if err != nil {
-		return err
-	}
-	balance := uint64(0)
-	if accounts[3] != nil {
-		if accounts[3].Executable || accounts[3].Owner != solana.SystemProgramID || len(accounts[3].Data) != 0 {
-			return errors.New("claim authority account is unusable")
-		}
-		balance = accounts[3].Lamports
+	if accounts[3] != nil && (accounts[3].Executable || accounts[3].Owner != solana.SystemProgramID || len(accounts[3].Data) != 0) {
+		return errors.New("claim authority account is unusable")
 	}
 	if err = resolveWithdrawalClaimLookups(tx, slot, accounts[5:]); err != nil {
 		return err
 	}
-	if err = checkProtectedWithdrawalClaim(tx, c, accounts[1], accounts[2], balance, rent); err != nil {
+	if err = checkProtectedWithdrawalClaim(tx, c, accounts[1], accounts[2]); err != nil {
 		return err
 	}
 	if err = verifyProtectedWithdrawalGeneration(ctx, client, c, slot); err != nil {
@@ -281,7 +273,11 @@ func decodeOwnerWithdrawalSync(ix squads.Instruction, settings, owner solana.Pub
 	return decodeWithdrawalInner(d[15:], ix.Accounts[3:])
 }
 
-func checkProtectedWithdrawalClaim(tx *solana.Transaction, c WithdrawalConsent, receiptAccount, assetAccount *chain.Account, authorityLamports, rent uint64) error {
+// checkProtectedWithdrawalClaim accepts exactly the official claim: the owner
+// pays for both USDC ATAs, then inside the vault Voltr pays the authority ATA
+// and the authority moves the ATA's evidenced balance plus the floor to the
+// owner, so the floor is met only by new proceeds and donated USDC can only add.
+func checkProtectedWithdrawalClaim(tx *solana.Transaction, c WithdrawalConsent, receiptAccount, assetAccount *chain.Account) error {
 	bad := errors.New("claim wire does not match approved protected operation")
 	if tx.Message.GetVersion() != solana.MessageVersionV0 && tx.Message.GetVersion() != solana.MessageVersionLegacy {
 		return bad
@@ -354,12 +350,12 @@ func checkProtectedWithdrawalClaim(tx *solana.Transaction, c WithdrawalConsent, 
 	if err != nil {
 		return err
 	}
-	outer := []squads.Instruction{claimInstruction(solana.SPLAssociatedTokenAccountProgramID, []byte{1}, owner, destination, owner, AssetMint, solana.SystemProgramID, solana.TokenProgramID)}
-	if authorityLamports < rent {
-		outer = append(outer, claimSystemTransfer(owner, authority.key, rent-authorityLamports))
+	outer := []squads.Instruction{
+		claimInstruction(solana.SPLAssociatedTokenAccountProgramID, []byte{1}, owner, destination, owner, AssetMint, solana.SystemProgramID, solana.TokenProgramID),
+		claimInstruction(solana.SPLAssociatedTokenAccountProgramID, []byte{1}, owner, source, authority.key, AssetMint, solana.SystemProgramID, solana.TokenProgramID),
+		create,
 	}
-	outer = append(outer, create)
-	expected := []squads.Instruction{}
+	baseline := uint64(0)
 	if assetAccount != nil {
 		if assetAccount.Key != source || len(assetAccount.Data) != 165 {
 			return bad
@@ -368,12 +364,15 @@ func checkProtectedWithdrawalClaim(tx *solana.Transaction, c WithdrawalConsent, 
 		if e != nil || token.Program != solana.TokenProgramID || token.Mint != AssetMint || token.Owner != authority.key || token.Frozen || token.IsNative || token.HasCloseAuthority || token.Delegate != nil {
 			return bad
 		}
-		if token.Amount > 0 {
-			expected = append(expected, checkedClaimTransfer(source, destination, authority.key, token.Amount))
-		}
-		expected = append(expected, claimInstruction(solana.TokenProgramID, []byte{9}, source, authority.key, authority.key))
+		baseline = token.Amount
 	}
-	expected = append(expected, claimInstruction(solana.SPLAssociatedTokenAccountProgramID, nil, authority.key, source, authority.key, AssetMint, solana.SystemProgramID, solana.TokenProgramID), claimInstruction(voltr.ProgramID, voltr.WithdrawVaultDiscriminator[:], authority.key, protocol, Vault, AssetMint, LPMint, escrow, IdleATA, IdleAuth, source, user.Receipt, solana.TokenProgramID, solana.TokenProgramID, solana.SystemProgramID), checkedClaimTransfer(source, destination, authority.key, floor))
+	if baseline > math.MaxUint64-floor {
+		return bad
+	}
+	expected := []squads.Instruction{
+		claimInstruction(voltr.ProgramID, voltr.WithdrawVaultDiscriminator[:], authority.key, protocol, Vault, AssetMint, LPMint, escrow, IdleATA, IdleAuth, source, user.Receipt, solana.TokenProgramID, solana.TokenProgramID, solana.SystemProgramID),
+		checkedClaimTransfer(source, destination, authority.key, baseline+floor),
+	}
 	keys, err := tx.Message.GetAllKeys()
 	if err != nil || len(keys) > 256 {
 		return bad
@@ -453,6 +452,14 @@ func checkProtectedWithdrawalClaim(tx *solana.Transaction, c WithdrawalConsent, 
 	inner, err := decodeOwnerWithdrawalSync(actual[len(outer)+1], settings, owner)
 	if err != nil || len(inner) != len(expected) {
 		return fmt.Errorf("%w: owner execution", bad)
+	}
+	// The client reads the balance after the finalized evidence; a larger
+	// moved amount only raises the floor, so USDC donated between the two reads
+	// cannot be used to refuse the claim.
+	if d := inner[1].Data; len(d) == 10 && d[0] == 12 {
+		if moved := binary.LittleEndian.Uint64(d[1:9]); moved > baseline+floor {
+			expected[1] = checkedClaimTransfer(source, destination, authority.key, moved)
+		}
 	}
 	for i := range inner {
 		if !sameClaimInstruction(inner[i], expected[i]) {

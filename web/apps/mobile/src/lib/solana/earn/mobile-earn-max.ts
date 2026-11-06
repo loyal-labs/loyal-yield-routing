@@ -1,5 +1,6 @@
 import {
   createSmartAccountVaultsClient,
+  fetchEarnMaxDepositQuote,
   prepareEarnMaxVoltr,
   voltrClaimPlan,
   VoltrClaimLiquidityError,
@@ -13,6 +14,7 @@ import {
 import { type Connection, PublicKey } from "@solana/web3.js";
 import { Buffer } from "buffer";
 
+import { env } from "@/config/env";
 import { getConnection, getSolanaEnv } from "@/lib/solana/rpc/connection";
 import type { Signer } from "@/lib/wallet/signer";
 import {
@@ -23,7 +25,7 @@ import {
 } from "@/services/api";
 import { startLifecycleFlow } from "@/services/observability";
 
-import { deliberateSession } from "./earn-session";
+import { deliberateSession, earnWalletRead } from "./earn-session";
 import { signAndSendPreparedOperation } from "./send-prepared";
 
 async function earnMaxAccount(signer: Signer) {
@@ -81,12 +83,24 @@ export async function approveMobileEarnMaxWithdrawal(
 
 function planFor(
   connection: Connection,
+  walletAddress: string,
   operation: MobileEarnMaxOperation,
   consent?: VoltrWithdrawalConsent,
 ): VoltrPlanBuilder {
   switch (operation.action) {
     case "deposit":
-      return async (context) => voltrDepositPlan(context, operation.amountRaw);
+      return async (context) =>
+        voltrDepositPlan(
+          context,
+          await fetchEarnMaxDepositQuote(
+            (path, { body, method }) =>
+              earnWalletRead(walletAddress, `${env.apiBaseUrl}${path}`, {
+                body,
+                method,
+              }),
+            operation.amountRaw,
+          ),
+        );
     case "request_withdrawal":
       return (context) =>
         voltrRequestWithdrawalPlan(connection, context, operation.amountRaw);
@@ -146,7 +160,12 @@ export async function executeMobileEarnMax(
         : null;
     const prepared = await prepareEarnMaxVoltr({
       connection,
-      build: planFor(connection, operation, approval?.approved ?? undefined),
+      build: planFor(
+        connection,
+        walletAddress,
+        operation,
+        approval?.approved ?? undefined,
+      ),
       client: createSmartAccountVaultsClient({ connection, programId }),
       owner: signer.publicKey,
       programId,

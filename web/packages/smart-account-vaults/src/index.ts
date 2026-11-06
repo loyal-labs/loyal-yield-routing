@@ -5,6 +5,8 @@ export * from "./simulation-diagnostics";
 export * from "./spending-limits";
 export * from "./types";
 export * from "./wallet";
+export * from "./voltr/deposit-quote";
+export * from "./voltr/lighthouse";
 export * from "./voltr/plans";
 export * from "./voltr/prepare";
 export * from "./voltr/program";

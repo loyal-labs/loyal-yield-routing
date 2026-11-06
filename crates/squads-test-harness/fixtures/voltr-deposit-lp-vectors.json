@@ -1,0 +1,17 @@
+{
+  "stateSlot": 465888518,
+  "vault": "HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA",
+  "vectors": [
+    {
+      "amountRaw": "1000000",
+      "lpMinted": "2686",
+      "unixTs": "1793920731"
+    },
+    {
+      "amountRaw": "250000000",
+      "lpMinted": "671669",
+      "unixTs": "1793920731"
+    }
+  ],
+  "voltrSha256": "bf1c1831b3d6350f4340badb942bd2e7bfaca4aa89276cb65e8480aa30d44c56"
+}

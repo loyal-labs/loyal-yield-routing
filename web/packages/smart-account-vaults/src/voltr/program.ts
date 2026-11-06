@@ -33,7 +33,22 @@ export const VOLTR_ASSET_MINT = new PublicKey(
 export const VOLTR_ASSET_DECIMALS = 6;
 export const EARN_MAX_VOLTR_ACCOUNT_INDEX = 2;
 const IS_AMOUNT_IN_LP = 1;
-const VAULT_TOTAL_VALUE_OFFSET = 168;
+export const VOLTR_VAULT_SIZE = 928;
+export const VOLTR_VAULT_TOTAL_VALUE_OFFSET = 168;
+// Vault bytes deposit issuance reads: total value, locked-profit duration, fee
+// bps, management-fee clock and accumulators, dead weight, high-water mark,
+// locked profit and its report time.
+export const VOLTR_DEPOSIT_PRICING_RANGES: readonly (readonly [
+  number,
+  number,
+])[] = [
+  [168, 176],
+  [448, 456],
+  [512, 528],
+  [568, 600],
+  [616, 640],
+  [672, 688],
+];
 const VAULT_LOCKED_PROFIT_DURATION_OFFSET = 448;
 const VAULT_LOCKED_PROFIT_OFFSET = 672;
 const VAULT_LAST_REPORT_OFFSET = 680;
@@ -321,7 +336,8 @@ export async function readVoltrPosition(
       : sinceReport <= BigInt(0)
         ? lockedAmount
         : (lockedAmount * (lockedDuration - sinceReport)) / lockedDuration;
-  const unlockedValue = readU64(v, VAULT_TOTAL_VALUE_OFFSET) - lockedProfit;
+  const unlockedValue =
+    readU64(v, VOLTR_VAULT_TOTAL_VALUE_OFFSET) - lockedProfit;
   const redemptionKeepBps = BPS - readU16(v, 520);
   const accountedLp =
     lpMint.data.readBigUInt64LE(36) +
@@ -333,7 +349,7 @@ export async function readVoltrPosition(
     accountedLp +
     unrealisedManagementFeeLp(
       accountedLp,
-      readU64(v, VAULT_TOTAL_VALUE_OFFSET),
+      readU64(v, VOLTR_VAULT_TOTAL_VALUE_OFFSET),
       readU64(v, 568),
       readU16(v, 516) + readU16(v, 518) + readU16(v, 526),
       nowSec,
