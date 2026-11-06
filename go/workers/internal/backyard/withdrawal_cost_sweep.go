@@ -147,13 +147,6 @@ func (w *withdrawalSettlementWorker) sweep(ctx context.Context) {
 			if err == nil {
 				err = w.database.settleWithdrawalCost(attempt, w.chain, cost.id)
 			}
-			if err == nil {
-				var state string
-				err = w.database.pool.QueryRow(attempt, `SELECT state FROM loyal_yield.backyard_withdrawal_cost_operations WHERE operation_id=$1`, cost.id).Scan(&state)
-				if err == nil && state == "unknown" {
-					failures[cost.route] = "withdrawal_pool_cost_unknown"
-				}
-			}
 			stop()
 			w.costCursor = cost.id
 			if err != nil {

@@ -85,7 +85,7 @@ func TestTickPersistsWithdrawalPrepareHoldBeforeRecordingOperation(t *testing.T)
 		prepareStep: func(context.Context, RouteManifest, Decision, Observation) (Observation, StepExecutionEvidence, error) {
 			return Observation{}, StepExecutionEvidence{}, roomHold("step_no_withdraw_room", nil)
 		},
-		recordDecision: func(context.Context, string, Observation, Decision, string) (DecisionRecord, error) {
+		recordDecision: func(context.Context, string, Observation, Decision, string, *releaseRequest) (DecisionRecord, error) {
 			recorded = true
 			return DecisionRecord{}, errors.New("must not create operation")
 		},

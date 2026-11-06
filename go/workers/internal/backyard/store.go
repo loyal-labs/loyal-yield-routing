@@ -26,6 +26,7 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/releasecontrol"
 )
 
 const OperationInsert = `INSERT INTO loyal_yield.multiply_operations (operation_id, route_key, cycle, engine_version, action, status, idempotency_key, strategy_key, expected_effects, recovery_reason) VALUES ($1, $2, $3, 'backyard_rwa_v1', $4, $5, $6, $7, $8, $9)`
@@ -275,6 +276,7 @@ func (d *Database) RecordDecisionOnManifest(
 	observation Observation,
 	decision Decision,
 	manifestSHA256 string,
+	release *releaseRequest,
 ) (DecisionRecord, error) {
 	if decision.Action == Hold || decision.Action == HoldManualRecovery {
 		return DecisionRecord{}, fmt.Errorf("a hold is not a journal row")
@@ -284,7 +286,23 @@ func (d *Database) RecordDecisionOnManifest(
 	}
 	var record DecisionRecord
 	err := d.inTx(ctx, func(tx pgx.Tx) (err error) {
+		var admission *releasecontrol.Admission
+		if release != nil {
+			a, err := releasecontrol.Check(ctx, tx, manifest.vault.VoltrVault, release.action, release.owners, release.amount)
+			var refusal *releasecontrol.Refusal
+			if errors.As(err, &refusal) {
+				return staleHold(refusal.Reason)
+			}
+			if err != nil {
+				return err
+			}
+			admission = &a
+		}
 		record, err = d.recordDecisionTx(ctx, tx, manifest.vault.Strategy, routeKey, observation, decision, manifestSHA256)
+		if err != nil || admission == nil {
+			return err
+		}
+		_, err = tx.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET release_control_vault=$2,release_control_action=$3,release_control_version=$4 WHERE operation_id=$1`, record.OperationID, admission.Vault, string(admission.Action), admission.Version)
 		return err
 	})
 	if err != nil {

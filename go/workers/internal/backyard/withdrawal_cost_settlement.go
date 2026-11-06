@@ -70,13 +70,21 @@ func allocateCappedWithdrawalComponent(total earnmax.USDCRaw, effectiveLP uint64
 	return amounts, nil
 }
 
+// allocateSettlement keeps every holder's share within its frozen
+// reservation. A finalized loss above the reservation is incremental by
+// construction and is booked whole to ExcessCost, a pool/operator expense.
 func (p *withdrawalCostPreparation) allocateSettlement(total, incremental earnmax.USDCRaw) error {
 	if err := p.validateAccounting(); err != nil {
 		return err
 	}
-	if total < 0 || incremental < 0 || incremental > total || incremental > p.IncrementalCost || total-incremental > p.MaxCost-p.IncrementalCost {
+	if total < 0 || incremental < 0 || incremental > total || total-incremental > p.MaxCost-p.IncrementalCost {
 		return fmt.Errorf("finalized withdrawal exceeds frozen component totals")
 	}
+	excess := max(total-p.MaxCost, 0)
+	if incremental-excess > p.IncrementalCost {
+		return fmt.Errorf("finalized withdrawal exceeds frozen component totals")
+	}
+	total, incremental = total-excess, incremental-excess
 	incCaps := make([]withdrawalCostCap, 0, len(p.Participants)+1)
 	coveredCaps := make([]withdrawalCostCap, 0, len(p.Participants)+1)
 	remainingLP := p.EffectiveLP
@@ -102,7 +110,8 @@ func (p *withdrawalCostPreparation) allocateSettlement(total, incremental earnma
 	last := len(p.Participants)
 	p.IncrementalOtherHolders = inc[last]
 	p.OtherHolders = inc[last] + covered[last]
-	p.MaxCost = total
-	p.IncrementalCost = incremental
+	p.MaxCost = total + excess
+	p.IncrementalCost = incremental + excess
+	p.ExcessCost = excess
 	return nil
 }

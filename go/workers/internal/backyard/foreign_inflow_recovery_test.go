@@ -74,7 +74,7 @@ func TestForeignHistoryWorkerRecoversWithoutDuplicateCredit(t *testing.T) {
 			created, sent := 0, 0
 			worker := &Worker{routeKey: productionRouteKey, interval: time.Millisecond, runtime: tickRuntime{
 				loadNonterminal: func(context.Context, string) (*PersistedOperation, error) { return nil, nil },
-				recordDecision: func(context.Context, string, Observation, Decision, string) (DecisionRecord, error) {
+				recordDecision: func(context.Context, string, Observation, Decision, string, *releaseRequest) (DecisionRecord, error) {
 					created++
 					return DecisionRecord{}, errors.New("unexpected decision")
 				},

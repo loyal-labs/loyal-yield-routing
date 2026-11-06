@@ -110,7 +110,7 @@ func backyardSelectorMode() (backyard.SelectorMode, error) {
 	return "", errors.New("BACKYARD_RWA_SELECTOR_LIVE must be 0 or 1")
 }
 
-const backyardUsage = `usage: loyal-engine backyard [in-flight | simulate-step --vault <vault> --lane <lane> --dir up|down --amount-raw <n> | selector-evaluate --vault <vault> [--execute] | clear-hold --vault <vault> --reason "<text>" | exit-lane --vault <vault> --lane <lane> (--by <operator> [--equity-zero] | --clear)]`
+const backyardUsage = `usage: loyal-engine backyard [in-flight | simulate-step --vault <vault> --lane <lane> --dir up|down --amount-raw <n> | selector-evaluate --vault <vault> [--execute] | clear-hold --vault <vault> --reason "<text>" | exit-lane --vault <vault> --lane <lane> (--by <operator> [--equity-zero] | --clear) | release-control show|set ...]`
 
 func runBackyardOperator(ctx context.Context, args []string, out io.Writer) error {
 	if len(args) == 1 && args[0] == "in-flight" {
@@ -128,6 +128,9 @@ func runBackyardOperator(ctx context.Context, args []string, out io.Writer) erro
 		}
 		_, err = fmt.Fprintln(out, total)
 		return err
+	}
+	if len(args) > 0 && args[0] == "release-control" {
+		return runReleaseControl(ctx, args[1:], out)
 	}
 	if len(args) > 0 && args[0] == "simulate-step" {
 		vault, lane, amount, err := parseSimulateStepFlags(args[1:])

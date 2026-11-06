@@ -18,12 +18,14 @@ func TestWithdrawalCostStatusGenerationVersionsAndUnknown(t *testing.T) {
 	if _, err := db.Exec(ctx, `CREATE TABLE loyal_yield.multiply_operations(operation_id TEXT PRIMARY KEY)`); err != nil {
 		t.Fatal(err)
 	}
-	migration, err := os.ReadFile("../../../../migrations/yield/0140_earn_max_withdrawal_costs.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(ctx, string(migration)); err != nil {
-		t.Fatal(err)
+	for _, name := range []string{"0140_earn_max_withdrawal_costs.sql", "0141_backyard_withdrawal_cost_participants.sql"} {
+		migration, err := os.ReadFile("../../../../migrations/yield/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec(ctx, string(migration)); err != nil {
+			t.Fatal(err)
+		}
 	}
 	c, _, _, _ := signedConsent(t)
 	key := ed25519.NewKeyFromSeed(make([]byte, 32))
@@ -65,11 +67,11 @@ func TestWithdrawalCostStatusGenerationVersionsAndUnknown(t *testing.T) {
 		if _, err := db.Exec(ctx, `INSERT INTO loyal_yield.multiply_operations VALUES($1)`, id); err != nil {
 			t.Fatal(err)
 		}
-		_, err := db.Exec(ctx, `INSERT INTO loyal_yield.backyard_withdrawal_cost_operations(operation_id,evidence_digest,message_sha256,effective_lp,max_cost_usdc,other_holders_usdc,max_incremental_cost_usdc,incremental_other_holders_usdc,network_usdc,network_lamports,evidence,state,receipt_signature,receipt_instruction,finalized_slot,actual_cost_usdc,actual_other_holders_usdc,actual_incremental_cost_usdc,actual_incremental_other_holders_usdc,actual_fee_lamports) VALUES($1,$2,$2,100,$3::bigint,0,$3::bigint,0,999999,5000,'{}',$4,CASE WHEN $4='settled' THEN $1 ELSE NULL END,CASE WHEN $4='settled' THEN 0 ELSE NULL END,CASE WHEN $4='settled' THEN 1 ELSE NULL END,CASE WHEN $4='settled' THEN $3::bigint ELSE NULL END,CASE WHEN $4='settled' THEN 0 ELSE NULL END,CASE WHEN $4='settled' THEN $3::bigint ELSE NULL END,CASE WHEN $4='settled' THEN 0 ELSE NULL END,CASE WHEN $4='settled' THEN 5000 ELSE NULL END)`, id, strings.Repeat("a", 64), cost, state)
+		_, err := db.Exec(ctx, `INSERT INTO loyal_yield.backyard_withdrawal_cost_operations(operation_id,evidence_digest,message_sha256,effective_lp,max_cost_usdc,other_holders_usdc,max_incremental_cost_usdc,incremental_other_holders_usdc,network_usdc,network_lamports,evidence,state,receipt_signature,actual_excess_cost_usdc,finalized_slot,actual_cost_usdc,actual_other_holders_usdc,actual_incremental_cost_usdc,actual_incremental_other_holders_usdc,actual_fee_lamports) VALUES($1,$2,$2,100,$3::bigint,0,$3::bigint,0,999999,5000,'{}',$4,CASE WHEN $4='settled' THEN $1 ELSE NULL END,CASE WHEN $4='settled' THEN 0 ELSE NULL END,CASE WHEN $4='settled' THEN 1 ELSE NULL END,CASE WHEN $4='settled' THEN $3::bigint ELSE NULL END,CASE WHEN $4='settled' THEN 0 ELSE NULL END,CASE WHEN $4='settled' THEN $3::bigint ELSE NULL END,CASE WHEN $4='settled' THEN 0 ELSE NULL END,CASE WHEN $4='settled' THEN 5000 ELSE NULL END)`, id, strings.Repeat("a", 64), cost, state)
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, err = db.Exec(ctx, `INSERT INTO loyal_yield.backyard_withdrawal_cost_reservations(operation_id,consent_id,authority,request_signature,request_instruction,escrow_lp,max_cost_usdc,incremental_cost_usdc,projected_payable_usdc,actual_cost_usdc,actual_incremental_cost_usdc) VALUES($1,$2,$3,$4,$5,100,$6::bigint,$6::bigint,1000,CASE WHEN $7='settled' THEN $6::bigint ELSE NULL END,CASE WHEN $7='settled' THEN $6::bigint ELSE NULL END)`, id, consentID, c.Authority, c.RequestSignature, c.RequestInstruction, cost, state)
+		_, err = db.Exec(ctx, `INSERT INTO loyal_yield.backyard_withdrawal_cost_reservations(operation_id,participant_id,owner_class,consent_id,authority,request_signature,request_instruction,escrow_lp,max_cost_usdc,incremental_cost_usdc,projected_payable_usdc,actual_cost_usdc,actual_incremental_cost_usdc) VALUES($1,$2,'squads',$2,$3,$4,$5,100,$6::bigint,$6::bigint,1000,CASE WHEN $7='settled' THEN $6::bigint ELSE NULL END,CASE WHEN $7='settled' THEN $6::bigint ELSE NULL END)`, id, consentID, c.Authority, c.RequestSignature, c.RequestInstruction, cost, state)
 		if err != nil {
 			t.Fatal(err)
 		}

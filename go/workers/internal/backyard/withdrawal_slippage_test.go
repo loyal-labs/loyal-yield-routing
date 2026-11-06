@@ -294,7 +294,7 @@ func TestWithdrawalSlippageRetriesAfterReobserving(t *testing.T) {
 			}
 			return observed, StepExecutionEvidence{}, nil
 		},
-		recordDecision: func(_ context.Context, _ string, _ Observation, d Decision, _ string) (DecisionRecord, error) {
+		recordDecision: func(_ context.Context, _ string, _ Observation, d Decision, _ string, _ *releaseRequest) (DecisionRecord, error) {
 			records++
 			if d.MaxSlippageBPS != 20 {
 				t.Fatal("retry changed durable limit")

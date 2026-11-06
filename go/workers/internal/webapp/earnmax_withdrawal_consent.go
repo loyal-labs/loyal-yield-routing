@@ -12,6 +12,7 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnmax"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/releasecontrol"
 )
 
 const withdrawalConsentPath = "/api/smart-accounts/earn-max/withdrawal-consent"
@@ -197,6 +198,9 @@ func (h earnMaxRoutes) registerWithdrawalClaimAttempts(api huma.API) {
 			}
 			if errors.Is(err, earnmax.ErrWithdrawalClaimPending) {
 				return nil, h.fail(http.StatusConflict, "withdrawal_claim_pending", "A claim you already signed is still pending. Check status before signing another transaction.")
+			}
+			if refusal := (*releasecontrol.Refusal)(nil); errors.As(err, &refusal) {
+				return nil, h.fail(http.StatusConflict, refusal.Reason, "Withdrawal claims are paused for this vault.")
 			}
 			return nil, h.fail(http.StatusConflict, "withdrawal_claim_not_reserved", "This claim could not be reserved. Check status before signing another transaction.")
 		}

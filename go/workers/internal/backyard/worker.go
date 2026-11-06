@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -43,7 +44,9 @@ type tickRuntime struct {
 	prepareJupiter          func(context.Context, RouteManifest, Decision, Observation) (Observation, JupiterExecutionEvidence, error)
 	prepareHastra           func(context.Context, RouteManifest, Decision, Observation) (Observation, HastraExecutionEvidence, error)
 	prepareStep             func(context.Context, RouteManifest, Decision, Observation) (Observation, StepExecutionEvidence, error)
-	recordDecision          func(context.Context, string, Observation, Decision, string) (DecisionRecord, error)
+	recordDecision          func(context.Context, string, Observation, Decision, string, *releaseRequest) (DecisionRecord, error)
+	admitWithdrawalDemand   func(context.Context, Observation) (admittedWithdrawalDemand, error)
+	observeAdmitted         func(context.Context, admittedWithdrawalDemand) (Observation, error)
 	build                   func(context.Context, string, any, ExpectedEffects) error
 	recordPreSendHold       func(context.Context, string, *PreSendHold) error
 	watchRoom               func([]roomWatch, func(roomUpdate))
@@ -66,6 +69,8 @@ type productionObserveState struct {
 	batch          func(context.Context) (Observation, error)
 	identity       func(context.Context) (programIdentityObservation, error)
 	foreignInflows func(context.Context, *Snapshot) error
+	navEvidence    func(context.Context, Observation) error
+	navEvidenceErr *string
 }
 
 func (p productionObserveState) observe(ctx context.Context) (Observation, error) {
@@ -89,6 +94,17 @@ func (p productionObserveState) observe(ctx context.Context) (Observation, error
 	}
 	if err := p.journal.RecordPositionSnapshot(ctx, p.routeKey, observation); err != nil {
 		return Observation{}, err
+	}
+	if p.navEvidence != nil {
+		// Missing evidence only makes deposit quotes refuse; it never stops risk work.
+		detail := ""
+		if err := p.navEvidence(ctx, observation); err != nil {
+			detail = err.Error()
+		}
+		if p.navEvidenceErr != nil && *p.navEvidenceErr != detail {
+			*p.navEvidenceErr = detail
+			_, _ = fmt.Fprintf(os.Stderr, "backyard-rwa-worker: deposit NAV evidence route=%s error=%q\n", p.routeKey, detail)
+		}
 	}
 	return observation, nil
 }
@@ -149,24 +165,30 @@ func mergeJournal(ctx context.Context, journal journalReader, routeKey string, o
 
 func productionTickRuntime(database *Database, rpc *chain.Client, view *View, jupiterClient *jupiter.Client, vault *vaultState, manifest RouteManifest, credentials Credentials) tickRuntime {
 	v := manifest.vault
-	state := productionObserveState{
-		manifest: manifest, routeKey: v.RouteKey,
-		journal: database,
-		batch: func(ctx context.Context) (Observation, error) {
+	batch := func(admitted *admittedWithdrawalDemand) func(context.Context) (Observation, error) {
+		return func(ctx context.Context) (Observation, error) {
 			refreshObservationLagSlots(ctx, rpc)
 			planning, err := database.readRoutePlanningState(ctx, v.RouteKey)
 			if err != nil {
 				return Observation{}, err
 			}
+			planning.inputs.admitted = admitted
 			observation, _, err := ObserveConfirmedRouteSnapshot(ctx, rpc, view, manifest, vault, planning.landedSlot, planning.inputs)
 			if err != nil {
 				return Observation{}, err
 			}
 			observation.planning = planning
 			return observation, nil
-		},
+		}
+	}
+	state := productionObserveState{
+		manifest: manifest, routeKey: v.RouteKey,
+		journal:        database,
+		batch:          batch(nil),
 		identity:       newProgramIdentityWatcher(viewProgramIdentity(view)).observe,
 		foreignInflows: func(ctx context.Context, s *Snapshot) error { return observeForeignInflows(ctx, database, rpc, v, s) },
+		navEvidence:    func(ctx context.Context, o Observation) error { return database.recordNAVEvidence(ctx, v, o) },
+		navEvidenceErr: new(string),
 	}
 	return tickRuntime{
 		withdrawalHealth:   database.RecordWithdrawalHealth,
@@ -194,6 +216,20 @@ func productionTickRuntime(database *Database, rpc *chain.Client, view *View, ju
 		protectWithdrawal: func(ctx context.Context, m RouteManifest, d Decision, o Observation, r any, e ExpectedEffects) (any, error) {
 			return prepareWithdrawalCost(ctx, database, rpc, view, m, d, o, r, e)
 		},
+		admitWithdrawalDemand: func(ctx context.Context, o Observation) (admittedWithdrawalDemand, error) {
+			set, err := classifyWithdrawalReceipts(ctx, database, rpc, view, manifest, o, o.Snapshot.Slot)
+			return admittedWithdrawalDemand{fingerprint: set.fingerprint, raw: set.admittedDemand}, err
+		},
+		observeAdmitted: func(ctx context.Context, admitted admittedWithdrawalDemand) (Observation, error) {
+			o, err := batch(&admitted)(ctx)
+			if err == nil {
+				err = enrichObservation(ctx, state.journal, state.routeKey, state.identity, &o)
+			}
+			if err == nil {
+				err = state.foreignInflows(ctx, &o.Snapshot)
+			}
+			return o, err
+		},
 		prepareBridge: func(ctx context.Context, manifest RouteManifest, decision Decision, observation Observation) (Observation, BridgeExecutionEvidence, error) {
 			return prepareBridgeFromTickObservation(ctx, rpc, view, manifest, decision, observation)
 		},
@@ -209,8 +245,8 @@ func productionTickRuntime(database *Database, rpc *chain.Client, view *View, ju
 		prepareStep: func(ctx context.Context, manifest RouteManifest, decision Decision, observation Observation) (Observation, StepExecutionEvidence, error) {
 			return prepareStepFromTickObservation(ctx, rpc, view, manifest, jupiterClient, database.RecordExitCost, decision, observation)
 		},
-		recordDecision: func(ctx context.Context, routeKey string, observation Observation, decision Decision, manifestSHA256 string) (DecisionRecord, error) {
-			return database.RecordDecisionOnManifest(ctx, manifest, routeKey, observation, decision, manifestSHA256)
+		recordDecision: func(ctx context.Context, routeKey string, observation Observation, decision Decision, manifestSHA256 string, release *releaseRequest) (DecisionRecord, error) {
+			return database.RecordDecisionOnManifest(ctx, manifest, routeKey, observation, decision, manifestSHA256, release)
 		},
 		recordPreSendHold: database.RecordPreSendHold,
 		build: func(ctx context.Context, operationID string, request any, effects ExpectedEffects) error {
@@ -317,10 +353,18 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 		w.holds.note(observation.Snapshot, decision.StrategyKey, holdStopped, decision.Reason)
 		return w.latchManualRecovery(ctx, observation, decision)
 	}
+	narrowed, err := w.admitWithdrawalFunding(ctx, &observation, &decision)
+	if err != nil {
+		w.noteHold(observation.Snapshot, decision.StrategyKey, err)
+		return err
+	}
+	if narrowed {
+		healthDecision = decision
+	}
 	w.holds.acted(decision.StrategyKey)
 	logStage("observe_decide", tickStart)
 	request, effects, prepared, err := w.prepare(ctx, decision, observation)
-	if prepared.Validate() == nil && prepared.Snapshot.Fresh && prepared.Snapshot.valued() {
+	if !narrowed && prepared.Validate() == nil && prepared.Snapshot.Fresh && prepared.Snapshot.valued() {
 		healthObservation = prepared
 	}
 	logStage("prepare", tickStart)
@@ -335,8 +379,9 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 			return err
 		}
 	}
-	record, err := w.runtime.recordDecision(ctx, w.routeKey, observation, decision, w.manifest.SHA256)
+	record, err := w.runtime.recordDecision(ctx, w.routeKey, observation, decision, w.manifest.SHA256, releaseRequestOf(observation.Snapshot, decision, request))
 	if err != nil {
+		w.noteHold(observation.Snapshot, decision.StrategyKey, err)
 		return err
 	}
 	if record.Status != Decided || record.OperationID == "" {
@@ -364,6 +409,36 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 	}
 	defer logStage("send", tickStart)
 	return w.runtime.advance(ctx, *pending)
+}
+
+// admitWithdrawalFunding sizes a cost-bearing ordinary withdrawal sale by the
+// demand of receipts that can bear its cost. Waiting receipts keep their own
+// reason; they neither block the sale for others nor enlarge it.
+func (w *Worker) admitWithdrawalFunding(ctx context.Context, observation *Observation, decision *Decision) (bool, error) {
+	if w.runtime.admitWithdrawalDemand == nil || !ordinaryWithdrawalCostRequired(observation.Snapshot, *decision) || !costBearingWithdrawalAction(*decision) {
+		return false, nil
+	}
+	admitted, err := w.runtime.admitWithdrawalDemand(ctx, *observation)
+	if err != nil || admitted.raw >= observation.Snapshot.WithdrawalDemandRaw {
+		return false, err
+	}
+	if w.runtime.observeAdmitted == nil {
+		return false, staleHold("withdrawal_demand_unadmitted")
+	}
+	narrowed, err := w.runtime.observeAdmitted(ctx, admitted)
+	if err != nil {
+		return false, err
+	}
+	next := decideWithAuditedReason(narrowed.Snapshot)
+	if err := next.Validate(); err != nil {
+		return false, err
+	}
+	if narrowed.Snapshot.WithdrawalDemandRaw > admitted.raw || (next.Action != ReportNAV && !ordinaryWithdrawalCostRequired(narrowed.Snapshot, next)) {
+		return false, staleHold("withdrawal_demand_unadmitted")
+	}
+	w.events.noteAction(next.Action)
+	*observation, *decision = narrowed, next
+	return true, nil
 }
 
 func (w *Worker) seedNAVReport(ctx context.Context) {

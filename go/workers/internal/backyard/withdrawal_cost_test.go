@@ -83,13 +83,13 @@ func TestWithdrawalCostDeleverAndSaleSigningBoundaryRejectsLateEvidence(t *testi
 	now := time.Now()
 	p := &withdrawalCostPreparation{manifest: m, MessageSHA256: sha256Bytes(message), net: &certifiedNAV{vault: m.vault.squads, manifest: m.SHA256, slot: 77, validUntil: now.Add(exitQuoteInterval)}}
 	for _, request := range []any{StepRequest{Open: KaminoLegRequest{Action: DeleverRouteStep}}, JupiterSwapRequest{Action: SwapCollateralToStableStep}} {
-		if err := p.validateSigningCertificate(request, message, now, 77); err != nil {
+		if err := p.validateSigningCertificate(context.Background(), request, message, now, 77); err != nil {
 			t.Fatal(err)
 		}
-		if err := p.validateSigningCertificate(request, message, now.Add(exitQuoteInterval+time.Second), 77); err == nil {
+		if err := p.validateSigningCertificate(context.Background(), request, message, now.Add(exitQuoteInterval+time.Second), 77); err == nil {
 			t.Fatalf("expired ordinary sale permitted: %T", request)
 		}
-		if err := p.validateSigningCertificate(request, message, now, 77+min(observationLagSlots(), adaptorMaxReportAgeSlots)+1); err == nil {
+		if err := p.validateSigningCertificate(context.Background(), request, message, now, 77+min(observationLagSlots(), adaptorMaxReportAgeSlots)+1); err == nil {
 			t.Fatalf("slot expired ordinary sale permitted: %T", request)
 		}
 	}
@@ -139,7 +139,7 @@ func TestWithdrawalCostComponentRoundingCannotExceedFullShare(t *testing.T) {
 
 func TestWithdrawalCostFinalizedFailureBooksActualFeeAndUnknownRemainsExplicit(t *testing.T) {
 	p := withdrawalCostPreparation{MaxCost: 30, NetworkUSDC: withdrawalTestUSDC(10), NetworkLamports: 5000}
-	cost, err := withdrawalReceiptCost(p, 2500, "failed", nil, "", chain.Receipt{})
+	cost, err := withdrawalReceiptCost(nil, "", "failed", chain.Receipt{})
 	if err != nil || cost != 0 {
 		t.Fatalf("atomic failed operation charged sale or lost actual fee: %d %v", cost, err)
 	}
@@ -170,7 +170,7 @@ func withdrawalCostTestDB(t *testing.T) *Database {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	if _, err := pool.Exec(context.Background(), `TRUNCATE loyal_yield.backyard_withdrawal_cost_reservations,loyal_yield.backyard_withdrawal_cost_operations,loyal_yield.earn_max_withdrawal_claim_attempts,loyal_yield.earn_max_withdrawal_consents,loyal_yield.multiply_operations`); err != nil {
+	if _, err := pool.Exec(context.Background(), `TRUNCATE loyal_yield.backyard_withdrawal_cost_reservations,loyal_yield.backyard_withdrawal_cost_operations,loyal_yield.earn_max_withdrawal_claim_attempts,loyal_yield.earn_max_withdrawal_consents,loyal_yield.backyard_confirmed_nav_publications,loyal_yield.multiply_operations`); err != nil {
 		t.Fatal(err)
 	}
 	return &Database{pool: pool}
@@ -274,7 +274,7 @@ func TestWithdrawalCostDatabaseCoveredSaleAndObservationOrdering(t *testing.T) {
 	if err := d.reserveWithdrawalCostRecord(ctx, "covered", p); err != nil {
 		t.Fatalf("already discounted liquidation charged twice: %v", err)
 	}
-	if got, err := withdrawalActualIncremental(*p, 80, 5000); err != nil || got != 0 {
+	if got, err := withdrawalActualIncremental(*p, 80); err != nil || got != 0 {
 		t.Fatalf("frozen NAV allowance lost at receipt: %d %v", got, err)
 	}
 	if err := d.releaseUnsignedWithdrawalCost(ctx, "covered"); err != nil {
@@ -303,7 +303,7 @@ func TestWithdrawalCostDatabaseCoveredSaleAndObservationOrdering(t *testing.T) {
 	if err := d.reserveWithdrawalCostRecord(ctx, "first", p); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.pool.Exec(ctx, `UPDATE loyal_yield.backyard_withdrawal_cost_reservations SET actual_cost_usdc=6,actual_incremental_cost_usdc=6 WHERE operation_id='first'; UPDATE loyal_yield.backyard_withdrawal_cost_operations SET state='settled',actual_cost_usdc=6,actual_incremental_cost_usdc=6,actual_other_holders_usdc=0,actual_incremental_other_holders_usdc=0,actual_fee_lamports=5000,receipt_signature='receipt',receipt_instruction=0,finalized_slot=200 WHERE operation_id='first'`); err != nil {
+	if _, err := d.pool.Exec(ctx, `UPDATE loyal_yield.backyard_withdrawal_cost_reservations SET actual_cost_usdc=6,actual_incremental_cost_usdc=6 WHERE operation_id='first'; UPDATE loyal_yield.backyard_withdrawal_cost_operations SET state='settled',actual_cost_usdc=6,actual_incremental_cost_usdc=6,actual_other_holders_usdc=0,actual_incremental_other_holders_usdc=0,actual_fee_lamports=5000,receipt_signature='receipt',actual_excess_cost_usdc=0,finalized_slot=200 WHERE operation_id='first'`); err != nil {
 		t.Fatal(err)
 	}
 	p.MaxCost = 1
@@ -326,5 +326,52 @@ func TestWithdrawalCostDatabaseCoveredSaleAndObservationOrdering(t *testing.T) {
 	p.Participants[0].Payable = 2000
 	if err := d.reserveWithdrawalCostRecord(ctx, "favorable", p); err == nil {
 		t.Fatal("favorable market price expanded signed incremental expense budget")
+	}
+}
+
+func TestWithdrawalCostSettlementAboveReservationIsTerminalWithExplicitExcess(t *testing.T) {
+	p := &withdrawalCostPreparation{EffectiveLP: 5100, NetworkLamports: 5000, MessageSHA256: strings.Repeat("b", 64)}
+	for i, lp := range []uint64{1500, 900, 200} {
+		c := earnmax.WithdrawalConsent{Authority: fmt.Sprint(i)}
+		id, _ := c.Digest()
+		p.Participants = append(p.Participants, withdrawalCostParticipant{Consent: c, ID: id, EscrowLP: lp})
+	}
+	if err := p.allocate(26, 25); err != nil {
+		t.Fatal(err)
+	}
+	frozen := append([]withdrawalCostParticipant(nil), p.Participants...)
+	others := p.OtherHolders
+	if err := p.allocateSettlement(p.MaxCost+7, p.IncrementalCost+7); err != nil {
+		t.Fatalf("finalized cost above reservation left unsettled: %v", err)
+	}
+	total := p.OtherHolders + p.ExcessCost
+	for i, r := range p.Participants {
+		if r.MaxCost != frozen[i].MaxCost || r.IncrementalCost != frozen[i].IncrementalCost {
+			t.Fatalf("user charge exceeded its reservation: %+v > %+v", r, frozen[i])
+		}
+		total += r.MaxCost
+	}
+	if p.ExcessCost != 7 || p.OtherHolders != others || total != 33 || p.MaxCost != 33 || p.IncrementalCost != 32 {
+		t.Fatalf("excess not booked explicitly to the pool: %+v", p)
+	}
+}
+
+func TestWithdrawalCostDatabaseSigningRefusesConsentReplacedAfterReservation(t *testing.T) {
+	d := withdrawalCostTestDB(t)
+	ctx := context.Background()
+	c := earnmax.WithdrawalConsent{Authority: "authority", WithdrawalGeneration: earnmax.WithdrawalGeneration{RequestSignature: "request", RequestInstruction: 2}, Version: "1", ReferenceUSDC: "1000", MinClaimUSDC: "1000", MaxUserFeeLamports: "0", ExpiresAt: fmt.Sprint(time.Now().Add(time.Hour).Unix()), Nonce: strings.Repeat("a", 64)}
+	id := insertWithdrawalCostConsent(t, d, c)
+	message := []byte("sealed ordinary withdrawal")
+	now := time.Now()
+	m := rwa.manifest
+	p := &withdrawalCostPreparation{database: d, manifest: m, MessageSHA256: sha256Bytes(message), net: &certifiedNAV{vault: m.vault.squads, manifest: m.SHA256, slot: 77, validUntil: now.Add(exitQuoteInterval)}, Participants: []withdrawalCostParticipant{{Consent: c, ID: id, EscrowLP: 100, Payable: 1000}}}
+	request := JupiterSwapRequest{Action: SwapCollateralToStableStep}
+	if err := p.validateSigningCertificate(ctx, request, message, now, 77); err != nil {
+		t.Fatal(err)
+	}
+	c.Version, c.MinClaimUSDC, c.Nonce = "2", "999", strings.Repeat("c", 64)
+	insertWithdrawalCostConsent(t, d, c)
+	if err := p.validateSigningCertificate(ctx, request, message, now, 77); err == nil || !strings.Contains(err.Error(), "withdrawal_consent_changed") {
+		t.Fatalf("signed under a superseded consent: %v", err)
 	}
 }

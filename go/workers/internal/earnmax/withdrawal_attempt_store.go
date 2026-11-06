@@ -16,10 +16,11 @@ import (
 	"github.com/solana-foundation/solana-go/v2/rpc"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/releasecontrol"
 )
 
-// ErrWithdrawalClaimWireUnqualified keeps the endpoint closed until the
-// independent server decoder qualifies the complete generation-fenced claim.
+// ErrWithdrawalClaimWireUnqualified refuses a claim when the server has no
+// chain client to run the protected-claim qualifier against.
 var ErrWithdrawalClaimWireUnqualified = errors.New("protected withdrawal claim wire is not independently qualified")
 var ErrWithdrawalClaimPending = errors.New("withdrawal_claim_pending")
 var ErrWithdrawalFeeBudget = errors.New(string(WithdrawalFeeBudget))
@@ -230,7 +231,15 @@ func (s *WithdrawalAttemptStore) reserveValidated(ctx context.Context, c Withdra
 		}
 		budget -= amount
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO loyal_yield.earn_max_withdrawal_claim_attempts(attempt_id,consent_id,authority,request_signature,request_instruction,signed_wire,transaction_signature,blockhash,last_valid_block_height,reserved_fee_lamports) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, id, consentID, c.Authority, c.RequestSignature, c.RequestInstruction, a.wire, a.signature, a.blockhash, strconv.FormatUint(a.height, 10), strconv.FormatUint(a.fee, 10))
+	reference, err := canonicalUint(c.ReferenceUSDC)
+	if err != nil {
+		return "", err
+	}
+	admission, err := releasecontrol.Check(ctx, tx, c.Vault, releasecontrol.ClaimAttempt, []string{c.Authority}, &reference)
+	if err != nil {
+		return "", err
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO loyal_yield.earn_max_withdrawal_claim_attempts(attempt_id,consent_id,authority,request_signature,request_instruction,signed_wire,transaction_signature,blockhash,last_valid_block_height,reserved_fee_lamports,release_control_vault,release_control_version) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`, id, consentID, c.Authority, c.RequestSignature, c.RequestInstruction, a.wire, a.signature, a.blockhash, strconv.FormatUint(a.height, 10), strconv.FormatUint(a.fee, 10), admission.Vault, admission.Version)
 	if err != nil {
 		return "", err
 	}

@@ -339,7 +339,7 @@ func TestViewStreamPlansAtS(t *testing.T) {
 	worker := &Worker{routeKey: productionRouteKey, manifest: manifest, runtime: tickRuntime{
 		loadNonterminal: func(context.Context, string) (*PersistedOperation, error) { return nil, nil },
 		observe:         state.observe,
-		recordDecision: func(context.Context, string, Observation, Decision, string) (DecisionRecord, error) {
+		recordDecision: func(context.Context, string, Observation, Decision, string, *releaseRequest) (DecisionRecord, error) {
 			t.Fatal("a view a minute behind reached a decision")
 			return DecisionRecord{}, nil
 		},

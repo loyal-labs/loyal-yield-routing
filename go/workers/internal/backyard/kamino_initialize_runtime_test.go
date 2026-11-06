@@ -119,7 +119,7 @@ func TestWorkerDispatchesInitializationAfterTheRecord(t *testing.T) {
 			order = append(order, "prepare")
 			return o, KaminoInitializationRequest{RouteLane: MapleSyrupUSDCLaneID}, nil
 		},
-		recordDecision: func(_ context.Context, _ string, _ Observation, got Decision, _ string) (DecisionRecord, error) {
+		recordDecision: func(_ context.Context, _ string, _ Observation, got Decision, _ string, _ *releaseRequest) (DecisionRecord, error) {
 			if got != d {
 				t.Fatal("decision changed")
 			}

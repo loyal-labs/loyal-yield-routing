@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"math/big"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnmax"
 )
 
 func bridgeMonitorHold(s Snapshot) (Decision, bool) {
@@ -73,7 +75,7 @@ func unexplainedNAVDriftHold(s Snapshot) (Decision, bool) {
 	if !s.netKnown(time.Now()) || !s.MonitorsArmed || s.PostMutationNAVRequired || s.CapitalMutated {
 		return Decision{}, false
 	}
-	if navDriftOutsideTolerance(uint64(s.StrategyNAVRaw)+uint64(s.ExitLiabilityRaw), uint64(s.PriorReportedNAVRaw)+uint64(s.JournalExitAtReportRaw)) {
+	if earnmax.NAVDriftOutsideTolerance(uint64(s.StrategyNAVRaw)+uint64(s.ExitLiabilityRaw), uint64(s.PriorReportedNAVRaw)+uint64(s.JournalExitAtReportRaw)) {
 		return monitorHold(s, "nav_drift_unexplained"), true
 	}
 	return Decision{}, false
@@ -96,18 +98,7 @@ func trustfulReportDue(s Snapshot) bool {
 }
 
 func navDriftOutsideBand(s Snapshot) bool {
-	return s.netKnown(time.Now()) && navDriftOutsideTolerance(uint64(s.StrategyNAVRaw), uint64(s.PriorReportedNAVRaw))
-}
-
-func navDriftOutsideTolerance(observed, reported uint64) bool {
-	bound := reported * uint64(navDriftToleranceBPS) / 10_000
-	if bound < uint64(navDriftFloorRaw) {
-		bound = uint64(navDriftFloorRaw)
-	}
-	if observed > reported {
-		return observed-reported > bound
-	}
-	return reported-observed > bound
+	return s.netKnown(time.Now()) && earnmax.NAVDriftOutsideTolerance(uint64(s.StrategyNAVRaw), uint64(s.PriorReportedNAVRaw))
 }
 
 func approvedVoltrFeeTerms(s Snapshot) bool {

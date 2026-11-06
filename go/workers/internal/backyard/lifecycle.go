@@ -63,7 +63,7 @@ func buildSimulatePersist(ctx context.Context, database *Database, rpc *chain.Cl
 	if scoped {
 		slot, checkErr := protected.cost.view.slot(ctx)
 		if checkErr == nil {
-			checkErr = protected.cost.validateSigningCertificate(withdrawalUnderlyingRequest(request), finalMessage, time.Now(), slot)
+			checkErr = protected.cost.validateSigningCertificate(ctx, withdrawalUnderlyingRequest(request), finalMessage, time.Now(), slot)
 		}
 		if checkErr != nil {
 			if cleanup := database.releaseUnsignedWithdrawalCost(ctx, operationID); cleanup != nil {

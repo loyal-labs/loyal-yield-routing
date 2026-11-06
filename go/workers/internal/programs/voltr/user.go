@@ -135,3 +135,46 @@ func (v Vault) unrealisedManagementFeeLP(accountedLP *big.Int, now time.Time) (*
 	feeLP := new(big.Int).Mul(feeAsset, accountedLP)
 	return ceilDiv(feeLP, totalValue.Sub(totalValue, feeAsset)), nil
 }
+
+// DeadWeightLP is minted to no one by the first deposit into a vault.
+const DeadWeightLP = 1_000
+
+// DepositLP is the LP the program mints for amountRaw of asset at now,
+// mirroring the SDK's calculateLpForDepositAmount: accrued management fee LP
+// dilutes the mint, issuance fee is kept by the vault, and the mint floors.
+func (v Vault) DepositLP(lpMintSupplyRaw uint64, assetDecimals, lpDecimals uint8, amountRaw uint64, now time.Time) (uint64, error) {
+	if v.IssuanceFeeBPS > bps {
+		return 0, errors.New("voltr issuance fee exceeds 100%")
+	}
+	totalLP, err := v.TotalLP(lpMintSupplyRaw, now)
+	if err != nil {
+		return 0, err
+	}
+	amount := new(big.Int).SetUint64(amountRaw)
+	var lp *big.Int
+	if totalLP.Sign() == 0 {
+		lp = new(big.Int).Mul(amount, new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(lpDecimals)), nil))
+		lp.Quo(lp, new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(assetDecimals)), nil))
+	} else {
+		keep := big.NewInt(bps - int64(v.IssuanceFeeBPS))
+		denominator := new(big.Int).Add(new(big.Int).SetUint64(v.TotalValueRaw), amount)
+		denominator.Mul(denominator, big.NewInt(bps))
+		denominator.Sub(denominator, new(big.Int).Mul(amount, keep))
+		if denominator.Sign() <= 0 {
+			return 0, errors.New("voltr deposit has no asset basis to price LP")
+		}
+		lp = new(big.Int).Mul(amount, totalLP)
+		lp.Mul(lp, keep)
+		lp.Quo(lp, denominator)
+	}
+	if v.LPSupplyDeadWeightRaw == 0 {
+		if lp.Cmp(big.NewInt(DeadWeightLP)) < 0 {
+			return 0, errors.New("voltr first deposit mints less than the dead-weight LP")
+		}
+		lp.Sub(lp, big.NewInt(DeadWeightLP))
+	}
+	if !lp.IsUint64() {
+		return 0, errors.New("voltr deposit LP exceeds u64")
+	}
+	return lp.Uint64(), nil
+}

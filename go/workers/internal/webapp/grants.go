@@ -17,6 +17,7 @@ type relationKind int
 const (
 	tableRelation relationKind = iota
 	sequenceRelation
+	rowLockRelation
 )
 
 var ErrRelationUnresolved = errors.New("relation does not resolve")
@@ -24,6 +25,7 @@ var ErrRelationUnresolved = errors.New("relation does not resolve")
 var privilegeChecks = [...]string{
 	tableRelation:    "SELECT to_regclass($1) IS NOT NULL, has_table_privilege(current_user, to_regclass($1), $2)",
 	sequenceRelation: "SELECT to_regclass($1) IS NOT NULL, has_sequence_privilege(current_user, to_regclass($1), $2)",
+	rowLockRelation:  "SELECT to_regclass($1) IS NOT NULL, has_any_column_privilege(current_user, to_regclass($1), $2)",
 }
 
 func publicUnlessQualified(relation string) string {
@@ -46,7 +48,17 @@ func SequenceGrant(sequence, privilege string) Grant {
 	return Grant{kind: sequenceRelation, relation: publicUnlessQualified(sequence), privilege: privilege}
 }
 
-func (g Grant) String() string { return g.privilege + " on " + g.relation }
+// RowLockGrant is what SELECT ... FOR SHARE needs: UPDATE on any one column.
+func RowLockGrant(table string) Grant {
+	return Grant{kind: rowLockRelation, relation: publicUnlessQualified(table), privilege: "UPDATE"}
+}
+
+func (g Grant) String() string {
+	if g.kind == rowLockRelation {
+		return "UPDATE (any column, for FOR SHARE) on " + g.relation
+	}
+	return g.privilege + " on " + g.relation
+}
 
 var ContentGrants = []Grant{
 	TableGrant("summaries", "SELECT"),
@@ -92,9 +104,19 @@ var WithdrawalConsentGrants = []Grant{
 }
 
 var WithdrawalAttemptGrants = []Grant{
+	TableGrant("loyal_yield.vault_release_controls", "SELECT"),
+	RowLockGrant("loyal_yield.vault_release_controls"),
 	TableGrant("loyal_yield.earn_max_withdrawal_claim_attempts", "SELECT"),
 	TableGrant("loyal_yield.earn_max_withdrawal_claim_attempts", "INSERT"),
 	TableGrant("loyal_yield.earn_max_withdrawal_claim_attempts", "UPDATE"),
+}
+
+var ReleaseControlGrants = []Grant{
+	TableGrant("loyal_yield.vault_release_controls", "SELECT"),
+	RowLockGrant("loyal_yield.vault_release_controls"),
+	TableGrant("loyal_yield.backyard_certified_nav", "SELECT"),
+	TableGrant("loyal_yield.backyard_confirmed_nav_publications", "SELECT"),
+	TableGrant("loyal_yield.earn_max_deposit_quotes", "INSERT"),
 }
 
 var WithdrawalStatusGrants = []Grant{

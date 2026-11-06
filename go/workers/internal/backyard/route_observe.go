@@ -117,6 +117,7 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 	if err != nil {
 		return Observation{}, nil, err
 	}
+	demand = runtime.inputs.withdrawalDemand(fingerprint, demand)
 	if strategyReceiptIntegrityFault(accountAt(accounts, v.strategyReceipt)) {
 		o := receiptIntegrityObservation(slot, selectedRoute)
 		o.Snapshot.Trustful = v.trustful()
@@ -185,6 +186,7 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 			if demand, fingerprint, err = decodeConfirmedWithdrawalDemand(v, receipts); err != nil {
 				return Observation{}, nil, err
 			}
+			demand = runtime.inputs.withdrawalDemand(fingerprint, demand)
 		} else {
 			detail := ""
 			if te := holdTransactionError(refreshErr); te != "" {

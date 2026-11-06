@@ -45,10 +45,8 @@ func (d *Database) reserveWithdrawalCostRecord(ctx context.Context, operationID 
 		}
 	}
 	return d.inTx(ctx, func(tx pgx.Tx) error {
-		for _, r := range p.Participants {
-			if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, r.Consent.WithdrawalGeneration.Key(r.Consent.Authority)); err != nil {
-				return err
-			}
+		if err := lockWithdrawalGenerations(ctx, tx, p.Participants); err != nil {
+			return err
 		}
 		var prior, priorState string
 		err := tx.QueryRow(ctx, `SELECT evidence_digest,state FROM loyal_yield.backyard_withdrawal_cost_operations WHERE operation_id=$1`, operationID).Scan(&prior, &priorState)
@@ -68,6 +66,9 @@ func (d *Database) reserveWithdrawalCostRecord(ctx context.Context, operationID 
 			return staleHold("withdrawal_operation_changed")
 		}
 		for _, r := range p.Participants {
+			if !r.consented() {
+				continue
+			}
 			var id string
 			if err := tx.QueryRow(ctx, `SELECT consent_id FROM loyal_yield.earn_max_withdrawal_consents WHERE authority=$1 AND request_signature=$2 AND request_instruction=$3 ORDER BY version DESC LIMIT 1`, r.Consent.Authority, r.Consent.RequestSignature, r.Consent.RequestInstruction).Scan(&id); err != nil {
 				return err
@@ -102,7 +103,18 @@ func (d *Database) reserveWithdrawalCostRecord(ctx context.Context, operationID 
 			return err
 		}
 		for _, r := range p.Participants {
-			_, err := tx.Exec(ctx, `INSERT INTO loyal_yield.backyard_withdrawal_cost_reservations(operation_id,consent_id,authority,request_signature,request_instruction,escrow_lp,max_cost_usdc,incremental_cost_usdc,projected_payable_usdc) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`, operationID, r.ID, r.Consent.Authority, r.Consent.RequestSignature, r.Consent.RequestInstruction, strconv.FormatUint(r.EscrowLP, 10), int64(r.MaxCost), int64(r.IncrementalCost), int64(r.Payable))
+			var consent, authority, signature, instruction, wait any = nil, r.User, nil, nil, nil
+			if r.consented() {
+				consent, authority, signature, instruction = r.ID, r.Consent.Authority, r.Consent.RequestSignature, r.Consent.RequestInstruction
+			}
+			if r.Wait != "" {
+				wait = r.Wait
+			}
+			var receipt any
+			if r.Receipt != "" {
+				receipt = r.Receipt
+			}
+			_, err := tx.Exec(ctx, `INSERT INTO loyal_yield.backyard_withdrawal_cost_reservations(operation_id,participant_id,owner_class,receipt,wait_reason,consent_id,authority,request_signature,request_instruction,escrow_lp,max_cost_usdc,incremental_cost_usdc,projected_payable_usdc) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`, operationID, r.ID, string(r.class()), receipt, wait, consent, authority, signature, instruction, strconv.FormatUint(r.EscrowLP, 10), int64(r.MaxCost), int64(r.IncrementalCost), int64(r.Payable))
 			if err != nil {
 				return err
 			}
@@ -179,14 +191,16 @@ func (d *Database) settleWithdrawalCost(ctx context.Context, client *chain.Clien
 	if receipt.Slot == 0 || sha256Bytes(wire) != wireDigest || !bytes.Equal(receipt.Wire, wire) {
 		return fmt.Errorf("withdrawal settlement wire mismatch")
 	}
-	actual, err := withdrawalReceiptCost(p, receipt.Fee, receipt.Err, expected, route, receipt.Receipt)
-	actualIncremental := earnmax.USDCRaw(0)
-	if err == nil {
-		actualIncremental, err = withdrawalActualIncremental(p, actual, receipt.Fee)
-	}
-	unknown := ""
+	actual, err := withdrawalReceiptCost(expected, route, receipt.Err, receipt.Receipt)
 	if err != nil {
-		unknown = err.Error()
+		return err
+	}
+	actualIncremental, err := withdrawalActualIncremental(p, actual)
+	if err != nil {
+		return err
+	}
+	if err := p.allocateSettlement(actual, actualIncremental); err != nil {
+		return err
 	}
 	var actualNetwork, actualNetworkUnknown any
 	if network, err := withdrawalNetworkCost(p, receipt.Fee); err == nil {
@@ -195,10 +209,8 @@ func (d *Database) settleWithdrawalCost(ctx context.Context, client *chain.Clien
 		actualNetworkUnknown = err.Error()
 	}
 	return d.inTx(ctx, func(tx pgx.Tx) error {
-		for _, r := range p.Participants {
-			if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, r.Consent.WithdrawalGeneration.Key(r.Consent.Authority)); err != nil {
-				return err
-			}
+		if err := lockWithdrawalGenerations(ctx, tx, p.Participants); err != nil {
+			return err
 		}
 		var current string
 		if err := tx.QueryRow(ctx, `SELECT state FROM loyal_yield.backyard_withdrawal_cost_operations WHERE operation_id=$1 FOR UPDATE`, operationID).Scan(&current); err != nil {
@@ -207,21 +219,26 @@ func (d *Database) settleWithdrawalCost(ctx context.Context, client *chain.Clien
 		if current == "settled" || current == "released" {
 			return nil
 		}
-		if unknown != "" {
-			_, err := tx.Exec(ctx, `UPDATE loyal_yield.backyard_withdrawal_cost_operations SET state='unknown',unknown_reason=$2,receipt_signature=$3,receipt_instruction=0,finalized_slot=$4,actual_fee_lamports=$5 WHERE operation_id=$1`, operationID, unknown, signature, receipt.Slot, strconv.FormatUint(receipt.Fee, 10))
-			return err
-		}
-		if err := p.allocateSettlement(actual, actualIncremental); err != nil {
-			return err
-		}
 		for _, r := range p.Participants {
-			if _, err := tx.Exec(ctx, `UPDATE loyal_yield.backyard_withdrawal_cost_reservations SET actual_cost_usdc=$3,actual_incremental_cost_usdc=$4 WHERE operation_id=$1 AND consent_id=$2`, operationID, r.ID, int64(r.MaxCost), int64(r.IncrementalCost)); err != nil {
+			if _, err := tx.Exec(ctx, `UPDATE loyal_yield.backyard_withdrawal_cost_reservations SET actual_cost_usdc=$3,actual_incremental_cost_usdc=$4 WHERE operation_id=$1 AND participant_id=$2`, operationID, r.ID, int64(r.MaxCost), int64(r.IncrementalCost)); err != nil {
 				return err
 			}
 		}
-		_, err := tx.Exec(ctx, `UPDATE loyal_yield.backyard_withdrawal_cost_operations SET state='settled',receipt_signature=$2,receipt_instruction=0,finalized_slot=$3,actual_cost_usdc=$4,actual_other_holders_usdc=$5,actual_fee_lamports=$6,actual_incremental_cost_usdc=$7,actual_incremental_other_holders_usdc=$8,actual_network_usdc=$9,actual_network_unknown_reason=$10,unknown_reason=NULL WHERE operation_id=$1`, operationID, signature, receipt.Slot, int64(actual), int64(p.OtherHolders), strconv.FormatUint(receipt.Fee, 10), int64(actualIncremental), int64(p.IncrementalOtherHolders), actualNetwork, actualNetworkUnknown)
+		_, err := tx.Exec(ctx, `UPDATE loyal_yield.backyard_withdrawal_cost_operations SET state='settled',receipt_signature=$2,finalized_slot=$3,actual_cost_usdc=$4,actual_other_holders_usdc=$5,actual_fee_lamports=$6,actual_incremental_cost_usdc=$7,actual_incremental_other_holders_usdc=$8,actual_network_usdc=$9,actual_network_unknown_reason=$10,actual_excess_cost_usdc=$11,unknown_reason=NULL WHERE operation_id=$1`, operationID, signature, receipt.Slot, int64(actual), int64(p.OtherHolders), strconv.FormatUint(receipt.Fee, 10), int64(actualIncremental), int64(p.IncrementalOtherHolders), actualNetwork, actualNetworkUnknown, int64(p.ExcessCost))
 		return err
 	})
+}
+
+func lockWithdrawalGenerations(ctx context.Context, tx pgx.Tx, participants []withdrawalCostParticipant) error {
+	for _, r := range participants {
+		if !r.consented() {
+			continue
+		}
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, r.Consent.WithdrawalGeneration.Key(r.Consent.Authority)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func withdrawalNetworkCost(p withdrawalCostPreparation, fee uint64) (earnmax.USDCRaw, error) {
@@ -237,18 +254,16 @@ func withdrawalNetworkCost(p withdrawalCostPreparation, fee uint64) (earnmax.USD
 	return earnmax.USDCRaw(n.Int64()), nil
 }
 
-func withdrawalActualIncremental(p withdrawalCostPreparation, actual earnmax.USDCRaw, _ uint64) (earnmax.USDCRaw, error) {
+func withdrawalActualIncremental(p withdrawalCostPreparation, actual earnmax.USDCRaw) (earnmax.USDCRaw, error) {
 	if actual < 0 || p.IncrementalCost < 0 || p.IncrementalCost > p.MaxCost {
 		return 0, fmt.Errorf("withdrawal NAV allowance basis unavailable")
 	}
-	incremental := actual - min(actual, p.MaxCost-p.IncrementalCost)
-	if incremental > p.IncrementalCost {
-		return 0, fmt.Errorf("finalized incremental cost exceeds reservation")
-	}
-	return incremental, nil
+	return actual - min(actual, p.MaxCost-p.IncrementalCost), nil
 }
 
-func withdrawalReceiptCost(p withdrawalCostPreparation, _ uint64, failure any, expected []byte, route string, receipt chain.Receipt) (earnmax.USDCRaw, error) {
+// withdrawalReceiptCost returns the finalized sale loss. A loss above the
+// reservation is still a final figure; the caller books the excess explicitly.
+func withdrawalReceiptCost(expected []byte, route string, failure any, receipt chain.Receipt) (earnmax.USDCRaw, error) {
 	cost := earnmax.USDCRaw(0)
 	if failure == nil {
 		v, err := vaultOfRoute(route)
@@ -291,8 +306,19 @@ func withdrawalReceiptCost(p withdrawalCostPreparation, _ uint64, failure any, e
 			cost += earnmax.USDCRaw(loss)
 		}
 	}
-	if cost > p.MaxCost {
-		return 0, fmt.Errorf("finalized withdrawal cost exceeds reservation")
-	}
 	return cost, nil
+}
+
+// latestWithdrawalConsentIs refuses to sign when the participant stored a
+// newer consent after the reservation captured r.Consent.
+func (d *Database) latestWithdrawalConsentIs(ctx context.Context, r withdrawalCostParticipant) error {
+	if d == nil {
+		return staleHold("withdrawal_cost_unavailable")
+	}
+	var id string
+	err := d.pool.QueryRow(ctx, `SELECT consent_id FROM loyal_yield.earn_max_withdrawal_consents WHERE authority=$1 AND request_signature=$2 AND request_instruction=$3 ORDER BY version DESC LIMIT 1`, r.Consent.Authority, r.Consent.RequestSignature, r.Consent.RequestInstruction).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && id != r.ID) {
+		return staleHold("withdrawal_consent_changed")
+	}
+	return err
 }

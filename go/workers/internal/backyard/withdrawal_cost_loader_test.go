@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnmax"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
@@ -23,9 +24,8 @@ import (
 	"github.com/solana-foundation/solana-go/v2"
 )
 
-func TestWithdrawalCostDatabaseLoaderUsesActualGenerationAndEscrow(t *testing.T) {
-	d := withdrawalCostTestDB(t)
-	ctx := context.Background()
+func withdrawalLoaderFixture(t *testing.T, d *Database, others ...ConfirmedAccount) (*withdrawalCostPreparation, Observation, *chain.Client, string, func()) {
+	t.Helper()
 	m := readyWorkerManifest(t)
 	owner := solana.NewWallet()
 	seed := [16]byte{1}
@@ -84,7 +84,7 @@ func TestWithdrawalCostDatabaseLoaderUsesActualGenerationAndEscrow(t *testing.T)
 	settingsData[124] = squads.FullPermissions
 	settingsData[126] = 1
 	binary.LittleEndian.PutUint64(settingsData[127:135], 258)
-	accounts := []ConfirmedAccount{vault, mint, receipt, {Address: settings.String(), Owner: squads.ProgramID.String(), Lamports: 1, Data: settingsData}}
+	accounts := append([]ConfirmedAccount{vault, mint, receipt, {Address: settings.String(), Owner: squads.ProgramID.String(), Lamports: 1, Data: settingsData}}, others...)
 	requestSignature := tx.Signatures[0].String()
 	client := newFakeChain(t, roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		body, err := io.ReadAll(request.Body)
@@ -128,6 +128,9 @@ func TestWithdrawalCostDatabaseLoaderUsesActualGenerationAndEscrow(t *testing.T)
 		return response(string(encoded)), nil
 	}))
 	view := &View{accounts: map[string]viewAccount{}, receipts: map[string]uint64{address: 0}, through: 77, advanced: make(chan struct{})}
+	for _, a := range others {
+		view.receipts[a.Address] = 0
+	}
 	for _, a := range accounts {
 		view.accounts[a.Address] = viewAccount{ConfirmedAccount: a, slot: 77}
 	}
@@ -140,6 +143,29 @@ func TestWithdrawalCostDatabaseLoaderUsesActualGenerationAndEscrow(t *testing.T)
 	net := &certifiedNAV{vault: m.vault.squads, manifest: m.SHA256, slot: 77, validUntil: time.Now().Add(exitQuoteInterval)}
 	o.Snapshot.net = net
 	p := &withdrawalCostPreparation{Slot: 77, view: view, chain: client, manifest: m, net: net, MaxCost: 20, NetworkUSDC: withdrawalTestUSDC(1), NetworkLamports: 5000, MessageSHA256: strings.Repeat("b", 64)}
+	regenerate := func() {
+		tx.Message.RecentBlockhash = solana.Hash{2}
+		tx.Signatures = nil
+		if _, err := tx.Sign(func(key solana.PublicKey) *solana.PrivateKey {
+			if key == owner.PublicKey() {
+				return &owner.PrivateKey
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if wire, err = tx.MarshalBinary(); err != nil {
+			t.Fatal(err)
+		}
+		requestSignature = tx.Signatures[0].String()
+	}
+	return p, o, client, id, regenerate
+}
+
+func TestWithdrawalCostDatabaseLoaderUsesActualGenerationAndEscrow(t *testing.T) {
+	d := withdrawalCostTestDB(t)
+	ctx := context.Background()
+	p, o, client, id, regenerate := withdrawalLoaderFixture(t, d)
 	if err := p.load(ctx, d, client, o); err != nil {
 		t.Fatal(err)
 	}
@@ -159,23 +185,51 @@ func TestWithdrawalCostDatabaseLoaderUsesActualGenerationAndEscrow(t *testing.T)
 		t.Fatal(err)
 	}
 	// Reusing the same PDA and LP cannot authorize another request signature.
-	tx.Message.RecentBlockhash = solana.Hash{2}
-	tx.Signatures = nil
-	if _, err := tx.Sign(func(key solana.PublicKey) *solana.PrivateKey {
-		if key == owner.PublicKey() {
-			return &owner.PrivateKey
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	wire, err = tx.MarshalBinary()
-	if err != nil {
-		t.Fatal(err)
-	}
-	requestSignature = tx.Signatures[0].String()
+	regenerate()
 	p.Participants = nil
 	if err := p.load(ctx, d, client, o); err == nil {
 		t.Fatal("same receipt PDA accepted a different request generation")
+	}
+}
+
+func TestWithdrawalCostDatabaseIdleRequesterDoesNotStallAdmittedFunding(t *testing.T) {
+	d := withdrawalCostTestDB(t)
+	ctx := context.Background()
+	m := readyWorkerManifest(t)
+	idleAddress, idleData := receiptFixture(t, m.vault.VoltrVault, solana.NewWallet().PublicKey().String(), 50, 500<<48)
+	p, o, client, id, _ := withdrawalLoaderFixture(t, d, ConfirmedAccount{Address: idleAddress, Owner: voltr.ProgramID.String(), Lamports: 1, Data: idleData})
+	o.Snapshot.WithdrawalDemandRaw = 1500
+	if err := p.load(ctx, d, client, o); err == nil || !strings.Contains(err.Error(), "withdrawal_demand_unadmitted") {
+		t.Fatalf("unadmitted demand sized a cost-bearing sale: %v", err)
+	}
+	o.Snapshot.WithdrawalDemandRaw = 1000
+	p.Participants = nil
+	if err := p.load(ctx, d, client, o); err != nil {
+		t.Fatalf("one idle requester stalled admitted funding: %v", err)
+	}
+	if err := p.allocate(40, 40); err != nil {
+		t.Fatal(err)
+	}
+	var admitted, waiting *withdrawalCostParticipant
+	for i := range p.Participants {
+		if p.Participants[i].Receipt == idleAddress {
+			waiting = &p.Participants[i]
+		} else {
+			admitted = &p.Participants[i]
+		}
+	}
+	if len(p.Participants) != 2 || admitted == nil || admitted.ID != id || admitted.MaxCost != 2 || waiting == nil || waiting.Wait == "" || waiting.MaxCost != 1 || p.OtherHolders != 37 {
+		t.Fatalf("waiting requester share moved or blocked: %+v", p)
+	}
+	if _, err := d.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_operations(operation_id,route_key,status) VALUES('idle','route','decided')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.reserveWithdrawalCostRecord(ctx, "idle", p); err != nil {
+		t.Fatal(err)
+	}
+	var wait string
+	var cost int64
+	if err := d.pool.QueryRow(ctx, `SELECT wait_reason,max_cost_usdc FROM loyal_yield.backyard_withdrawal_cost_reservations WHERE operation_id='idle' AND receipt=$1 AND consent_id IS NULL`, idleAddress).Scan(&wait, &cost); err != nil || wait != waiting.Wait || cost != 1 {
+		t.Fatalf("waiting requester not journaled with its own reason: %q %d %v", wait, cost, err)
 	}
 }

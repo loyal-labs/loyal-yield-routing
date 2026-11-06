@@ -92,10 +92,13 @@ func TestWithdrawalAttemptDatabaseFeeReservationSurvivesWideningAndRetries(t *te
 		t.Fatal(err)
 	}
 	defer pool.Close()
-	if _, err := pool.Exec(ctx, `TRUNCATE loyal_yield.backyard_withdrawal_cost_reservations,loyal_yield.backyard_withdrawal_cost_operations,loyal_yield.earn_max_withdrawal_claim_attempts,loyal_yield.earn_max_withdrawal_consents,loyal_yield.multiply_operations`); err != nil {
+	if _, err := pool.Exec(ctx, `TRUNCATE loyal_yield.backyard_withdrawal_cost_reservations,loyal_yield.backyard_withdrawal_cost_operations,loyal_yield.earn_max_withdrawal_claim_attempts,loyal_yield.earn_max_withdrawal_consents,loyal_yield.backyard_confirmed_nav_publications,loyal_yield.multiply_operations,loyal_yield.vault_release_controls`); err != nil {
 		t.Fatal(err)
 	}
 	c, a, key := withdrawalAttemptFixture(t)
+	if _, err := pool.Exec(ctx, `INSERT INTO loyal_yield.vault_release_controls(vault,action,state,version,reason,operator) VALUES($1,'claim_attempt','open',1,'test','test')`, c.Vault); err != nil {
+		t.Fatal(err)
+	}
 	store := NewWithdrawalAttemptStore(pool)
 	insert := func(c WithdrawalConsent) {
 		id, _ := c.Digest()
