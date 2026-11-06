@@ -39,8 +39,8 @@ scrape_configs:
   # node_exporter with the systemd collector: unit state and restart counts
   # for every loyal-* and xstock-* unit.
   # loyal-db-primary (10.92.1.1) runs a node_exporter with only the
-  # filesystem and textfile collectors; its textfile carries the replica
-  # metrics of deploy/hetzner/db/replica.sh. Same job, so LoyalMonitoringDown
+  # filesystem and textfile collectors; its textfile carries the pg_wal size
+  # written by deploy/hetzner/db/replica.sh. Same job, so LoyalMonitoringDown
   # covers it.
   - job_name: node
     static_configs:
