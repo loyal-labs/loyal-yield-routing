@@ -19,6 +19,8 @@ install() {
   box 'f=/usr/local/sbin/loyal-db-replica; install -m 0755 /dev/stdin $f.new && mv -f $f.new $f' <"$HERE/replica.sh"
 }
 
+[[ ${BASH_SOURCE[0]} == "$0" ]] || return 0
+
 case ${1:-} in
   urls)
     box 'umask 077; mkdir -p /etc/loyal-db/replica'

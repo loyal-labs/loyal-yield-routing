@@ -1,5 +1,7 @@
 "use client";
 
+import type { ReactNode } from "react";
+
 import type { TokenRow } from "@/components/wallet-sidebar/types";
 import {
   ScrambledPopDigits,
@@ -288,6 +290,7 @@ function ShieldedCell({
 export function CryptoPane({
   balanceFraction,
   balanceWhole,
+  incoming,
   isBalanceRevealed,
   isEmpty,
   onReceive,
@@ -303,6 +306,7 @@ export function CryptoPane({
 }: {
   balanceFraction: string;
   balanceWhole: string;
+  incoming: ReactNode;
   isBalanceRevealed: boolean;
   isEmpty: boolean;
   onReceive: () => void;
@@ -393,6 +397,8 @@ export function CryptoPane({
             </div>
           </div>
         </div>
+
+        {incoming}
 
         <div className="flex w-full flex-1 flex-col p-2">
           {isEmpty ? (

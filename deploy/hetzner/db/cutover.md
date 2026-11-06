@@ -1,6 +1,6 @@
 # Neon to loyal-db-primary: replica and cutover
 
-Rehearsed, not executed. The freeze needs the owner's go in `gates.md`. Times are PST.
+Rehearsed, not executed. The freeze needs the owner's go in `gates.md`. `cutover.sh preflight` ran green on Nov 5.
 
 ## What runs today
 
@@ -44,62 +44,66 @@ Neon removes a logical slot that has not acknowledged `flush_lsn` progress for a
 
 Prometheus on loyal-workers pages the Telegram alerts group through `loyal-db-replica metrics` (a textfile on the DB box, written every minute): `LoyalDbReplicaSubscriptionDown` after 5 minutes without an apply worker, `LoyalDbReplicaSubscriptionStale` after 15 minutes without a message, `LoyalDbNeonSlotInactive` after 10 minutes, `LoyalDbNeonSlotLag` above 5 GiB, plus volume under 100 GiB free and `pg_wal` over 60 GB (`deploy/hetzner/README.md`, Replica guards). Neon's 40 hours leave most of the window to act in. `remote.sh check` (`replica.sh` `cmd_check`) is the manual form of the slot check and exits 1 when a slot is inactive or lags more than 5 GiB.
 
-Freeze step 5 disables the subscriptions on purpose. Before it, silence `alertname=~"LoyalDbReplica.*|LoyalDbNeon.*"` in Alertmanager (`amtool silence add` on loyal-workers) for the rollback window, and delete the `loyal-db-replica` rule group when the subscriptions are dropped.
+`cutover.sh switch` disables the subscriptions on purpose. `cutover.sh freeze` first adds a 7-day Alertmanager silence on `alertname=~"LoyalDbReplica.*|LoyalDbNeon.*"`. `cutover.sh pause-neon` drops the subscriptions. From then on, `replica.sh metrics` stops writing subscription and slot series for them, so those alerts resolve and the rule group can stay.
 
-## Before the freeze
+## Cutover
 
-1. `remote.sh verify` shows every table in state `r` for all three subscriptions, and no `DIFF` lines beyond rows written since the read.
-2. `remote.sh backfill` has finished (`backfill: done from <cutoff>` in `/var/lib/loyal-db-replica/backfill.log`). Run `remote.sh catchup` a few times beforehand so that the run during the freeze only covers the last interval.
-3. Rehearse `remote.sh sequences`. It is safe on the replica and the final run during the freeze overwrites it.
-4. Stage the new credentials without installing them. Each one is a direct DSN to `10.92.1.1:5432`, not pgbouncer, because the families hold session advisory locks (`deploy/hetzner/README.md:49`). Use `sslmode=verify-full` with the box CA `/etc/loyal-db/tls/ca.crt`, or `sslmode=require`. The user is the owner role, with the password from `/etc/loyal-db/replica/<owner>.password`.
-5. Stage the `pg_hba.conf` lines. They go in front of the `host all all 0.0.0.0/0 reject` line:
-   ```
-   hostssl loyal_app        loyal_app_owner        10.92.0.0/16 scram-sha-256
-   hostssl loyal_yield_prod loyal_yield_prod_owner 10.92.0.0/16 scram-sha-256
-   hostssl kamino_timescale kamino_timescale_owner 10.92.0.0/16 scram-sha-256
-   ```
-6. Confirm that Vercel shows 0 requests on the routes that write: the Vercel web app (loyal-app) and the telegram app. Standing order 5 puts the DB move after that.
+| The lie underneath | The one fix | What gets deleted |
+| --- | --- | --- |
+| "Every new DSN is direct, because the families hold session advisory locks." Only Yield clients hold session locks or LISTEN (`go/workers/internal/engine/family.go:38`, `go/workers/internal/backyard/store.go:115`, `go/workers/internal/observer/worker/watch_refresh.go:41`, `go/workers/internal/autodeposit/worker.go:361`), and they already use Neon's direct endpoint. App and Timescale clients use Neon's pooler and only `pg_advisory_xact_lock` (`go/workers/internal/webapp/crons.go:49`). | Each URL keeps its shape. A direct Neon host maps to `10.92.1.1:5432`, and a `-pooler` host maps to pgbouncer `10.92.1.1:6432` in transaction mode. `replica.sh pgbouncer-test` proves named prepared statements work through 6432. | The direct-only rule and the `verify-full` option. Every URL is `sslmode=require`. pgx and sqlx/rustls do not check the certificate at `require`, the same as on Neon today. |
+| The credential table was written by hand, and it missed telegram, the web crons, admin's Yield and Timescale URLs, and backyard's Timescale URL. | `cutover.sh inventory` decrypts every credential on the hosts and writes `inventory.tsv` (credential, unit, Neon endpoint, db, role, pooler or direct). Every later step reads that file. `coverage` fails if a running `loyal-*` unit is missing from it, or if a database reader is missing from `ENGINES`/`SERVICES`. | The hand-written table and the "check list-timers on both hosts" step. |
+| "Owner role with a password is enough." Out of the box the Hetzner owner roles had `TimeZone=UTC` and `statement_timeout=900000`, while Neon's `neondb_owner` has `GMT` and `0`. Neither had a pg_hba line or a pgbouncer user. | `replica.sh access` adds the hba lines and pgbouncer users. `replica.sh grants --fix` copies Neon's per-database role settings. `grants` diffs every table, sequence, schema, function and database privilege. `schema` diffs `pg_dump` of both sides. Each one is idempotent and runs in every preflight. | Freeze step "append the staged hba lines". |
 
-## Freeze
+### Consumers (inventory of Nov 5, 22:45Z)
 
-Expected length is 10 to 15 minutes. Most of it is installing credentials.
+All 19 live bindings are on loyal-workers, and all of them log in as `neondb_owner`. loyal-eu-1, robinx-prod and loyal-agent-memory hold no Loyal Neon URL. `loyal-clickstack` and `loyal-clickstack-relay` have no database.
 
-1. Stop the writers. On loyal-workers run `systemctl stop loyal-retail loyal-backyard loyal-observer loyal-realtime loyal-web loyal-admin loyal-stats`. On both hosts, check `systemctl list-timers 'loyal-*'` and stop the timers that write, such as `loyal-squads-watch-tick` and `loyal-observer-push-check`. The Vercel web and telegram apps must already be at 0 requests. If not, stop here.
-2. Confirm that Neon has no writers left. The only sessions as `neondb_owner` should be the `loyal_hz_*` walsenders and your own:
-   ```sql
-   select application_name, state, count(*) from pg_stat_activity where usename = 'neondb_owner' group by 1, 2;
-   ```
-3. Lag 0. Run `remote.sh verify` until every slot shows `lag_bytes` at or near 0 and stops moving. Neon writes a little WAL on its own, so look for no change across two runs.
-4. `remote.sh catchup`, then `remote.sh sequences`.
-5. On Hetzner, run `ALTER SUBSCRIPTION loyal_hz_<src> DISABLE` for each of `app`, `yield` and `timescale`. Keep the subscriptions and their Neon slots for the rollback window.
-6. Append the staged hba lines and run `systemctl reload postgresql@18-main`. Run `ANALYZE` in each database.
-7. Flip the URLs. Every file is a systemd credential on loyal-workers, encrypted with `systemd-creds encrypt --with-key=host --name=<NAME>` (`deploy/hetzner/README.md:44`). Keep the old file as `<file>.neon` before writing the new one.
-   | Service | Credential name and file | Database |
-   | --- | --- | --- |
-   | loyal-retail | `RETAIL_DATABASE_URL`, `/etc/credstore.encrypted/loyal-retail/RETAIL_DATABASE_URL` (`deploy/hetzner/systemd/loyal-retail.service:19`) | loyal_yield_prod |
-   | loyal-retail | `RETAIL_TIMESCALE_DATABASE_URL`, same directory (`loyal-retail.service:20`) | kamino_timescale |
-   | loyal-backyard | `BACKYARD_DATABASE_URL`, `/etc/credstore.encrypted/loyal-backyard/BACKYARD_DATABASE_URL` (`loyal-backyard.service:19`) | loyal_yield_prod |
-   | loyal-observer | `NEON_DATABASE_URL` and `TIMESCALEDB_URL`, `/etc/credstore.encrypted/loyal-observer/` (`loyal-observer.service:20-21`) | loyal_yield_prod, kamino_timescale |
-   | loyal-realtime | `NEON_DATABASE_URL` inside the `realtime-envelope` JSON credential (`loyal-realtime.service:29-33`, `deploy/hetzner/README.md:195`) | loyal_yield_prod |
-   | loyal-admin | `ADMIN_APP_DATABASE_URL`, `/etc/credstore.encrypted/loyal-admin-app-db` (`loyal-admin.service:31`), plus any optional DB credential in its drop-ins | loyal_app |
-   | loyal-stats | `STATS_APP_DATABASE_URL` and `STATS_YIELD_DATABASE_URL`, `/etc/credstore.encrypted/loyal-stats-{app,yield}-db` (`loyal-stats.service:26-27`) | loyal_app, loyal_yield_prod |
-   | loyal-web | `WEB_APP_DATABASE_URL`, `/etc/credstore.encrypted/loyal-web-app-db` if installed (`deploy/hetzner/README.md:354`) | loyal_app |
-   | Vercel loyal-app web and telegram | `DATABASE_URL` in Vercel project env | unchanged: they are at 0 requests and get deleted in teardown |
-   | 1Password env files used by local tooling | `NEON_DATABASE_URL`, `TIMESCALEDB_URL`, `DATABASE_URL` | the owner updates them after the freeze |
-8. Start the services in reverse order of step 1. Then check them: each unit is `active`, the realtime `/ready` endpoint answers, and one write lands in each database. On the box, `select max(inserted_at) from kamino.reserve_updates` should advance.
+| Database | Readers | Neon shape, maps to |
+| --- | --- | --- |
+| `loyal_app` | loyal-admin, loyal-stats, loyal-telegram, loyal-web, loyal-web-cron@ | pooler, maps to 6432 |
+| `loyal_yield_prod` | loyal-admin, loyal-backyard, loyal-observer, loyal-realtime (inside `realtime-envelope`), loyal-retail, loyal-stats, loyal-web, loyal-web-cron@ | direct, maps to 5432 |
+| `kamino_timescale` | loyal-admin, loyal-backyard, loyal-observer, loyal-retail, loyal-web, loyal-web-cron@ | pooler, maps to 6432 |
 
-## Rollback
+`/etc/credstore.encrypted/loyal-web-app-db.a347` and `.owner` are on disk but no unit references them, so they are not switched. The Vercel projects (`loyal-frontend`, `loyal-app`) still have 104 route handlers that reach a database. They are not switched: only 2 non-cron requests landed after 12:45 PST on Nov 5. A Vercel write after the freeze snapshot lands on Neon only. The write counters catch it, and `verify`, `unfreeze` and `pause-neon` fail until a human copies the rows and reruns with `ACCEPT_NEON_WRITES=1`. A Neon restart or stats reset between snapshots makes the counters unknown, which fails the same way.
 
-Within the window, before Hetzner takes writes worth keeping:
+### Kit
 
-1. Stop the services again and move each `<file>.neon` back over its credential.
-2. Start the services. Neon was never written by the cutover and still holds the truth.
-3. To resume the replica, drop the rows written on Hetzner after the flip. In practice that means rerunning setup from an empty database. Then run `ALTER SUBSCRIPTION ... ENABLE`.
+`cutover.sh` runs on the Mac. It reuses `remote.sh`'s `box` and `install`, and every database step is a `replica.sh` subcommand on the box. Credentials are staged, tested, switched and rolled back on loyal-workers by `/etc/loyal-cutover/creds.py`. Passwords go box to workers over a pipe and are sealed straight into `systemd-creds` files. Nothing prints a URL, user or password. Every subcommand can be rerun.
 
-After writes land on Hetzner, rolling back loses them. Two choices remain: fix forward, or set up a reverse subscription from Neon to Hetzner. The reverse subscription needs `wal_level = logical` on the box plus DDL on Neon, and both are owner calls. Decide the window length before the freeze. Fifteen minutes of smoke checks is the default.
+| Step | What it does |
+| --- | --- |
+| `preflight` | Inventory, coverage, hba and pgbouncer access, grants, schema, pgbouncer test, staging every credential into `/etc/loyal-cutover/stage`, a read through each staged URL, Neon sessions, lag-wait, catchup, sequences, write counters, a replica verify, both Neon endpoints over the API, unit stop/start times from 14 days of journal, and the estimate. Neon sees only read-only sessions. No running unit is touched. |
+| `freeze` | Refuses if a credential already points at Hetzner or a subscription is disabled. Silence, then stop: web-cron timers, wait until each cron instance is `inactive` or `failed` (a running oneshot is `activating`), engines one at a time (each must stop with `Result=success`), then services. Neon sessions, lag-wait, catchup, sequences, the Neon `freeze` write snapshot (the baseline for every later Neon check), and a replica verify that must show no DIFF. A DIFF is any table not in sync state `r`, a max pk that differs, or an exact count that differs. Counts are exact on tables under 256 MB on both sides. Larger tables rely on state `r`, lag-wait and max pk: their counts took 334 s by seq scan on Nov 5, with 0% of pages all-visible. |
+| `switch` | lag-wait, `ALTER SUBSCRIPTION ... DISABLE`, catchup, sequences, the Hetzner `switch` write snapshot. Then it saves each live Neon credential to `/etc/loyal-cutover/neon/<path>` (temp file, fsync, rename, then checked to decrypt to a Neon URL) and installs the staged one the same way. Services start, and each must answer its health path. Engines stay stopped. A rerun resumes: lag-wait skips a subscription that is already disabled. |
+| `verify` | Reads through every live URL, health on each service, Hetzner write counters since `switch` and Neon write counters since `freeze`. Fails if any check fails, if Hetzner took no write, if Neon took one, or if either side's counters cannot be read or were reset. |
+| `unfreeze` | `verify`, then writes `/etc/loyal-cutover/unfrozen`, then the timers, then the engines (each must answer `/metrics`), then health on everything after 60 s. |
+| `rollback` | Refuses once `unfreeze` has run (`rollback --force` overrides it). Refuses once `pause-neon` has run. Stops the writers, then lists the Hetzner row changes since `switch`, which it discards. Puts the saved Neon credentials back and starts everything. Re-enables the subscriptions only if Hetzner took 0 writes since `switch`, counted. |
+| `pause-neon` | Refuses if Neon took writes since `freeze` or its counters are unknown (override with `ACCEPT_NEON_WRITES=1`). Drops the subscriptions and their Neon slots, sets `disabled: true` on `ep-dry-forest-ah27inp9` and `ep-ancient-grass-aqb5aalu`, and suspends them if they are active. Neither project is deleted. Branch endpoints are left alone. |
+| `status` | Which side each credential points at, plus whether a staged copy and a saved Neon copy exist. |
+
+### Freeze plan, measured
+
+From the preflight of Nov 5, 22:45Z (`proof/hz-db5-cutover/preflight-20261105T2245Z.txt`). Stop and start times are the journal maxima over 14 days: stops at most 3.75 s (loyal-web), starts at most 13.59 s (loyal-observer).
+
+1. `cutover.sh preflight`, any time before. It must exit 0 (295 s).
+2. `cutover.sh freeze`, about 114 s. Catchup is most of it (66 s).
+3. `cutover.sh switch`, about 108 s.
+4. `cutover.sh verify`, about 26 s. If it fails, run `cutover.sh rollback`.
+5. `cutover.sh unfreeze`, about 65 s.
+6. `cutover.sh pause-neon` once the rollback window closes.
+
+Writes stop for about 5.2 minutes, from freeze to unfreeze. loyal-web, admin, stats, telegram and realtime are down from freeze until switch starts them, about 3.7 minutes. Engines are down the whole 5.2 minutes.
+
+### Rollback
+
+Reverse replication from Hetzner to Neon is not set up. It needs `wal_level=logical` on the box, which means a Postgres restart. It also keeps Neon awake through the window, while the plan pauses Neon. And hypertables do not replicate through their root.
+
+- Before `unfreeze`: `rollback` loses nothing the engines wrote. Services write during `verify` (it requires a Hetzner write). `rollback` lists those row changes and leaves them only on Hetzner.
+- After `unfreeze`, fix forward. `rollback` refuses. `rollback --force` discards every Hetzner write since `switch`, engine money moves included. Hetzner's pgbackrest PITR covers Hetzner. Neon keeps its own history until the project is deleted.
+- If `switch` stops after disabling the subscriptions but before the `switch` snapshot, rerun `switch`. `rollback` from there re-enables the subscriptions, because no client wrote to Hetzner yet.
 
 ## After
 
-- Drop the three subscriptions once the window closes. `DROP SUBSCRIPTION` also drops the Neon slot. If you skip this, Neon removes the inactive slots after about 40 hours anyway, and each one pins WAL until then.
-- Timescale retention is `loyal-db-retention.timer` on loyal-db-primary: daily at 04:30 UTC it runs `loyal-db-replica retain`, which drops hypertable chunks older than 62 days (`timescaledb.max_background_workers = 0`, so no policy job). It keeps running after cutover.
+- `pause-neon` drops the three subscriptions and their Neon slots.
+- Timescale retention is `loyal-db-retention.timer` on loyal-db-primary. Daily at 04:30 UTC it runs `loyal-db-replica retain`, which drops hypertable chunks older than 62 days (`timescaledb.max_background_workers = 0`, so no policy job). It keeps running after cutover.
 - Rescale to cpx51 (owner call D2). It needs a stop of the box. Do it outside a copy, and before the freeze rather than after.

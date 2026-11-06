@@ -553,16 +553,19 @@ The heartbeat needs `OBSERVABILITY_OTLP_ENDPOINT` and `OBSERVABILITY_INGESTION_A
 sends none. It reports environment `prod`, which the "Web telemetry heartbeat" alert
 accepts beside `production`.
 
-Install the units from `systemd/`, then two drop-ins on the template, in
-`/etc/systemd/system/loyal-web-cron@.service.d/`. `40-verified-release.conf` is
-`activate.sh`'s drop-in for `loyal-web.service` with the same `ExecStart=`
-(`activate.sh` does not write it for the template; repeat it after each web deploy
-until it does). `50-credentials.conf` is loyal-web's own credential lines:
+Install the units from `systemd/`, then create the directory
+`/etc/systemd/system/loyal-web-cron@.service.d/` and its `50-credentials.conf`, which is
+loyal-web's own credential lines:
 
 ```sh
 { echo '[Service]'; systemctl cat loyal-web.service | grep '^LoadCredentialEncrypted='; } \
   > /etc/systemd/system/loyal-web-cron@.service.d/50-credentials.conf
 ```
+
+Once that directory exists, every `activate.sh web` also writes
+`40-verified-release.conf` there, with `ExecStart=<release>/loyal-web cron %i`, and
+backs it up and rolls it back with loyal-web's own drop-in. A host without the directory
+is untouched.
 
 A run needs `WEB_APP_DATABASE_URL` (both jobs) and `WEB_SOLANA_RPC_URL` and
 `SMART_ACCOUNT_SPONSOR_PK` (reconcile), `WEB_YIELD_DATABASE_URL`, `TIMESCALEDB_URL`,
@@ -802,8 +805,9 @@ Remove: `systemctl disable --now loyal-db-replica-metrics.timer
 loyal-db-retention.timer prometheus-node-exporter` on the box, delete the four
 units in `/etc/systemd/system`, `apt-get remove prometheus-node-exporter`,
 drop the `10.92.1.1:9100` target from `prometheus.yml` and the
-`loyal-db-replica` rule group. Delete that group when the subscriptions are
-dropped after cutover.
+`loyal-db-replica` rule group. After `cutover.sh pause-neon` drops the
+subscriptions, `replica.sh metrics` stops emitting their series and those
+alerts resolve, so the group can stay until the guards go.
 
 ### Withdrawal attention
 
@@ -862,6 +866,16 @@ three units, plus xstock-bot's `xstock-bot`, `xstock-pools` and
 across restarts. It sets `service.name` from each unit's syslog identifier
 (`loyal-observer`, `loyal-retail`, `loyal-backyard`, ...), lifts the slog
 fields into attributes, and exports OTLP/HTTP to ClickStack.
+
+### Reading ClickStack
+
+Loyal's logs, traces and Telegram alerts live in ClickStack (HyperDX), not PostHog. The MCP header is `Bearer ${LOYAL_CLICKSTACK_API_KEY}`, a name that exists only in `.env.1password`, so an agent session started outside `op run` gets `401 AUTH_HEADER_REJECTED`. Inside `op run --env-file=.env.1password`, call the MCP over plain JSON-RPC with curl: `initialize`, keep the `Mcp-Session-Id` header, then `tools/call`. For example `clickstack_sql` on the connection "Local ClickHouse", table `otel_logs`.
+
+The alert webhooks are "TG Alerts" and "TG Direct". The "Errors" alert filters `deployment.environment.name IN (production, prod)`. The collector does not set that attribute (`collector/otelcol.yaml` sets only `service.name`), so the alert sees the frontend and mobile apps but not the Go workers.
+
+### Helius
+
+One prod Helius project serves Loyal's workers and robinx. Billing is 20 credits per MB streamed on LaserStream and 1 credit per RPC call, on uncompressed bytes. Measure a process's stream before trusting a code estimate: sample `ss -tinH state established dst <laserstream ip>` twice and take the `bytes_received` delta. The workers' RPC URLs are sealed credentials (`BACKYARD_SOLANA_RPC_URL`, `SOLANA_RPC_URL`, `RETAIL_SOLANA_RPC_URL`). The observer streams about 2.6 GB a day (measured 2026-10-10); robinx's transaction tape on the same project is the bulk of the bytes.
 
 ### Backyard alert response
 

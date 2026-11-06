@@ -58,6 +58,7 @@ import {
 import { useLastValue } from "@/components/wallet-workspace/facelift/use-last-value";
 import { useIsNarrowViewport } from "@/components/wallet-workspace/facelift/use-is-narrow-viewport";
 import { WalletHomePage } from "@/components/wallet-workspace/facelift/wallet-home-page";
+import { useIncomingTransfers } from "./use-bridge-move";
 import { WithdrawPane } from "@/components/wallet-workspace/facelift/withdraw-pane";
 import {
   WorkspacePaneSkeleton,
@@ -233,6 +234,9 @@ export function WorkspaceFaceliftShell() {
   const [navigationNonce, setNavigationNonce] = useState(0);
   const [assetAction, setAssetAction] = useState<AssetAction | null>(null);
   const [isReceiveOpen, setIsReceiveOpen] = useState(false);
+  const incoming = useIncomingTransfers(
+    isSignedIn && launched ? earnData.walletAddress ?? null : null
+  );
   useEffect(() => {
     const walletAddress = earnData.walletAddress;
     const settingsPda = earnData.settingsPda;
@@ -417,11 +421,9 @@ export function WorkspaceFaceliftShell() {
         />
         <ReceiveSheet
           isOpen={isReceiveOpen}
-          onClose={() => setIsReceiveOpen(false)}
-          onMove={(source) => {
+          onClose={() => {
             setIsReceiveOpen(false);
-            handleSelectPage("assets");
-            setAssetAction({ type: "move", source });
+            incoming.reload();
           }}
           walletAddress={earnData.walletAddress ?? null}
         />
@@ -468,6 +470,9 @@ export function WorkspaceFaceliftShell() {
           earnBalanceUsd={earnData.earnBalanceUsd}
           earnMaxBalanceUsd={earnMax.view.balanceUsd}
           flashedShortcut={flashedShortcut}
+          incomingTransfers={
+            incoming.items.filter((i) => i.status.kind === "waiting").length
+          }
           isEarnBalanceLoading={isPositionLoading}
           isEarnMaxBalanceLoading={earnMax.view.isLoading}
           onSelectPage={handleSelectPage}
@@ -531,6 +536,7 @@ export function WorkspaceFaceliftShell() {
             />
           ) : activePage !== "earn" && activePage !== "earnmax" ? (
             <CryptoPage
+              incoming={incoming}
               navigationNonce={navigationNonce}
               onBack={() => handleSelectPage("wallet")}
               onEarn={(sourceMint) => {

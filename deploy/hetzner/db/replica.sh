@@ -272,7 +272,7 @@ EOF
     join -t'|' -a1 -a2 -e '-' -o 0,1.2,2.2,1.3,2.3 \
       <(neon_ro "$src" -c "$q_tables" | sort -t'|' -k1,1) \
       <(local_sql -d "$db" -c "$q_tables" | sort -t'|' -k1,1) |
-      awk -F'|' '{ flag = ($4 == $5 || $3 ~ /^syncing/) ? "" : "  DIFF"; printf "%-70s %16s %16s %s | %s%s\n", $1, $2, $3, $4, $5, flag }'
+      awk -F'|' '{ exact = $2 !~ /^~/ && $3 !~ /^~/; flag = ($3 ~ /^syncing/ || $4 != $5 || (exact && $2 != $3)) ? "  DIFF" : ""; printf "%-70s %16s %16s %s | %s%s\n", $1, $2, $3, $4, $5, flag }'
     echo "-- subscription (Hetzner)"
     local_sql -d "$db" -F' ' -c "select 'tables by state: ' || string_agg(st::text || '=' || n, ' ' order by st) from (select srsubstate as st, count(*) n from pg_subscription_rel r join pg_subscription s on s.oid=r.srsubid where s.subname='loyal_hz_$src' group by 1) x" \
       -c "select 'worker ' || coalesce(relid::regclass::text, 'apply') || ' received ' || coalesce(received_lsn::text, '-') || ' last_msg ' || coalesce(round(extract(epoch from now() - last_msg_receipt_time))::text, '-') || 's ago' from pg_stat_subscription where subname='loyal_hz_$src'" \
@@ -325,6 +325,7 @@ cmd_metrics() {
     echo '# TYPE loyal_db_subscription_last_msg_receipt_timestamp_seconds gauge'
     for spec in "${DATABASES[@]}"; do
       sub=loyal_hz_$(field "$spec" 1)
+      [[ -n $(local_sql -d postgres -c "select 1 from pg_subscription where subname='$sub'") ]] || continue
       sql="select coalesce((select subenabled::int from pg_subscription where subname='$sub'), 0), (select count(*) from pg_stat_subscription where subname='$sub' and worker_type='apply' and pid is not null), coalesce((select extract(epoch from max(last_msg_receipt_time))::bigint::text from pg_stat_subscription where subname='$sub' and worker_type='apply'), '')"
       IFS='|' read -r enabled workers last < <(local_sql -d postgres -c "$sql")
       echo "loyal_db_subscription_enabled{subscription=\"$sub\"} $enabled"
@@ -336,6 +337,7 @@ cmd_metrics() {
     echo '# TYPE loyal_db_neon_slot_lag_bytes gauge'
     for spec in "${DATABASES[@]}"; do
       src=$(field "$spec" 1) sub=loyal_hz_$(field "$spec" 1)
+      [[ -n $(local_sql -d postgres -c "select 1 from pg_subscription where subname='$sub'") ]] || continue
       if row=$(PGCONNECT_TIMEOUT=10 NEON_STATEMENT_TIMEOUT=20000 neon_ro "$src" -c "select coalesce(bool_or(active), false)::int || ' ' || coalesce(max(pg_wal_lsn_diff(pg_current_wal_lsn(), confirmed_flush_lsn))::bigint, 0) from pg_replication_slots where slot_name='$sub'" 2>/dev/null); then
         read -r active lag <<<"$row"
         echo "loyal_db_neon_probe_success{source=\"$src\"} 1"
@@ -367,7 +369,294 @@ cmd_retain() {
   done
 }
 
+HBA=/etc/postgresql/18/main/pg_hba.conf
+PGB_USERS=/etc/pgbouncer/loyal-users.txt
+CUTOVER=$WORK/cutover
+CLIENT_NETS=(10.92.0.0/16 127.0.0.1/32)
+USER_NS="n.nspname not in ('pg_catalog','information_schema') and n.nspname !~ '^(_timescaledb|timescaledb_|pg_toast|pg_temp)' and not exists (select 1 from pg_depend e where e.classid = 'pg_namespace'::regclass and e.objid = n.oid and e.deptype = 'e')"
+NOT_EXT="not exists (select 1 from pg_depend e where e.objid = c.oid and e.classid = 'pg_class'::regclass and e.deptype = 'e')"
+WRITES_SQL="select '@epoch|' || extract(epoch from pg_postmaster_start_time())::bigint || '/' || coalesce(extract(epoch from stats_reset)::bigint, 0) from pg_stat_database where datname = current_database() union all select format('%I.%I', schemaname, relname) || '|' || (n_tup_ins + n_tup_upd + n_tup_del) from pg_stat_user_tables where schemaname not in ('_timescaledb_catalog', '_timescaledb_config')"
+DUMP_FLAGS=(--schema-only --no-owner --no-privileges --no-publications --no-subscriptions --exclude-schema='_timescaledb*' --exclude-schema='timescaledb_*')
+ROLE_SETTINGS="select name || '=' || setting from pg_settings where name in ('TimeZone','search_path','DateStyle','IntervalStyle','lock_timeout','idle_in_transaction_session_timeout','idle_session_timeout','transaction_timeout','default_transaction_isolation','client_encoding','standard_conforming_strings','statement_timeout') order by 1"
+
+indent() { sed 's/^/  /'; }
+local_dump() { sudo -u postgres pg_dump "$@"; }
+
+owner_sql() {
+  local db=$1 role=$2
+  PGPASSWORD=$(cat "$SECRETS/$role.password") psql -XAtq -v ON_ERROR_STOP=1 "host=127.0.0.1 port=${PGB_PORT:-5432} dbname=$db user=$role sslmode=require application_name=loyal-cutover" "${@:3}"
+}
+
+cmd_access() {
+  local spec db role net line verifier hba=0 users=0
+  for spec in "${DATABASES[@]}"; do
+    db=$(field "$spec" 2) role=$(field "$spec" 3)
+    if [[ $(local_sql -c "select rolcanlogin and coalesce(rolpassword like 'SCRAM-SHA-256\$%', false) from pg_authid where rolname='$role'") != t ]]; then
+      echo "access: $role cannot log in with a SCRAM password; run setup" >&2
+      exit 1
+    fi
+    for net in "${CLIENT_NETS[@]}"; do
+      line="hostssl $db $role $net scram-sha-256"
+      grep -qxF "$line" "$HBA" && continue
+      grep -qE '^host +all +all +0\.0\.0\.0/0 +reject' "$HBA" || { echo "access: no catch-all reject line in $HBA" >&2; exit 1; }
+      awk -v l="$line" '!done && /^host +all +all +0\.0\.0\.0\/0 +reject/ { print l; done = 1 } { print }' "$HBA" >"$HBA.new"
+      cat "$HBA.new" >"$HBA" && rm -f "$HBA.new"
+      hba=1
+      changed "$HBA: $line"
+    done
+    verifier=$(local_sql -c "select rolpassword from pg_authid where rolname='$role'")
+    line="\"$role\" \"$verifier\""
+    if ! grep -qxF "$line" "$PGB_USERS"; then
+      { grep -v "^\"$role\" " "$PGB_USERS" || true; echo "$line"; } >"$PGB_USERS.new"
+      cat "$PGB_USERS.new" >"$PGB_USERS" && rm -f "$PGB_USERS.new"
+      users=1
+      changed "$PGB_USERS: $role SCRAM verifier"
+    fi
+  done
+  if ((hba)); then
+    [[ $(local_sql -c "select count(*) from pg_hba_file_rules where error is not null") == 0 ]] || { echo "access: pg_hba.conf has errors, not reloaded" >&2; exit 1; }
+    local_sql -c "select pg_reload_conf()" >/dev/null
+  fi
+  ((users)) && systemctl reload loyal-pgbouncer
+  echo "access: $changes change(s)"
+}
+
+priv_sql() {
+  cat <<EOF
+select kind || '|' || name || '|' || priv || '|' || ok from (
+  select 'table' as kind, format('%I.%I', n.nspname, c.relname) as name, p as priv, has_table_privilege($1, c.oid, p)::text as ok
+  from pg_class c join pg_namespace n on n.oid = c.relnamespace cross join unnest(array['SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER']) p
+  where c.relkind in ('r','p','v','m','f') and $USER_NS and $NOT_EXT
+  union all
+  select 'sequence', format('%I.%I', n.nspname, c.relname), p, has_sequence_privilege($1, c.oid, p)::text
+  from pg_class c join pg_namespace n on n.oid = c.relnamespace cross join unnest(array['USAGE','SELECT','UPDATE']) p
+  where c.relkind = 'S' and $USER_NS and $NOT_EXT
+  union all
+  select 'schema', format('%I', n.nspname), p, has_schema_privilege($1, n.oid, p)::text
+  from pg_namespace n cross join unnest(array['USAGE','CREATE']) p where $USER_NS
+  union all
+  select 'function', format('%I.%I(%s)', n.nspname, f.proname, pg_get_function_identity_arguments(f.oid)), 'EXECUTE', has_function_privilege($1, f.oid, 'EXECUTE')::text
+  from pg_proc f join pg_namespace n on n.oid = f.pronamespace
+  where $USER_NS and not exists (select 1 from pg_depend d where d.classid = 'pg_proc'::regclass and d.objid = f.oid and d.deptype = 'e')
+  union all
+  select 'database', '-', p, has_database_privilege($1, current_database(), p)::text from unnest(array['CONNECT','CREATE','TEMPORARY']) p
+) x order by 1
+EOF
+}
+
+cmd_grants() {
+  local spec src db role gaps=0 out kind name priv
+  mkdir -p "$CUTOVER"
+  for spec in "${DATABASES[@]}"; do
+    src=$(field "$spec" 1) db=$(field "$spec" 2) role=$(field "$spec" 3)
+    neon_ro "$src" -c "$(priv_sql current_user)" >"$CUTOVER/grants-neon-$src"
+    local_sql -d "$db" -c "$(priv_sql "'$role'")" >"$CUTOVER/grants-hz-$src"
+    out=$(awk -F'|' 'NR == FNR { n[$1 "|" $2 "|" $3] = $4; next } { h[$1 "|" $2 "|" $3] = $4 }
+      END {
+        for (k in n) if (!(k in h)) print "missing-on-hz|" k; else if (n[k] == "true" && h[k] != "true") print "gap|" k; else if (n[k] != h[k]) print "extra-on-hz|" k
+        for (k in h) if (!(k in n)) print "missing-on-neon|" k
+      }' "$CUTOVER/grants-neon-$src" "$CUTOVER/grants-hz-$src" | sort)
+    echo "grants: $db as $role vs Neon $src as current_user: $(wc -l <"$CUTOVER/grants-neon-$src") checks, $(grep -c '^gap|' <<<"$out" || true) gap(s), $(grep -c '^extra-on-hz|' <<<"$out" || true) extra on Hetzner, $(grep -c '^missing' <<<"$out" || true) object(s) on one side only"
+    [[ -z $out ]] || indent <<<"$out"
+    while IFS='|' read -r _ kind name priv; do
+      if [[ ${1:-} == --fix ]]; then
+        local_sql -d "$db" -c "GRANT $priv ON ${kind^^} $name TO $role"
+        changed "$db: GRANT $priv ON ${kind^^} $name TO $role"
+      else
+        gaps=$((gaps + 1))
+      fi
+    done < <(grep '^gap|' <<<"$out" || true)
+    out=$(grep -vxF -f <(owner_sql "$db" "$role" -c "$ROLE_SETTINGS") <(PGOPTIONS='-c default_transaction_read_only=on' psql -XAtq "service=neon_$src" -c "$ROLE_SETTINGS") || true)
+    echo "settings: $db as $role: $(grep -c . <<<"$out" || true) differ from Neon $src as current_user"
+    while IFS='=' read -r name value; do
+      [[ -n $name ]] || continue
+      if [[ ${1:-} == --fix ]]; then
+        printf 'ALTER ROLE %s IN DATABASE %s SET %s = %s;\n' "$role" "$db" "$name" "$(sql_literal "$value")" | local_sql
+        changed "$db: ALTER ROLE $role SET $name = '$value' (the Neon value)"
+      else
+        echo "  $name: Neon '$value'"
+        gaps=$((gaps + 1))
+      fi
+    done <<<"$out"
+  done
+  ((gaps == 0)) || { echo "grants: $gaps gap(s); rerun with --fix" >&2; exit 1; }
+}
+
+schema_diff() {
+  python3 -I - "$1" "$2" <<'PY'
+import re, sys
+def blocks(path):
+    out, key, body = {}, "preamble", []
+    def flush():
+        text = "\n".join(l for l in body if l.strip() and not l.startswith("--"))
+        if text:
+            out.setdefault(key, []).append(text)
+    for line in open(path):
+        line = line.rstrip("\n")
+        if line.startswith(("\\restrict", "\\unrestrict", "SET ", "SELECT pg_catalog.set_config")):
+            continue
+        m = re.match(r"-- Name: (.*); Type: (.*); Schema: (.*); Owner: .*", line)
+        if m:
+            flush()
+            key, body = f"{m.group(2)} {m.group(3)}.{m.group(1)}", []
+        else:
+            body.append(line)
+    flush()
+    return {k: "\n".join(sorted(v)) for k, v in out.items() if not k.startswith(("EXTENSION ", "COMMENT -.EXTENSION "))}
+neon, hz = blocks(sys.argv[1]), blocks(sys.argv[2])
+bare = lambda t: re.sub(r"[()\s]", "", t)
+drift = 0
+print(f"  {len(neon)} objects on Neon, {len(hz)} on Hetzner (extensions compared by name and version)")
+for k in sorted(neon.keys() | hz.keys()):
+    a, b = neon.get(k), hz.get(k)
+    if a == b:
+        continue
+    if a is not None and b is not None and bare(a) == bare(b):
+        print(f"  deparse-only: {k} (same tokens, redundant parentheses differ)")
+        continue
+    drift = 1
+    print(f"  DRIFT {k}: {'only on Neon' if b is None else 'only on Hetzner' if a is None else 'definition differs'}")
+    for side, t in (("<", a), (">", b)):
+        for l in (t or "").splitlines():
+            print(f"    {side} {l}")
+sys.exit(drift)
+PY
+}
+
+EXT_SQL="select extname || ' ' || extversion from pg_extension order by 1"
+
+TS_SETTINGS=$(cat <<'EOF'
+select 'hypertable ' || format('%I.%I', hypertable_schema, hypertable_name) || ' dims=' || num_dimensions || ' compression=' || compression_enabled from timescaledb_information.hypertables
+union all select 'dimension ' || format('%I.%I', hypertable_schema, hypertable_name) || ' ' || column_name || ' ' || coalesce(time_interval::text, integer_interval::text) from timescaledb_information.dimensions
+union all select 'compression ' || hypertable::text || ' segmentby=' || coalesce(segmentby, '-') || ' orderby=' || coalesce(orderby, '-') from timescaledb_information.hypertable_compression_settings
+union all select 'job ' || proc_name || ' ' || coalesce(format('%I.%I', hypertable_schema, hypertable_name), '-') || ' every ' || schedule_interval || ' ' || coalesce(config::text, '') from timescaledb_information.jobs where job_id >= 1000
+order by 1
+EOF
+)
+
+cmd_schema() {
+  local spec src db drift=0 d
+  mkdir -p "$CUTOVER"
+  for spec in "${DATABASES[@]}"; do
+    src=$(field "$spec" 1) db=$(field "$spec" 2)
+    PGOPTIONS='-c default_transaction_read_only=on' pg_dump "service=neon_$src" "${DUMP_FLAGS[@]}" -f "$CUTOVER/schema-neon-$src.sql"
+    local_dump -d "$db" "${DUMP_FLAGS[@]}" >"$CUTOVER/schema-hz-$src.sql"
+    echo "schema: $db vs Neon $src"
+    schema_diff "$CUTOVER/schema-neon-$src.sql" "$CUTOVER/schema-hz-$src.sql" || drift=1
+    echo "  extensions: Neon $(neon_ro "$src" -c "$EXT_SQL" | paste -sd, -) | Hetzner $(local_sql -d "$db" -c "$EXT_SQL" | paste -sd, -)"
+  done
+  d=$(diff <(neon_ro timescale -c "$TS_SETTINGS") <(local_sql -d kamino_timescale -c "$TS_SETTINGS") || true)
+  echo "timescale settings: $(grep -c '^[<>]' <<<"$d" || true) differing line(s) (< Neon, > Hetzner)"
+  local_sql -d kamino_timescale -c "$TS_SETTINGS" | indent
+  [[ -z $d ]] || { indent <<<"$d"; drift=1; }
+  exit $drift
+}
+
+cmd_pgbouncer_test() {
+  local spec db role
+  for spec in "${DATABASES[@]}"; do
+    db=$(field "$spec" 2) role=$(field "$spec" 3)
+    PGB_PORT=6432 owner_sql "$db" "$role" -f - <<'SQL' | tr '\n' ' '
+select 'pgbouncer: ' || current_user || ' ' || current_database() || ' via 6432';
+select $1::int * 10 as v \parse cutover_probe
+\bind_named cutover_probe 1 \g
+\bind_named cutover_probe 2 \g
+\close_prepared cutover_probe
+SQL
+    echo "(named prepared statement reused across transactions)"
+  done
+}
+
+cmd_lag_wait() {
+  local spec src db target deadline=$((SECONDS + ${1:-600}))
+  for spec in "${DATABASES[@]}"; do
+    src=$(field "$spec" 1) db=$(field "$spec" 2)
+    if [[ $(local_sql -d "$db" -c "select subenabled from pg_subscription where subname = 'loyal_hz_$src'") == f ]]; then
+      echo "lag-wait: subscription loyal_hz_$src is disabled, so an earlier switch already passed lag-wait; skipped"
+      continue
+    fi
+    target=$(neon_ro "$src" -c "select pg_current_wal_lsn()")
+    until [[ $(neon_ro "$src" -c "select coalesce(bool_and(confirmed_flush_lsn >= '$target'), false) from pg_replication_slots where slot_name = 'loyal_hz_$src'") == t ]]; do
+      ((SECONDS < deadline)) || { echo "lag-wait: slot loyal_hz_$src has not confirmed $target" >&2; exit 1; }
+      sleep 1
+    done
+    echo "lag-wait: slot loyal_hz_$src confirmed past $target"
+  done
+}
+
+cmd_writes() {
+  local action=$1 tag=$2 only=${3:-} spec src db file unknown=0
+  mkdir -p "$CUTOVER"
+  for spec in "${DATABASES[@]}"; do
+    src=$(field "$spec" 1) db=$(field "$spec" 2)
+    for side in neon hz; do
+      [[ -z $only || $only == "$side" ]] || continue
+      file=$CUTOVER/writes-$tag-$side-$src
+      if [[ $side == neon ]]; then neon_ro "$src" -c "$WRITES_SQL"; else local_sql -d "$db" -c "$WRITES_SQL"; fi >"$file.now"
+      grep -q '^@epoch|' "$file.now" || { echo "writes: $side $src returned no counters" >&2; exit 1; }
+      if [[ $action == save ]]; then
+        sync "$file.now"
+        mv -f "$file.now" "$file"
+        sync "$CUTOVER"
+        echo "writes: saved $tag $side $src ($(($(wc -l <"$file") - 1)) tables)"
+        continue
+      fi
+      [[ -s $file ]] || { echo "writes: no snapshot $file" >&2; exit 1; }
+      awk -F'|' -v l="$side $src" -v tag="$tag" 'NR == FNR { was[$1] = $2; next }
+        $1 == "@epoch" { r += ($2 != was[$1]); next }
+        { d = $2 - was[$1] } d != 0 { printf "writes: %s %s %+d\n", l, $1, d; t += (d < 0 ? 0 : d); r += (d < 0) }
+        END { printf "writes: %s total %d since %s%s\n", l, t, tag, (r ? ", UNKNOWN: counters reset (restart or stats reset), writes since " tag " cannot be counted" : ""); exit (r > 0) }' \
+        "$file" "$file.now" || unknown=1
+      rm -f "$file.now"
+    done
+  done
+  exit $unknown
+}
+
+cmd_sessions() {
+  local spec src
+  for spec in "${DATABASES[@]}"; do
+    src=$(field "$spec" 1)
+    neon_ro "$src" -F' ' -c "select 'sessions: Neon $src', coalesce(nullif(application_name, ''), '-'), coalesce(host(client_addr), 'local'), state, count(*) from pg_stat_activity where backend_type = 'client backend' and datname = current_database() and coalesce(application_name, '') <> 'loyal-hz-replica' and pid <> pg_backend_pid() group by 2, 3, 4 order by 5 desc"
+  done
+}
+
+cmd_subscriptions() {
+  local spec src db
+  if [[ $1 == enabled ]]; then
+    for spec in "${DATABASES[@]}"; do
+      src=$(field "$spec" 1) db=$(field "$spec" 2)
+      [[ $(local_sql -d "$db" -c "select subenabled from pg_subscription where subname = 'loyal_hz_$src'") == t ]] || { echo "subscription loyal_hz_$src: not enabled" >&2; exit 1; }
+    done
+    echo "subscriptions: all enabled"
+    return 0
+  fi
+  for spec in "${DATABASES[@]}"; do
+    src=$(field "$spec" 1) db=$(field "$spec" 2)
+    [[ -n $(local_sql -d "$db" -c "select 1 from pg_subscription where subname = 'loyal_hz_$src'") ]] || { echo "subscription loyal_hz_$src: absent"; continue; }
+    case $1 in
+      disable | enable) local_sql -d "$db" -c "ALTER SUBSCRIPTION loyal_hz_$src ${1^^}" ;;
+      drop) local_sql -d "$db" -c "ALTER SUBSCRIPTION loyal_hz_$src DISABLE" -c "ALTER SUBSCRIPTION loyal_hz_$src SET (slot_name = NONE)" -c "DROP SUBSCRIPTION loyal_hz_$src" ;;
+    esac
+    echo "subscription loyal_hz_$src: $1"
+  done
+  if [[ $1 == drop ]]; then
+    for spec in "${DATABASES[@]}"; do
+      src=$(field "$spec" 1)
+      neon_rw "$src" -c "select 'Neon slot ' || slot_name || ' dropped' from pg_replication_slots, pg_drop_replication_slot(slot_name) where slot_name = 'loyal_hz_$src'"
+    done
+  fi
+}
+
 case ${1:-} in
+  access) cmd_access ;;
+  grants) cmd_grants "${2:-}" ;;
+  schema) cmd_schema ;;
+  pgbouncer-test) cmd_pgbouncer_test ;;
+  lag-wait) cmd_lag_wait "${2:-600}" ;;
+  writes) cmd_writes "$2" "$3" "${4:-}" ;;
+  sessions) cmd_sessions ;;
+  subscriptions) cmd_subscriptions "$2" ;;
   setup) cmd_setup ;;
   backfill) cmd_backfill ;;
   catchup) cmd_catchup ;;
@@ -376,5 +665,5 @@ case ${1:-} in
   check) cmd_check ;;
   metrics) cmd_metrics ;;
   retain) cmd_retain "${2:-}" ;;
-  *) echo "usage: $0 setup|backfill|catchup|sequences|verify|check|metrics|retain [--dry-run]" >&2; exit 2 ;;
+  *) echo "usage: $0 setup|backfill|catchup|sequences|verify|check|metrics|retain [--dry-run]|access|grants [--fix]|schema|pgbouncer-test|lag-wait [secs]|writes save|diff <tag> [neon|hz]|sessions|subscriptions enabled|disable|enable|drop" >&2; exit 2 ;;
 esac

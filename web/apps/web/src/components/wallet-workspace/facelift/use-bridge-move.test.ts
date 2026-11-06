@@ -19,7 +19,14 @@ const wallets = [
 
 mock.module("@privy-io/react-auth", () => ({
   usePrivy: () => ({ ready: true, authenticated: true }),
-  useUser: () => ({ user: { linkedAccounts: [] }, refreshUser: async () => ({}) }),
+  useUser: () => ({
+    user: {
+      linkedAccounts: [
+        { type: "wallet", chainType: "solana", address: WALLET, walletClientType: "phantom" },
+      ],
+    },
+    refreshUser: async () => ({}),
+  }),
   useCreateWallet: () => ({ createWallet: async () => ({}) }),
   getIdentityToken: async () => "token",
   useAuthorizationSignature: () => ({ generateAuthorizationSignature: async () => ({}) }),
@@ -29,8 +36,7 @@ mock.module("@privy-io/react-auth", () => ({
 
 const React = await import("react");
 const { createRoot } = await import("react-dom/client");
-const { useEvmDepositAddress } = await import("./use-evm-deposit-address");
-const { classifySendError, settleWithin, useBridgeMove, useBridgeMoveBalances } = await import(
+const { classifySendError, moveIncoming, settleWithin, useIncomingTransfers } = await import(
   "./use-bridge-move"
 );
 
@@ -40,20 +46,11 @@ const NETWORKS = [
     name: "Base",
     icon: null,
     route: "evm",
+    shortName: "Base",
+    minUsd: 0,
     tokens: [{ asset: "0xusdc", symbol: "USDC", name: "USD Coin", icon: null, decimals: 6 }],
   },
 ];
-const BALANCE = {
-  chain: "base",
-  chainName: "Base",
-  chainIcon: null,
-  asset: "0xusdc",
-  symbol: "USDC",
-  name: "USD Coin",
-  icon: null,
-  decimals: 6,
-  amountRaw: BigInt(5_000_000),
-};
 const CALL = { to: EVM, data: "0x", value: "0" };
 const QUOTE = {
   requestId: "0xreq",
@@ -84,22 +81,19 @@ test("one open reads the balances once, however often the sheet renders", async 
       )
     );
   }) as typeof fetch;
-  let hook!: ReturnType<typeof useEvmDepositAddress>;
-  let moves!: ReturnType<typeof useBridgeMoveBalances>;
+  let moves!: ReturnType<typeof useIncomingTransfers>;
   function Probe() {
-    hook = useEvmDepositAddress(WALLET);
-    moves = useBridgeMoveBalances(hook.info?.kind === "relay_signed", hook.networks, WALLET);
+    moves = useIncomingTransfers(WALLET);
     return null;
   }
   const root = createRoot(document.createElement("div") as unknown as Element);
   try {
     await React.act(async () => root.render(React.createElement(Probe)));
-    await React.act(async () => hook.load());
     await waitFor(50);
     await React.act(async () => root.render(React.createElement(Probe)));
     await waitFor(50);
     expect(paths.filter((p) => p.endsWith("/balances"))).toHaveLength(1);
-    expect(moves.balances).toHaveLength(1);
+    expect(moves.items).toHaveLength(1);
   } finally {
     await React.act(async () => root.unmount());
     globalThis.fetch = realFetch;
@@ -111,6 +105,13 @@ async function failSend(failure: unknown, calls = [CALL], confirmStatus = 200) {
   const realFetch = globalThis.fetch;
   globalThis.fetch = (async (url: string) => {
     posts.push(url);
+    if (url.endsWith("/balances"))
+      return new Response(
+        JSON.stringify({
+          balances: [{ chain: "base", asset: "0xusdc", decimals: 6, amountRaw: "5000000" }],
+        })
+      );
+    if (url.endsWith("/transfers")) return new Response(JSON.stringify({ transfers: [] }));
     return new Response(JSON.stringify({ ...QUOTE, calls }), {
       status: url.endsWith("/confirm") ? confirmStatus : 200,
     });
@@ -120,33 +121,32 @@ async function failSend(failure: unknown, calls = [CALL], confirmStatus = 200) {
     sendTransaction.mockImplementationOnce(async () => ({ hash: "0xapprove" }));
   }
   sendTransaction.mockImplementationOnce(() => Promise.reject(failure));
-  let move!: ReturnType<typeof useBridgeMove>;
-  function Probe() {
-    move = useBridgeMove(BALANCE, EVM);
-    return null;
-  }
-  const root = createRoot(document.createElement("div") as unknown as Element);
   try {
-    await React.act(async () => root.render(React.createElement(Probe)));
-    await React.act(async () => move.setAmountInput("1"));
-    await waitFor(600);
-    await React.act(async () => move.send());
-    const { step } = move;
+    const outcome = await moveIncoming({
+      sender: EVM,
+      chain: "base",
+      asset: "0xusdc",
+      symbol: "USDC",
+      wallet: wallets[0] as never,
+      sendTransaction: sendTransaction as never,
+      signal: new AbortController().signal,
+      onRead: () => undefined,
+      onQuoted: () => undefined,
+    });
     return {
-      step: step.kind,
-      message: step.kind === "failed" ? step.message : null,
+      step: outcome.kind,
+      message: outcome.kind === "failed" ? outcome.message : null,
       refusalPosts: posts.filter((p) => p.endsWith("/sponsor-refusal")).length,
       sends: sendTransaction.mock.calls.length,
     };
   } finally {
-    await React.act(async () => root.unmount());
     globalThis.fetch = realFetch;
   }
 }
 
 test("a rejection is read from the code, not the wording", async () => {
   const result = await failSend(Object.assign(new Error("nope"), { code: 4001 }));
-  expect(result).toEqual({ step: "form", message: null, refusalPosts: 0, sends: 1 });
+  expect(result).toEqual({ step: "rejected", message: null, refusalPosts: 0, sends: 1 });
 });
 
 test("a failure that names rejection in its text is not a rejection", async () => {
@@ -180,6 +180,51 @@ test("a confirm the server refused sends nothing and shows the failure", async (
   const result = await failSend(new Error("unreached"), [CALL], 503);
   expect(result.sends).toBe(0);
   expect(result.step).toBe("failed");
+});
+
+test("a sent hash whose receipt cannot be read is still submitted", async () => {
+  const posts: { url: string; body: unknown }[] = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: string, init?: RequestInit) => {
+    posts.push({ url, body: init?.body ? JSON.parse(String(init.body)) : null });
+    if (url.endsWith("/balances"))
+      return new Response(
+        JSON.stringify({
+          balances: [{ chain: "base", asset: "0xusdc", decimals: 6, amountRaw: "5000000" }],
+        })
+      );
+    if (url.endsWith("/transfers")) return new Response(JSON.stringify({ transfers: [] }));
+    return new Response(JSON.stringify({ ...QUOTE, calls: [CALL] }));
+  }) as typeof fetch;
+  sendTransaction.mockReset();
+  sendTransaction.mockImplementationOnce(async () => ({ hash: "0xsent" }));
+  const rpcDown = {
+    ...wallets[0],
+    getEthereumProvider: async () => ({
+      request: async () => {
+        throw new Error("rpc down");
+      },
+    }),
+  };
+  try {
+    const outcome = await moveIncoming({
+      sender: EVM,
+      chain: "base",
+      asset: "0xusdc",
+      symbol: "USDC",
+      wallet: rpcDown as never,
+      sendTransaction: sendTransaction as never,
+      signal: new AbortController().signal,
+      onRead: () => undefined,
+      onQuoted: () => undefined,
+    });
+    expect(outcome.kind).toBe("submitted");
+    expect(posts.filter((p) => p.url.endsWith("/submit")).map((p) => p.body)).toEqual([
+      { originTx: "0xsent" },
+    ]);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 });
 
 test("a wallet call that never settles times out as its own failure", async () => {

@@ -46,6 +46,7 @@ export type Post = {
   "/api/funding/bridge/out/quote": Types.BridgeOutQuoteResponse;
   "/api/funding/bridge/quote": Types.BridgeQuoteResponse;
   "/api/funding/bridge/transfers/{requestId}/confirm": Types.BridgeTransfer;
+  "/api/funding/bridge/transfers/{requestId}/release": Types.BridgeTransfer;
   "/api/funding/bridge/transfers/{requestId}/sponsor-refusal": Types.BridgeTransfer;
   "/api/funding/bridge/transfers/{requestId}/submit": Types.BridgeTransfer;
   "/api/funding/evm-deposit-address": Types.EvmDepositAddressResponse;

@@ -315,6 +315,10 @@ export type BridgeRecipientsResponse = {
     recipients: Array<BridgeRecipient> | null;
 };
 
+export type BridgeReleaseRequest = {
+    reason: 'rejected' | 'refused' | 'reverted' | 'aborted';
+};
+
 export type BridgeSponsorRefusalRequest = {
     /**
      * Privy's error text, logged for the operator
@@ -823,6 +827,10 @@ export type EarnMaxContextResponse = {
 export type EarnMaxErrorDetail = {
     code: string;
     message?: string;
+    /**
+     * The bridge transfer already in flight, on bridge_in_flight
+     */
+    requestId?: string;
 };
 
 export type EarnMaxSummary = {
@@ -2962,6 +2970,10 @@ export type PostFundingBridgeQuoteErrors = {
      */
     404: RouteError;
     /**
+     * Conflict
+     */
+    409: RouteError;
+    /**
      * Too Many Requests
      */
     429: RouteError;
@@ -3060,6 +3072,10 @@ export type PostFundingBridgeTransferConfirmErrors = {
      */
     404: RouteError;
     /**
+     * Conflict
+     */
+    409: RouteError;
+    /**
      * Service Unavailable
      */
     503: RouteError;
@@ -3075,6 +3091,57 @@ export type PostFundingBridgeTransferConfirmResponses = {
 };
 
 export type PostFundingBridgeTransferConfirmResponse = PostFundingBridgeTransferConfirmResponses[keyof PostFundingBridgeTransferConfirmResponses];
+
+export type PostFundingBridgeTransferReleaseData = {
+    body?: BridgeReleaseRequest;
+    headers?: {
+        Authorization?: string;
+        Cookie?: string;
+        'X-Forwarded-Host'?: string;
+    };
+    path: {
+        /**
+         * Relay request id from the quote
+         */
+        requestId: string;
+    };
+    query?: never;
+    url: '/api/funding/bridge/transfers/{requestId}/release';
+};
+
+export type PostFundingBridgeTransferReleaseErrors = {
+    /**
+     * Bad Request
+     */
+    400: RouteError;
+    /**
+     * Unauthorized
+     */
+    401: RouteError;
+    /**
+     * Forbidden
+     */
+    403: RouteError;
+    /**
+     * Not Found
+     */
+    404: RouteError;
+    /**
+     * Service Unavailable
+     */
+    503: RouteError;
+};
+
+export type PostFundingBridgeTransferReleaseError = PostFundingBridgeTransferReleaseErrors[keyof PostFundingBridgeTransferReleaseErrors];
+
+export type PostFundingBridgeTransferReleaseResponses = {
+    /**
+     * OK
+     */
+    200: BridgeTransfer;
+};
+
+export type PostFundingBridgeTransferReleaseResponse = PostFundingBridgeTransferReleaseResponses[keyof PostFundingBridgeTransferReleaseResponses];
 
 export type PostFundingBridgeSponsorRefusalData = {
     body?: BridgeSponsorRefusalRequest;

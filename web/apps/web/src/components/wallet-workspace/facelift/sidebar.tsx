@@ -138,6 +138,7 @@ export function FaceliftSidebar({
   earnBalanceUsd,
   earnMaxBalanceUsd,
   flashedShortcut,
+  incomingTransfers,
   isEarnBalanceLoading,
   isEarnMaxBalanceLoading,
   onSelectPage,
@@ -152,6 +153,7 @@ export function FaceliftSidebar({
   earnBalanceUsd: number;
   earnMaxBalanceUsd: number;
   flashedShortcut: WorkspacePage | null;
+  incomingTransfers: number;
   isEarnBalanceLoading: boolean;
   isEarnMaxBalanceLoading: boolean;
   onSelectPage: (page: WorkspacePage) => void;
@@ -583,6 +585,15 @@ export function FaceliftSidebar({
                 isFlashed={flashedShortcut === "assets"}
                 letter="A"
               />
+              {incomingTransfers > 0 && (
+                <span className="ml-auto flex min-w-0 items-center gap-1.5 text-[13px] text-muted-foreground leading-4">
+                  <span className="truncate">
+                    {incomingTransfers} incoming transfer
+                    {incomingTransfers === 1 ? "" : "s"}
+                  </span>
+                  <span className="size-1.5 shrink-0 rounded-full bg-primary" />
+                </span>
+              )}
             </span>
             <SplitAmount
               fraction={assetsBalance.balanceFraction}

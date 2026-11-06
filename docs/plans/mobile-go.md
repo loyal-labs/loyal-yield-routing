@@ -432,3 +432,21 @@ The on-device mainnet deposit and withdraw stay on Vlad's preview build.
   is M1's check.
 - An Earn MAX screen design for mobile. None exists in the app. Figma and
   Linear were not searched.
+
+## Status 2026-11-05
+
+Every Earn and Earn MAX path the app calls is served by Go (#608, equivalence checked by byte-comparing the TypeScript and Go built transactions, 15 of 15). `loyal-web` has run these families live since 2026-10-24 (#609 to #614): refund scan by each policy's vault, earnings on its own non-blocking connection (stale data, else 503 `refresh_in_progress`), one Timescale pool of 4, read and write timeouts, and autodeposit with wallet push off. The app's home is this repo. Owner decisions from 2026-10-23:
+
+- Vercel and loyal-app are sunset later. Deleting the Next `/mobile/` twins and porting `/api/earn-max/apy` is "not for now". The signed-out sidebar still reads the APY from Next.
+- Sponsorship is mainnet-only by design.
+- Every vault index is 1 (`EarnVaultIndex`); 14 of 17,136 policies sit on vault 0 and are not served.
+
+Open:
+
+- Covering index and `VACUUM` on `vault_position_snapshot_positions`; a cold earnings rebuild reads the whole snapshot history and takes about 35 s at the median.
+- Decide whether to hide the 17 non-Loyal fleet-vault policies of the canary account `EEA8` from Earn refunds.
+- Log a line when a background earnings refresh is skipped because every slot is full, and bound the APY query with a statement timeout (the earnings cache sets one; check that it covers the APY query).
+- Decide whether periodic vault position snapshots come back. Snapshots are written only on change since #374, so vaults 8885 and 2319 have none since 2026-10-13. They have had no activity since July.
+- `recurringDelegations` and delegation refund read vault 1 only.
+- Autodeposit wallet push needs `MOBILE_PUSH_API_BASE_URL` and `MOBILE_PUSH_API_SECRET`. They were in no 1Password item or env file on 2026-10-24; the Hetzner migration handoff tracks where they come from now.
+- Vlad's EAS preview build and the production flip of `EXPO_PUBLIC_API_BASE_URL` are his; this plan does not track them.
