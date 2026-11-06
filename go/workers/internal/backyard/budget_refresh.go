@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"time"
 
 	"github.com/solana-foundation/solana-go/v2"
 	"github.com/solana-foundation/solana-go/v2/rpc"
@@ -109,14 +110,24 @@ func simulateBudgetRefreshInstructionsWithOptional(ctx context.Context, c *chain
 		return 0, nil, err
 	}
 	minimum := uint64(minimumSlot)
-	simulated, err := c.Simulate(ctx, wire, rpc.SimulateTransactionOpts{Commitment: rpc.CommitmentConfirmed, MinContextSlot: &minimum, ReplaceRecentBlockhash: true, Accounts: &rpc.SimulateTransactionAccountsOpts{Encoding: solana.EncodingBase64, Addresses: keys}})
+	opts := rpc.SimulateTransactionOpts{Commitment: rpc.CommitmentConfirmed, MinContextSlot: &minimum, ReplaceRecentBlockhash: true, Accounts: &rpc.SimulateTransactionAccountsOpts{Encoding: solana.EncodingBase64, Addresses: keys}}
+	simulated, err := c.Simulate(ctx, wire, opts)
+	// Let a lagging RPC catch up without lowering the required account slot.
+	for retry := 0; retry < 2 && errors.Is(err, chain.ErrBehind); retry++ {
+		select {
+		case <-ctx.Done():
+			err = ctx.Err()
+		case <-time.After(250 * time.Millisecond):
+			simulated, err = c.Simulate(ctx, wire, opts)
+		}
+	}
 	var failure *chain.SimulationError
 	if errors.As(err, &failure) {
 		transactionError, _ := json.Marshal(failure.Err)
 		return 0, nil, &PreSendHold{Reason: holdStale, Details: map[string]string{"cause": "price_refresh_simulation_failed", "transactionError": string(transactionError)}}
 	}
 	if err != nil {
-		return 0, nil, staleHoldFrom(err, "price_refresh_simulation_unavailable")
+		return 0, nil, &PreSendHold{Reason: holdStale, cause: err, Details: map[string]string{"cause": "price_refresh_simulation_unavailable", "rpcError": chain.Scrub(err.Error())}}
 	}
 	accounts := make([]ConfirmedAccount, len(addresses))
 	for i, a := range simulated.Accounts {

@@ -7,7 +7,6 @@ import {
   earnMaxPendingMessage,
   earnMaxPendingSubtitle,
   earnMaxWithdrawalPending,
-  formatEarnMaxWithdrawalAmount,
   formatEarnMaxApyLabel,
 } from "@loyal-labs/shared";
 import { CircleCheck, Clock3, Infinity as InfinityIcon } from "lucide-react";
@@ -115,7 +114,6 @@ export function isEarnMaxUntouched(view: EarnMaxViewModel): boolean {
     !view.isLoading &&
     view.balanceUsd <= 0 &&
     view.activity.length === 0 &&
-    !(view.recoverableUsdcRaw && BigInt(view.recoverableUsdcRaw) > BigInt(0)) &&
     !view.withdrawal
   );
 }
@@ -366,7 +364,6 @@ function EarnMaxActivityCard({
               let lineIndex = 0;
               return (
                 <>
-                  {view.recoverableUsdcRaw && BigInt(view.recoverableUsdcRaw) > BigInt(0) && actions.recoverClaimRemainder ? <div className="flex flex-col items-start gap-2 px-4 py-3"><p className="text-[13px] text-muted-foreground">{formatEarnMaxWithdrawalAmount(view.recoverableUsdcRaw, "USDC")} remains available in your Earn MAX account.</p><SmallPill disabled={view.isBusy} label="Move remaining USDC to wallet" onClick={() => void actions.recoverClaimRemainder?.()} variant="light" /></div> : null}
                   {withdrawal?.canClaim ? (
                     <StaggerLine index={lineIndex++}>
                         <GroupHeaderWithIcon

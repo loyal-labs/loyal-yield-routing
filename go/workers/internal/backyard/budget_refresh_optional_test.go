@@ -8,8 +8,81 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
+
+func TestSimulatedReserveRefreshRetriesLagWithoutWeakeningCapture(t *testing.T) {
+	for _, scenario := range []string{"catches up", "still behind", "program failure", "rate limited", "canceled"} {
+		t.Run(scenario, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			client := newFakeChain(t, nil)
+			calls, firstParams := 0, ""
+			rpcOf(client).Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+				var payload struct {
+					Method string            `json:"method"`
+					Params []json.RawMessage `json:"params"`
+				}
+				if err := json.NewDecoder(request.Body).Decode(&payload); err != nil || payload.Method != "simulateTransaction" {
+					t.Fatalf("unexpected RPC: %s %v", payload.Method, err)
+				}
+				params, _ := json.Marshal(payload.Params)
+				if calls == 0 {
+					firstParams = string(params)
+				} else if string(params) != firstParams {
+					t.Fatal("retry changed the unsigned wire or capture requirements")
+				}
+				var config struct {
+					MinContextSlot         uint64 `json:"minContextSlot"`
+					Commitment             string `json:"commitment"`
+					SigVerify              bool   `json:"sigVerify"`
+					ReplaceRecentBlockhash bool   `json:"replaceRecentBlockhash"`
+				}
+				if err := json.Unmarshal(payload.Params[1], &config); err != nil || config.MinContextSlot != 41 || config.Commitment != "confirmed" || config.SigVerify || !config.ReplaceRecentBlockhash {
+					t.Fatalf("capture requirements changed: %+v %v", config, err)
+				}
+				calls++
+				switch scenario {
+				case "program failure":
+					return response(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":43},"value":{"err":"BlockhashNotFound"}}}`), nil
+				case "rate limited":
+					return response(`{"jsonrpc":"2.0","id":1,"error":{"code":-32429,"message":"rate limited"}}`), nil
+				case "canceled":
+					cancel()
+				case "catches up":
+					if calls == 3 {
+						return response(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":43},"value":{"err":null,"accounts":[{"owner":"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA","lamports":9,"data":["AQ==","base64"],"executable":false}]}}}`), nil
+					}
+				}
+				return response(`{"jsonrpc":"2.0","id":1,"error":{"code":-32016,"message":"Minimum context slot has not been reached"}}`), nil
+			})
+			slot, accounts, err := simulateLanesReserveRefreshOptional(ctx, rwa, client, []string{PrimeUSDCLaneID}, []string{bridgeVault}, nil, 41)
+			if scenario == "catches up" {
+				if err != nil || calls != 3 || slot != 43 || len(accounts) != 1 || accounts[0].Lamports != 9 {
+					t.Fatalf("catchup failed: calls=%d slot=%d accounts=%v err=%v", calls, slot, accounts, err)
+				}
+				return
+			}
+			wantCalls, wantCause, wantErr := 1, "price_refresh_simulation_unavailable", context.Canceled
+			switch scenario {
+			case "still behind":
+				wantCalls, wantErr = 3, chain.ErrBehind
+			case "rate limited":
+				wantErr = chain.ErrRateLimited
+			case "program failure":
+				wantCause, wantErr = "price_refresh_simulation_failed", nil
+			}
+			var hold *PreSendHold
+			if calls != wantCalls || !errors.As(err, &hold) || holdCause(hold) != wantCause || wantErr != nil && !errors.Is(err, wantErr) {
+				t.Fatalf("unexpected retry/hold: calls=%d err=%v", calls, err)
+			}
+			if wantErr != nil && hold.Details["rpcError"] == "" {
+				t.Fatal("RPC failure lost its diagnostic reason")
+			}
+		})
+	}
+}
 
 // The selector destination batch pins lifecycle addresses that may legitimately
 // be absent (an unopened obligation or farm user state). A simulated reserve
