@@ -29,6 +29,7 @@ type Worker struct {
 }
 
 type tickRuntime struct {
+	protectInvestment       func(context.Context, Decision, Observation, any) error
 	executionReady          func(context.Context, string, time.Time) error
 	protectWithdrawal       func(context.Context, RouteManifest, Decision, Observation, any, ExpectedEffects) (any, error)
 	withdrawalHealth        func(context.Context, withdrawalAssessment) error
@@ -192,6 +193,7 @@ func productionTickRuntime(database *Database, rpc *chain.Client, view *View, ju
 		navEvidenceErr: new(string),
 	}
 	return tickRuntime{
+		protectInvestment:  (lanePricer{rpc: rpc, view: view, client: jupiterClient, manifest: manifest}).protectInvestment,
 		executionReady:     database.executionReady,
 		withdrawalHealth:   database.RecordWithdrawalHealth,
 		persistedNAVReport: database.ObservedNAVReport,
@@ -497,6 +499,13 @@ func (w *Worker) stopWhileLatched(ctx context.Context) (bool, error) {
 
 func (w *Worker) prepare(ctx context.Context, decision Decision, observation Observation) (request any, effects ExpectedEffects, prepared Observation, err error) {
 	defer func() {
+		if err == nil && investmentExitRequired(w.manifest.vault, decision) {
+			if w.runtime.protectInvestment == nil {
+				err = staleHold(investmentExitUnavailable)
+			} else {
+				err = w.runtime.protectInvestment(ctx, decision, observation, request)
+			}
+		}
 		if err == nil {
 			request, err = authorizeAddRequest(request, decision, observation.Snapshot)
 		}
