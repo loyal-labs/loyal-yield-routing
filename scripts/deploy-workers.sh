@@ -44,7 +44,8 @@ host=${LOYAL_WORKERS_SSH:-loyal-workers}
 unit=loyal-$family
 dropin=/etc/systemd/system/$unit.service.d/40-verified-release.conf
 releases=/opt/loyal/releases/$family
-rules_record=/etc/prometheus/loyal.rules.yml.sha
+rules_file=/etc/prometheus/loyal.rules.yml
+rules_path=deploy/hetzner/monitoring/loyal.rules.yml
 
 cd "$(dirname "$0")/.."
 git fetch -q origin main
@@ -119,8 +120,12 @@ if [[ $web_family == yes && ${LOYAL_DEPLOY_DRY_RUN:-} == 1 ]]; then
   exit 0
 fi
 
-facts=$(ssh "$host" sh -s -- "$rules_record" "$dropin" <<'REMOTE'
-id -u; uname -m; echo rules $(cat "$1" 2>/dev/null); cat "$2"
+facts=$(ssh "$host" sh -s -- "$rules_file" "$dropin" <<'REMOTE'
+blob() {
+  [ -f "$1" ] || return 0
+  { printf 'blob %d\0' "$(wc -c <"$1")"; cat "$1"; } | sha1sum | cut -d' ' -f1
+}
+id -u; uname -m; echo rules $(blob "$1"); cat "$2"
 REMOTE
 )
 {
@@ -143,13 +148,33 @@ if [[ ${#running} -ne 40 ]]; then
 fi
 echo "host $host runs $running; deploying $sha"
 
-rules_sha=$(sed -n 's/^rules \([0-9a-f]\{40\}\)$/\1/p' <<<"$facts")
 install_rules=yes
+rules_exit=0
 if [[ $web_family == yes ]]; then
   install_rules=no
-elif [[ -n $rules_sha ]] && ! git merge-base --is-ancestor "$rules_sha" "$sha" 2>/dev/null; then
-  install_rules=no
-  echo "host rules come from $rules_sha, which is not an ancestor of $sha; leaving them"
+else
+  host_blob=$(sed -n 's/^rules \([0-9a-f]\{40\}\)$/\1/p' <<<"$facts")
+  target_blob=$(git rev-parse --verify --quiet "$sha:$rules_path") || {
+    echo "$sha has no $rules_path" >&2
+    exit 1
+  }
+  if [[ $host_blob == "$target_blob" ]]; then
+    install_rules=no
+    echo "monitoring rules unchanged"
+  elif [[ -n $host_blob ]]; then
+    # Newest, so a revert never places the host's rules before a later version.
+    from=$(git log --format=%H --raw --no-abbrev origin/main -- "$rules_path" |
+      awk -v blob="$host_blob" 'NF == 1 { c = $1 } $4 == blob && !found { print c; found = 1 }')
+    if [[ -z $from ]]; then
+      install_rules=no
+      rules_exit=1
+      echo "host rules (blob $host_blob) match no version on origin/main: installed from a branch or edited by hand" >&2
+      echo "merge that branch, or install main's rules by hand with deploy/hetzner/install-rules.sh" >&2
+    elif ! git merge-base --is-ancestor "$from" "$sha"; then
+      install_rules=no
+      echo "host rules come from $from, newer than $sha; leaving them"
+    fi
+  fi
 fi
 
 if [[ $running == "$sha" && $mode == running ]]; then
@@ -166,7 +191,7 @@ REMOTE
     exit 1
   fi
   if [[ $install_rules != yes ]]; then
-    exit 0
+    exit "$rules_exit"
   fi
 elif [[ $web_family != yes ]]; then
   if ! git cat-file -e "${running}^{commit}" 2>/dev/null; then
@@ -248,13 +273,13 @@ REMOTE
 fi
 
 if [[ $install_rules != yes ]]; then
-  exit 0
+  exit "$rules_exit"
 fi
 upload=$(ssh "$host" "mktemp -d /tmp/loyal-monitoring.XXXXXX")
 scp -q -r "$tree/deploy/hetzner/monitoring" "$tree/deploy/hetzner/install-rules.sh" "$host:$upload/"
 set +e
 ssh "$host" systemd-run --unit="loyal-deploy-rules-${sha:0:12}" --quiet --wait --pipe --collect \
-  /bin/sh "$upload/install-rules.sh" "$sha" "${rules_sha:-none}" "$upload"
+  /bin/sh "$upload/install-rules.sh" "$sha" "${host_blob:-none}" "$upload"
 status=$?
 set -e
 if [[ $status -ne 0 ]]; then

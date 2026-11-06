@@ -18,7 +18,7 @@ A `relay_signed` user's deposit waits on their Privy embedded EVM wallet until t
 - The unmoved-funds alert (#733, `go/workers/internal/bridge/unmoved.go`) went live on retail `bdb8b71ab` at 23:18Z. It publishes `loyal_bridge_incoming_unmoved{address,chain,asset,under_min}` every 10 minutes, and Prometheus holds the 30-minute clock (`LoyalBridgeIncomingUnmoved`, `Stranded`, `ScanStale`, `ScanFailing`). It runs on the `privy-gas-spend.conf` credentials, which are the website's Privy app.
 
 Deploy notes from this release:
-- The host's rules record named a pre-squash branch sha, so `deploy retail` skipped the rules. They were installed by hand with `install-rules.sh`. Fix the record or the ancestry check before the next rules change.
+- The host's rules record named a pre-squash branch sha, so `deploy retail` skipped the rules. They were installed by hand with `install-rules.sh`. Fixed on branch `fix/rules-by-content`: the deploy now places the host rules by file content, with no record.
 - The host's `alertmanager.yml` had drifted from the repo since October and was reinstalled.
 - After the 2026-11-05 15:46 PST DB switch, yield migrations go to Hetzner (10.92.1.1) only. Logical replication does not carry DDL, so ask the Hetzner migration coordinator before any yield or app DDL.
 
