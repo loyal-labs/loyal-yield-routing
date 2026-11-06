@@ -83,6 +83,7 @@ func TestWorkerDispatchesWYLDSDebtConversionsToHastra(t *testing.T) {
 				s.DebtIdleRaw, s.Target = 5_000, exitAllTarget
 			}
 			o := tickObservation(s)
+			s.net = fixtureSnapshotCertificate(s)
 			want := Decide(s)
 			if want.Action != action || want.StrategyKey != autoAUTOWYLDSLane {
 				t.Fatal(want)

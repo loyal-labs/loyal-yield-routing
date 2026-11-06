@@ -515,7 +515,7 @@ func stepUpBorrowWithinCap(st stepState, borrow uint64) (uint64, error) {
 }
 
 func quoteEntryExit(ctx context.Context, p lanePricer, record func(context.Context, ExitCost) (bool, error), costs exitCosts, entry heldExitBasis, slot int64, at time.Time) error {
-	if c := costs[entry.st.route.Lane]; c.Quote != nil && c.Quote.fresh(entry.heldRaw, entry.mark) {
+	if c := costs[entry.st.route.Lane]; c.Quote != nil && c.Quote.fresh(entry.heldRaw, entry.mark) && c.Quote.validAt(time.Now(), slot) && c.Quote.scope.vault == p.manifest.vault.squads && c.Quote.scope.manifest == p.manifest.SHA256 && c.Quote.scope.usdc == entry.usdc {
 		return nil
 	}
 	cost, err := p.priceHeldExit(ctx, entry, slot, at)
@@ -524,6 +524,9 @@ func quoteEntryExit(ctx context.Context, p lanePricer, record func(context.Conte
 	}
 	if err != nil {
 		return staleHoldFrom(err, exitUnpriced)
+	}
+	if !cost.fresh(entry.heldRaw, entry.mark) || !cost.validAt(time.Now(), slot) {
+		return staleHold(exitUnpriced)
 	}
 	return nil
 }
@@ -599,7 +602,7 @@ func assembleMove(ctx context.Context, rpc *chain.Client, manifest RouteManifest
 	if entrySt.cash, err = vaultCustodyRaw(v, accounts, v.cash, fleet.USDCMint, bridgeTokenProgram); err != nil {
 		return StepExecutionEvidence{}, heldExitBasis{}, err
 	}
-	entry := heldExitBasis{st: entrySt, heldRaw: deposit, markValue: uint64(value), mark: prices.collateral}
+	entry := heldExitBasis{st: entrySt, heldRaw: deposit, markValue: uint64(value), mark: prices.collateral, usdc: prices.usdc}
 	return StepExecutionEvidence{Request: request, ExpectedEffects: moveEffects(route, st.collateralBalance)}, entry, nil
 }
 

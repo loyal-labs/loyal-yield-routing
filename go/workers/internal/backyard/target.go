@@ -221,7 +221,7 @@ func withdrawalTarget(k targetTick) (int, LaneTarget, bool) {
 }
 
 func rotateTarget(k targetTick) (int, LaneTarget, bool) {
-	if k.vault.NewAllocation != nil {
+	if !k.vault.netKnown(time.Now()) || k.vault.NewAllocation != nil {
 		return 0, LaneTarget{}, false
 	}
 	for i, l := range k.lanes {
@@ -238,7 +238,7 @@ func rotateTarget(k targetTick) (int, LaneTarget, bool) {
 }
 
 func overflowTarget(k targetTick) (int, LaneTarget, bool) {
-	if k.vault.NewAllocation != nil {
+	if !k.vault.netKnown(time.Now()) || k.vault.NewAllocation != nil {
 		return 0, LaneTarget{}, false
 	}
 	for i, l := range k.lanes {
@@ -569,11 +569,16 @@ func decideSnapshot(s Snapshot, initializationReady func(Snapshot) bool) Decisio
 	if termDebtUnknown(s) {
 		return d(Hold, string(holdStale), 0)
 	}
-	if !s.Trustful && s.VoltrStrategyIdleRaw > 0 {
+	if !s.Trustful && s.VoltrStrategyIdleRaw > 0 && s.netKnown(time.Now()) {
 		return d(VoltrRestoreIdle, "withdrawal_staged", s.VoltrStrategyIdleRaw)
 	}
-	report := func(reason string) Decision { return d(ReportNAV, reason, 0) }
-	if !s.Trustful && s.PostMutationNAVRequired && !withdrawalIdleUnderfunded(s) {
+	report := func(reason string) Decision {
+		if !s.netKnown(time.Now()) {
+			return d(Hold, exitUnpriced, 0)
+		}
+		return d(ReportNAV, reason, 0)
+	}
+	if !s.Trustful && s.netKnown(time.Now()) && s.PostMutationNAVRequired && !withdrawalIdleUnderfunded(s) {
 		return report("post_mutation_nav_due")
 	}
 	if t.Level == levelDebtZero && s.PositionDebtRaw > 0 {
@@ -602,7 +607,7 @@ func decideSnapshot(s Snapshot, initializationReady func(Snapshot) bool) Decisio
 		if hold, drifted := unexplainedNAVDriftHold(s); drifted {
 			return hold
 		}
-		if capitalMutationReports(s) || (scheduledNAVReportDue(s) && !(t.Rule == ruleEntry && t.EntryRaw > 0)) {
+		if (s.ExitLiabilityRaw != s.JournalExitAtReportRaw && navDriftOutsideBand(s)) || capitalMutationReports(s) || (scheduledNAVReportDue(s) && !(t.Rule == ruleEntry && t.EntryRaw > 0)) {
 			return report("nav_due")
 		}
 	}
@@ -640,6 +645,9 @@ func outboundStep(s Snapshot, t LaneTarget, d func(Action, string, int64) Decisi
 		if amount == 0 {
 			return d(Hold, string(holdSpendingLimit), 0), true
 		}
+		if s.Trustful && !s.netKnown(time.Now()) {
+			return d(Hold, exitUnpriced, 0), true
+		}
 		return d(StageSquadsToVoltr, outboundStageReason, amount), true
 	}
 	if t.EquityZero && s.PositionDebtRaw == 0 && s.PositionCollateralRaw > partialWithdrawalDustRaw {
@@ -653,7 +661,7 @@ func outboundStep(s Snapshot, t LaneTarget, d func(Action, string, int64) Decisi
 		return d(DeleverRouteStep, releaseReason, t.ReleaseRaw), true
 	}
 	if shortfall := withdrawalShortfallRaw(s); t.Rule == ruleWithdrawal && shortfall > 0 {
-		if s.StrategyNAVRaw == 0 {
+		if s.netKnown(time.Now()) && s.StrategyNAVRaw == 0 {
 			return d(HoldManualRecovery, "withdrawal_conservation_shortfall", shortfall), true
 		}
 		return d(Hold, string(holdNoRoom), 0), true
@@ -662,6 +670,14 @@ func outboundStep(s Snapshot, t LaneTarget, d func(Action, string, int64) Decisi
 }
 
 func inboundStep(s Snapshot, t LaneTarget, hard int64, d func(Action, string, int64) Decision) Decision {
+	if !s.netKnown(time.Now()) {
+		if !s.Trustful && s.SquadsIdleRaw > 0 && !laneInFlight(s) {
+			if amount := s.StageAllowance.cap(s.SquadsIdleRaw); amount > 0 {
+				return d(StageSquadsToVoltr, returnCashReason, amount)
+			}
+		}
+		return d(Hold, exitUnpriced, 0)
+	}
 	if s.SquadsIdleRaw > 0 && s.NewAllocation != nil {
 		returnRaw := min(s.SquadsIdleRaw, allocationCashDeficit(s))
 		if min(s.NewAllocation.ProviderRoomRaw, s.NewAllocation.EquityRoomRaw) == 0 {

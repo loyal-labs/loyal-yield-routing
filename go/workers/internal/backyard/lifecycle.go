@@ -20,9 +20,57 @@ func buildSimulatePersist(ctx context.Context, database *Database, rpc *chain.Cl
 	if err != nil {
 		return err
 	}
-	message, blockhash, height, err := compileRequest(manifest, request)
+	protected, scoped := request.(withdrawalCostRequest)
+	message, blockhash, height, err := compileRequest(manifest, withdrawalUnderlyingRequest(request))
 	if err != nil {
 		return err
+	}
+	if scoped {
+		if err := database.reserveWithdrawalCost(ctx, operationID, protected.cost, message); err != nil {
+			return err
+		}
+		if err := protected.cost.revalidate(ctx, message); err != nil {
+			if cleanup := database.releaseUnsignedWithdrawalCost(ctx, operationID); cleanup != nil {
+				return fmt.Errorf("%w: unsigned withdrawal reservation cleanup: %v", err, cleanup)
+			}
+			return err
+		}
+		slot, err := protected.cost.view.slot(ctx)
+		if err == nil {
+			err = validateWithdrawalRequestNAV(manifest, withdrawalUnderlyingRequest(request), time.Now(), slot)
+		}
+		if err != nil {
+			if cleanup := database.releaseUnsignedWithdrawalCost(ctx, operationID); cleanup != nil {
+				return fmt.Errorf("%w: unsigned withdrawal reservation cleanup: %v", err, cleanup)
+			}
+			return err
+		}
+	}
+	// Database admission can wait behind another worker. Recompile after it so
+	// every private NAV/economic seal is checked at the signing boundary.
+	finalMessage, finalHash, finalHeight, err := compileRequest(manifest, withdrawalUnderlyingRequest(request))
+	if err != nil || sha256Bytes(finalMessage) != sha256Bytes(message) || finalHash != blockhash || finalHeight != height {
+		if scoped {
+			if cleanup := database.releaseUnsignedWithdrawalCost(ctx, operationID); cleanup != nil {
+				return fmt.Errorf("unsigned withdrawal reservation cleanup: %w", cleanup)
+			}
+		}
+		if err != nil {
+			return err
+		}
+		return staleHold("prepared_request_changed_before_signing")
+	}
+	if scoped {
+		slot, checkErr := protected.cost.view.slot(ctx)
+		if checkErr == nil {
+			checkErr = protected.cost.validateSigningCertificate(withdrawalUnderlyingRequest(request), finalMessage, time.Now(), slot)
+		}
+		if checkErr != nil {
+			if cleanup := database.releaseUnsignedWithdrawalCost(ctx, operationID); cleanup != nil {
+				return fmt.Errorf("%w: unsigned withdrawal reservation cleanup: %v", checkErr, cleanup)
+			}
+			return checkErr
+		}
 	}
 	signer, err := credentials.signer()
 	if err != nil {
@@ -32,10 +80,18 @@ func buildSimulatePersist(ctx context.Context, database *Database, rpc *chain.Cl
 	if err != nil {
 		return err
 	}
+	if scoped {
+		if err := database.bindWithdrawalCostWire(ctx, operationID, signed, encoded); err != nil {
+			return err
+		}
+	}
 	start := time.Now()
 	simulation, err := simulateSigned(ctx, rpc, signed.signedWire)
 	logStage("build_simulate", start)
 	if err != nil {
+		if scoped {
+			return fmt.Errorf("withdrawal_signed_wire_recovery_required: %v", err)
+		}
 		return simulationRefused(err)
 	}
 	return database.PersistSigned(ctx, operationID, signed, simulation, encoded)
@@ -71,7 +127,13 @@ func advanceNonterminalWithManifest(ctx context.Context, manifest RouteManifest,
 	}
 	switch operation.Status {
 	case Decided, Built, Simulated:
-		return database.MarkPreBroadcastFailed(ctx, operation.ID, operation.Status, "prebroadcast_restart_reobserve_required")
+		if handled, err := database.recoverDisclosedWithdrawalCost(ctx, manifest, rpc, operation); handled || err != nil {
+			return err
+		}
+		if err := database.MarkPreBroadcastFailed(ctx, operation.ID, operation.Status, "prebroadcast_restart_reobserve_required"); err != nil {
+			return err
+		}
+		return database.releaseWithdrawalCost(ctx, operation.ID)
 	case Signed, BroadcastIntent:
 		return database.land(ctx, rpc, operation)
 	case Confirmed, Reconciling:
@@ -113,11 +175,17 @@ func (d *Database) land(ctx context.Context, rpc *chain.Client, operation Persis
 	}
 	switch {
 	case out.Kind == chain.Expired:
-		return d.MarkExpiredAbsentFailed(ctx, operation.ID, operation.Status, out)
+		if err := d.MarkExpiredAbsentFailed(ctx, operation.ID, operation.Status, out); err != nil {
+			return err
+		}
+		return d.releaseWithdrawalCost(ctx, operation.ID)
 	case operation.Status == Signed:
 		return d.MarkManualRecovery(ctx, operation.ID, Signed, "signed_signature_found_before_broadcast_intent")
 	case out.Kind == chain.Failed:
-		return d.recoverConfirmedFailure(ctx, rpc, operation)
+		if err := d.recoverConfirmedFailure(ctx, rpc, operation); err != nil {
+			return err
+		}
+		return d.settleWithdrawalCost(ctx, rpc, operation.ID)
 	}
 	return d.MarkConfirmed(ctx, operation.ID, operation.Status, int64(out.Slot))
 }
@@ -162,6 +230,9 @@ func (d *Database) reconcile(ctx context.Context, manifest RouteManifest, rpc *c
 	reconciliation, effects, err := ReconcileConfirmedTransaction(manifest.vault, expected, receipt)
 	if err != nil {
 		return d.MarkManualRecovery(ctx, operation.ID, operation.Status, "exact_effect_reconciliation_failed")
+	}
+	if err := d.settleWithdrawalCost(ctx, rpc, operation.ID); err != nil {
+		return err
 	}
 	return d.MarkReconciled(ctx, operation.ID, reconciliation, effects)
 }

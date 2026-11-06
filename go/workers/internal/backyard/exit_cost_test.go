@@ -109,7 +109,7 @@ func TestStepSaleCarriesRepaymentAndClippedPayoff(t *testing.T) {
 		}
 	}
 	free := realizedSale{ExpectedSale: *expected.Sale, ReturnedRaw: expected.Sale.MarkValueRaw + 1, Slot: 77}
-	if c, ok := free.exitCost(time.Now()); !ok || c.BPS != 1 {
+	if c, ok := free.exitCost(time.Now()); !ok || c.BPS != 0 {
 		t.Fatal("favorable sale retained an old expensive cost", c, ok)
 	} else if (ExitCost{BPS: 20_000_000}).outlier(&c) {
 		t.Fatal("a free sale suppressed the next priced quote")

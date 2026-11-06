@@ -37,6 +37,7 @@ func entryTargeted(t *testing.T, s Snapshot, lane string) Snapshot {
 		q.BorrowFeeRaw = 0
 		q = parBorrow(q)
 	}
+	s.net = fixtureSnapshotCertificate(s)
 	return targetedWith(s, targetInputs{Entry: &SelectorResult{Action: "ENTER", DestinationLane: lane, SelectedQuote: &q}})
 }
 

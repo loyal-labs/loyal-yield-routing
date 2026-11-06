@@ -840,6 +840,7 @@ export type EarnMaxSummary = {
     policyAccounts: Array<PolicyBinding>;
     policyStatus: string;
     realizedApyBps: number | null;
+    recoverableUsdcRaw: string | null;
     strategyKey: string | null;
     withdrawal: WithdrawalView | null;
 };
@@ -1788,6 +1789,7 @@ export type ForecastUnavailableError = {
 export type HealthView = {
     lastKnownAttention: boolean;
     observedAt: string | null;
+    reason?: string;
     status: string;
 };
 
@@ -2338,6 +2340,66 @@ export type WithdrawBlockingTokenAccount = {
     amountRaw: string;
     mint: string;
     tokenProgramId: string;
+};
+
+export type WithdrawalApprovalOutputBody = {
+    consentId: string;
+};
+
+export type WithdrawalAttemptOutputBody = {
+    attemptId: string;
+};
+
+export type WithdrawalClaimAttempt = {
+    blockhash: string;
+    consent: WithdrawalConsent;
+    feeLamports: string;
+    lastValidBlockHeight: number;
+    signature: string;
+    wireBase64: string;
+};
+
+export type WithdrawalConsent = {
+    authority: string;
+    cluster: string;
+    destination: string;
+    expiresAt: string;
+    feeBasisHash: string;
+    lpRaw: string;
+    maxUserFeeLamports: string;
+    minClaimUsdcRaw: string;
+    nonce: string;
+    owner: string;
+    ownerSignature: string;
+    policySeed: string;
+    program: string;
+    referenceSlot: string;
+    referenceUsdcRaw: string;
+    requestInstruction: number;
+    requestSignature: string;
+    settings: string;
+    vault: string;
+    version: string;
+};
+
+export type WithdrawalConsentView = {
+    approved: WithdrawalConsent | null;
+    costStatus: WithdrawalCostStatus | null;
+    draft: WithdrawalConsent;
+    reason?: string;
+};
+
+export type WithdrawalCostStatus = {
+    approvedClaimFeeLamports: string;
+    approvedCostUsdcRaw: string;
+    claimPending: boolean | null;
+    remainingClaimFeeLamports: string | null;
+    remainingCostUsdcRaw: string | null;
+    reservedClaimFeeLamports: string | null;
+    reservedCostUsdcRaw: string | null;
+    settledCostUsdcRaw: string | null;
+    spentClaimFeeLamports: string | null;
+    unknownReason?: string;
 };
 
 export type WithdrawalView = {
@@ -4125,6 +4187,128 @@ export type GetEarnMaxSummaryResponses = {
 };
 
 export type GetEarnMaxSummaryResponse = GetEarnMaxSummaryResponses[keyof GetEarnMaxSummaryResponses];
+
+export type PostEarnMaxWithdrawalClaimAttemptData = {
+    body?: WithdrawalClaimAttempt;
+    headers?: {
+        Authorization?: string;
+        Cookie?: string;
+        'X-Forwarded-Host'?: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/smart-accounts/earn-max/withdrawal-claim-attempt';
+};
+
+export type PostEarnMaxWithdrawalClaimAttemptErrors = {
+    /**
+     * Bad Request
+     */
+    400: RouteError;
+    /**
+     * Unauthorized
+     */
+    401: RouteError;
+    /**
+     * Conflict
+     */
+    409: RouteError;
+    /**
+     * Service Unavailable
+     */
+    503: RouteError;
+};
+
+export type PostEarnMaxWithdrawalClaimAttemptError = PostEarnMaxWithdrawalClaimAttemptErrors[keyof PostEarnMaxWithdrawalClaimAttemptErrors];
+
+export type PostEarnMaxWithdrawalClaimAttemptResponses = {
+    /**
+     * OK
+     */
+    200: WithdrawalAttemptOutputBody;
+};
+
+export type PostEarnMaxWithdrawalClaimAttemptResponse = PostEarnMaxWithdrawalClaimAttemptResponses[keyof PostEarnMaxWithdrawalClaimAttemptResponses];
+
+export type GetEarnMaxWithdrawalConsentData = {
+    body?: never;
+    headers?: {
+        Authorization?: string;
+        Cookie?: string;
+        'X-Forwarded-Host'?: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/smart-accounts/earn-max/withdrawal-consent';
+};
+
+export type GetEarnMaxWithdrawalConsentErrors = {
+    /**
+     * Unauthorized
+     */
+    401: RouteError;
+    /**
+     * Conflict
+     */
+    409: RouteError;
+    /**
+     * Service Unavailable
+     */
+    503: RouteError;
+};
+
+export type GetEarnMaxWithdrawalConsentError = GetEarnMaxWithdrawalConsentErrors[keyof GetEarnMaxWithdrawalConsentErrors];
+
+export type GetEarnMaxWithdrawalConsentResponses = {
+    /**
+     * OK
+     */
+    200: WithdrawalConsentView;
+};
+
+export type GetEarnMaxWithdrawalConsentResponse = GetEarnMaxWithdrawalConsentResponses[keyof GetEarnMaxWithdrawalConsentResponses];
+
+export type PostEarnMaxWithdrawalConsentData = {
+    body?: WithdrawalConsent;
+    headers?: {
+        Authorization?: string;
+        Cookie?: string;
+        'X-Forwarded-Host'?: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/smart-accounts/earn-max/withdrawal-consent';
+};
+
+export type PostEarnMaxWithdrawalConsentErrors = {
+    /**
+     * Bad Request
+     */
+    400: RouteError;
+    /**
+     * Unauthorized
+     */
+    401: RouteError;
+    /**
+     * Conflict
+     */
+    409: RouteError;
+    /**
+     * Service Unavailable
+     */
+    503: RouteError;
+};
+
+export type PostEarnMaxWithdrawalConsentError = PostEarnMaxWithdrawalConsentErrors[keyof PostEarnMaxWithdrawalConsentErrors];
+
+export type PostEarnMaxWithdrawalConsentResponses = {
+    /**
+     * OK
+     */
+    200: WithdrawalApprovalOutputBody;
+};
+
+export type PostEarnMaxWithdrawalConsentResponse = PostEarnMaxWithdrawalConsentResponses[keyof PostEarnMaxWithdrawalConsentResponses];
 
 export type GetEarnTransactionsData = {
     body?: never;

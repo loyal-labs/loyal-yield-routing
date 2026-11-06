@@ -2,7 +2,9 @@ package earnmax
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"time"
 
@@ -28,14 +30,16 @@ type PendingWithdrawal struct {
 }
 
 type Position struct {
-	ObservedSlot uint64
-	PoolLP       uint64
-	PoolValue    USDCRaw
-	LP           LPRaw
-	Value        USDCRaw
-	Idle         *USDCRaw
-	Withdrawal   *PendingWithdrawal
-	IssuanceBPS  uint16
+	ObservedSlot  uint64
+	PoolLP        uint64
+	PoolValue     USDCRaw
+	LP            LPRaw
+	Value         USDCRaw
+	Idle          *USDCRaw
+	Withdrawal    *PendingWithdrawal
+	IssuanceBPS   uint16
+	FeeBasisHash  string
+	AuthorityCash *USDCRaw
 }
 
 type ClaimBlock string
@@ -64,7 +68,11 @@ func (r *Reader) Position(ctx context.Context, a Authority, now time.Time) (Posi
 	if err != nil {
 		return Position{}, err
 	}
-	keys := []solana.PublicKey{Vault, LPMint, user.LPATA, user.Receipt, IdleATA}
+	assetATA, err := spl.AssociatedTokenAddress(a.key, AssetMint, solana.TokenProgramID)
+	if err != nil {
+		return Position{}, err
+	}
+	keys := []solana.PublicKey{Vault, LPMint, user.LPATA, user.Receipt, IdleATA, assetATA}
 	var slot uint64
 	accounts, err := retryTransient(ctx, func() ([]*chain.Account, error) {
 		var accounts []*chain.Account
@@ -106,6 +114,16 @@ func (r *Reader) Position(ctx context.Context, a Authority, now time.Time) (Posi
 		return Position{}, err
 	}
 	position := Position{ObservedSlot: slot, Idle: idleAssets(idle), PoolLP: totalLP.Uint64(), PoolValue: poolValue, IssuanceBPS: vault.IssuanceFeeBPS}
+	if accounts[5] == nil {
+		zero := USDCRaw(0)
+		position.AuthorityCash = &zero
+	} else if token, err := spl.DecodeTokenAccount(accounts[5]); err == nil && token.Mint == AssetMint && token.Owner == a.key && !token.Frozen {
+		if amount, err := signed[USDCRaw](token.Amount); err == nil {
+			position.AuthorityCash = &amount
+		}
+	}
+	basis := sha256.Sum256(vaultAccount.Data)
+	position.FeeBasisHash = hex.EncodeToString(basis[:])
 	if lpAccount != nil {
 		token, err := spl.DecodeTokenAccount(lpAccount)
 		if err != nil {

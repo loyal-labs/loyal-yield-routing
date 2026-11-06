@@ -206,7 +206,7 @@ func (e *events) tickResult(err error, fatal bool) {
 		if manual {
 			level = slog.LevelWarn
 		}
-		e.log.Log(context.Background(), level, "backyard_heartbeat", "lane", s.RouteLane, "ltv_bps", s.LTVBPS, "nav_raw", s.StrategyNAVRaw, "manual", manual,
+		e.log.Log(context.Background(), level, "backyard_heartbeat", "lane", s.RouteLane, "ltv_bps", s.LTVBPS, "nav_raw", s.netLogValue(now), "nav_known", s.netKnown(now), "nav_unavailable", s.NAVUnavailable, "manual", manual,
 			"snapshot_slot", s.Slot, "snapshot_age_seconds", snapshotAge, "automatic_protection_disabled", manual,
 			"has_position", s.HasPosition, "target_rule", s.Target.Rule,
 			"withdrawal_demand_raw", s.WithdrawalDemandRaw, "voltr_idle_raw", s.VoltrIdleRaw, "withdrawal_waiting_seconds", waiting,

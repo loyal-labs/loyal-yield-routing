@@ -13,6 +13,17 @@ import type {
   SendPreparedWithWalletArgs,
   WalletAdapterLike,
 } from "./types";
+import { protectedVoltrClaimConsent } from "./voltr/prepare";
+import type { VoltrWithdrawalConsent } from "./voltr/plans";
+
+export type ProtectedVoltrClaimBroadcast = {
+  consent: VoltrWithdrawalConsent;
+  wire: Uint8Array;
+  signature: string;
+  blockhash: string;
+  lastValidBlockHeight: number;
+  feeLamports: string;
+};
 
 type PreparedOperation = SendPreparedWithWalletArgs["prepared"];
 type PreparedConnection = SendPreparedWithWalletArgs["connection"];
@@ -360,20 +371,32 @@ export async function sendPreparedWithWallet({
   onTransactionConfirmed,
   onTransactionSent,
   sendOptions,
-}: SendPreparedWithWalletArgs): Promise<string> {
+  beforeProtectedClaimBroadcast,
+}: SendPreparedWithWalletArgs & { beforeProtectedClaimBroadcast?: (claim: ProtectedVoltrClaimBroadcast) => Promise<void> }): Promise<string> {
   const latestBlockhash = await connection.getLatestBlockhash("confirmed");
   const transaction = compilePreparedOperation({
     prepared,
     blockhash: latestBlockhash.blockhash,
   });
+  const protection = protectedVoltrClaimConsent(prepared);
+  const send = async () => {
+    if (!protection) return sendVersionedTransaction({ wallet, connection, transaction, sendOptions });
+    if (!beforeProtectedClaimBroadcast) throw new Error("Protected withdrawal claim accounting is unavailable. Check status before claiming.");
+    const expected = new Uint8Array(transaction.message.serialize());
+    const signed = await wallet.signTransaction(transaction);
+    const actual = signed.message.serialize();
+    if (actual.length !== expected.length || actual.some((value, index) => value !== expected[index])) throw new Error("Wallet changed the protected withdrawal transaction. Review and sign again.");
+    const wire = signed.serialize();
+    if (wire.length > 1232) throw new Error("Signed Earn MAX transaction is too large.");
+    if (BigInt(protection.expiresAt) <= BigInt(Math.floor(Date.now()/1000))) throw new Error("Withdrawal approval expired. Review and approve again.");
+    const { value: fee } = await connection.getFeeForMessage(signed.message, "confirmed");
+    if (fee === null || !Number.isSafeInteger(fee) || BigInt(fee) > BigInt(protection.maxUserFeeLamports)) throw new Error("The claim network fee exceeds your approval or could not be verified.");
+    await beforeProtectedClaimBroadcast({ consent: protection, wire, signature: getSignedTransactionSignature(signed), blockhash: latestBlockhash.blockhash, lastValidBlockHeight: latestBlockhash.lastValidBlockHeight, feeLamports: String(fee) });
+    return sendSignedTransactionWithReconciliation({ connection, sendOptions, transaction: signed });
+  };
   const signature = await withSimulationDiagnostic(
     () =>
-      sendVersionedTransaction({
-        wallet,
-        connection,
-        transaction,
-        sendOptions,
-      }),
+      send(),
     {
       connection,
       prepared,
@@ -409,6 +432,9 @@ export async function sendPreparedBatchWithWallet({
   onTransactionConfirmed,
   onTransactionSent,
 }: SendPreparedBatchWithWalletArgs): Promise<string[]> {
+  if (prepared.some((operation) => protectedVoltrClaimConsent(operation) !== null)) {
+    throw new Error("Protected withdrawals must be sent individually through the withdrawal claim flow.");
+  }
   if (sendMode === "sign-and-confirm-each") {
     const signatures: string[] = [];
     for (const [index, operation] of prepared.entries()) {

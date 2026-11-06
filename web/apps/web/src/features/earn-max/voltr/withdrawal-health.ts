@@ -47,6 +47,7 @@ export function parseWithdrawalHealth(
   }
   return {
     lastKnownAttention,
+    ...(typeof state.reason === "string" && state.reason.length <= 128 ? { reason: state.reason } : {}),
     observedAt: new Date(timestamp).toISOString(),
     status:
       state.status === "waiting" || state.status === "operator_attention"

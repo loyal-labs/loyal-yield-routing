@@ -5,6 +5,7 @@ import type {
   EarnMaxPerformancePoint,
   EarnMaxWithdrawalView,
 } from "@loyal-labs/shared";
+import type { WithdrawalCostStatus } from "@loyal-labs/api";
 
 export type {
   EarnMaxActivityItem,
@@ -20,6 +21,16 @@ export type {
 } from "@loyal-labs/shared";
 
 export type EarnMaxViewModel = {
+  recoverableUsdcRaw?: string | null;
+  withdrawalApproval?: {
+    costStatus?: WithdrawalCostStatus | null;
+    approvedReferenceRaw?: string | null;
+    approvedFeeLamports?: string | null;
+    generationKey?: string;
+    floorRaw: string | null;
+    reason: string | null;
+    referenceRaw: string;
+  };
   activity: EarnMaxActivityItem[];
   balanceUsd: number;
   canWithdraw: boolean;
@@ -40,6 +51,11 @@ export type EarnMaxViewModel = {
 };
 
 export type EarnMaxActions = {
+  recoverClaimRemainder?: () => Promise<boolean>;
+  approveWithdrawal?: (
+    minClaimRaw: bigint,
+    maxFeeLamports: bigint,
+  ) => Promise<boolean>;
   cancelWithdrawal: () => Promise<boolean>;
   claim: () => Promise<boolean>;
   close: () => Promise<boolean>;

@@ -101,6 +101,7 @@ func TestHourlyNAVFreshnessRetainsActualReportTimestamp(t *testing.T) {
 		s := base()
 		s.ReportSequence, s.ReportSnapshotDigest = 9, sha256Bytes([]byte("hourly-nav"))
 		s.PriorReportUpdatedUnix, s.LastReportAgeSeconds = now.Unix()-age, age
+		certifyProjectionFixture(&s, now)
 		p, err := newRouteObservationProjection(Observation{ObservedAt: now, Snapshot: s})
 		if err != nil || p.NAVFresh != (age < 3600) || p.ReportObservedAt != time.Unix(now.Unix()-age, 0).UTC().Format(time.RFC3339) {
 			t.Fatalf("hourly report age=%d: %+v err=%v", age, p, err)

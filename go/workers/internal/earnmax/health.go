@@ -32,6 +32,7 @@ const (
 )
 
 type HealthView struct {
+	Reason             string  `json:"reason,omitempty"`
 	LastKnownAttention bool    `json:"lastKnownAttention"`
 	ObservedAt         *string `json:"observedAt"`
 	Status             string  `json:"status"`
@@ -64,7 +65,7 @@ func healthView(raw []byte, now time.Time) HealthView {
 		return unavailable
 	}
 	observedAt := iso(h.ObservedAt)
-	view := HealthView{LastKnownAttention: unavailable.LastKnownAttention, ObservedAt: &observedAt, Status: HealthUnavailable}
+	view := HealthView{Reason: h.Reason, LastKnownAttention: unavailable.LastKnownAttention, ObservedAt: &observedAt, Status: HealthUnavailable}
 	if h.Status == HealthWaiting || h.Status == HealthOperatorAttention {
 		view.Status = h.Status
 	}

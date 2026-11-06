@@ -18,6 +18,7 @@ func autoWindowFixture() SelectorInput {
 	s.VoltrIdleRaw, s.TotalVaultNAVRaw = 1_677_000_000, 1_677_000_000
 	in.Quotes[0].SourceLane = s.RouteLane
 	in.Markets = []LaneEconomics{in.Markets[1]}
+	s.net = fixtureSnapshotCertificate(*s)
 	return in
 }
 

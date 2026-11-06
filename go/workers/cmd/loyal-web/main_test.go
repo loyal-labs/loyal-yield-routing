@@ -48,8 +48,12 @@ func TestAMalformedYieldDatabaseURLStillServesEarnMaxWithoutAPY(t *testing.T) {
 		t.Fatal(err)
 	}
 	yieldDB := openDB(t.Context(), "Earn MAX routes", "WEB_YIELD_DATABASE_URL")
-	if earnMax(rpcClient, grantVerdicts{EarnMax: true}, yieldDB) == nil {
+	max := earnMax(rpcClient, grantVerdicts{EarnMax: true}, yieldDB)
+	if max == nil {
 		t.Fatal("a malformed yield database URL only costs APY; Earn MAX must still be served")
+	}
+	if max.Consents != nil || max.Attempts != nil || max.WithdrawalStatus != nil {
+		t.Fatal("unavailable withdrawal storage must leave approval and claim accounting capabilities absent")
 	}
 }
 

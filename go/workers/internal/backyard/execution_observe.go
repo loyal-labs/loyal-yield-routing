@@ -86,7 +86,8 @@ func prepareBridgeFromObservedAccounts(ctx context.Context, rpc *chain.Client, m
 	if err != nil {
 		return Observation{}, BridgeExecutionEvidence{}, err
 	}
-	ticketRequired := !v.trustful() && (decision.Action != StageSquadsToVoltr || earnHeldLane(route.Lane))
+	reportRequired := decision.Action != StageSquadsToVoltr || v.trustful()
+	ticketRequired := !v.trustful() && reportRequired
 	var ticket observedReportTicket
 	if ticketRequired {
 		ticket, err = decodeObservedReportTicket(v, accountAt(accounts, reportTicketPDA))
@@ -130,6 +131,9 @@ func prepareBridgeFromObservedAccounts(ctx context.Context, rpc *chain.Client, m
 	if err != nil {
 		return Observation{}, BridgeExecutionEvidence{}, err
 	}
+	if reportRequired && (!nav.net.valid(time.Now(), nav.Slot) || nav.net.manifest != manifest.SHA256) {
+		return Observation{}, BridgeExecutionEvidence{}, staleHold(exitUnpriced)
+	}
 	if ticketRequired && nav.Report.Sequence <= ticket.LastConsumedSequence {
 		return Observation{}, BridgeExecutionEvidence{}, fmt.Errorf("report ticket sequence is not fresh")
 	}
@@ -146,7 +150,9 @@ func prepareBridgeFromObservedAccounts(ctx context.Context, rpc *chain.Client, m
 		}
 	}
 	exitAtReport := nav.ExitLiabilityRaw
-	effects.ExitLiabilityRaw = &exitAtReport
+	if reportRequired {
+		effects.ExitLiabilityRaw = &exitAtReport
+	}
 	// FSj27 returns the NAV each report-bearing leg arms; Trustful's
 	// deposit_strategy returns its end value. A Trustful withdrawal returns
 	// nothing.
@@ -162,12 +168,12 @@ func prepareBridgeFromObservedAccounts(ctx context.Context, rpc *chain.Client, m
 		wireAmount = min(wireAmount, strategyTwoBridgeLegCapRaw)
 	}
 	return observation, BridgeExecutionEvidence{
-		Request: BridgeBuildRequest{
-			Action: action, AmountRaw: wireAmount,
+		Request: bindBridgeRequest(BridgeBuildRequest{
+			net: nav.net, Action: action, AmountRaw: wireAmount,
 			Report: nav.Report, Policy: policy,
 			AdaptorConfig: v.Strategy, Settings: backyardSettings,
 			RecentBlockhash: blockhash.Blockhash, LastValidBlockHeight: blockhash.LastValidBlockHeight,
-		},
+		}),
 		ExpectedEffects: effects,
 	}, nil
 }

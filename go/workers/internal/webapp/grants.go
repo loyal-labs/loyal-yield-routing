@@ -86,6 +86,23 @@ var YieldGrants = []Grant{
 	TableGrant("loyal_yield.multiply_route_current_apy_days", "SELECT"),
 }
 
+var WithdrawalConsentGrants = []Grant{
+	TableGrant("loyal_yield.earn_max_withdrawal_consents", "SELECT"),
+	TableGrant("loyal_yield.earn_max_withdrawal_consents", "INSERT"),
+}
+
+var WithdrawalAttemptGrants = []Grant{
+	TableGrant("loyal_yield.earn_max_withdrawal_claim_attempts", "SELECT"),
+	TableGrant("loyal_yield.earn_max_withdrawal_claim_attempts", "INSERT"),
+	TableGrant("loyal_yield.earn_max_withdrawal_claim_attempts", "UPDATE"),
+}
+
+var WithdrawalStatusGrants = []Grant{
+	TableGrant("loyal_yield.backyard_withdrawal_cost_reservations", "SELECT"),
+	TableGrant("loyal_yield.backyard_withdrawal_cost_operations", "SELECT"),
+	TableGrant("loyal_yield.earn_max_withdrawal_claim_attempts", "SELECT"),
+}
+
 func MissingGrants(ctx context.Context, pool *pgxpool.Pool, want []Grant) ([]Grant, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()

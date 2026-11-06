@@ -27,7 +27,8 @@ type WithdrawalView struct {
 }
 
 type Summary struct {
-	ObservedSlot string `json:"observedSlot"`
+	RecoverableUSDC *string `json:"recoverableUsdcRaw"`
+	ObservedSlot    string  `json:"observedSlot"`
 	// RN adapter: delete once shipped RN reads /api/earn-max/apy.
 	APYHistory         []APYPoint      `json:"apyHistory" nullable:"false"`
 	BalanceUsd         float64         `json:"balanceUsd"`
@@ -79,6 +80,10 @@ func (r *Reader) Summary(ctx context.Context, settings solana.PublicKey) (Summar
 		ObservedSlot: strconv.FormatUint(position.ObservedSlot, 10), APYHistory: rnHistory(public.History),
 		BalanceUsd: float64(position.Value) / 1e6, ClaimAmountRaw: "0", Coverage: "complete", CurrentApyBps: public.CurrentApyBps,
 		ForecastApyBps: public.APYBps, Goal: "active", IssuanceFeeBps: position.IssuanceBPS, PolicyAccounts: []PolicyBinding{}, PolicyStatus: "ready", RealizedApyBps: apy.Bps,
+	}
+	if position.AuthorityCash != nil {
+		amount := strconv.FormatInt(int64(*position.AuthorityCash), 10)
+		summary.RecoverableUSDC = &amount
 	}
 	if !history.Complete() {
 		summary.Coverage = "history_incomplete"

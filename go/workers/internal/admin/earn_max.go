@@ -479,6 +479,11 @@ func earnMaxLoadRoute(ctx context.Context, d *Deps) (EarnMaxRoute, error) {
 		route.NavFresh = &fresh
 	}
 	route.NavUsd = earnMaxDiv(earnMaxNum(observation["navRaw"]), 1e6)
+	if observation["navKnown"] == false {
+		route.NavUsd = nil
+		fresh := false
+		route.NavFresh = &fresh
+	}
 	route.ReportObservedAt = earnMaxStr(observation["reportObservedAt"])
 	route.ReportSlot = earnMaxNum(observation["reportSlot"])
 	route.RouteStatus = earnMaxStr(observation["routeStatus"])

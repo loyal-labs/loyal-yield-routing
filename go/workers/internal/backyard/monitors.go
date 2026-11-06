@@ -3,6 +3,7 @@ package backyard
 import (
 	"fmt"
 	"math/big"
+	"time"
 )
 
 func bridgeMonitorHold(s Snapshot) (Decision, bool) {
@@ -69,10 +70,10 @@ func withdrawalIdleUnderfunded(s Snapshot) bool {
 }
 
 func unexplainedNAVDriftHold(s Snapshot) (Decision, bool) {
-	if !s.MonitorsArmed || s.PostMutationNAVRequired || s.CapitalMutated {
+	if !s.netKnown(time.Now()) || !s.MonitorsArmed || s.PostMutationNAVRequired || s.CapitalMutated {
 		return Decision{}, false
 	}
-	if navDriftOutsideBand(s) {
+	if navDriftOutsideTolerance(uint64(s.StrategyNAVRaw)+uint64(s.ExitLiabilityRaw), uint64(s.PriorReportedNAVRaw)+uint64(s.JournalExitAtReportRaw)) {
 		return monitorHold(s, "nav_drift_unexplained"), true
 	}
 	return Decision{}, false
@@ -85,17 +86,17 @@ func capitalMutationReports(s Snapshot) bool {
 const capitalMutationReportAgeSeconds int64 = 60
 
 func scheduledNAVReportDue(s Snapshot) bool {
-	return s.LastReportAgeSeconds >= int64(routineNAVReportInterval.Seconds()) ||
-		(s.CapitalMutated && s.LastReportAgeSeconds >= capitalMutationReportAgeSeconds)
+	return s.netKnown(time.Now()) && (s.LastReportAgeSeconds >= int64(routineNAVReportInterval.Seconds()) ||
+		(s.CapitalMutated && s.LastReportAgeSeconds >= capitalMutationReportAgeSeconds))
 }
 
 func trustfulReportDue(s Snapshot) bool {
-	return navDriftOutsideBand(s) ||
-		s.LastReportAgeSeconds >= int64(routineNAVReportInterval.Seconds())
+	return s.netKnown(time.Now()) && (navDriftOutsideBand(s) ||
+		s.LastReportAgeSeconds >= int64(routineNAVReportInterval.Seconds()))
 }
 
 func navDriftOutsideBand(s Snapshot) bool {
-	return navDriftOutsideTolerance(uint64(s.StrategyNAVRaw)+uint64(s.ExitLiabilityRaw), uint64(s.PriorReportedNAVRaw)+uint64(s.JournalExitAtReportRaw))
+	return s.netKnown(time.Now()) && navDriftOutsideTolerance(uint64(s.StrategyNAVRaw), uint64(s.PriorReportedNAVRaw))
 }
 
 func navDriftOutsideTolerance(observed, reported uint64) bool {

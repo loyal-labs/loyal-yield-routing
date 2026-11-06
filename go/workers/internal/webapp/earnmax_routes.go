@@ -85,9 +85,12 @@ func (c InviteCodes) admit(code *string) (string, bool) {
 }
 
 type EarnMax struct {
-	Reader  *earnmax.Reader
-	Cluster SolanaCluster
-	Invites InviteCodes
+	Reader           *earnmax.Reader
+	Consents         *earnmax.WithdrawalConsentStore
+	Attempts         WithdrawalClaimAttempts
+	WithdrawalStatus *earnmax.WithdrawalCostStatusReader
+	Cluster          SolanaCluster
+	Invites          InviteCodes
 }
 
 type EarnMaxHeaders struct {
@@ -268,6 +271,7 @@ func newEarnMaxRoutes(auth *Auth, appDB *pgxpool.Pool, cfg EarnMax, release stri
 }
 
 func (h earnMaxRoutes) registerReads(api huma.API) {
+	h.registerWithdrawalConsents(api)
 	errs := func(codes ...int) map[string]*huma.Response {
 		return errorResponses[routeError](api, codes...)
 	}

@@ -29,6 +29,7 @@ func readyWorkerManifest(t *testing.T) RouteManifest {
 // names none), and its target is computed, a flat vault's Voltr idle entering
 // that lane under the selector's current quote.
 func tickObservation(snapshot Snapshot) Observation {
+	snapshot.net = fixtureSnapshotCertificate(snapshot)
 	if snapshot.RouteLane == "" {
 		snapshot.RouteLane, snapshot.StrategyKey = MapleSyrupUSDCLaneID, MapleSyrupUSDCLaneID
 	}

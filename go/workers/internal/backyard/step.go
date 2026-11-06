@@ -7,10 +7,12 @@ import (
 )
 
 type StepRequest struct {
-	Open   KaminoLegRequest
-	Swap   *JupiterSwapRequest      `json:",omitempty"`
-	Hastra *HastraConversionRequest `json:",omitempty"`
-	Close  *KaminoLegRequest        `json:",omitempty"`
+	admission *addAdmission
+	riskOnly  bool
+	Open      KaminoLegRequest
+	Swap      *JupiterSwapRequest      `json:",omitempty"`
+	Hastra    *HastraConversionRequest `json:",omitempty"`
+	Close     *KaminoLegRequest        `json:",omitempty"`
 }
 
 type StepExecutionEvidence struct {

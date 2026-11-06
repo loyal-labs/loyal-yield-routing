@@ -692,38 +692,40 @@ func (p lanePricer) settleHeld(ctx context.Context, o Observation, s Snapshot, m
 }
 
 func (p lanePricer) priceHeldExit(ctx context.Context, b heldExitBasis, slot int64, at time.Time) (ExitCost, error) {
-	receipts, sold, value := b.st.position.CollateralDepositedRaw, b.heldRaw, b.markValue
-	if receipts == 0 {
-		var err error
-		if receipts, err = payoffReceiptsForLiquidity(b.st.collateral.totalLiquiditySF, b.st.collateral.terms.CollateralMintTotalSupply, b.heldRaw); err != nil {
-			return ExitCost{}, staleHoldFrom(err, "exit_quote_unavailable")
-		}
-		if len(b.st.topology) == 0 {
-			b.st.topology = []string{b.st.route.Kamino.CollateralReserve}
-		}
+	at = time.Now().UTC()
+	if p.client == nil || b.heldRaw == 0 {
+		return ExitCost{}, staleHold("exit_quote_unavailable")
 	}
-	if limit := stepLegCap(b.st.route); limit.exceeded(receipts) {
-		receipts = limit.raw
-		liquidity, err := b.st.collateral.redeemLiquidityRaw(receipts)
-		if err != nil || liquidity > math.MaxUint64-b.st.collateralBalance {
-			return ExitCost{}, staleHoldFrom(err, "exit_quote_unavailable")
-		}
-		sold = liquidity + b.st.collateralBalance
-		scaled := new(big.Int).Mul(new(big.Int).SetUint64(b.markValue), new(big.Int).SetUint64(sold))
-		value = scaled.Quo(scaled, new(big.Int).SetUint64(b.heldRaw)).Uint64()
+	route := b.st.route
+	source, destination, _, _, err := jupiterEdgeForRoute(p.manifest.vault, SwapCollateralToStableStep, route.Lane)
+	if err != nil || destination != fleet.USDCMint {
+		return ExitCost{}, staleHoldFrom(err, "exit_quote_unavailable")
 	}
-	exit, _, err := assembleStep(ctx, p.rpc, p.view, p.client, p.manifest, p.policies, b.st, stepExit, receipts, sold, slot)
+	request := jupiter.QuoteRequest{InputMint: source, OutputMint: destination, Amount: b.heldRaw, SlippageBPS: jupiterMaxSlippageBPS, MaxAccounts: 64, InstructionVersion: "V2"}
+	if l, ok := findEarnLane(route.Lane); ok {
+		request.Dexes = l.jupiterDexes
+	}
+	quote, err := p.client.Quote(ctx, request)
 	if err != nil {
 		return ExitCost{}, err
 	}
-	cost, err := exitCostOf(b.st.route.Lane, exitCostQuote, sold, value, conversionQuotedOutput(exit.Request), b.mark, slot, at)
-	cost.QuotedCollateralRaw = b.heldRaw
+	out, _, err := validateJupiterQuoteForRoute(p.manifest.vault, quote, SwapCollateralToStableStep, b.heldRaw, route.Lane, jupiterMaxSlippageBPS)
+	if err != nil {
+		return ExitCost{}, err
+	}
+	if quote.ContextSlot == 0 || slot <= 0 || quote.ContextSlot > uint64(slot)+uint64(min(observationLagSlots(), adaptorMaxReportAgeSlots)) || quote.ContextSlot < uint64(slot) && uint64(slot)-quote.ContextSlot > uint64(min(observationLagSlots(), adaptorMaxReportAgeSlots)) {
+		return ExitCost{}, staleHold("exit_quote_slot_unavailable")
+	}
+	cost, err := exitCostOf(route.Lane, exitCostQuote, b.heldRaw, b.markValue, out, b.mark, int64(quote.ContextSlot), at)
+	if err == nil {
+		cost.scope = &exitQuoteScope{vault: p.manifest.vault.squads, manifest: p.manifest.SHA256, usdc: b.usdc, path: source + ":" + destination}
+	}
 	return cost, err
 }
 
 func releaseExitMicros(source Snapshot, equity uint64) (usdMicros, error) {
 	rel := newSourceRelease(source, int64(min(equity, math.MaxInt64)))
-	if rel == nil || source.ExitCostBPS == 0 || source.PositionCollateralRaw <= 0 || source.PositionCollateralValueRaw < 0 {
+	if rel == nil || !source.netKnown(time.Now()) || source.PositionCollateralRaw <= 0 || source.PositionCollateralValueRaw < 0 {
 		return 0, staleHold("selector_release_unpriced")
 	}
 	released := new(big.Int).Mul(big.NewInt(source.PositionCollateralValueRaw), big.NewInt(rel.CollateralRaw-rel.CollateralTargetRaw))

@@ -19,11 +19,13 @@ func TestProviderAdmissionCountsGrossExposureAndSharedCustodyOnce(t *testing.T) 
 		{RouteLane: primePRIMEPYUSDTemplate.Lane, PositionCollateralValueRaw: 5_000 * usd},
 		{RouteLane: onreONycUSDC, PositionCollateralValueRaw: 70_000 * usd, PositionDebtValueRaw: 50_000 * usd},
 	}
-	s := Snapshot{TotalVaultNAVRaw: 100_000 * usd}
+	s := Snapshot{Slot: 77, TotalVaultNAVRaw: 100_000 * usd}
+	s.net = fixtureSnapshotCertificate(s)
 	for _, l := range lanes {
 		s.HeldLanes += l.RouteLane + ","
 	}
 	s.HeldLanes = strings.TrimSuffix(s.HeldLanes, ",")
+	s.net = fixtureSnapshotCertificate(s)
 	for lane, want := range map[string]int64{primePRIMEUSDCTemplate.Lane: 52_000 * usd, autoAUTOPYUSDTemplate.Lane: 52_000 * usd, MapleSyrupUSDCLaneID: 100_000 * usd, onreONycUSDC: 30_000 * usd} {
 		if got := newAllocationLimits(s, lanes, productionRWAPolicy, lane).ProviderRoomRaw; got != want {
 			t.Fatalf("%s room %d want %d", lane, got, want)
@@ -65,6 +67,8 @@ func TestPrimeAllocationCombinesDebtLanesAndProtectsPendingWithdrawals(t *testin
 	const usd = int64(1_000_000)
 	s := Snapshot{TotalVaultNAVRaw: 100_000 * usd, WithdrawalDemandRaw: 10_000 * usd,
 		HeldLanes: primePRIMEUSDCTemplate.Lane + "," + primePRIMEPYUSDTemplate.Lane}
+	s.Slot = 77
+	s.net = fixtureSnapshotCertificate(s)
 	lanes := []Snapshot{
 		{RouteLane: primePRIMEUSDCTemplate.Lane, PositionCollateralValueRaw: 2_000 * usd, PositionDebtValueRaw: 1_000 * usd, CollateralIdleValueRaw: 200 * usd},
 		{RouteLane: primePRIMEPYUSDTemplate.Lane, PositionCollateralValueRaw: 3_000 * usd, PositionDebtValueRaw: 500 * usd, CollateralIdleValueRaw: 200 * usd},
@@ -99,6 +103,7 @@ func TestNewCashAdmissionRechecksCashAndProviderAfterRestart(t *testing.T) {
 	q.Unlevered, q.BorrowReceiveRaw, q.BorrowValueRaw, q.ProceedsValueRaw = true, 0, 0, 0
 	in := targetInputs{Entry: &SelectorResult{Action: SelectorEnter, DestinationLane: s.RouteLane, SelectedQuote: &q}}
 	decide := func() Decision {
+		s.net = fixtureSnapshotCertificate(s)
 		views := []Snapshot{s}
 		applyAllocationLimits(views, productionRWAPolicy)
 		raw, _ := json.Marshal(views[0])
@@ -106,6 +111,7 @@ func TestNewCashAdmissionRechecksCashAndProviderAfterRestart(t *testing.T) {
 		if err := json.Unmarshal(raw, &restarted); err != nil {
 			t.Fatal(err)
 		}
+		restarted.net = fixtureSnapshotCertificate(restarted)
 		return Decide(targetedWith(restarted, in))
 	}
 	if d := decide(); d.Action != Hold {
@@ -191,6 +197,9 @@ func TestNewCashSelectorRejectsExcessExposureAndRotations(t *testing.T) {
 	in.Markets[0].EntryCapacity = Capacity{Known: true, Raw: q.EquityRaw}
 	q.BorrowReceiveRaw = uint64(q.EquityRaw / 2)
 	*q = parBorrow(*q)
+	if in.Snapshot.net != nil {
+		in.Snapshot.net = fixtureSnapshotCertificate(in.Snapshot)
+	}
 	got := SelectOpportunity(in, SelectorState{})
 	if got.Action != SelectorKeep || got.Candidates[0].BlockedReason != "new_allocation_limit" {
 		t.Fatal("gross exposure ignored borrowed capital", got)
@@ -199,8 +208,14 @@ func TestNewCashSelectorRejectsExcessExposureAndRotations(t *testing.T) {
 	in.Markets[0].EntryCapacity.Raw = q.EquityRaw
 	q.BorrowReceiveRaw = uint64(q.EquityRaw / 2)
 	*q = parBorrow(*q)
+	if in.Snapshot.net != nil {
+		in.Snapshot.net = fixtureSnapshotCertificate(in.Snapshot)
+	}
 	got = SelectOpportunity(in, SelectorState{})
 	advanceSelectorFixture(&in, in.Policy.Persistence)
+	if in.Snapshot.net != nil {
+		in.Snapshot.net = fixtureSnapshotCertificate(in.Snapshot)
+	}
 	got = SelectOpportunity(in, got.State)
 	if got.Action != SelectorEnter {
 		t.Fatal("eligible gradual entry was refused", got)
@@ -210,6 +225,9 @@ func TestNewCashSelectorRejectsExcessExposureAndRotations(t *testing.T) {
 	in.Snapshot.HasPosition = true
 	in.Snapshot.PositionCollateralRaw, in.Snapshot.PositionCollateralValueRaw = 1_000_000_000, 1_000_000_000
 	in.Lanes = []Snapshot{in.Snapshot}
+	if in.Snapshot.net != nil {
+		in.Snapshot.net = fixtureSnapshotCertificate(in.Snapshot)
+	}
 	got = SelectOpportunity(in, got.State)
 	if got.Action != SelectorKeep || got.SelectedQuote != nil {
 		t.Fatal("new cash policy sold an existing holding to diversify", got)
@@ -244,6 +262,9 @@ func smallAllocationFixture() SelectorInput {
 
 func TestSmallAllocationsFillTargetsThenPreferCoreAndSurviveRestart(t *testing.T) {
 	in := smallAllocationFixture()
+	if in.Snapshot.net != nil {
+		in.Snapshot.net = fixtureSnapshotCertificate(in.Snapshot)
+	}
 	result := SelectOpportunity(in, SelectorState{})
 	if result.Action != SelectorKeep || result.DestinationLane != primePRIMEUSDCTemplate.Lane {
 		t.Fatal("small target did not require its own persistence window", result)
@@ -255,6 +276,9 @@ func TestSmallAllocationsFillTargetsThenPreferCoreAndSurviveRestart(t *testing.T
 	}
 	advanceSelectorFixture(&in, time.Minute)
 	for _, want := range []string{primePRIMEUSDCTemplate.Lane, MapleSyrupUSDCLaneID, onreONycUSDC} {
+		if in.Snapshot.net != nil {
+			in.Snapshot.net = fixtureSnapshotCertificate(in.Snapshot)
+		}
 		result = SelectOpportunity(in, previous)
 		if result.Action != SelectorEnter || result.DestinationLane != want || result.SelectedQuote == nil {
 			t.Fatalf("wanted %s, got %+v", want, result)
@@ -292,8 +316,14 @@ func TestSmallAllocationPriorityNeverBypassesProfitabilityOrTarget(t *testing.T)
 	in := smallAllocationFixture()
 	in.Markets[1].NativeAPY = .05 // Seven days' yield is below even the 10 bps allowance.
 	in.Quotes[2].CostRaw = 100_000_000
+	if in.Snapshot.net != nil {
+		in.Snapshot.net = fixtureSnapshotCertificate(in.Snapshot)
+	}
 	first := SelectOpportunity(in, SelectorState{})
 	advanceSelectorFixture(&in, time.Minute)
+	if in.Snapshot.net != nil {
+		in.Snapshot.net = fixtureSnapshotCertificate(in.Snapshot)
+	}
 	got := SelectOpportunity(in, first.State)
 	if got.Action != SelectorEnter || got.DestinationLane != onreONycUSDC {
 		t.Fatal("diversification forced an uneconomic entry", got)

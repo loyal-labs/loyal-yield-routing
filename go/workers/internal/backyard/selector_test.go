@@ -20,10 +20,12 @@ func selectorFixture() SelectorInput {
 	p.UncertaintyBPS = 0
 	market := LaneEconomics{Lane: "OnRe/ONyc/USDC", EvidenceID: "rates", ObservedAt: now, NativeObservedAt: now, NativeAPY: .15, SupplyAPY: 0, CurrentBorrowAPY: .04, BorrowCurve: []BorrowCurvePoint{{0, 400}, {8000, 400}, {10000, 10000}}, DebtSupplyRaw: 1e15, DebtBorrowRaw: 1e14, EntryCapacity: Capacity{Known: true, Unlimited: true}}
 	quote := parBorrow(MoveQuote{MinimumIdleRaw: uint64(s.TotalVaultNAVRaw), BorrowReceiveRaw: uint64(s.TotalVaultNAVRaw / 2), SourceLane: s.RouteLane, DestinationLane: market.Lane, ObservationID: s.ObservationID, EquityRaw: s.TotalVaultNAVRaw, CostRaw: 10_000, ObservedAt: now, EvidenceID: "complete-sequence", SampleSlot: s.Slot, ValidThroughSlot: s.Slot + 32})
+	s.net = fixtureSnapshotCertificate(s)
 	return SelectorInput{Now: now, Snapshot: s, Markets: []LaneEconomics{market}, Quotes: []MoveQuote{quote}, Policy: p}
 }
 func advanceSelectorFixture(in *SelectorInput, d time.Duration) {
 	in.Now = in.Now.Add(d)
+	in.Snapshot.net = fixtureSnapshotCertificate(in.Snapshot)
 	for i := range in.Markets {
 		in.Markets[i].ObservedAt = in.Now
 		in.Markets[i].NativeObservedAt = in.Now
@@ -38,6 +40,9 @@ func TestSelectorDoesNotRefreshOldRecipeWithFreshTimestamp(t *testing.T) {
 	for _, kind := range []string{"expired", "future", "unbounded", "missing"} {
 		t.Run(kind, func(t *testing.T) {
 			in := selectorFixture()
+			if in.Snapshot.net != nil {
+				in.Snapshot.net = fixtureSnapshotCertificate(in.Snapshot)
+			}
 			first := SelectOpportunity(in, SelectorState{})
 			advanceSelectorFixture(&in, time.Minute)
 			switch kind {
@@ -49,6 +54,9 @@ func TestSelectorDoesNotRefreshOldRecipeWithFreshTimestamp(t *testing.T) {
 				in.Quotes[0].ValidThroughSlot++
 			case "missing":
 				in.Quotes[0].SampleSlot = 0
+			}
+			if in.Snapshot.net != nil {
+				in.Snapshot.net = fixtureSnapshotCertificate(in.Snapshot)
 			}
 			got := SelectOpportunity(in, first.State)
 			if got.Action == "ENTER" || got.Action == "SWITCH" || got.SelectedQuote != nil {
@@ -64,12 +72,18 @@ func TestSelectorDoesNotRefreshOldRecipeWithFreshTimestamp(t *testing.T) {
 func TestSelectorPersistenceRestartsAfterCapacityClosureAndSurvivesJSONRestart(t *testing.T) {
 	t.Parallel()
 	in := selectorFixture()
+	if in.Snapshot.net != nil {
+		in.Snapshot.net = fixtureSnapshotCertificate(in.Snapshot)
+	}
 	first := SelectOpportunity(in, SelectorState{})
 	if first.Action != "KEEP" || first.Reason != "advantage_not_yet_persistent" {
 		t.Fatal(first)
 	}
 	in.Markets[0].EntryCapacity = Capacity{Known: true, Raw: 0}
 	advanceSelectorFixture(&in, 30*time.Second)
+	if in.Snapshot.net != nil {
+		in.Snapshot.net = fixtureSnapshotCertificate(in.Snapshot)
+	}
 	closed := SelectOpportunity(in, first.State)
 	if closed.Action != "KEEP" || closed.Candidates[0].BlockedReason != "entry_closed" {
 		t.Fatal(closed)
@@ -79,6 +93,9 @@ func TestSelectorPersistenceRestartsAfterCapacityClosureAndSurvivesJSONRestart(t
 	}
 	in.Markets[0].EntryCapacity = Capacity{Known: true, Unlimited: true}
 	advanceSelectorFixture(&in, 31*time.Second)
+	if in.Snapshot.net != nil {
+		in.Snapshot.net = fixtureSnapshotCertificate(in.Snapshot)
+	}
 	reopened := SelectOpportunity(in, closed.State)
 	if reopened.Action != "KEEP" || reopened.Reason != "advantage_not_yet_persistent" {
 		t.Fatal("reopened lane entered on pre-closure persistence", reopened)
@@ -89,12 +106,18 @@ func TestSelectorPersistenceRestartsAfterCapacityClosureAndSurvivesJSONRestart(t
 		t.Fatal(err)
 	}
 	advanceSelectorFixture(&in, in.Policy.Persistence+time.Second)
+	if in.Snapshot.net != nil {
+		in.Snapshot.net = fixtureSnapshotCertificate(in.Snapshot)
+	}
 	opened := SelectOpportunity(in, restarted)
 	if opened.Action != "ENTER" {
 		t.Fatal(opened)
 	}
 	// A long observation gap is not proof of continuous advantage.
 	advanceSelectorFixture(&in, in.Policy.MaxSampleGap+time.Minute)
+	if in.Snapshot.net != nil {
+		in.Snapshot.net = fixtureSnapshotCertificate(in.Snapshot)
+	}
 	if got := SelectOpportunity(in, opened.State); got.Action != "KEEP" || got.Reason != "advantage_not_yet_persistent" {
 		t.Fatal(got)
 	}
@@ -112,6 +135,9 @@ func TestSelectorMissingEvidenceNeverBecomesFreeCapacityOrZeroCosts(t *testing.T
 	} {
 		in := selectorFixture()
 		mutate(&in)
+		if in.Snapshot.net != nil {
+			in.Snapshot.net = fixtureSnapshotCertificate(in.Snapshot)
+		}
 		got := SelectOpportunity(in, SelectorState{})
 		if got.Action != "KEEP" {
 			t.Fatal(got)
@@ -123,6 +149,9 @@ func TestSelectorPricesOneBorrowPassAtProjectedUtilization(t *testing.T) {
 	in := selectorFixture()
 	in.Markets[0].DebtSupplyRaw = 2_000_000_000
 	in.Markets[0].DebtBorrowRaw = 1_500_000_000
+	if in.Snapshot.net != nil {
+		in.Snapshot.net = fixtureSnapshotCertificate(in.Snapshot)
+	}
 	got := SelectOpportunity(in, SelectorState{})
 	if len(got.Candidates) != 1 || got.Candidates[0].BorrowAPR <= .9 || got.Action != "KEEP" {
 		t.Fatal(got)
@@ -186,6 +215,9 @@ func TestEconomicOutageDoesNotBlockSafetyWithdrawalOrExactRecovery(t *testing.T)
 		t.Fatal(got)
 	}
 	in.Snapshot = s
+	if in.Snapshot.net != nil {
+		in.Snapshot.net = fixtureSnapshotCertificate(in.Snapshot)
+	}
 	if got := SelectOpportunity(in, SelectorState{}); got.Action != "KEEP" || got.Reason != "execution_recovery_or_safety_first" {
 		t.Fatal(got)
 	}
@@ -198,6 +230,9 @@ func TestSelectorNeverPreemptsExecutableRiskReduction(t *testing.T) {
 	in.Snapshot.PositionDebtRaw = 100
 	in.Snapshot.SquadsIdleRaw = 100
 	in.Snapshot.LTVBPS = 7000
+	if in.Snapshot.net != nil {
+		in.Snapshot.net = fixtureSnapshotCertificate(in.Snapshot)
+	}
 	got := SelectOpportunity(in, SelectorState{})
 	if got.Action != "KEEP" || got.SelectedQuote != nil {
 		t.Fatal(got)
@@ -207,20 +242,32 @@ func TestSelectorNeverPreemptsExecutableRiskReduction(t *testing.T) {
 func TestSelectorNAVDoesNotEraseFreshAdvantage(t *testing.T) {
 	t.Parallel()
 	in := selectorFixture()
+	if in.Snapshot.net != nil {
+		in.Snapshot.net = fixtureSnapshotCertificate(in.Snapshot)
+	}
 	first := SelectOpportunity(in, SelectorState{})
 	in.Snapshot.LastReportAgeSeconds = 3600
 	advanceSelectorFixture(&in, 30*time.Second)
+	if in.Snapshot.net != nil {
+		in.Snapshot.net = fixtureSnapshotCertificate(in.Snapshot)
+	}
 	accounting := SelectOpportunity(in, first.State)
 	if accounting.Action != "KEEP" || accounting.Reason != "accounting_first" || !accounting.State.Advantages[advantageKey{lane: in.Markets[0].Lane}].Since.Equal(in.Now.Add(-30*time.Second)) {
 		t.Fatal(accounting)
 	}
 	advanceSelectorFixture(&in, 31*time.Second)
 	in.Snapshot.LastReportAgeSeconds = 0
+	if in.Snapshot.net != nil {
+		in.Snapshot.net = fixtureSnapshotCertificate(in.Snapshot)
+	}
 	if got := SelectOpportunity(in, accounting.State); got.Action != "ENTER" {
 		t.Fatal(got)
 	}
 	in.Snapshot.RouteLane = "PRIME/USDC"
 	in.Quotes[0].SourceLane = in.Snapshot.RouteLane
+	if in.Snapshot.net != nil {
+		in.Snapshot.net = fixtureSnapshotCertificate(in.Snapshot)
+	}
 	if got := SelectOpportunity(in, accounting.State); got.Action != "KEEP" {
 		t.Fatal("ownership change retained advantage", got)
 	}
@@ -235,8 +282,14 @@ func TestSelectorPartialAllocationCanBecomePersistent(t *testing.T) {
 	in.Markets[0].EntryCapacity = Capacity{Known: true, Raw: 200_000_000}
 	in.Quotes[0].EquityRaw, in.Quotes[0].BorrowReceiveRaw = 200_000_000, 100_000_000
 	in.Quotes[0] = parBorrow(in.Quotes[0])
+	if in.Snapshot.net != nil {
+		in.Snapshot.net = fixtureSnapshotCertificate(in.Snapshot)
+	}
 	first := SelectOpportunity(in, SelectorState{})
 	advanceSelectorFixture(&in, time.Minute)
+	if in.Snapshot.net != nil {
+		in.Snapshot.net = fixtureSnapshotCertificate(in.Snapshot)
+	}
 	got := SelectOpportunity(in, first.State)
 	if got.Action != "ENTER" || got.Candidates[0].IdleRaw != 800_000_000 {
 		t.Fatal(got)
@@ -251,6 +304,7 @@ func TestStagedRestoreFinishesAfterWithdrawalDemandChanges(t *testing.T) {
 		s.WithdrawalDemandRaw, s.VoltrIdleRaw = demand, 10
 		s.VoltrStrategyIdleRaw, s.StagedAmountRaw, s.StagedAmountKnown = 5, 5, true
 		s.PostMutationNAVRequired = true
+		s.net = fixtureSnapshotCertificate(s)
 		if got := Decide(s); got.Action != VoltrRestoreIdle || got.AmountRaw != 5 {
 			t.Fatal(got)
 		}
@@ -273,6 +327,9 @@ func TestPilotSelectorForecastsOnlyExecutableTrancheAndRetainsWholeVaultIdle(t *
 	in.Quotes[0] = parBorrow(in.Quotes[0])
 	in.Quotes[0].CostRaw = 100
 	in.Policy.IdleBufferRaw = 2_000_000
+	if in.Snapshot.net != nil {
+		in.Snapshot.net = fixtureSnapshotCertificate(in.Snapshot)
+	}
 	got := SelectOpportunity(in, SelectorState{})
 	c := got.Candidates[0]
 	if !c.CostsKnown || c.InvestedRaw != 9_999_900 || c.IdleRaw != 90_000_000 {
@@ -282,6 +339,9 @@ func TestPilotSelectorForecastsOnlyExecutableTrancheAndRetainsWholeVaultIdle(t *
 	// gross destination income. The whole-wealth denominator does affect the
 	// continuous fee projection; KEEP still uses actual source holdings.
 	in.Snapshot.VoltrIdleRaw, in.Snapshot.TotalVaultNAVRaw = 20_000_000, 20_000_000
+	if in.Snapshot.net != nil {
+		in.Snapshot.net = fixtureSnapshotCertificate(in.Snapshot)
+	}
 	smaller := SelectOpportunity(in, SelectorState{}).Candidates[0]
 	if c.GrossGainRaw != smaller.GrossGainRaw || c.GainRaw <= smaller.GainRaw || c.GainRaw-smaller.GainRaw > 100 || c.BorrowAPR != smaller.BorrowAPR || smaller.IdleRaw != 10_000_000 {
 		t.Fatal(c, smaller)
@@ -290,6 +350,9 @@ func TestPilotSelectorForecastsOnlyExecutableTrancheAndRetainsWholeVaultIdle(t *
 	in.Quotes[0].EquityRaw = 3_000_000
 	in.Quotes[0].BorrowReceiveRaw = 3_000_000 / 2
 	in.Quotes[0] = parBorrow(in.Quotes[0])
+	if in.Snapshot.net != nil {
+		in.Snapshot.net = fixtureSnapshotCertificate(in.Snapshot)
+	}
 	partial := SelectOpportunity(in, SelectorState{}).Candidates[0]
 	if !partial.CostsKnown || partial.InvestedRaw != 2_999_900 || partial.IdleRaw != 17_000_000 || partial.GainRaw >= c.GainRaw {
 		t.Fatal("partial capacity did not reduce deployment", partial)
@@ -298,11 +361,17 @@ func TestPilotSelectorForecastsOnlyExecutableTrancheAndRetainsWholeVaultIdle(t *
 	in.Quotes[0].EquityRaw = 1_000_000
 	in.Quotes[0].BorrowReceiveRaw = 1_000_000 / 2
 	in.Quotes[0] = parBorrow(in.Quotes[0])
+	if in.Snapshot.net != nil {
+		in.Snapshot.net = fixtureSnapshotCertificate(in.Snapshot)
+	}
 	buffered := SelectOpportunity(in, SelectorState{}).Candidates[0]
 	if !buffered.CostsKnown || buffered.InvestedRaw != 999_900 || buffered.IdleRaw != 19_000_000 {
 		t.Fatal("idle buffer omitted from whole-vault forecast", buffered)
 	}
 	in.Quotes[0].EquityRaw = 20_000_000
+	if in.Snapshot.net != nil {
+		in.Snapshot.net = fixtureSnapshotCertificate(in.Snapshot)
+	}
 	if wrong := SelectOpportunity(in, SelectorState{}).Candidates[0]; wrong.CostsKnown || wrong.BlockedReason != "bounded_move_cost_unavailable" {
 		t.Fatal("accepted quote for unexecutable full-vault amount", wrong)
 	}
@@ -317,6 +386,9 @@ func TestPilotSelectorForecastUsesQuotedBorrowInsteadOfLeverageAssumption(t *tes
 	in.Quotes[0].BorrowReceiveRaw = 3_000_000
 	in.Quotes[0].BorrowFeeRaw = 100
 	in.Quotes[0] = parBorrow(in.Quotes[0])
+	if in.Snapshot.net != nil {
+		in.Snapshot.net = fixtureSnapshotCertificate(in.Snapshot)
+	}
 	got := SelectOpportunity(in, SelectorState{}).Candidates[0]
 	// The step owes its receive plus the fee; only the receive converts into
 	// collateral (the fee is charged in the cost).
@@ -332,6 +404,9 @@ func TestPilotSelectorForecastUsesQuotedBorrowInsteadOfLeverageAssumption(t *tes
 		t.Fatal("quoted borrow ignored", got, want)
 	}
 	in.Quotes[0].BorrowReceiveRaw = 0
+	if in.Snapshot.net != nil {
+		in.Snapshot.net = fixtureSnapshotCertificate(in.Snapshot)
+	}
 	if got = SelectOpportunity(in, SelectorState{}).Candidates[0]; got.CostsKnown || got.BlockedReason != "bounded_borrow_unavailable" {
 		t.Fatal("missing amount accepted", got)
 	}

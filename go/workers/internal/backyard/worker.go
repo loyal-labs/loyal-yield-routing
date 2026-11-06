@@ -28,6 +28,7 @@ type Worker struct {
 }
 
 type tickRuntime struct {
+	protectWithdrawal       func(context.Context, RouteManifest, Decision, Observation, any, ExpectedEffects) (any, error)
 	withdrawalHealth        func(context.Context, withdrawalAssessment) error
 	observeWithdrawalHealth func(context.Context) (Observation, error)
 	persistedNAVReport      func(context.Context, string) (navReport, bool, error)
@@ -190,6 +191,9 @@ func productionTickRuntime(database *Database, rpc *chain.Client, view *View, ju
 		observe:   state.observe,
 		loadLatch: database.ManualRecoveryLatch,
 		latch:     database.LatchManualRecovery,
+		protectWithdrawal: func(ctx context.Context, m RouteManifest, d Decision, o Observation, r any, e ExpectedEffects) (any, error) {
+			return prepareWithdrawalCost(ctx, database, rpc, view, m, d, o, r, e)
+		},
 		prepareBridge: func(ctx context.Context, manifest RouteManifest, decision Decision, observation Observation) (Observation, BridgeExecutionEvidence, error) {
 			return prepareBridgeFromTickObservation(ctx, rpc, view, manifest, decision, observation)
 		},
@@ -210,6 +214,25 @@ func productionTickRuntime(database *Database, rpc *chain.Client, view *View, ju
 		},
 		recordPreSendHold: database.RecordPreSendHold,
 		build: func(ctx context.Context, operationID string, request any, effects ExpectedEffects) error {
+			underlying := withdrawalUnderlyingRequest(request)
+			if a, required := requestAddAdmission(underlying); required {
+				slot, err := view.slot(ctx)
+				if err != nil {
+					return err
+				}
+				if err := validateAddAdmission(manifest, underlying, a, time.Now(), slot); err != nil {
+					return err
+				}
+			}
+			if r, ok := underlying.(BridgeBuildRequest); ok && (r.Action != bridgeStageSquadsToVoltr || v.trustful()) {
+				slot, err := view.slot(ctx)
+				if err != nil {
+					return err
+				}
+				if !r.net.valid(time.Now(), slot) {
+					return staleHold("certified_nav_expired")
+				}
+			}
 			return buildSimulatePersist(ctx, database, rpc, manifest, operationID, request, effects, credentials)
 		},
 	}
@@ -229,6 +252,7 @@ func NewWorker(database *Database, rpc *chain.Client, view *View, jupiterClient 
 	if _, err := credentials.signer(); err != nil {
 		return nil, err
 	}
+	state.exits = newExitQuoter(database, jupiterClient, v.manifest, state.events)
 	return &Worker{wake: make(chan struct{}, 1), routeKey: v.RouteKey, interval: config.PollInterval, manifest: v.manifest, events: state.events, holds: holdLog{events: state.events},
 		runtime: productionTickRuntime(database, rpc, view, jupiterClient, state, v.manifest, credentials)}, nil
 }
@@ -304,6 +328,13 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 		w.noteHold(observation.Snapshot, decision.StrategyKey, err)
 		return err
 	}
+	if w.runtime.protectWithdrawal != nil {
+		request, err = w.runtime.protectWithdrawal(ctx, w.manifest, decision, prepared, request, effects)
+		if err != nil {
+			w.noteHold(observation.Snapshot, decision.StrategyKey, err)
+			return err
+		}
+	}
 	record, err := w.runtime.recordDecision(ctx, w.routeKey, observation, decision, w.manifest.SHA256)
 	if err != nil {
 		return err
@@ -368,7 +399,16 @@ func (w *Worker) stopWhileLatched(ctx context.Context) (bool, error) {
 	return latched, nil
 }
 
-func (w *Worker) prepare(ctx context.Context, decision Decision, observation Observation) (any, ExpectedEffects, Observation, error) {
+func (w *Worker) prepare(ctx context.Context, decision Decision, observation Observation) (request any, effects ExpectedEffects, prepared Observation, err error) {
+	defer func() {
+		if err == nil {
+			request, err = authorizeAddRequest(request, decision, observation.Snapshot)
+		}
+	}()
+
+	if requiresNAVForAdd(decision) && !observation.Snapshot.netKnown(time.Now()) {
+		return nil, ExpectedEffects{}, observation, staleHold(exitUnpriced)
+	}
 	wireDecision := decision
 	switch decision.Action {
 	case InitializeKaminoObligation:
@@ -511,6 +551,7 @@ func (w *Worker) Run(ctx context.Context) error {
 
 type vaultState struct {
 	events        *events
+	exits         *exitQuoter
 	refreshFailed failureStreak
 	staleHeld     staleStreak
 

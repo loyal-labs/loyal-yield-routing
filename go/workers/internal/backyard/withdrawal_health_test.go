@@ -182,3 +182,35 @@ func TestLatchedTickRefreshesRiskWithoutExecutingAndExposesFailedRefreshAge(t *t
 		t.Fatal("unpriced withdrawal evidence replaced valued risk observation")
 	}
 }
+
+func TestWithdrawalHealthMissingNAVShowsExactWaitAndKeepsKnownCash(t *testing.T) {
+	o := Observation{ObservedAt: time.Unix(1700000000, 0), Snapshot: livePartialSnapshot()}
+	o.Snapshot.net, o.Snapshot.NAVUnavailable = nil, exitUnpriced
+	h, ok := assessWithdrawalHealth(rwa, o, Decision{Action: Hold}, nil)
+	if !ok || h.Status != "waiting" || h.Reason != exitUnpriced {
+		t.Fatalf("missing price hidden: %+v", h)
+	}
+	o.Snapshot.VoltrIdleRaw = o.Snapshot.WithdrawalDemandRaw
+	h, ok = assessWithdrawalHealth(rwa, o, Decision{Action: Hold}, nil)
+	if !ok || h.Status != "waiting" || h.Reason != "withdrawal_covered" {
+		t.Fatalf("known cash lost: %+v", h)
+	}
+	o.Snapshot.VoltrIdleRaw = 0
+	h, ok = assessWithdrawalHealth(rwa, o, Decision{Action: HoldManualRecovery}, nil)
+	if !ok || h.Status != "operator_attention" {
+		t.Fatalf("manual protection lost: %+v", h)
+	}
+}
+
+func TestWithdrawalCostHoldPublishesPriceWaitWithoutHidingOperatorAttention(t *testing.T) {
+	o := Observation{ObservedAt: time.Now(), Snapshot: livePartialSnapshot()}
+	err := withdrawalCostWait(earnmax.WithdrawalWaitingPrice)
+	h, ok := assessWithdrawalHealth(rwa, o, Decision{Action: VoltrRestoreIdle}, err)
+	if !ok || h.Status != "waiting" || h.Reason != "withdrawal_price_limit" {
+		t.Fatalf("approved-cost hold lost its user-visible reason: %+v", h)
+	}
+	h, ok = assessWithdrawalHealth(rwa, o, Decision{Action: HoldManualRecovery}, err)
+	if !ok || h.Status != "operator_attention" || h.Reason != "withdrawal_intervention_required" {
+		t.Fatalf("price wait hid operator attention: %+v", h)
+	}
+}

@@ -78,6 +78,8 @@ func (a *StageAllowance) cap(idle int64) int64 {
 }
 
 type Snapshot struct {
+	net                         *certifiedNAV
+	NAVUnavailable              string `json:",omitempty"`
 	ValuationSource             string `json:",omitempty"`
 	ValuationSlot               int64  `json:",omitempty"`
 	ObservationID               string
@@ -193,6 +195,9 @@ type Snapshot struct {
 }
 
 func (o Observation) exitCosts() exitCosts {
+	if o.quotedExits != nil {
+		return o.quotedExits
+	}
 	if o.planning == nil {
 		return nil
 	}
@@ -274,6 +279,7 @@ func (d Decision) Validate() error {
 }
 
 type Observation struct {
+	quotedExits     exitCosts
 	planning        *routePlanningState
 	routeBatch      *routeObservationBatch
 	policies        installedPolicies

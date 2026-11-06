@@ -164,7 +164,7 @@ export function requestWithdrawVaultInstruction(args: {
 }
 
 /** Claim: burns the escrowed LP and pays USDC to the authority's ATA. */
-export function withdrawVaultInstruction(
+export function unprotectedWithdrawVaultInstruction(
   authority: PublicKey,
 ): TransactionInstruction {
   const user = voltrUserAccounts(authority);
@@ -226,6 +226,7 @@ export type VoltrPosition = {
   observedSlot?: string;
   /** USDC already sitting in the smart-account vault's USDC ATA. */
   assetRaw: bigint;
+  assetAtaExists: boolean;
   /** Smart-account vault lamports (rent payer for withdrawal requests). */
   authorityLamports: number;
   escrowLpAtaExists: boolean;
@@ -236,6 +237,7 @@ export type VoltrPosition = {
   /** USDC raw the free LP redeems for right now. */
   valueRaw: bigint;
   withdrawal: {
+    receiptBytes: Uint8Array;
     escrowedLpRaw: bigint;
     /** Program pays min(request-time quote, present value) at claim. */
     payoutRaw: bigint;
@@ -348,12 +350,14 @@ export async function readVoltrPosition(
     const atRequest = readU80F48(r, 80);
     const atPresent = lpToAssets(escrowedLpRaw);
     withdrawal = {
+      receiptBytes: new Uint8Array(r),
       escrowedLpRaw,
       payoutRaw: atPresent < atRequest ? atPresent : atRequest,
       withdrawableFromTs: Number(readU64(r, 96)),
     };
   }
   return {
+    assetAtaExists: assetAta !== null,
     assetRaw: assetAta ? assetAta.data.readBigUInt64LE(64) : BigInt(0),
     observedSlot: String(snapshot.context.slot),
     assetsToLp: (assetRaw) =>

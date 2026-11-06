@@ -1,0 +1,75 @@
+CREATE TABLE loyal_yield.backyard_withdrawal_cost_operations (
+    operation_id TEXT PRIMARY KEY REFERENCES loyal_yield.multiply_operations(operation_id),
+    evidence_digest TEXT NOT NULL CHECK (evidence_digest ~ '^[0-9a-f]{64}$'),
+    message_sha256 TEXT NOT NULL CHECK (message_sha256 ~ '^[0-9a-f]{64}$'),
+    signed_wire_sha256 TEXT CHECK (signed_wire_sha256 ~ '^[0-9a-f]{64}$'),
+    signed_wire BYTEA CHECK (octet_length(signed_wire) BETWEEN 1 AND 1232),
+    transaction_signature TEXT,
+    recent_blockhash TEXT,
+    last_valid_block_height BIGINT CHECK (last_valid_block_height > 0),
+    expected_effects JSONB,
+    effective_lp NUMERIC(20,0) NOT NULL CHECK (effective_lp > 0),
+    max_cost_usdc BIGINT NOT NULL CHECK (max_cost_usdc >= 0),
+    other_holders_usdc BIGINT NOT NULL CHECK (other_holders_usdc >= 0),
+    max_incremental_cost_usdc BIGINT NOT NULL CHECK (max_incremental_cost_usdc BETWEEN 0 AND max_cost_usdc),
+    incremental_other_holders_usdc BIGINT NOT NULL CHECK (incremental_other_holders_usdc BETWEEN 0 AND other_holders_usdc),
+    network_usdc BIGINT CHECK (network_usdc >= 0),
+    network_unknown_reason TEXT,
+    network_lamports NUMERIC(20,0) NOT NULL CHECK (network_lamports >= 0),
+    evidence JSONB NOT NULL,
+    state TEXT NOT NULL DEFAULT 'reserved' CHECK (state IN ('reserved','settled','unknown','released')),
+    receipt_signature TEXT,
+    receipt_instruction INTEGER CHECK (receipt_instruction >= 0),
+    finalized_slot BIGINT CHECK (finalized_slot > 0),
+    actual_cost_usdc BIGINT CHECK (actual_cost_usdc >= 0),
+    actual_other_holders_usdc BIGINT CHECK (actual_other_holders_usdc >= 0),
+    actual_incremental_cost_usdc BIGINT CHECK (actual_incremental_cost_usdc BETWEEN 0 AND actual_cost_usdc),
+    actual_incremental_other_holders_usdc BIGINT CHECK (actual_incremental_other_holders_usdc BETWEEN 0 AND actual_other_holders_usdc),
+    actual_fee_lamports NUMERIC(20,0) CHECK (actual_fee_lamports >= 0),
+    actual_network_usdc BIGINT CHECK (actual_network_usdc >= 0),
+    actual_network_unknown_reason TEXT,
+    unknown_reason TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (operation_id,receipt_signature,receipt_instruction),
+    CHECK (state <> 'settled' OR (receipt_signature IS NOT NULL AND receipt_instruction IS NOT NULL AND finalized_slot IS NOT NULL AND actual_cost_usdc IS NOT NULL AND actual_other_holders_usdc IS NOT NULL AND actual_incremental_cost_usdc IS NOT NULL AND actual_incremental_other_holders_usdc IS NOT NULL AND actual_fee_lamports IS NOT NULL)),
+    CHECK (state <> 'unknown' OR unknown_reason IS NOT NULL),
+    CHECK (network_usdc IS NOT NULL OR network_unknown_reason IS NOT NULL),
+    CHECK (signed_wire IS NULL OR (signed_wire_sha256 IS NOT NULL AND transaction_signature IS NOT NULL AND recent_blockhash IS NOT NULL AND last_valid_block_height IS NOT NULL AND expected_effects IS NOT NULL))
+);
+
+CREATE TABLE loyal_yield.backyard_withdrawal_cost_reservations (
+    operation_id TEXT NOT NULL REFERENCES loyal_yield.backyard_withdrawal_cost_operations(operation_id),
+    consent_id TEXT NOT NULL REFERENCES loyal_yield.earn_max_withdrawal_consents(consent_id),
+    authority TEXT NOT NULL,
+    request_signature TEXT NOT NULL,
+    request_instruction INTEGER NOT NULL CHECK (request_instruction >= 0),
+    escrow_lp NUMERIC(20,0) NOT NULL CHECK (escrow_lp > 0),
+    max_cost_usdc BIGINT NOT NULL CHECK (max_cost_usdc >= 0),
+    incremental_cost_usdc BIGINT NOT NULL CHECK (incremental_cost_usdc >= 0),
+    projected_payable_usdc BIGINT NOT NULL CHECK (projected_payable_usdc >= 0),
+    actual_cost_usdc BIGINT CHECK (actual_cost_usdc >= 0),
+    actual_incremental_cost_usdc BIGINT CHECK (actual_incremental_cost_usdc BETWEEN 0 AND actual_cost_usdc),
+    PRIMARY KEY (operation_id,consent_id),
+    UNIQUE (operation_id,authority,request_signature,request_instruction)
+);
+CREATE INDEX backyard_withdrawal_cost_generation ON loyal_yield.backyard_withdrawal_cost_reservations(authority,request_signature,request_instruction);
+
+CREATE TABLE loyal_yield.earn_max_withdrawal_claim_attempts (
+    attempt_id TEXT PRIMARY KEY CHECK (attempt_id ~ '^[0-9a-f]{64}$'),
+    consent_id TEXT NOT NULL REFERENCES loyal_yield.earn_max_withdrawal_consents(consent_id),
+    authority TEXT NOT NULL,
+    request_signature TEXT NOT NULL,
+    request_instruction INTEGER NOT NULL CHECK (request_instruction >= 0),
+    signed_wire BYTEA NOT NULL CHECK (octet_length(signed_wire) BETWEEN 1 AND 1232),
+    transaction_signature TEXT NOT NULL UNIQUE,
+    blockhash TEXT NOT NULL,
+    last_valid_block_height NUMERIC(20,0) NOT NULL CHECK (last_valid_block_height > 0),
+    reserved_fee_lamports NUMERIC(20,0) NOT NULL CHECK (reserved_fee_lamports > 0),
+    state TEXT NOT NULL DEFAULT 'reserved' CHECK (state IN ('reserved','settled','released')),
+    actual_fee_lamports NUMERIC(20,0) CHECK (actual_fee_lamports >= 0),
+    finalized_slot BIGINT CHECK (finalized_slot > 0),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CHECK (state <> 'settled' OR (actual_fee_lamports IS NOT NULL AND finalized_slot IS NOT NULL))
+);
+CREATE INDEX earn_max_withdrawal_claim_attempt_generation ON loyal_yield.earn_max_withdrawal_claim_attempts(authority,request_signature,request_instruction);
+CREATE UNIQUE INDEX earn_max_withdrawal_claim_attempt_active_generation ON loyal_yield.earn_max_withdrawal_claim_attempts(authority,request_signature,request_instruction) WHERE state='reserved';

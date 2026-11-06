@@ -1,5 +1,7 @@
 package backyard
 
+import "time"
+
 // Admission limits never request a sale of existing collateral.
 type allocationLimits struct {
 	CashReserveRaw  int64 `json:"cashReserveRaw"`
@@ -42,7 +44,7 @@ func allocationGroup(lane string) string {
 func newAllocationLimits(s Snapshot, lanes []Snapshot, p SelectorPolicy, destination string) allocationLimits {
 	limits := allocationLimits{CashReserveRaw: p.idleBufferRaw(s.TotalVaultNAVRaw), UnleveredEntry: p.unleveredEntry(destination)}
 	provider, group := providerGroup(destination), allocationGroup(destination)
-	if provider == "" || group == "" || s.TotalVaultNAVRaw <= 0 || s.TotalVaultNAVRaw > 1<<53 || s.WithdrawalDemandRaw < 0 || s.WithdrawalDemandRaw > 1<<53 {
+	if !s.netKnown(time.Now()) || provider == "" || group == "" || s.TotalVaultNAVRaw <= 0 || s.TotalVaultNAVRaw > 1<<53 || s.WithdrawalDemandRaw < 0 || s.WithdrawalDemandRaw > 1<<53 {
 		return limits
 	}
 	if len(lanes) == 0 {

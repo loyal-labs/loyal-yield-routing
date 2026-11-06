@@ -80,6 +80,7 @@ func (b *book) views() []Snapshot {
 			StrategyNAVRaw: nav, PriorReportedNAVRaw: nav, TotalVaultNAVRaw: nav + b.voltr,
 			ChainUnix: b.now, BorrowCapacityKnown: true, BorrowUtilizationBlocked: l.blocked, AdditionalDebtRoomRaw: uint64(l.room),
 			Obligation: observedObligation(!l.uninitialized)}
+		s.net = fixtureSnapshotCertificate(s)
 		copy(s.BorrowDebtPriceSF[:], leverageTestPriceBytes())
 		s.BorrowUSDCPriceSF, s.BorrowDebtDecimals = s.BorrowDebtPriceSF, 6
 		if l.coll > 0 {
@@ -108,6 +109,9 @@ func (b *book) views() []Snapshot {
 		views = append(views, Snapshot{ObservationID: "book", Slot: 100, RouteKind: RouteKind, Fresh: true, RouteLane: MapleSyrupUSDCLaneID, StrategyKey: MapleSyrupUSDCLaneID,
 			LiquidationThresholdBPS: 8000, MaxLTVBPS: 8000, VoltrIdleRaw: b.voltr, SquadsIdleRaw: b.squads, WithdrawalDemandRaw: b.demand, ChainUnix: b.now,
 			StrategyNAVRaw: nav, PriorReportedNAVRaw: nav, TotalVaultNAVRaw: nav + b.voltr})
+	}
+	for i := range views {
+		views[i].net = fixtureSnapshotCertificate(views[i])
 	}
 	return views
 }
@@ -559,6 +563,7 @@ func TestTargetDebtCashNoLaneOwesConvertsToUSDC(t *testing.T) {
 	topup := pyusd
 	topup.HeldLanes, topup.DebtIdleRaw, topup.CollateralIdleRaw, topup.MinimumCollateralDepositRaw = autoAUTOPYUSD.Lane, 25_000_000, 5_000_000, 1
 	topup.HasPosition, topup.PositionCollateralRaw, topup.PositionCollateralValueRaw = true, 1_000_000_000, 1_000_000_000
+	topup.net = fixtureSnapshotCertificate(topup)
 	if d := Decide(targeted(topup)); d.Action != OpenRouteStep || d.Reason != topupDepositReason {
 		t.Fatalf("collateral in flight: %+v", d)
 	}

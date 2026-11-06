@@ -57,6 +57,7 @@ func TestLiveSelectorCollectsExecutablePartialCapacityAndKeepsFeedImmutable(t *t
 	}
 	in.Markets, in.Quotes = observed, quotes
 	in.Now = time.Now().UTC()
+	in.Snapshot.net = fixtureSnapshotCertificate(in.Snapshot)
 	result := SelectOpportunity(in, SelectorState{})
 	found := false
 	for _, candidate := range result.Candidates {

@@ -6,16 +6,19 @@ import (
 	"encoding/hex"
 	"strings"
 	"testing"
+	"time"
 )
 
 func bridgeTestRequest(action Action, amount uint64) BridgeBuildRequest {
-	return BridgeBuildRequest{
+	r := BridgeBuildRequest{
 		Action: BridgeAction(action), AmountRaw: amount, Policy: testPolicyAccount(policyKey{action: action}),
 		Report:          BridgeReport{Sequence: 1, ObservedSlot: 1, NAVAfterRaw: 0, SnapshotDigest: navDigest(hex.EncodeToString(bytes.Repeat([]byte{1}, 32)))},
 		AdaptorConfig:   bridgeStrategy,
 		Settings:        backyardSettings,
 		RecentBlockhash: bridgeVault, LastValidBlockHeight: 99,
 	}
+	r.net = &certifiedNAV{vault: rwa.squads, manifest: rwa.manifest.SHA256, slot: 1, report: r.Report, validUntil: time.Now().Add(exitQuoteInterval)}
+	return bindBridgeRequest(r)
 }
 
 func TestUnsignedBridgeMessageEqualsSignedMessage(t *testing.T) {
@@ -122,6 +125,8 @@ func TestBridgeBuilderRejectsCapitalAndReportMutations(t *testing.T) {
 	}
 	bad = bridgeTestRequest(VoltrRestoreIdle, 1)
 	bad.Report.SnapshotDigest = "00" + bad.Report.SnapshotDigest[2:]
+	bad.net.report = bad.Report
+	bad = bindBridgeRequest(bad)
 	if _, err := bridgeInstruction(rwa, bad); err != nil {
 		t.Fatal("nonzero digest was rejected")
 	}

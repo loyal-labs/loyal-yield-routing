@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"encoding/hex"
 	"fmt"
+	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
@@ -56,6 +57,8 @@ func bridgeActionOf(action Action) (BridgeAction, error) {
 }
 
 type BridgeBuildRequest struct {
+	requestDigest        string
+	net                  *certifiedNAV
 	Action               BridgeAction
 	AmountRaw            uint64
 	Report               BridgeReport
@@ -111,6 +114,9 @@ const (
 )
 
 func compileBridgeMessageForDelegate(v *Vault, request BridgeBuildRequest, delegate publicKey) ([]byte, error) {
+	if err := request.validateNAV(v, time.Now()); err != nil {
+		return nil, err
+	}
 	if request.LastValidBlockHeight <= 0 || request.AdaptorConfig != v.Strategy || request.Settings != backyardSettings || request.Report.Sequence != request.Report.ObservedSlot {
 		return nil, fmt.Errorf("bridge config or report is not bound to confirmed state")
 	}
@@ -142,6 +148,9 @@ func compileBridgeMessageForDelegate(v *Vault, request BridgeBuildRequest, deleg
 }
 
 func bridgeInstruction(v *Vault, request BridgeBuildRequest) (compiledInstruction, error) {
+	if err := request.validateNAV(v, time.Now()); err != nil {
+		return compiledInstruction{}, err
+	}
 	switch request.Action {
 	case bridgeAllocateToSquads:
 		if request.AmountRaw == 0 || request.AmountRaw > strategyTwoBridgeLegCapRaw {
@@ -222,6 +231,9 @@ const (
 )
 
 func trustfulBridgeInstructions(v *Vault, request BridgeBuildRequest) ([]compiledInstruction, []byte, error) {
+	if err := request.validateNAV(v, time.Now()); err != nil {
+		return nil, nil, err
+	}
 	book := request.Report.NAVAfterRaw
 	if book > bridgeMaxNAV {
 		return nil, nil, fmt.Errorf("Trustful end value exceeds the vault cap")

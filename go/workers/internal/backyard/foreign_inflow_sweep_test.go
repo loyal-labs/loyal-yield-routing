@@ -109,7 +109,7 @@ func TestForeignSweepDoesNotRaisePrincipalCapAndWireStillPersists(t *testing.T) 
 	m := readyWorkerManifest(t)
 	accounts := append(routeNAVFixture(t, 77), exactReportTicketAccount(t, 4))
 	binary.LittleEndian.PutUint64(accountAt(accounts, bridgeStrategyATA).Data[64:72], total)
-	o := Observation{ObservedAt: time.Now().UTC(), Snapshot: Snapshot{Slot: 77, RouteLane: PrimeUSDCLaneID, StrategyKey: PrimeUSDCLaneID, VoltrIdleRaw: 11, VoltrStrategyIdleRaw: int64(total), SquadsIdleRaw: 6, ForeignCustodyRaw: 1}, policies: testPolicies(t), planning: &routePlanningState{inputs: targetInputs{ExitCosts: fixtureExitCosts()}}}
+	o := Observation{ObservedAt: time.Now().UTC(), Snapshot: Snapshot{Slot: 77, RouteLane: PrimeUSDCLaneID, StrategyKey: PrimeUSDCLaneID, VoltrIdleRaw: 11, VoltrStrategyIdleRaw: int64(total), SquadsIdleRaw: 6, ForeignCustodyRaw: 1}, policies: testPolicies(t), planning: &routePlanningState{inputs: targetInputs{ExitCosts: fixtureExitCosts(m, 77, accounts)}}}
 	client := newFakeChain(t, roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		return response(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":78},"value":{"blockhash":%q,"lastValidBlockHeight":999}}}`, bridgeVault)), nil
 	}))

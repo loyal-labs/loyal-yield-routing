@@ -7,7 +7,8 @@ import {
   TransactionMessage,
   VersionedTransaction,
 } from "@solana/web3.js";
-import { Buffer } from "buffer";
+import bs58 from "bs58";
+import { protectedVoltrClaimConsent, type ProtectedVoltrClaimBroadcast } from "@loyal-labs/smart-account-vaults";
 
 import {
   WalletRejectedError,
@@ -266,6 +267,7 @@ export async function signAndSendPreparedOperations(args: {
   signer: Signer;
   operations: HydratedPreparedOperation[];
   sendMode?: SendPreparedMode;
+  beforeProtectedClaimBroadcast?: (claim: ProtectedVoltrClaimBroadcast) => Promise<void>;
 }): Promise<SentTransaction[]> {
   const { connection, signer, operations, sendMode = "confirm-each" } = args;
   if (operations.length === 0) {
@@ -291,6 +293,7 @@ export async function signAndSendPreparedOperations(args: {
           connection,
           signer,
           operations: [operation],
+          beforeProtectedClaimBroadcast: args.beforeProtectedClaimBroadcast,
         });
         sent.push(confirmed);
       } catch (error) {
@@ -310,7 +313,25 @@ export async function signAndSendPreparedOperations(args: {
   const transactions = operations.map((operation) =>
     compilePreparedOperation(operation, blockhash),
   );
+  const protections = operations.map(protectedVoltrClaimConsent);
+  if (protections.some(Boolean) && !args.beforeProtectedClaimBroadcast) throw new Error("Protected withdrawal claim accounting is unavailable. Check status before claiming.");
+  const expectedMessages = transactions.map(transaction => new Uint8Array(transaction.message.serialize()));
   await signer.signAllTransactions(transactions);
+  for (let index=0;index<transactions.length;index++) {
+    const consent=protections[index];
+    if (!consent) continue;
+    const transaction=transactions[index];
+    const actual=transaction.message.serialize();
+    const expected=expectedMessages[index];
+    if (actual.length!==expected.length || actual.some((value,at)=>value!==expected[at])) throw new Error("Wallet changed the protected withdrawal transaction. Review and sign again.");
+    const wire=transaction.serialize();
+    if(wire.length>MAX_TRANSACTION_BYTES) throw new Error("Signed Earn MAX transaction is too large.");
+    if(BigInt(consent.expiresAt)<=BigInt(Math.floor(Date.now()/1000))) throw new Error("Withdrawal approval expired. Review and approve again.");
+    const {value:fee}=await connection.getFeeForMessage(transaction.message,"confirmed");
+    if(fee===null || !Number.isSafeInteger(fee) || BigInt(fee)>BigInt(consent.maxUserFeeLamports)) throw new Error("The claim network fee exceeds your approval or could not be verified.");
+    if(!args.beforeProtectedClaimBroadcast) throw new Error("Withdrawal claim accounting is unavailable.");
+    await args.beforeProtectedClaimBroadcast({consent,wire,signature:bs58.encode(transaction.signatures[0]),blockhash,lastValidBlockHeight,feeLamports:String(fee)});
+  }
 
   if (sendMode === "send-all-before-confirm" && transactions.length > 1) {
     const inFlight: InFlightTransaction[] = [];
@@ -357,11 +378,13 @@ export async function signAndSendPreparedOperation(args: {
   connection: Connection;
   signer: Signer;
   operation: HydratedPreparedOperation;
+  beforeProtectedClaimBroadcast?: (claim: ProtectedVoltrClaimBroadcast) => Promise<void>;
 }): Promise<SentTransaction> {
   const [sent] = await signAndSendPreparedOperations({
     connection: args.connection,
     signer: args.signer,
     operations: [args.operation],
+    beforeProtectedClaimBroadcast: args.beforeProtectedClaimBroadcast,
   });
   return sent;
 }

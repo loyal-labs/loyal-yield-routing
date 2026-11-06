@@ -53,6 +53,7 @@ func TestMonitorBookIdentityHoldsOnVaultMismatch(t *testing.T) {
 		t.Fatalf("coherent book held: %+v", hold)
 	}
 	s := monitorSnapshot(t, func(_ []ConfirmedAccount, s *Snapshot) { s.VoltrTotalValueRaw = 49 })
+	s.net = fixtureSnapshotCertificate(s)
 	got := Decide(s)
 	if got.Action != HoldManualRecovery || got.Reason != "book_identity_mismatch" {
 		t.Fatalf("vault book mismatch did not hold: %+v", got)
@@ -65,6 +66,7 @@ func TestAcknowledgedForeignIdleKeepsAccountingExactAndRecoveryReachable(t *test
 	s.AcknowledgedForeignIdleRaw = 1_000_000
 	s.VoltrIdleRaw += 1_000_000
 	s.LastReportAgeSeconds = int64(routineNAVReportInterval.Seconds())
+	s.net = fixtureSnapshotCertificate(s)
 	if got := Decide(s); got.Action != ReportNAV {
 		t.Fatalf("acknowledged transfer blocked NAV: %+v", got)
 	}
@@ -91,6 +93,7 @@ func TestAcknowledgedForeignIdleKeepsAccountingExactAndRecoveryReachable(t *test
 	staged.VoltrStrategyIdleRaw, staged.StagedAmountRaw = 7, 7
 	staged.StageTransient, staged.StagedAmountKnown = true, true
 	staged.WithdrawalDemandRaw = staged.VoltrIdleRaw + 7
+	staged.net = fixtureSnapshotCertificate(staged)
 	if got := Decide(staged); got.Action != VoltrRestoreIdle || got.AmountRaw != 7 {
 		t.Fatalf("acknowledged transfer blocked staged withdrawal: %+v", got)
 	}
@@ -153,6 +156,7 @@ func TestMonitorCustodyZeroAtRestAndStageAmountPresent(t *testing.T) {
 		s.StageTransient = true
 		s.WithdrawalDemandRaw = 20 // uncovered by idle 11, so the stage leg restores
 	})
+	staged.net = fixtureSnapshotCertificate(staged)
 	if got := Decide(staged); got.Action != VoltrRestoreIdle || got.AmountRaw != 7 {
 		t.Fatalf("explained custody was not restored at its staged amount: %+v", got)
 	}
@@ -187,9 +191,11 @@ func TestMonitorIdleCoversPendingRequestQuotes(t *testing.T) {
 		s.PostMutationNAVRequired = true
 		s.WithdrawalDemandRaw = 20
 	})
+	s.net = fixtureSnapshotCertificate(s)
 	if got := Decide(s); got.Action == ReportNAV || got.Action == VoltrAllocateToSquads || got.Action == HoldManualRecovery {
 		t.Fatalf("underfunded queue allowed a refresh or allocation tick: %+v", got)
 	}
+	s.net = fixtureSnapshotCertificate(s)
 	if got := Decide(s); got.Action != StageSquadsToVoltr || got.Reason != outboundStageReason {
 		t.Fatalf("underfunded queue did not keep the unwind leg admissible: %+v", got)
 	}
@@ -215,6 +221,7 @@ func TestMonitorProgramDataPinHoldsOnChange(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			s := monitorSnapshot(t, nil)
 			tc.mutate(&s)
+			s.net = fixtureSnapshotCertificate(s)
 			if got := Decide(s); got.Action != HoldManualRecovery || got.Reason != "program_identity_changed" {
 				t.Fatalf("changed program identity did not hold: %+v", got)
 			}
@@ -230,6 +237,7 @@ func TestMonitorProgramDataPinHoldsOnChange(t *testing.T) {
 func TestMonitorSingleReporterSequenceMismatchHolds(t *testing.T) {
 	t.Parallel()
 	s := monitorSnapshot(t, func(_ []ConfirmedAccount, s *Snapshot) { s.TicketLastConsumedSequenceRaw = 5 })
+	s.net = fixtureSnapshotCertificate(s)
 	if got := Decide(s); got.Action != HoldManualRecovery || got.Reason != "out_of_band_crank" {
 		t.Fatalf("ticket sequence moved outside the journal: %+v", got)
 	}

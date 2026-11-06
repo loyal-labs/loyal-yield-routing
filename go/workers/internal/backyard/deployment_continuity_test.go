@@ -30,6 +30,9 @@ func TestPolicyUpgradeRequiresFreshTradeEvidence(t *testing.T) {
 			if minute > 0 {
 				advanceSelectorFixture(&in, 5*time.Minute)
 			}
+			if in.Snapshot.net != nil {
+				in.Snapshot.net = fixtureSnapshotCertificate(in.Snapshot)
+			}
 			previous = SelectOpportunity(in, previous.State)
 		}
 		if previous.Action != SelectorEnter {
@@ -46,12 +49,18 @@ func TestPolicyUpgradeRequiresFreshTradeEvidence(t *testing.T) {
 		in.Policy = productionRWAPolicy
 		resize()
 		advanceSelectorFixture(&in, time.Second)
+		if in.Snapshot.net != nil {
+			in.Snapshot.net = fixtureSnapshotCertificate(in.Snapshot)
+		}
 		result := SelectOpportunity(in, restarted)
 		if result.Action != SelectorKeep || result.Reason != "advantage_not_yet_persistent" || result.SelectedQuote != nil {
 			t.Fatalf("legacy=%v: upgrade reused old trade authority: %+v", legacy, result)
 		}
 		for minute := 5; minute <= 30; minute += 5 {
 			advanceSelectorFixture(&in, 5*time.Minute)
+			if in.Snapshot.net != nil {
+				in.Snapshot.net = fixtureSnapshotCertificate(in.Snapshot)
+			}
 			result = SelectOpportunity(in, result.State)
 			if (result.Action == SelectorEnter) != (minute == 30) {
 				t.Fatalf("new policy persistence at minute %d: %+v", minute, result)

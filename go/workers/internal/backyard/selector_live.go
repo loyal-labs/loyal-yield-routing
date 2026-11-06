@@ -31,6 +31,9 @@ func collectSelectorQuotes(ctx context.Context, rpc *chain.Client, view *View, c
 		seen[market.Lane] = market
 	}
 	s := o.Snapshot
+	if !s.netKnown(time.Now()) {
+		return out, nil, staleHold(exitUnpriced)
+	}
 	buffer := policy.idleBufferRaw(s.TotalVaultNAVRaw)
 	onlyLane, onlySource := "", ""
 	if request != nil {

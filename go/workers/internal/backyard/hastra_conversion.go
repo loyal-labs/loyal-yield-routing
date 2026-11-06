@@ -74,6 +74,8 @@ func hastraEdgeForRoute(v *Vault, action Action, lane string) (hastraEdge, error
 }
 
 type HastraConversionRequest struct {
+	admission            *addAdmission
+	riskOnly             bool
 	Action               Action
 	AmountRaw            uint64
 	OutputRaw            uint64

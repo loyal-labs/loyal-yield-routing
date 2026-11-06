@@ -96,6 +96,15 @@ func backyardGroups(state map[string]any) []map[string]any {
 }
 
 func backyardProjected(state map[string]any, keys []string) any {
+	if observation := backyardObject(state["observation"]); observation != nil && observation["navKnown"] == false {
+		for _, key := range keys {
+			switch key {
+			case "aumUsdMicros", "aum_usd_micros", "aumRaw", "navUsdMicros", "nav_usd_micros", "reportedNavRaw", "navRaw":
+				return nil
+			}
+		}
+	}
+
 	for _, group := range backyardGroups(state) {
 		for _, key := range keys {
 			switch v := group[key].(type) {
@@ -272,6 +281,10 @@ func loadBackyard(ctx context.Context, d *Deps) (BackyardPage, error) {
 			Fresh:      backyardBool(decoded, []string{"fresh", "navFresh"}),
 			ObservedAt: backyardText(backyardProjected(decoded, []string{"reportObservedAt", "navObservedAt"})),
 			Slot:       backyardBigInt(decoded, []string{"reportSlot", "navSlot", "slot"}),
+		}
+		if observation := backyardObject(decoded["observation"]); observation != nil && observation["navKnown"] == false {
+			fresh := false
+			page.Report.Fresh = &fresh
 		}
 		page.RouteStatus = backyardText(backyardProjected(decoded, []string{"routeStatus", "status"}))
 		page.Settings = append(append(page.Settings, backyardManifest...), backyardScalarSettings(state)...)

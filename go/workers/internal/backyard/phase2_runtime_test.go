@@ -24,6 +24,8 @@ func TestPhase2SelectedLaneUsesRouteNeutralLifecycleActions(t *testing.T) {
 		// The selector's entry into this lane already allocated the cash.
 		Target: LaneTarget{Rule: ruleEntry},
 	}
+	snapshot.net = fixtureSnapshotCertificate(snapshot)
+	snapshot.net = fixtureSnapshotCertificate(snapshot)
 	decision := Decide(snapshot)
 	if decision.Action != SwapStableToCollateralStep || decision.StrategyKey != MapleSyrupUSDCLaneID {
 		t.Fatalf("selected lane did not use stable-to-collateral action: %+v", decision)
@@ -31,6 +33,7 @@ func TestPhase2SelectedLaneUsesRouteNeutralLifecycleActions(t *testing.T) {
 
 	snapshot.SquadsIdleRaw = 0
 	snapshot.CollateralIdleRaw = 25_000
+	snapshot.net = fixtureSnapshotCertificate(snapshot)
 	decision = Decide(snapshot)
 	if decision.Action != OpenRouteStep || decision.AmountRaw != 25_000 {
 		t.Fatalf("selected lane did not open from collateral custody: %+v", decision)
@@ -46,6 +49,8 @@ func TestPhase2WithdrawalDemandKeepsTerminalIdleCovered(t *testing.T) {
 		VoltrIdleRaw: 2_793_180, CollateralIdleRaw: 0,
 		LiquidationThresholdBPS: 8_000, MaxLTVBPS: 8_000}
 
+	snapshot.net = fixtureSnapshotCertificate(snapshot)
+	snapshot.net = fixtureSnapshotCertificate(snapshot)
 	decision := Decide(snapshot)
 	if decision.Action != Hold || decision.Reason != string(holdAtTarget) || decision.AmountRaw != 0 {
 		t.Fatalf("selected-lane terminal withdrawal state is not stable: %+v", decision)

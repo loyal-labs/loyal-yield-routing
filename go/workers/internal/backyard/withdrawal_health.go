@@ -45,6 +45,12 @@ func assessWithdrawalHealth(v *Vault, o Observation, decision Decision, tickErr 
 		switch {
 		case decision.Action == HoldManualRecovery:
 			h.Status, h.Reason = "operator_attention", "withdrawal_intervention_required"
+		case !s.netKnown(o.ObservedAt) && (decision.Action == Hold || decision.Action == ReportNAV || decision.Action == VoltrRestoreIdle || decision.Action == StageSquadsToVoltr && s.Trustful):
+			h.Status, h.Reason = "waiting", s.NAVUnavailable
+			h.preserveAttention = true
+			if h.Reason == "" {
+				h.Reason = "certified_nav_unavailable"
+			}
 		case tickErr != nil || decision.Action == Hold:
 			h.Status, h.Reason = "unavailable", "withdrawal_evidence_unavailable"
 		default:
@@ -57,8 +63,9 @@ func assessWithdrawalHealth(v *Vault, o Observation, decision Decision, tickErr 
 		h.Reason = "held:unpriced_lane:" + unpriced.lane
 	}
 	var hold *PreSendHold
-	if withdrawalShortfallRaw(s) > 0 && errors.As(tickErr, &hold) && hold.Reason == holdPriceLimit {
-		h.Reason = "withdrawal_price_limit"
+	if h.Status != "operator_attention" && withdrawalShortfallRaw(s) > 0 && errors.As(tickErr, &hold) &&
+		(hold.Reason == holdPriceLimit || holdCause(hold) == "withdrawal_waiting_price") {
+		h.Status, h.Reason = "waiting", "withdrawal_price_limit"
 	}
 	return h, true
 }
