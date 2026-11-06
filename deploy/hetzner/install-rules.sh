@@ -2,13 +2,14 @@
 set -eu
 
 sha=${1:-}
-recorded=${2:-}
+seen=${2:-}
 dir=${3:-}
 case $sha in *[!0-9a-f]* | '') sha=bad ;; esac
-case $recorded in none) ;; *[!0-9a-f]* | '') recorded=bad ;; esac
+case $seen in none) ;; *[!0-9a-f]* | '') seen=bad ;; esac
+[ "$seen" = none ] || [ ${#seen} -eq 40 ] || seen=bad
 case $dir in /tmp/loyal-monitoring.*/*) dir=bad ;; /tmp/loyal-monitoring.*) ;; *) dir=bad ;; esac
-if [ ${#sha} -ne 40 ] || [ "$recorded" = bad ] || [ "$dir" = bad ]; then
-	echo "usage: install-rules.sh <40-hex commit sha> <40-hex recorded sha|none> /tmp/loyal-monitoring.*" >&2
+if [ ${#sha} -ne 40 ] || [ "$seen" = bad ] || [ "$dir" = bad ]; then
+	echo "usage: install-rules.sh <40-hex commit sha> <40-hex git blob id of the host rules|none> /tmp/loyal-monitoring.*" >&2
 	exit 2
 fi
 rules=/etc/prometheus/loyal.rules.yml
@@ -39,9 +40,9 @@ fail() {
 	say "FAILED: $*"
 	exit 1
 }
-record() {
-	printf '%s\n' "$sha" >"$rules.sha.tmp"
-	mv -f "$rules.sha.tmp" "$rules.sha"
+blob() {
+	[ -f "$1" ] || return 0
+	{ printf 'blob %d\0' "$(wc -c <"$1")"; cat "$1"; } | sha1sum | cut -d' ' -f1
 }
 
 rules_loaded() {
@@ -73,12 +74,11 @@ if ! flock -w 300 9; then
 fi
 [ -f "$monitoring/loyal.rules.yml" ] || fail "$monitoring/loyal.rules.yml is missing"
 [ -f "$rules" ] || fail "$rules is missing; the first monitoring install is manual (deploy/hetzner/README.md)"
-now=$(cat "$rules.sha" 2>/dev/null || echo none)
-[ "$now" = "$recorded" ] || fail "$rules.sha says $now, not the $recorded the deploy read; another deploy installed rules meanwhile. Rerun the deploy"
+now=$(blob "$rules")
+[ "$now" = "$seen" ] || fail "$rules is blob $now, not the $seen the deploy read; rules changed meanwhile. Rerun the deploy"
 
 if cmp -s "$monitoring/loyal.rules.yml" "$rules"; then
-	record
-	say "monitoring rules unchanged; recorded $sha"
+	say "monitoring rules unchanged"
 	exit 0
 fi
 cd "$monitoring"
@@ -97,5 +97,4 @@ if ! systemctl reload prometheus || ! loaded=$(rules_loaded "$since" "$rule_coun
 	systemctl reload prometheus || true
 	fail "Prometheus did not load the new rules ($loaded); restored the previous $rules"
 fi
-record
 say "monitoring rules of $sha installed: Prometheus serves $loaded rules from $rules"

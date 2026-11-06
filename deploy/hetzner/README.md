@@ -134,19 +134,30 @@ is `/var/log/loyal-deploy/<family>-<sha>.log`.
 
 A failed engine step ends the deploy before the rules step.
 
-Rules: `/etc/prometheus/loyal.rules.yml.sha` records the commit the
-installed rules came from. Rules never move backwards: the deploy installs
-only when that record is missing or names the target or one of its
-ancestors in the local clone; otherwise it says so and leaves the rules. To
-install, it uploads the snapshot's `monitoring/` and `install-rules.sh` to a
-fresh `/tmp/loyal-monitoring.*` dir and runs `install-rules.sh <sha>
-<recorded sha|none> <dir>` there as a transient unit (log
+Rules: the content of `/etc/prometheus/loyal.rules.yml` is its own position
+in main's history. The deploy reads the file's git blob id on the host and
+compares it with the target's `deploy/hetzner/monitoring/loyal.rules.yml`:
+
+- Equal: it prints `monitoring rules unchanged` and installs nothing.
+- Different, and the blob is the newest version of that path on
+  `origin/main` (newest, so a revert never moves the rules backwards): it
+  installs when that commit is an ancestor of the target. Otherwise the host
+  rules come from a commit newer than the target and the deploy leaves them.
+- Different, and the blob matches no version on `origin/main` (installed
+  from a branch, or edited by hand): the deploy leaves the file, says so,
+  and exits 1 after the engine step. Merge the branch, or install main's
+  rules by hand with `install-rules.sh <sha> <host blob id> <dir>`.
+- No file on the host: `install-rules.sh` fails; the first install is manual.
+
+To install, it uploads the snapshot's `monitoring/` and `install-rules.sh` to
+a fresh `/tmp/loyal-monitoring.*` dir and runs `install-rules.sh <sha>
+<host blob id|none> <dir>` there as a transient unit (log
 `/var/log/loyal-deploy/rules-<sha>.log`). On the host it:
 
-1. Takes the same deploy lock, and stops if the record no longer says what
-   the deploy read (another deploy installed rules meanwhile).
-2. If the uploaded `loyal.rules.yml` is byte-identical to the host's, only
-   records the sha.
+1. Takes the same deploy lock, and stops if the file's blob id is no longer
+   the one the deploy read (another install changed the rules meanwhile).
+2. If the uploaded `loyal.rules.yml` is byte-identical to the host's, says
+   so and stops.
 3. Otherwise runs `promtool check rules loyal.rules.yml`, `promtool test
    rules loyal.rules.test.yml` and `python3 verify-alert-messages.py` in the
    upload; any failure leaves the host file as it was.
@@ -154,7 +165,7 @@ fresh `/tmp/loyal-monitoring.*` dir and runs `install-rules.sh <sha>
    reads Prometheus on `127.0.0.1:9090`: a successful config reload after
    the install, and the rule count `promtool` reported served from that
    file. A failed reload or another count puts the previous file back and
-   reloads; success records the sha.
+   reloads.
 
 The deploy does not install `alertmanager.yml`: the host's copy carries the
 real alerts `chat_id` in place of the repo's placeholder, which the repo does
