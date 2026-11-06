@@ -31,10 +31,40 @@ func TestEarnMaxReportNAVFormats(t *testing.T) {
 		{"missing report", nil, nil, nil, 0, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, ok := earnMaxDecodeReport(tc.program, tc.returnData, tc.request)
+			got, ok := earnMaxDecodeReport(tc.program, tc.returnData, tc.request, program)
 			if got != tc.want || ok != tc.ok {
 				t.Fatalf("NAV=(%v, %v), want (%v, %v)", got, ok, tc.want, tc.ok)
 			}
 		})
+	}
+}
+
+func TestEarnMaxVaultSelection(t *testing.T) {
+	loyal, err := earnMaxConfigFor("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	backyard, err := earnMaxConfigFor("backyard")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loyal.identity.Address != "HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA" || backyard.identity.Address != "GrHZD15bMiUwrVPsmBwz8GRoQeDZN6wNEQVdW8k8SxV1" {
+		t.Fatal("vault selection changed")
+	}
+	if loyal.RouteKey == backyard.RouteKey || loyal.identity.CashATA == backyard.identity.CashATA || loyal.Accounts.LPMint == backyard.Accounts.LPMint || earnMaxCaches[loyal.identity.ID] == earnMaxCaches[backyard.identity.ID] {
+		t.Fatal("vaults share data or a cache")
+	}
+	if _, err := earnMaxConfigFor("unknown"); err == nil {
+		t.Fatal("unknown vault silently selected a different vault")
+	}
+	data := "Fc1bBwAAAAA="
+	for _, cfg := range []earnMaxConfig{loyal, backyard} {
+		program := cfg.Accounts.AdaptorProgram.String()
+		if _, ok := earnMaxDecodeReport(&program, &data, nil, program); !ok {
+			t.Fatal("selected adaptor report rejected")
+		}
+		if _, ok := earnMaxDecodeReport(&program, &data, nil, "another-adaptor"); ok {
+			t.Fatal("another adaptor's report was accepted")
+		}
 	}
 }

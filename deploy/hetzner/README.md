@@ -977,6 +977,15 @@ the self-hosted ClickStack sits under `/api/api/v2` (the UI proxies `/api`).
 
 ### Admin environment (loyal-admin)
 
+The Earn MAX admin page has separate Loyal and Backyard tabs at
+`/vault-integrations/earn-max?vault=loyal` and
+`/vault-integrations/earn-max?vault=backyard`. An omitted selection opens Loyal;
+an unknown selection is rejected. Each tab scopes worker records, live account
+reads, Voltr statistics and caches to its vault. Accounts come from the worker's
+vault registry; token decimals come from the selected route's on-chain mints.
+Deploy this read-only dashboard change through `loyal-admin`; it does not require
+restarting either vault worker or changing its investment settings.
+
 The unit sets only `LOYAL_ADMIN_ADDRESS`. Everything below goes in the host
 drop-in `/etc/systemd/system/loyal-admin.service.d/60-env.conf` as
 `Environment=` lines, never in the repo, because the hosts and keyed URLs are
