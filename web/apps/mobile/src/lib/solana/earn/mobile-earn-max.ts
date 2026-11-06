@@ -7,23 +7,15 @@ import {
   VoltrClaimLiquidityError,
   voltrDepositPlan,
   type VoltrPlanBuilder,
-  type VoltrWithdrawalConsent,
-  voltrWithdrawalConsentMessage,
   voltrRecoverClaimRemainderPlan,
   voltrRequestWithdrawalPlan,
 } from "@loyal-labs/smart-account-vaults";
 import { type Connection, PublicKey } from "@solana/web3.js";
-import { Buffer } from "buffer";
 
 import { env } from "@/config/env";
 import { getConnection, getSolanaEnv } from "@/lib/solana/rpc/connection";
 import type { Signer } from "@/lib/wallet/signer";
-import {
-  fetchEarnMax,
-  provisionEarnMaxAccount,
-  saveEarnMaxWithdrawalConsent,
-  reserveEarnMaxWithdrawalClaim,
-} from "@/services/api";
+import { fetchEarnMax, provisionEarnMaxAccount } from "@/services/api";
 import { startLifecycleFlow } from "@/services/observability";
 
 import { deliberateSession, earnWalletRead } from "./earn-session";
@@ -35,7 +27,7 @@ async function earnMaxAccount(signer: Signer) {
   if (!token) throw new Error("Sign in to use Earn MAX.");
   const summary = await fetchEarnMax(
     walletAddress,
-    "/api/smart-accounts/earn-max/summary",
+    "/api/smart-accounts/earn-max/summary"
   );
   const account =
     summary?.config ?? (await provisionEarnMaxAccount(walletAddress));
@@ -51,42 +43,10 @@ export type MobileEarnMaxOperation =
   | { action: "claim" }
   | { action: "recover_assets" };
 
-export async function approveMobileEarnMaxWithdrawal(
-  signer: Signer,
-  minimum: bigint,
-  maxFeeLamports: bigint,
-) {
-  await deliberateSession(signer);
-  const review = await fetchEarnMax(
-    signer.publicKey.toBase58(),
-    "/api/smart-accounts/earn-max/withdrawal-consent",
-  );
-  if (!review || review.draft.owner !== signer.publicKey.toBase58())
-    throw new Error("Withdrawal approval does not match your wallet.");
-  if (
-    minimum <= BigInt(0) ||
-    minimum > BigInt(review.draft.referenceUsdcRaw) ||
-    maxFeeLamports < BigInt(0)
-  )
-    throw new Error(
-      "Enter a positive minimum no higher than the current withdrawal value.",
-    );
-  const consent: VoltrWithdrawalConsent = {
-    ...review.draft,
-    minClaimUsdcRaw: minimum.toString(),
-    maxUserFeeLamports: maxFeeLamports.toString(),
-  };
-  consent.ownerSignature = Buffer.from(
-    await signer.signMessage(voltrWithdrawalConsentMessage(consent)),
-  ).toString("base64");
-  await saveEarnMaxWithdrawalConsent(signer.publicKey.toBase58(), consent);
-}
-
 function planFor(
   connection: Connection,
   walletAddress: string,
-  operation: MobileEarnMaxOperation,
-  consent?: VoltrWithdrawalConsent,
+  operation: MobileEarnMaxOperation
 ): VoltrPlanBuilder {
   switch (operation.action) {
     case "deposit":
@@ -98,16 +58,26 @@ function planFor(
               earnWalletRead(
                 walletAddress,
                 `${env.apiBaseUrl}/api/smart-accounts/earn-max/deposit-quote`,
-                { body, method },
+                { body, method }
               ),
-            operation.amountRaw,
-          ),
+            operation.amountRaw
+          )
         );
     case "request_withdrawal":
       return (context) =>
         voltrRequestWithdrawalPlan(connection, context, operation.amountRaw);
     case "claim":
-      return (context) => voltrClaimPlan(connection, context, consent);
+      return async (context) => {
+        const readiness = await fetchEarnMax(
+          walletAddress,
+          "/api/smart-accounts/earn-max/withdrawal-claim-readiness"
+        );
+        if (!readiness?.ready)
+          throw new Error(
+            "Withdrawal availability is temporarily unknown. Try again shortly."
+          );
+        return voltrClaimPlan(connection, context);
+      };
     case "recover_assets":
       return (context) => voltrRecoverClaimRemainderPlan(connection, context);
   }
@@ -117,7 +87,7 @@ const activeWallets = new Set<string>();
 
 export async function executeMobileEarnMax(
   signer: Signer,
-  operation: MobileEarnMaxOperation,
+  operation: MobileEarnMaxOperation
 ) {
   const walletAddress = signer.publicKey.toBase58();
   if (activeWallets.has(walletAddress)) {
@@ -143,7 +113,8 @@ export async function executeMobileEarnMax(
   activeWallets.add(walletAddress);
   const flow = startLifecycleFlow({
     flowName: "earn_max.vault",
-    flowVariant: operation.action === "recover_assets" ? "claim" : operation.action,
+    flowVariant:
+      operation.action === "recover_assets" ? "claim" : operation.action,
   });
   flow.observe("intent");
   let stage: "prepare" | "wallet_submit_confirm" = "prepare";
@@ -153,21 +124,9 @@ export async function executeMobileEarnMax(
       throw new Error("Earn MAX requires mainnet.");
     const connection = getConnection();
     const programId = new PublicKey(account.programId);
-    const approval =
-      operation.action === "claim"
-        ? await fetchEarnMax(
-            walletAddress,
-            "/api/smart-accounts/earn-max/withdrawal-consent",
-          )
-        : null;
     const prepared = await prepareEarnMaxVoltr({
       connection,
-      build: planFor(
-        connection,
-        walletAddress,
-        operation,
-        approval?.approved ?? undefined,
-      ),
+      build: planFor(connection, walletAddress, operation),
       client: createSmartAccountVaultsClient({ connection, programId }),
       owner: signer.publicKey,
       programId,
@@ -181,7 +140,6 @@ export async function executeMobileEarnMax(
       connection,
       signer,
       operation: prepared,
-      beforeProtectedClaimBroadcast: (claim) => reserveEarnMaxWithdrawalClaim(walletAddress, claim),
     });
     flow.complete("wallet_submit_confirm", { chainState: "confirmed" });
     return sent;

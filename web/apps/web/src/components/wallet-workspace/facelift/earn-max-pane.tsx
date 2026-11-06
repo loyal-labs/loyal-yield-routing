@@ -7,7 +7,6 @@ import {
   earnMaxPendingMessage,
   earnMaxPendingSubtitle,
   earnMaxWithdrawalPending,
-  earnMaxWithdrawalCostView,
   formatEarnMaxWithdrawalAmount,
   formatEarnMaxApyLabel,
 } from "@loyal-labs/shared";
@@ -198,103 +197,6 @@ function GroupHeaderWithIcon({
 
 const TRANSACTIONS_LIMIT = 5;
 
-function WithdrawalApproval({
-  actions,
-  view,
-}: {
-  actions: EarnMaxActions;
-  view: EarnMaxViewModel;
-}) {
-  const [minimum, setMinimum] = useState("");
-  const [fee, setFee] = useState("");
-  const [inputError, setInputError] = useState<string | null>(null);
-  const approval = view.withdrawalApproval;
-  useEffect(() => { setMinimum(""); setFee(""); setInputError(null); }, [approval?.generationKey]);
-  const exactUsdc = (raw: string) => formatEarnMaxWithdrawalAmount(raw,"USDC") ?? "Unavailable";
-  if (!approval || !actions.approveWithdrawal) return null;
-  const costStatus=approval.costStatus;
-  const costs=earnMaxWithdrawalCostView({status:costStatus??null,approved:approval.approvedReferenceRaw && approval.floorRaw && approval.approvedFeeLamports ? {referenceUsdcRaw:approval.approvedReferenceRaw,minClaimUsdcRaw:approval.floorRaw,maxUserFeeLamports:approval.approvedFeeLamports}:null});
-  const parse = (text: string, decimals: number) => {
-    if (!new RegExp(`^\\d+(?:\\.\\d{1,${decimals}})?$`).test(text))
-      throw new Error("Enter a valid amount.");
-    const [whole, fraction = ""] = text.split(".");
-    return (
-      BigInt(whole) * BigInt(10) ** BigInt(decimals) +
-      BigInt(fraction.padEnd(decimals, "0"))
-    );
-  };
-  return (
-    <form
-      className="flex flex-col gap-2 px-4 py-3"
-      onSubmit={(event) => {
-        event.preventDefault();
-        try {
-          const floor = parse(minimum, 6);
-          const maxFee = parse(fee, 9);
-          setInputError(null);
-          void actions.approveWithdrawal?.(floor, maxFee);
-        } catch (error) {
-          setInputError(
-            error instanceof Error ? error.message : "Enter valid amounts.",
-          );
-        }
-      }}
-    >
-      <p className="text-[13px] text-muted-foreground">
-        {approval.reason === "waiting_price"
-          ? "Waiting for your approved minimum. You can wait or approve a lower amount."
-          : approval.reason === "expired"
-            ? "Your approval expired. A claim you already signed may still finish. Review and approve before signing again."
-            : approval.floorRaw
-              ? approval.reason === "needs_consent" ? "Withdrawal protection changed. Review and approve a minimum again." : `Approved minimum: ${exactUsdc(approval.floorRaw)}.`
-              : "Approve a minimum USDC amount to continue your withdrawal."}
-      </p>
-      <p className="text-[13px] text-muted-foreground">
-        Current withdrawal value: {exactUsdc(approval.referenceRaw)}.
-      </p>
-      {approval.floorRaw ? <div className="flex flex-col gap-2"><dl aria-label="Withdrawal costs" className="text-[12px] text-muted-foreground">{costs.rows.map(({label,value})=><div className="flex justify-between gap-3 py-0.5" key={label}><dt>{label}</dt><dd className="text-right">{value ?? "Unavailable"}</dd></div>)}</dl><p className="text-[12px] text-muted-foreground">The operator pays its own network fees. Your claim fees are shown separately.</p>{!costStatus ? <p className="text-[12px] text-muted-foreground">Cost status is unavailable. Check status before signing again.</p>:costStatus.unknownReason ? <p className="text-[12px] text-muted-foreground">Some costs are awaiting confirmation. The remaining allowance is unavailable.</p>:null}{costStatus?.claimPending ? <p className="text-[12px] text-muted-foreground">A claim you signed is pending and may still finish under that approval.</p>:null}</div>:null}
-      <label className="text-[13px]">
-        Minimum USDC to receive
-        <input
-          aria-label="Minimum USDC to receive"
-          className="mt-1 w-full rounded-xl bg-accent px-3 py-2"
-          inputMode="decimal"
-          onChange={(event) => setMinimum(event.target.value)}
-          required
-          value={minimum}
-        />
-      </label>
-      <label className="text-[13px]">
-        Maximum network fees (SOL)
-        <input
-          aria-label="Maximum network fees in SOL"
-          className="mt-1 w-full rounded-xl bg-accent px-3 py-2"
-          inputMode="decimal"
-          onChange={(event) => setFee(event.target.value)}
-          required
-          value={fee}
-        />
-      </label>
-      <p className="text-[12px] text-muted-foreground">
-        Failed attempts can charge network fees. A claim you already signed may
-        finish under its earlier approval. A new minimum needs a new wallet approval.
-      </p>
-      {inputError ? (
-        <p role="alert" className="text-[13px]">
-          {inputError}
-        </p>
-      ) : null}
-      <button
-        className="self-start rounded-full bg-accent px-4 py-2 text-[13px] disabled:opacity-40"
-        disabled={view.isBusy}
-        type="submit"
-      >
-        Approve minimum
-      </button>
-    </form>
-  );
-}
-
 function minutesLeftLabel(readyBy: string): string {
   const msLeft = new Date(readyBy).getTime() - Date.now();
   if (!Number.isFinite(msLeft) || msLeft <= 0) {
@@ -464,10 +366,7 @@ function EarnMaxActivityCard({
               let lineIndex = 0;
               return (
                 <>
-                  {view.recoverableUsdcRaw && BigInt(view.recoverableUsdcRaw) > BigInt(0) && actions.recoverClaimRemainder ? <div className="flex flex-col items-start gap-2 px-4 py-3"><p className="text-[13px] text-muted-foreground">{usdcRawLabel(view.recoverableUsdcRaw)} remains available in your Earn MAX account.</p><SmallPill disabled={view.isBusy} label="Move remaining USDC to wallet" onClick={() => void actions.recoverClaimRemainder?.()} variant="light" /></div> : null}
-                    {withdrawal ? (
-                      <WithdrawalApproval actions={actions} view={view} />
-                    ) : null}
+                  {view.recoverableUsdcRaw && BigInt(view.recoverableUsdcRaw) > BigInt(0) && actions.recoverClaimRemainder ? <div className="flex flex-col items-start gap-2 px-4 py-3"><p className="text-[13px] text-muted-foreground">{formatEarnMaxWithdrawalAmount(view.recoverableUsdcRaw, "USDC")} remains available in your Earn MAX account.</p><SmallPill disabled={view.isBusy} label="Move remaining USDC to wallet" onClick={() => void actions.recoverClaimRemainder?.()} variant="light" /></div> : null}
                   {withdrawal?.canClaim ? (
                     <StaggerLine index={lineIndex++}>
                         <GroupHeaderWithIcon
@@ -484,8 +383,7 @@ function EarnMaxActivityCard({
                         <div className="flex w-full items-start gap-2 px-4 pt-1 pb-2">
                           <SmallPill
                               disabled={
-                                view.isBusy ||
-                                Boolean(view.withdrawalApproval?.reason)
+                                view.isBusy
                               }
                             label="Claim withdrawal"
                             onClick={() => void actions.claim()}

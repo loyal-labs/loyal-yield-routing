@@ -63,7 +63,8 @@ func claimPricePublished(nav *certifiedVaultNAV, now time.Time, slot, totalValue
 	return nil
 }
 
-func (s *WithdrawalAttemptStore) claimNAVPublished(ctx context.Context) error {
+// CheckNAVPublication prevents claims against a stale, overstated vault price.
+func (s *WithdrawalAttemptStore) CheckNAVPublication(ctx context.Context) error {
 	if s.chain == nil {
 		return ErrWithdrawalClaimWireUnqualified
 	}

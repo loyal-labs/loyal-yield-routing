@@ -19,6 +19,7 @@ import (
 const withdrawalConsentPath = "/api/smart-accounts/earn-max/withdrawal-consent"
 
 type WithdrawalClaimAttempts interface {
+	CheckNAVPublication(context.Context) error
 	ExistingExact(context.Context, earnmax.WithdrawalConsent, []byte) (string, bool, error)
 	Reserve(context.Context, earnmax.WithdrawalConsent, []byte, string, string, uint64, uint64) (string, error)
 }

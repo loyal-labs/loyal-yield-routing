@@ -17,6 +17,7 @@ import { fetchWithTimeout } from "@/lib/network/fetch-with-timeout";
 import { EarnApiError } from "@/lib/solana/earn/earn-api";
 
 type EarnMaxReadPath =
+  | "/api/smart-accounts/earn-max/withdrawal-claim-readiness"
   | "/api/smart-accounts/earn-max/withdrawal-consent"
   | "/api/smart-accounts/earn-max/summary"
   | "/api/smart-accounts/earn-max/activity";

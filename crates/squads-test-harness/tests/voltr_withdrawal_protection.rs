@@ -628,6 +628,15 @@ fn claim_setup() -> (litesvm::LiteSVM, serde_json::Value, Vec<u8>) {
 
 #[test]
 fn production_ts_signed_claim_wire_executes_real_voltr_and_squads() {
+    verify_signed_claim(false);
+}
+
+#[test]
+fn public_claim_needs_no_consent_and_keeps_atomic_payout_and_generation_checks() {
+    verify_signed_claim(true);
+}
+
+fn verify_signed_claim(public: bool) {
     let (mut svm, fixture, receipt_data) = claim_setup();
     let owner = voltr_capture::owner();
     let authority = voltr_capture::key(&fixture["authority"]);
@@ -644,7 +653,11 @@ fn production_ts_signed_claim_wire_executes_real_voltr_and_squads() {
     let source = voltr_capture::ata(&authority, &USDC_MINT);
     let destination = voltr_capture::ata(&owner.pubkey(), &USDC_MINT);
     let escrow = voltr_capture::ata(&receipt, &lp);
-    let (wire, transaction) = voltr_capture::wire(&fixture);
+    let (wire, transaction) = voltr_capture::wire(if public {
+        &fixture["publicClaim"]
+    } else {
+        &fixture
+    });
     let policy =
         loyal_actions::derive_action_account(&voltr_capture::key(&fixture["settings"]), 1).0;
     for offset in [72, 80, 96] {
@@ -685,11 +698,15 @@ fn production_ts_signed_claim_wire_executes_real_voltr_and_squads() {
         .unwrap()
         .parse()
         .unwrap();
-    let floor: u64 = fixture["consent"]["minClaimUsdcRaw"]
-        .as_str()
-        .unwrap()
-        .parse()
-        .unwrap();
+    let floor: u64 = (if public {
+        &fixture["publicClaim"]["floorRaw"]
+    } else {
+        &fixture["consent"]["minClaimUsdcRaw"]
+    })
+    .as_str()
+    .unwrap()
+    .parse()
+    .unwrap();
     let mut too_high = transaction.clone();
     let solana_sdk::message::VersionedMessage::V0(message) = &mut too_high.message else {
         panic!("production fixture must be v0");
@@ -705,11 +722,11 @@ fn production_ts_signed_claim_wire_executes_real_voltr_and_squads() {
         u64::from_le_bytes(owner_data[at..at + 8].try_into().unwrap()),
         baseline + floor
     );
-    owner_data[at..at + 8].copy_from_slice(&(baseline + floor + 1).to_le_bytes());
+    owner_data[at..at + 8].copy_from_slice(&(baseline + floor + 2).to_le_bytes());
     voltr_capture::resign(&mut too_high);
     let failure = svm
         .send_transaction(too_high)
-        .expect_err("actual Voltr payout cannot satisfy floor plus one");
+        .expect_err("actual Voltr payout cannot satisfy the raised floor");
     assert!(failure
         .meta
         .logs
@@ -729,7 +746,7 @@ fn production_ts_signed_claim_wire_executes_real_voltr_and_squads() {
         "unchanged signed TS claim wire executes after a dust donation to the authority ATA",
     );
     assert_eq!(get_spl_token_amount(&svm, destination), baseline + floor);
-    assert_eq!(get_spl_token_amount(&svm, source), dust);
+    assert_eq!(get_spl_token_amount(&svm, source), dust + u64::from(public));
     assert!(svm
         .get_account(&receipt)
         .map(|a| a.lamports == 0)

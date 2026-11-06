@@ -1,8 +1,14 @@
 package webapp
 
 import (
+	"context"
+	"os"
+	"strings"
+
 	"encoding/base64"
 	"encoding/json"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/releasecontrol"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -19,6 +25,30 @@ import (
 )
 
 func TestWithdrawalConsentReportsUnansweredRPCAsUnavailableNotGenerationRefusal(t *testing.T) {
+	auth, token := withdrawalRouteAuth(t)
+	client := auth.chain
+
+	router := chi.NewRouter()
+	earnMaxRoutes{auth: auth, cfg: EarnMax{Cluster: Mainnet, Reader: earnmax.NewReader(client, nil), Consents: earnmax.NewWithdrawalConsentStore(nil)}}.registerWithdrawalConsents(humachi.New(router, apiConfig()))
+	req := httptest.NewRequest(http.MethodGet, withdrawalConsentPath, nil)
+	req.Header.Set("Cookie", walletSessionCookie+"="+token)
+	res := httptest.NewRecorder()
+	router.ServeHTTP(res, req)
+	var body struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(res.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if res.Code != http.StatusServiceUnavailable || body.Error.Code != "earn_max_unavailable" {
+		t.Fatalf("unanswered RPC = %d %s; want 503 earn_max_unavailable, not a generation refusal", res.Code, res.Body.String())
+	}
+}
+
+func withdrawalRouteAuth(t *testing.T) (*Auth, string) {
+	t.Helper()
 	wallet := solana.NewWallet().PublicKey()
 	settings := solana.PublicKey{7}
 	settingsData := append([]byte(nil), squads.SettingsDiscriminator[:]...)
@@ -73,21 +103,77 @@ func TestWithdrawalConsentReportsUnansweredRPCAsUnavailableNotGenerationRefusal(
 		t.Fatal(err)
 	}
 
-	router := chi.NewRouter()
-	earnMaxRoutes{auth: &Auth{keys: keys, chain: client}, cfg: EarnMax{Cluster: Mainnet, Reader: earnmax.NewReader(client, nil), Consents: earnmax.NewWithdrawalConsentStore(nil)}}.registerWithdrawalConsents(humachi.New(router, apiConfig()))
-	req := httptest.NewRequest(http.MethodGet, withdrawalConsentPath, nil)
-	req.Header.Set("Cookie", walletSessionCookie+"="+token)
-	res := httptest.NewRecorder()
-	router.ServeHTTP(res, req)
-	var body struct {
-		Error struct {
-			Code string `json:"code"`
-		} `json:"error"`
+	return &Auth{keys: keys, chain: client}, token
+}
+
+type publicClaimNAVFixture struct {
+	err    error
+	checks int
+}
+
+func (f *publicClaimNAVFixture) CheckNAVPublication(context.Context) error { f.checks++; return f.err }
+func (*publicClaimNAVFixture) ExistingExact(context.Context, earnmax.WithdrawalConsent, []byte) (string, bool, error) {
+	panic("public claim must not reserve a consent")
+}
+func (*publicClaimNAVFixture) Reserve(context.Context, earnmax.WithdrawalConsent, []byte, string, string, uint64, uint64) (string, error) {
+	panic("public claim must not reserve a consent")
+}
+
+func TestPublicClaimReadinessNeedsAuthAndFreshPriceButNoConsent(t *testing.T) {
+	dsn := os.Getenv("EARNMAX_WITHDRAWAL_TEST_DSN")
+	if dsn == "" {
+		t.Skip("fresh local withdrawal database required")
 	}
-	if err := json.Unmarshal(res.Body.Bytes(), &body); err != nil {
+	if !strings.Contains(dsn, "@127.0.0.1:") || !strings.Contains(dsn, "/vault_cost_test_") {
+		t.Fatal("requires disposable local database")
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Code != http.StatusServiceUnavailable || body.Error.Code != "earn_max_unavailable" {
-		t.Fatalf("unanswered RPC = %d %s; want 503 earn_max_unavailable, not a generation refusal", res.Code, res.Body.String())
+	defer pool.Close()
+	auth, token := withdrawalRouteAuth(t)
+	checker := &publicClaimNAVFixture{}
+	router := chi.NewRouter()
+	earnMaxRoutes{auth: auth, cfg: EarnMax{Cluster: Mainnet, Attempts: checker, Releases: pool}}.registerRelease(humachi.New(router, apiConfig()))
+	control, _, err := releasecontrol.Capability(ctx, pool, earnmax.Vault.String(), releasecontrol.ClaimAttempt, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name     string
+		signedIn bool
+		state    releasecontrol.State
+		nav      error
+		status   int
+	}{
+		{"signed out", false, releasecontrol.Open, nil, 401},
+		{"operator hold", true, releasecontrol.Held, nil, 409},
+		{"stale high price", true, releasecontrol.Open, earnmax.ErrClaimWaitingNAVPublication, 409},
+		{"public claim", true, releasecontrol.Open, nil, 200},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			control, err = releasecontrol.Set(ctx, pool, releasecontrol.Change{Vault: earnmax.Vault.String(), Action: releasecontrol.ClaimAttempt, State: tc.state, ExpectVersion: control.Version, Reason: "public readiness test", Operator: "test"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			checker.err, checker.checks = tc.nav, 0
+			req := httptest.NewRequest(http.MethodGet, "/api/smart-accounts/earn-max/withdrawal-claim-readiness", nil)
+			if tc.signedIn {
+				req.Header.Set("Cookie", walletSessionCookie+"="+token)
+			}
+			res := httptest.NewRecorder()
+			router.ServeHTTP(res, req)
+			if res.Code != tc.status {
+				t.Fatalf("got %d %s", res.Code, res.Body.String())
+			}
+			if tc.status == 200 && !strings.Contains(res.Body.String(), `"ready":true`) {
+				t.Fatal("public claim was not admitted")
+			}
+			if (!tc.signedIn || tc.state == releasecontrol.Held) && checker.checks != 0 {
+				t.Fatal("price checked before admission")
+			}
+		})
 	}
 }

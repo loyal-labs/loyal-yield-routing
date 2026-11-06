@@ -1,28 +1,26 @@
 # Earn MAX claim availability
 
-## Protected withdrawal approval
+## Public withdrawals
 
-The current web/mobile flow requires an owner-signed minimum USDC claim and a
-remaining SOL network-fee budget. Approval is scoped to the active request's
-transaction/invocation, smart account and current Squads policy seed. Changing
-the minimum requires a new signature. Expiry gates new signing/admission; an
-already reserved exact wire remains budgeted and may finish until its blockhash
-expires. Expiry or a new approval never releases an ambiguous claim attempt.
-Legacy receipts adopt the fence in their first protected claim.
+The web/mobile source uses the normal request, wait and claim flow. There is
+no separate signed minimum or network-fee form. Partial and full requests remain
+supported. Claims check the operator release switch and the existing certified
+NAV publication bound before preparation, then re-read cooldown and liquidity.
+No owner allowlist or amount cap is intended for the public Loyal release.
 
-Official request/cancel preparation advances the monotonic policy seed. Claims
-atomically create an owner-only temporary policy, check the receipt's LP,
-request ceiling and deadline, sweep existing user USDC, close/recreate the ATA,
-claim, transfer exactly the approved minimum and remove the policy. Remaining
-USDC is shown separately with a recovery action. This protects the updated
-official flow; owners retain access to public protocol entrypoints.
+The wallet signs a claim that atomically checks the receipt's LP, request ceiling
+and deadline, advances the Squads policy seed, and transfers existing user USDC
+plus the current quoted payout, less one raw USDC unit for integer rounding.
+A changed receipt or insufficient proceeds rolls back the transaction. Remaining
+USDC can be recovered separately; tiny amounts are displayed without rounding to
+zero. Quotes and available liquidity can change before execution. A failed
+transaction can still charge a network fee.
 
-Preparation checks the complete outer-inclusive wire and current existing
-lookup-table state. Both wallet paths check the returned signed message and
-packet, then persist the exact signed claim and fee reservation before broadcast.
-An unresolved attempt blocks a replacement. Failed transactions can charge
-network fees; an unlimited-retry or all-fees guarantee is not offered. Release
-still requires the recorded current-program runtime, wire and ledger checks.
+Legacy explicitly consented claims and their reservation/settlement APIs remain
+supported for old clients and recovery. Existing records are preserved. New public
+claims use the ordinary owner-signed send/confirmation path, with no off-chain
+consent ledger or cumulative user fee budget. Their NAV availability check is a
+preparation check, not an atomic on-chain NAV certificate.
 
 ## Liquidity availability
 
@@ -46,21 +44,21 @@ classification. This guard does not restore liquidity or reserve it; another
 claim can consume the pool balance before execution.
 
 Coverage uses the full `pending.payoutRaw`, never existing user USDC or the
-smaller approved claim floor. The local Voltr SDK 2.1.1
+claim transfer floor. The local Voltr SDK 2.1.1
 `src/extensions/withdrawals.ts` computes the effective payout as the minimum
 of the request quote and current redemption-fee-adjusted assets;
 `src/extensions/math.ts` floors that asset redemption. This matches the
 existing payout estimate. The current estimate includes unrealised
 management-fee LP dilution. Changes in fees, NAV or time between preparation
-and execution can still block a protected claim.
+and execution can still block a claim.
 
 ## Pending requests and operator attention
 
 Only one withdrawal receipt can be open for an Earn MAX smart-account vault.
 The header, RWA Loop, Positions tab and mobile Withdraw controls are disabled
 while it is pending. A hover, keyboard-focus or touch tooltip explains why.
-Approval and Check status remain available; claiming also needs a valid approved
-minimum. The form and fresh plan preparation
+Check status remains available; Claim becomes available once the receipt is ready
+and funded. Fresh request preparation
 also reject duplicate requests, including requests from a stale open form.
 
 The authenticated Voltr summary may include display-only withdrawal health

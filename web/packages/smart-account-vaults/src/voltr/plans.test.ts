@@ -38,7 +38,7 @@ function fixture(payout: bigint, dust: bigint, hasAta = true) {
   const connection = new Connection("http://fixture.invalid");
   const info = (
     data: Buffer,
-    program = TOKEN_PROGRAM_ID,
+    program = TOKEN_PROGRAM_ID
   ): AccountInfo<Buffer> => ({
     data,
     executable: false,
@@ -71,7 +71,7 @@ function fixture(payout: bigint, dust: bigint, hasAta = true) {
       closeAuthorityOption: 0,
       closeAuthority: owner,
     },
-    idle,
+    idle
   );
   connection.getMultipleAccountsInfoAndContext = async () => ({
     context: { slot: 1 },
@@ -96,27 +96,34 @@ describe("protected Voltr claim instruction contract (not runtime qualification)
       voltrClaimPlan(
         fixture(BigInt(99), BigInt(1_000_000_000)),
         { authority, owner },
-        consent,
-      ),
+        consent
+      )
     ).rejects.toMatchObject({ code: "waiting_price" });
   });
-  test("missing, expired and mismatched LP approval cannot prepare a claim", async () => {
-    await expect(
-      voltrClaimPlan(fixture(BigInt(100), BigInt(0)), { authority, owner }),
-    ).rejects.toMatchObject({ code: "needs_consent" });
+  test("explicit expired and mismatched LP approvals cannot prepare a claim", async () => {
     await expect(
       voltrClaimPlan(
         fixture(BigInt(100), BigInt(0)),
         { authority, owner },
-        { ...consent, expiresAt: "1" },
-      ),
+        { ...consent, expiresAt: "1" }
+      )
     ).rejects.toMatchObject({ code: "expired" });
     await expect(
       voltrClaimPlan(
         fixture(BigInt(100), BigInt(0)),
         { authority, owner },
-        { ...consent, lpRaw: "99" },
-      ),
+        { ...consent, lpRaw: "99" }
+      )
     ).rejects.toMatchObject({ code: "needs_consent" });
   });
+});
+
+test("public claims need no separate consent and pin the payout and receipt", async () => {
+  const plan = await voltrClaimPlan(fixture(100n, 7n), { authority, owner });
+  expect(plan.claimProtection).toBeUndefined();
+  expect(plan.lifecycleFence).toBe(true);
+  expect(plan.withdrawalReceiptBytes?.length).toBe(112);
+  expect(plan.vault[1].data.readBigUInt64LE(1)).toBe(106n);
+  const smallest = await voltrClaimPlan(fixture(1n, 0n), { authority, owner });
+  expect(smallest.vault[1].data.readBigUInt64LE(1)).toBe(1n);
 });

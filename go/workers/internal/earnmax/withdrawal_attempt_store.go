@@ -134,7 +134,7 @@ func (s *WithdrawalAttemptStore) Reserve(ctx context.Context, c WithdrawalConsen
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return "", err
 	}
-	if err := s.claimNAVPublished(ctx); err != nil {
+	if err := s.CheckNAVPublication(ctx); err != nil {
 		return "", err
 	}
 	if _, err := retryTransient(ctx, func() (struct{}, error) { return struct{}{}, s.qualifyWithdrawalClaim(ctx, c, &a) }); err != nil {
