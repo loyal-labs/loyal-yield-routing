@@ -93,11 +93,12 @@ function planFor(
         voltrDepositPlan(
           context,
           await fetchEarnMaxDepositQuote(
-            (path, { body, method }) =>
-              earnWalletRead(walletAddress, `${env.apiBaseUrl}${path}`, {
-                body,
-                method,
-              }),
+            (_path, { body, method }) =>
+              earnWalletRead(
+                walletAddress,
+                `${env.apiBaseUrl}/api/smart-accounts/earn-max/deposit-quote`,
+                { body, method },
+              ),
             operation.amountRaw,
           ),
         );
