@@ -401,7 +401,7 @@ groups:
           recovery: "Verify pg_wal is back below 60 GB and shrinking."
 
       - alert: LoyalDbMetricsStale
-        expr: time() - max(node_textfile_mtime_seconds{file="loyal_db_replica.prom"}) > 600 or absent(loyal_db_pg_wal_bytes)
+        expr: time() - max(node_textfile_mtime_seconds{file=~".*/loyal_db_replica\\.prom"}) > 600 or absent(loyal_db_pg_wal_bytes)
         for: 5m
         labels: {severity: page}
         annotations:

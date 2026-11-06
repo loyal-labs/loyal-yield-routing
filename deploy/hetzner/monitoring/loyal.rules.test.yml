@@ -1544,7 +1544,7 @@ tests:
 - name: db_metrics_stale_pages_when_series_absent_or_textfile_old
   interval: 1m
   input_series:
-  - series: node_textfile_mtime_seconds{file="loyal_db_replica.prom",instance="10.92.1.1:9100",job="node"}
+  - series: node_textfile_mtime_seconds{file="/var/lib/prometheus/node-exporter/loyal_db_replica.prom",instance="10.92.1.1:9100",job="node"}
     values: '0x2 120x38'
   - series: loyal_db_pg_wal_bytes
     values: '1000x40'
@@ -1565,7 +1565,7 @@ tests:
 - name: db_metrics_stale_silent_while_fresh
   interval: 1m
   input_series:
-  - series: node_textfile_mtime_seconds{file="loyal_db_replica.prom",instance="10.92.1.1:9100",job="node"}
+  - series: node_textfile_mtime_seconds{file="/var/lib/prometheus/node-exporter/loyal_db_replica.prom",instance="10.92.1.1:9100",job="node"}
     values: '0+60x40'
   - series: loyal_db_pg_wal_bytes
     values: '1000x40'
@@ -1577,7 +1577,7 @@ tests:
 - name: db_metrics_stale_pages_when_pg_wal_series_gone
   interval: 1m
   input_series:
-  - series: node_textfile_mtime_seconds{file="loyal_db_replica.prom",instance="10.92.1.1:9100",job="node"}
+  - series: node_textfile_mtime_seconds{file="/var/lib/prometheus/node-exporter/loyal_db_replica.prom",instance="10.92.1.1:9100",job="node"}
     values: '0+60x40'
   alert_rule_test:
   - eval_time: 4m
