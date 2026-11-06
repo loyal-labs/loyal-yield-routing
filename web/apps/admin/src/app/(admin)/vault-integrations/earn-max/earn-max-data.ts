@@ -4,12 +4,6 @@ import { apyHistory, earnedSinceEmpty, realizedApy } from "./earn-max-math";
 
 export type EarnMaxProps = Pages["/vault-integrations/earn-max"];
 
-export const IDLE_ATA = "6LATwaB4yRwGURCBDyFeJGqofaXxb6xXws9wBGbr3RBh";
-export const CUSTODY = {
-  debt: "J4YFQzxhQ3pht2RRYes5yv1spPYBqvHzxn4zMX7iriHn",
-  collateral: "9tDh95ofQ7B83bHAou1XJGJNnfRTs3hLfX8uyKW6u97G",
-} as const;
-
 export type Part<T> = { ok: true; value: T } | { ok: false; error: string };
 
 function part<T>(source: {
@@ -32,6 +26,7 @@ export function earnMaxData(props: EarnMaxProps) {
   const now = Date.parse(props.loadedAt);
 
   return {
+    selectedVault: props.selectedVault,
     apy: mapPart(part(props.apy), ({ daily, sharePrice }) => {
       const realized = realizedApy(daily, sharePrice / 1000, now);
       return (

@@ -1,333 +1,61 @@
-import {
-  AddressLink,
-  ShortAddressText,
-} from "@/components/blockchain/address-link";
-import { SectionHeader } from "@/components/layout/section-header";
-import { Badge } from "@/components/ui/badge";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
+import { AddressLink } from "@/components/blockchain/address-link";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
-import {
-  backyardVaultData,
-  type BackyardVaultProps,
-} from "./backyard-vault-data";
+import type { BackyardVaultProps } from "./backyard-vault-data";
 
-function formatUsdMicros(value: bigint | null) {
-  if (value === null) return "—";
-  const cents = (value + BigInt(5_000)) / BigInt(10_000);
-  const whole = cents / BigInt(100);
-  return `$${whole.toString().replace(/\\B(?=(\\d{3})+(?!\\d))/g, ",")}.${(
-    cents % BigInt(100)
-  )
-    .toString()
-    .padStart(2, "0")}`;
+function amount(raw: string | null, decimals: number | null, symbol: string) {
+  if (raw === null || decimals === null) return "—";
+  return `${(Number(raw) / 10 ** decimals).toLocaleString("en-US", {
+    maximumFractionDigits: 6,
+  })} ${symbol}`;
 }
 
-function formatBps(value: bigint | null) {
-  if (value === null) return "—";
-  return `${(Number(value) / 100).toFixed(2)}%`;
-}
-
-function formatRaw(value: bigint | null) {
-  if (value === null) return "Unavailable";
-  const whole = value / BigInt(1_000_000);
-  const fraction = ((value % BigInt(1_000_000)) / BigInt(10_000))
-    .toString()
-    .padStart(2, "0");
-  return `${whole
-    .toString()
-    .replace(/\B(?=(\d{3})+(?!\d))/g, ",")}.${fraction}`;
-}
-
-function formatDate(value: string) {
-  return new Intl.DateTimeFormat("en-US", {
-    dateStyle: "medium",
-    timeStyle: "short",
-    timeZone: "UTC",
-  }).format(new Date(value));
-}
-
-function actionKind(action: string) {
-  if (action.includes("ALLOCATE") || action.includes("OPEN"))
-    return "Deposit / deploy";
-  if (
-    action.includes("DELEVER") ||
-    action.includes("STAGE") ||
-    action.includes("RESTORE")
-  )
-    return "Withdrawal / restore";
-  return action.replaceAll("_", " ");
-}
-
-export function BackyardVault(props: BackyardVaultProps) {
-  const data = backyardVaultData(props);
-
+export function VaultDetails(data: BackyardVaultProps) {
+  if (!data.available) {
+    return <p className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">Position details unavailable: {data.error}</p>;
+  }
+  const position = data.currentPosition;
   return (
-    <>
-      <SectionHeader
-        breadcrumbs={[]}
-        subtitle="Read-only view of the Voltr vault, its bound Squads smart account, and the Backyard RWA worker projection."
-        title="Backyard vault"
-      />
-
-      {!data.available ? (
-        <Card>
-          <CardHeader>
-            <Badge variant="outline">Awaiting projection</Badge>
-            <CardTitle className="text-base">No live vault snapshot</CardTitle>
-            <CardDescription>{formatDate(data.observedAt)} UTC</CardDescription>
-          </CardHeader>
-          <CardContent className="text-sm text-muted-foreground">
-            {data.error}
-          </CardContent>
-        </Card>
-      ) : (
-        <>
-          <section className="grid gap-4 md:grid-cols-4">
-            <Metric
-              title="Current AUM"
-              value={formatUsdMicros(data.aumUsdMicros)}
-              description="Latest worker valuation"
-            />
-            <Metric
-              title="Reported NAV"
-              value={formatUsdMicros(data.navUsdMicros)}
-              description={`Observed ${formatDate(data.observedAt)} UTC`}
-            />
-            <Metric
-              title="Forecast APY"
-              value={formatBps(data.projectedApyBps)}
-              description="Latest route snapshot; not a promise"
-            />
-          </section>
-
-          <section className="grid gap-4 md:grid-cols-2">
-            <Card>
-              <CardHeader>
-                <CardDescription>Current route position</CardDescription>
-                <CardTitle className="text-base">
-                  {data.currentPosition.strategy ?? "No funded position"}
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="grid grid-cols-3 gap-3 text-sm">
-                <div>
-                  <p className="text-muted-foreground">Collateral</p>
-                  <p className="font-medium tabular-nums">
-                    {formatRaw(data.currentPosition.collateralRaw)} PRIME
-                  </p>
-                </div>
-                <div>
-                  <p className="text-muted-foreground">Debt</p>
-                  <p className="font-medium tabular-nums">
-                    {formatRaw(data.currentPosition.debtRaw)} USDC
-                  </p>
-                </div>
-                <div>
-                  <p className="text-muted-foreground">LTV</p>
-                  <p className="font-medium tabular-nums">
-                    {formatBps(data.currentPosition.ltvBps)}
-                  </p>
-                </div>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardHeader>
-                <CardDescription>Bound accounts</CardDescription>
-                <CardTitle className="text-base">Voltr + Squads</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-2 text-sm">
-                {data.settings.slice(0, 5).map((setting) => (
-                  <p key={setting.key} className="flex justify-between gap-4">
-                    <span className="text-muted-foreground">{setting.key}</span>
-                    <AddressLink address={setting.value} />
-                  </p>
-                ))}
-              </CardContent>
-            </Card>
-          </section>
-
-          <section className="grid gap-4 md:grid-cols-3">
-            <Metric
-              title="Voltr idle"
-              value={`${formatRaw(data.voltrIdleRaw)} USDC`}
-              description="Strategy idle balance projected by worker"
-            />
-            <Metric
-              title="Strategy idle"
-              value={`${formatRaw(data.strategyIdleRaw)} USDC`}
-              description="Voltr strategy receipt custody"
-            />
-            <Metric
-              title="Squads idle"
-              value={`${formatRaw(data.squadsIdleRaw)} USDC`}
-              description="Smart-account idle balance projected by worker"
-            />
-            <Metric
-              title="Withdrawal wait"
-              value={`${data.withdrawalWaitSeconds}s`}
-              description={`Vault cap ${formatRaw(data.vaultCapRaw)} USDC`}
-            />
-          </section>
-
-          <Card>
-            <CardHeader>
-              <CardDescription>Route and NAV report</CardDescription>
-              <CardTitle className="text-base">
-                {data.routeStatus ?? "Route status unavailable"}
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="flex flex-wrap gap-x-6 gap-y-2 text-sm text-muted-foreground">
-              <span>
-                Report slot:{" "}
-                {data.report.slot?.toLocaleString("en-US") ?? "Unavailable"}
-              </span>
-              <span>
-                Report time:{" "}
-                {data.report.observedAt
-                  ? `${formatDate(data.report.observedAt)} UTC`
-                  : "Unavailable"}
-              </span>
-              <span>
-                Freshness:{" "}
-                {data.report.fresh === null
-                  ? "Unavailable"
-                  : data.report.fresh
-                  ? "Fresh"
-                  : "Stale"}
-              </span>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardDescription>Vault settings</CardDescription>
-              <CardTitle className="text-base">
-                Configuration observed by the worker
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="grid gap-2 text-sm md:grid-cols-2">
-              {data.settings.slice(5).length ? (
-                data.settings.slice(5).map((setting) => (
-                  <p
-                    key={setting.key}
-                    className="flex justify-between gap-4 rounded border p-2"
-                  >
-                    <span className="text-muted-foreground">{setting.key}</span>
-                    <span className="font-mono text-xs">{setting.value}</span>
-                  </p>
-                ))
-              ) : (
-                <p className="text-muted-foreground">
-                  Fee and admin settings are unavailable until projected by the
-                  worker.
-                </p>
-              )}
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardDescription>Recent worker journal</CardDescription>
-              <CardTitle className="text-base">
-                Capital decisions and execution steps
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Time</TableHead>
-                    <TableHead>Type</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead>Amount</TableHead>
-                    <TableHead>Transaction</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {data.history.length ? (
-                    data.history.map((item, index) => (
-                      <TableRow key={`${item.created_at}-${index}`}>
-                        <TableCell>
-                          {formatDate(String(item.created_at))} UTC
-                        </TableCell>
-                        <TableCell>{actionKind(item.action)}</TableCell>
-                        <TableCell>
-                          <Badge
-                            variant={
-                              item.status === "reconciled"
-                                ? "outline"
-                                : "secondary"
-                            }
-                          >
-                            {item.status}
-                          </Badge>
-                        </TableCell>
-                        <TableCell className="tabular-nums">
-                          {item.amount_raw
-                            ? formatRaw(BigInt(item.amount_raw))
-                            : "—"}
-                        </TableCell>
-                        <TableCell>
-                          {item.transaction_signature ? (
-                            <ShortAddressText
-                              address={item.transaction_signature}
-                            />
-                          ) : (
-                            "—"
-                          )}
-                        </TableCell>
-                      </TableRow>
-                    ))
-                  ) : (
-                    <TableRow>
-                      <TableCell colSpan={5} className="text-muted-foreground">
-                        No worker decisions or execution steps recorded yet.
-                      </TableCell>
-                    </TableRow>
-                  )}
-                </TableBody>
-              </Table>
-            </CardContent>
-          </Card>
-        </>
-      )}
-    </>
-  );
-}
-
-function Metric({
-  description,
-  title,
-  value,
-}: {
-  description: string;
-  title: string;
-  value: string;
-}) {
-  return (
-    <Card>
-      <CardHeader>
-        <CardDescription>{description}</CardDescription>
-        <CardTitle className="text-base">{title}</CardTitle>
-      </CardHeader>
-      <CardContent>
-        <p className="text-2xl font-semibold tabular-nums tracking-tight">
-          {value}
-        </p>
-      </CardContent>
-    </Card>
+    <section className="grid gap-4 lg:grid-cols-2" aria-label="Position and accounts">
+      <Card>
+        <CardHeader>
+          <CardDescription>Current route tokens</CardDescription>
+          <CardTitle className="text-base">{position.strategy ?? "No open position"}</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <dl className="grid grid-cols-2 gap-4 text-sm">
+            <div className="space-y-1">
+              <dt className="text-muted-foreground">Collateral</dt>
+              <dd className="font-medium tabular-nums">{amount(position.collateralRaw, position.collateralDecimals, position.collateralSymbol)}</dd>
+            </div>
+            <div className="space-y-1">
+              <dt className="text-muted-foreground">Debt</dt>
+              <dd className="font-medium tabular-nums">{amount(position.debtRaw, position.debtDecimals, position.debtSymbol)}</dd>
+            </div>
+            <div className="space-y-1">
+              <dt className="text-muted-foreground">Strategy USDC cash</dt>
+              <dd className="font-medium tabular-nums">{amount(data.strategyIdleRaw, 6, "USDC")}</dd>
+            </div>
+          </dl>
+          {data.tokenError ? <p className="text-xs text-muted-foreground">Token amounts unavailable: {data.tokenError}</p> : null}
+        </CardContent>
+      </Card>
+      <Card>
+        <CardHeader>
+          <CardDescription>Selected vault accounts</CardDescription>
+          <CardTitle className="text-base">Voltr and Squads</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <dl className="space-y-3 text-sm">
+            {data.settings.map(({ key, value }) => (
+              <div className="flex flex-wrap items-center justify-between gap-2" key={key}>
+                <dt className="text-muted-foreground">{key}</dt>
+                <dd><AddressLink address={value} /></dd>
+              </div>
+            ))}
+          </dl>
+        </CardContent>
+      </Card>
+    </section>
   );
 }

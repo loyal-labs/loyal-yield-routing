@@ -155,3 +155,20 @@ func RouteKeys() []string {
 	}
 	return out
 }
+
+// VaultDescription exposes the registry's public accounts to read-only consumers.
+type VaultDescription struct {
+	RouteKey string
+	Settings string
+	Accounts voltr.StrategyAccounts
+	Routes   []RuntimeRoute
+}
+
+func DescribeVault(name string) (VaultDescription, error) {
+	v, err := findVault(name)
+	if err != nil {
+		return VaultDescription{}, err
+	}
+	return VaultDescription{RouteKey: v.RouteKey, Settings: backyardSettings,
+		Accounts: v.strategyAccounts(), Routes: append([]RuntimeRoute(nil), v.routes...)}, nil
+}
