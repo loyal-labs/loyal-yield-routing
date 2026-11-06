@@ -255,7 +255,7 @@ func TestWithdrawalSlippageHoldAndLaterCashRecovery(t *testing.T) {
 	}
 	o := Observation{ObservedAt: time.Now().UTC(), Snapshot: targeted(livePartialSnapshot())}
 	h, ok := assessWithdrawalHealth(rwa, o, Decide(o.Snapshot), err)
-	if !ok || h.Status != "unavailable" || h.Reason != "withdrawal_price_limit" {
+	if !ok || h.Status != "waiting" || h.Reason != "withdrawal_price_limit" {
 		t.Fatalf("missing actionable hold: %+v", h)
 	}
 	o.ObservedAt = o.ObservedAt.Add(11 * time.Minute)
@@ -294,7 +294,7 @@ func TestWithdrawalSlippageRetriesAfterReobserving(t *testing.T) {
 			}
 			return observed, StepExecutionEvidence{}, nil
 		},
-		recordDecision: func(_ context.Context, _ string, _ Observation, d Decision, _ string) (DecisionRecord, error) {
+		recordDecision: func(_ context.Context, _ string, _ Observation, d Decision, _ string, _ *releaseRequest) (DecisionRecord, error) {
 			records++
 			if d.MaxSlippageBPS != 20 {
 				t.Fatal("retry changed durable limit")

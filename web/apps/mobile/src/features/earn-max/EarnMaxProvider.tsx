@@ -13,6 +13,7 @@ import { mmkv } from "@/lib/storage";
 import { AppState } from "react-native";
 import {
   executeMobileEarnMax,
+  approveMobileEarnMaxWithdrawal,
   type MobileEarnMaxOperation,
 } from "@/lib/solana/earn/mobile-earn-max";
 import { deliberateSession } from "@/lib/solana/earn/earn-session";
@@ -44,7 +45,16 @@ function useModel() {
   const locked = useRef(false);
   const readVersion = useRef(0);
   const [loadedKey, setLoadedKey] = useState<string | null>(null);
-  const refresh = useCallback(async (options?: { signIn?: boolean }) => {
+  const [approval, setApproval] =
+    useState<
+      Awaited<
+        ReturnType<
+          typeof fetchEarnMax<"/api/smart-accounts/earn-max/withdrawal-consent">
+        >
+      >
+    >(null);
+  const refresh = useCallback(
+    async (options?: { signIn?: boolean }) => {
     if (!key || getSolanaEnv() !== "mainnet") return false;
     if (options?.signIn && signerRef.current)
       await deliberateSession(signerRef.current);
@@ -57,6 +67,18 @@ function useModel() {
         fetchEarnMax(key, "/api/smart-accounts/earn-max/activity"),
       ]);
       if (isCurrent()) {
+          if (summary?.summary.withdrawal) {
+            try {
+              const review = await fetchEarnMax(
+                key,
+                "/api/smart-accounts/earn-max/withdrawal-consent",
+              );
+              if (!isCurrent()) return false;
+              setApproval(review);
+            } catch {
+              if (isCurrent()) setApproval(null);
+            }
+          } else setApproval(null);
         setData({
           key,
           summary: summary?.summary ?? null,
@@ -67,16 +89,21 @@ function useModel() {
       }
     } catch (e) {
       if (isCurrent()) {
-        setError(e instanceof Error ? e.message : "Unable to update Earn MAX.");
+          setError(
+            e instanceof Error ? e.message : "Unable to update Earn MAX.",
+          );
       }
     } finally {
       if (isCurrent()) setLoadedKey(key);
     }
     return false;
-  }, [key]);
+    },
+    [key],
+  );
   useEffect(() => {
     readVersion.current += 1;
     setData(null);
+    setApproval(null);
     setError(null);
     setLoadedKey(null);
     void refresh();
@@ -112,17 +139,17 @@ function useModel() {
         setBusy(false);
       }
     },
-    [key, signer, refresh]
+    [key, signer, refresh],
   );
   const visible = data?.key === key ? data : null;
   const newest = Math.max(
     0,
     ...(visible?.activity.operations ?? []).map(
-      (item) => Date.parse(item.timestamp) || 0
+      (item) => Date.parse(item.timestamp) || 0,
     ),
     visible?.summary?.withdrawal?.canClaim
       ? Date.parse(visible.summary.withdrawal.readyBy) || 0
-      : 0
+      : 0,
   );
   const [seen, setSeen] = useState(0);
   const seenKey = `activity:earn-max:${key}`;
@@ -134,6 +161,22 @@ function useModel() {
     setSeen(newest);
   }, [seenKey, newest]);
   return {
+    approval,
+    approveWithdrawal: async (minimum: bigint, maxFeeLamports: bigint) => {
+      if (!signer || locked.current)
+        throw new Error(
+          "Unlock your wallet and wait for the current operation.",
+        );
+      locked.current = true;
+      setBusy(true);
+      try {
+        await approveMobileEarnMaxWithdrawal(signer, minimum, maxFeeLamports);
+        await refresh();
+      } finally {
+        locked.current = false;
+        setBusy(false);
+      }
+    },
     unread: newest > seen,
     markSeen,
     controls: earnMaxControls({

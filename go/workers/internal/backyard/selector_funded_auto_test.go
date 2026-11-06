@@ -26,6 +26,7 @@ func fundedAutoFixture(t *testing.T) SelectorInput {
 		EvidenceID: sha256Bytes([]byte("auto-priced-quote")), SampleSlot: in.Snapshot.Slot, ValidThroughSlot: in.Snapshot.Slot + observationLagFloorSlots,
 	}
 	in.Quotes = []MoveQuote{parBorrow(quote)}
+	in.Snapshot.net = fixtureSnapshotCertificate(in.Snapshot)
 	return in
 }
 

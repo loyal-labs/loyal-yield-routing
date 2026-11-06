@@ -68,7 +68,7 @@ func fundLane(t *testing.T, accounts *[]ConfirmedAccount, lane string, collatera
 
 func observeMultiLane(t *testing.T, manifest RouteManifest, accounts []ConfirmedAccount) Observation {
 	t.Helper()
-	o, _, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), manifest, routeObservationRuntime{state: testVaultState, inputs: targetInputs{ExitCosts: fixtureExitCosts()},
+	o, _, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), manifest, routeObservationRuntime{state: testVaultState, inputs: targetInputs{ExitCosts: fixtureExitCosts(manifest, 77, accounts)},
 		read:             fixtureBatchRuntime(77, accounts),
 		refreshValuation: fixtureRefresh(77, accounts),
 		now:              func() time.Time { return time.Unix(kaminoFixtureUnix, 0).UTC() },
@@ -136,7 +136,7 @@ func TestTwoHeldLanesNAVCountsEverySharedCustodyOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	nav, err := ComputeRouteNAVForRoutes(77, navAccounts, manifest, nil, routes, fixtureExitCosts())
+	nav, err := ComputeRouteNAVForRoutes(77, navAccounts, manifest, nil, routes, fixtureExitCosts(manifest, 77, accounts))
 	if err != nil || nav.Report.NAVAfterRaw != uint64(s.StrategyNAVRaw) {
 		t.Fatalf("report NAV is not the held book: %d %v", nav.Report.NAVAfterRaw, err)
 	}

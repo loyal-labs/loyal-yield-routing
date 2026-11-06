@@ -31,6 +31,7 @@ func TestFlatObservationProjectionRetainsConfirmedDashboardTruth(t *testing.T) {
 		PriorReportUpdatedUnix: observedAt.Add(-10 * time.Second).Unix(), LastReportAgeSeconds: 10,
 		ReportSequence: 123, ReportSnapshotDigest: strings.Repeat("a", 64),
 	}}
+	certifyProjectionFixture(&observation.Snapshot, observedAt)
 	projection, err := newRouteObservationProjection(observation)
 	if err != nil {
 		t.Fatal(err)

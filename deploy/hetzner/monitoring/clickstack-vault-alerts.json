@@ -1,0 +1,87 @@
+{
+  "teamId": "6a58601284f8f1d4ff4d129c",
+  "sourceId": "6a58601284f8f1d4ff4d12a5",
+  "connectionId": "6a58601284f8f1d4ff4d12a1",
+  "dashboardId": "6abf9e82df00e17b4af9fd8a",
+  "tileId": "6abf9e82df00e17b4af9fd89",
+  "searches": [
+    {
+      "id": "6ab6eeb4df00e17b4af9194e",
+      "where": "ServiceName = 'loyal-backyard' AND LogAttributes['vault'] = 'rwa' AND Body = 'backyard_heartbeat'"
+    },
+    {
+      "id": "6ab6eeb5df00e17b4af91955",
+      "where": "ServiceName = 'loyal-backyard' AND LogAttributes['vault'] = 'rwa' AND Body = 'backyard_operation_reconciled' AND LogAttributes['action'] = 'REPORT_NAV'"
+    },
+    {
+      "id": "6ab6eeb3df00e17b4af91947",
+      "where": "ServiceName = 'loyal-backyard' AND LogAttributes['vault'] = 'rwa' AND SeverityText = 'warn'"
+    },
+    {
+      "id": "6ab6eeb7df00e17b4af9195c",
+      "where": "ServiceName = 'loyal-backyard' AND LogAttributes['vault'] = 'rwa' AND Body = 'backyard_worker_start'"
+    }
+  ],
+  "alerts": [
+    {
+      "id": "6ab6eed8df00e17b4af91990",
+      "policy": {
+        "threshold": 2,
+        "thresholdType": "below",
+        "interval": "5m",
+        "source": "saved_search",
+        "savedSearchId": "6ab6eeb4df00e17b4af9194e"
+      },
+      "message": "rwa vault sent fewer than 2 heartbeats in 5 minutes. Check loyal-backyard.service on loyal-workers, the vault loop, and telemetry ingestion."
+    },
+    {
+      "id": "6ab6eedadf00e17b4af91998",
+      "policy": {
+        "threshold": 1,
+        "thresholdType": "below",
+        "interval": "5m",
+        "source": "tile",
+        "dashboardId": "6abf9e82df00e17b4af9fd8a",
+        "tileId": "6abf9e82df00e17b4af9fd89"
+      },
+      "message": "rwa vault has no reconciled REPORT_NAV in 75 minutes. Check held observations, the recovery latch, and report attempts. This measures report age, not exit-price validity."
+    },
+    {
+      "id": "6ab6eed7df00e17b4af91988",
+      "policy": {
+        "source": "saved_search",
+        "savedSearchId": "6ab6eeb3df00e17b4af91947",
+        "threshold": 1,
+        "thresholdType": "above",
+        "interval": "1m"
+      },
+      "message": "RWA vault warning events exceeded the configured threshold. Check the recorded warning, vault loop, stage, and error details."
+    },
+    {
+      "id": "6ab6eedbdf00e17b4af919a0",
+      "policy": {
+        "source": "saved_search",
+        "savedSearchId": "6ab6eeb7df00e17b4af9195c",
+        "threshold": 6,
+        "thresholdType": "above",
+        "interval": "30m"
+      },
+      "message": "Repeated RWA vault worker starts in 30 minutes. Check loyal-backyard.service on loyal-workers and the recorded exit causes."
+    }
+  ],
+  "navConfig": {
+    "configType": "sql",
+    "displayType": "number",
+    "connectionId": "6a58601284f8f1d4ff4d12a1",
+    "sourceId": "6a58601284f8f1d4ff4d12a5",
+    "sqlTemplate": "WITH fromUnixTimestamp64Milli({endDateMilliseconds:Int64}) AS evaluated_at\nSELECT toUInt8(count() > 0 AND max(Timestamp) >= evaluated_at - INTERVAL 75 MINUTE) AS nav_fresh\nFROM $__sourceTable\nWHERE Timestamp >= evaluated_at - INTERVAL 2 HOUR\n  AND Timestamp <= evaluated_at\n  AND ServiceName = 'loyal-backyard' AND LogAttributes['vault'] = 'rwa' AND Body = 'backyard_operation_reconciled' AND LogAttributes['action'] = 'REPORT_NAV'\nLIMIT 1",
+    "numberFormat": {
+      "output": "number",
+      "mantissa": 0
+    }
+  },
+  "looping": {
+    "status": "deferred; no looping rules are created by this CLI",
+    "dependency": "Verify full alert/search/dashboard inventory and new-dashboard/tile creation response IDs, then seed an independent idempotent creation packet. Existing absence alerts must not group vaults."
+  }
+}

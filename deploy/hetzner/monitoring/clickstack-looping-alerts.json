@@ -1,0 +1,79 @@
+{
+  "version": 1,
+  "teamId": "6a58601284f8f1d4ff4d129c",
+  "dashboard": {
+    "name": "Backyard Looping alert health",
+    "tags": [
+      "loyal-looping-monitor-v1"
+    ],
+    "filters": [],
+    "tiles": [
+      {
+        "id": "9de0e34fb188f5529978ac39",
+        "name": "Heartbeats in 5 minutes",
+        "x": 0,
+        "y": 0,
+        "w": 6,
+        "h": 3,
+        "config": {
+          "configType": "sql",
+          "displayType": "number",
+          "connectionId": "6a58601284f8f1d4ff4d12a1",
+          "sourceId": "6a58601284f8f1d4ff4d12a5",
+          "sqlTemplate": "WITH fromUnixTimestamp64Milli({endDateMilliseconds:Int64}) AS evaluated_at\nSELECT count() AS heartbeat_count\nFROM $__sourceTable\nWHERE Timestamp >= evaluated_at - INTERVAL 5 MINUTE\n  AND Timestamp <= evaluated_at\n  AND ServiceName = 'loyal-backyard' AND LogAttributes['vault'] = 'looping' AND Body = 'backyard_heartbeat'\nLIMIT 1",
+          "numberFormat": {
+            "output": "number",
+            "mantissa": 0
+          }
+        }
+      },
+      {
+        "id": "c44e1cc5410b659210bc9c40",
+        "name": "NAV report within 75 minutes (1 = fresh, 0 = stale)",
+        "x": 6,
+        "y": 0,
+        "w": 6,
+        "h": 3,
+        "config": {
+          "configType": "sql",
+          "displayType": "number",
+          "connectionId": "6a58601284f8f1d4ff4d12a1",
+          "sourceId": "6a58601284f8f1d4ff4d12a5",
+          "sqlTemplate": "WITH fromUnixTimestamp64Milli({endDateMilliseconds:Int64}) AS evaluated_at\nSELECT toUInt8(count() > 0 AND max(Timestamp) >= evaluated_at - INTERVAL 75 MINUTE) AS nav_fresh\nFROM $__sourceTable\nWHERE Timestamp >= evaluated_at - INTERVAL 2 HOUR\n  AND Timestamp <= evaluated_at\n  AND ServiceName = 'loyal-backyard' AND LogAttributes['vault'] = 'looping' AND Body = 'backyard_operation_reconciled' AND LogAttributes['action'] = 'REPORT_NAV'\nLIMIT 1",
+          "numberFormat": {
+            "output": "number",
+            "mantissa": 0
+          }
+        }
+      }
+    ]
+  },
+  "alerts": [
+    {
+      "source": "tile",
+      "tileId": "9de0e34fb188f5529978ac39",
+      "threshold": 2,
+      "thresholdType": "below",
+      "interval": "5m",
+      "channel": {
+        "type": "webhook",
+        "webhookId": "6a60b666dcc64beb0ded8d48"
+      },
+      "name": "Backyard Looping worker silent (no heartbeat)",
+      "message": "Looping vault sent fewer than 2 heartbeats in 5 minutes. Check loyal-backyard.service on loyal-workers, the vault loop, and telemetry ingestion."
+    },
+    {
+      "source": "tile",
+      "tileId": "c44e1cc5410b659210bc9c40",
+      "threshold": 1,
+      "thresholdType": "below",
+      "interval": "5m",
+      "channel": {
+        "type": "webhook",
+        "webhookId": "6a60b666dcc64beb0ded8d48"
+      },
+      "name": "Backyard Looping worker NAV report stale",
+      "message": "Looping vault has no reconciled REPORT_NAV in 75 minutes. Check held observations, the recovery latch, and report attempts. This measures report age, not exit-price validity."
+    }
+  ]
+}

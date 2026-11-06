@@ -1,0 +1,1623 @@
+{
+  "clickstack_save_alert": {
+    "type": "object",
+    "properties": {
+      "id": {
+        "type": "string",
+        "description": "Alert ID. Omit to create a new alert, provide to update an existing one."
+      },
+      "source": {
+        "type": "string",
+        "enum": [
+          "saved_search",
+          "tile"
+        ],
+        "description": "Alert source type: saved_search or tile."
+      },
+      "savedSearchId": {
+        "type": "string",
+        "description": "Saved search ID (required when source is saved_search)."
+      },
+      "dashboardId": {
+        "type": "string",
+        "description": "Dashboard ID (required when source is tile)."
+      },
+      "tileId": {
+        "type": "string",
+        "description": "Tile ID within the dashboard (required when source is tile). Must be a line, stacked bar, or number tile."
+      },
+      "groupBy": {
+        "type": "string",
+        "description": "Group-by key for saved search alerts."
+      },
+      "threshold": {
+        "type": "number",
+        "description": "Threshold value for triggering the alert."
+      },
+      "thresholdType": {
+        "type": "string",
+        "enum": [
+          "above",
+          "below",
+          "above_exclusive",
+          "below_or_equal",
+          "equal",
+          "not_equal",
+          "between",
+          "not_between"
+        ],
+        "description": "How the metric value is compared against the threshold."
+      },
+      "thresholdMax": {
+        "type": "number",
+        "description": "Upper bound (required when thresholdType is between or not_between, must be >= threshold)."
+      },
+      "interval": {
+        "type": "string",
+        "enum": [
+          "1m",
+          "5m",
+          "15m",
+          "30m",
+          "1h",
+          "6h",
+          "12h",
+          "1d"
+        ],
+        "description": "Evaluation interval."
+      },
+      "scheduleOffsetMinutes": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 1439,
+        "description": "Offset from the interval boundary in minutes (must be < interval)."
+      },
+      "scheduleStartAt": {
+        "anyOf": [
+          {
+            "type": "string",
+            "format": "date-time"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Absolute UTC anchor for window alignment (ISO 8601)."
+      },
+      "channel": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "webhook",
+            "description": "Channel type for alert notifications."
+          },
+          "webhookId": {
+            "type": "string",
+            "description": "Webhook destination ID (required for webhook channel)."
+          }
+        },
+        "required": [
+          "type",
+          "webhookId"
+        ],
+        "additionalProperties": false,
+        "description": "Alert notification channel configuration."
+      },
+      "name": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 512,
+        "description": "Human-friendly alert name."
+      },
+      "message": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 4096,
+        "description": "Alert message template (supports Handlebars syntax)."
+      }
+    },
+    "required": [
+      "source",
+      "threshold",
+      "thresholdType",
+      "interval",
+      "channel"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  },
+  "clickstack_save_dashboard": {
+    "type": "object",
+    "properties": {
+      "id": {
+        "type": "string",
+        "description": "Dashboard ID. Omit to create a new dashboard, provide to update an existing one."
+      },
+      "name": {
+        "type": "string",
+        "description": "Dashboard name"
+      },
+      "tiles": {
+        "type": "array",
+        "items": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Tile title shown on the dashboard"
+                },
+                "x": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 23,
+                  "default": 0,
+                  "description": "Horizontal grid position (0\u201323). Default 0"
+                },
+                "y": {
+                  "type": "number",
+                  "minimum": 0,
+                  "default": 0,
+                  "description": "Vertical grid position. Default 0"
+                },
+                "w": {
+                  "type": "number",
+                  "minimum": 1,
+                  "maximum": 24,
+                  "default": 12,
+                  "description": "Width in grid columns (1-24; a full row is 24). Default 12. Match the width to the displayType: number 6-8 (three or four KPIs per row), line / stacked_bar / pie 8-12, heatmap 12, table / search 12-24 (often the full row). A markdown note is usually full-width (24)."
+                },
+                "h": {
+                  "type": "number",
+                  "minimum": 1,
+                  "default": 4,
+                  "description": "Height in grid rows. Default 4. Match the height to the displayType so content is not clipped: number 3-4, line / stacked_bar / pie 4-6, heatmap 5-6, table / search 6-10 (taller when more rows are expected), markdown 2-3 for a short note (h: 1 clips the text)."
+                },
+                "id": {
+                  "type": "string",
+                  "maxLength": 36,
+                  "description": "Tile ID (auto-generated if omitted)"
+                },
+                "containerId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256,
+                  "description": "Container this tile belongs to. Must reference the id of a container in the dashboard-level containers array. Omit to render the tile in the ungrouped area."
+                },
+                "tabId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256,
+                  "description": "Tab within the container this tile belongs to. Requires containerId to be set and must match a tab id on that container. Omit to render in the container's shell (useful when the container has zero or one tabs, or when a tile should appear above the tab bar)."
+                },
+                "config": {
+                  "type": "object",
+                  "properties": {
+                    "displayType": {
+                      "type": "string",
+                      "const": "line",
+                      "description": "Line chart over time"
+                    },
+                    "sourceId": {
+                      "type": "string",
+                      "description": "Source ID \u2013 call clickstack_list_sources"
+                    },
+                    "select": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "aggFn": {
+                            "type": "string",
+                            "enum": [
+                              "avg",
+                              "count",
+                              "count_distinct",
+                              "last_value",
+                              "max",
+                              "min",
+                              "quantile",
+                              "sum",
+                              "any",
+                              "none",
+                              "increase"
+                            ],
+                            "description": "Aggregation function. \"count\" requires no valueExpression; all others do. METRIC SOURCES: \"increase\" computes the per-bucket counter increase for Sum metrics (reset-aware). For Gauges use last_value/avg/min/max. For Histograms use \"quantile\" with level or \"count\"."
+                          },
+                          "valueExpression": {
+                            "type": "string",
+                            "description": "Column or expression to aggregate. Required for all aggFn except \"count\". Use PascalCase for top-level columns (e.g. \"Duration\", \"StatusCode\"). For span attributes use: SpanAttributes['key'] (e.g. SpanAttributes['http.method']). For resource attributes use: ResourceAttributes['key'] (e.g. ResourceAttributes['service.name']).\n\nMETRIC SOURCES: optional \u2014 defaults to \"Value\" (the metric value column) when metricType/metricName are set."
+                          },
+                          "where": {
+                            "type": "string",
+                            "default": "",
+                            "description": "Filter in Lucene syntax. Example: \"level:error\""
+                          },
+                          "whereLanguage": {
+                            "type": "string",
+                            "enum": [
+                              "sql",
+                              "lucene"
+                            ],
+                            "default": "lucene"
+                          },
+                          "alias": {
+                            "type": "string",
+                            "description": "Display label for this series \u2014 used in chart legends, table column headers, CSV exports, and onClick templates. Always set a short, human-readable alias (e.g. \"Requests\", \"P95 Latency\", \"Error Rate\"). Without an alias the UI shows the raw ClickHouse expression (e.g. count(), quantile(0.95)(Duration)) which is hard to read. Heatmap select items are the only exception (no alias needed)."
+                          },
+                          "level": {
+                            "type": "number",
+                            "enum": [
+                              0.5,
+                              0.9,
+                              0.95,
+                              0.99
+                            ],
+                            "description": "Percentile level for aggFn=\"quantile\". REQUIRED for histogram metrics with aggFn:\"quantile\"."
+                          },
+                          "numberFormat": {
+                            "type": "object",
+                            "properties": {
+                              "output": {
+                                "type": "string",
+                                "enum": [
+                                  "currency",
+                                  "percent",
+                                  "byte",
+                                  "time",
+                                  "duration",
+                                  "number",
+                                  "data_rate",
+                                  "throughput"
+                                ],
+                                "description": "Format category. \"duration\" auto-formats elapsed times as e.g. \"1.2s\" (use factor for input unit). \"time\" formats clock-style durations. \"byte\" formats as KB/MB/GB. \"data_rate\" formats as bytes/sec. \"throughput\" formats as count/sec. \"currency\" prepends a symbol. \"percent\" appends %, and divides the value by 100 (0.5 becomes 50%)."
+                              },
+                              "mantissa": {
+                                "type": "integer",
+                                "description": "Decimal places (0\u201310). Not used for \"time\" or \"duration\" output."
+                              },
+                              "thousandSeparated": {
+                                "type": "boolean",
+                                "description": "Separate thousands (e.g. 1,234,567)"
+                              },
+                              "average": {
+                                "type": "boolean",
+                                "description": "Abbreviate large numbers (e.g. 1.2m)"
+                              },
+                              "decimalBytes": {
+                                "type": "boolean",
+                                "description": "Use decimal base for bytes (1KB = 1000). Only for \"byte\" output."
+                              },
+                              "factor": {
+                                "type": "number",
+                                "description": "Input unit factor for \"time\" or \"duration\" output. 1 = seconds, 0.001 = milliseconds, 0.000001 = microseconds, 0.000000001 = nanoseconds."
+                              },
+                              "currencySymbol": {
+                                "type": "string",
+                                "description": "Currency symbol (e.g. \"$\"). Only for \"currency\" output."
+                              },
+                              "unit": {
+                                "type": "string",
+                                "description": "Suffix appended to the value (e.g. \" req/s\")"
+                              }
+                            },
+                            "required": [
+                              "output"
+                            ],
+                            "additionalProperties": false,
+                            "description": "Per-series display formatting, applied to this series only (overrides any tile-level numberFormat). Controls how the series number value(s) are formatted for display. Most useful: { output: \"duration\", factor: 0.000000001 } to auto-format nanosecond durations, or { output: \"number\", mantissa: 2, thousandSeparated: true } for clean counts."
+                          },
+                          "metricType": {
+                            "type": "string",
+                            "enum": [
+                              "gauge",
+                              "sum",
+                              "histogram"
+                            ],
+                            "description": "METRIC SOURCES ONLY. OTel metric kind: gauge, sum, or histogram. Required (with metricName) when the tile sourceId is a metric source. summary and exponential histogram are not supported by the renderer yet."
+                          },
+                          "metricName": {
+                            "type": "string",
+                            "description": "METRIC SOURCES ONLY. OTel metric name (e.g. \"system.cpu.utilization\"). Required when metricType is set."
+                          },
+                          "isDelta": {
+                            "type": "boolean",
+                            "description": "METRIC SOURCES ONLY (gauge metrics). When true, computes the Prometheus-style delta over each bucket. Default false."
+                          }
+                        },
+                        "required": [
+                          "aggFn"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "minItems": 1,
+                      "maxItems": 20,
+                      "description": "Metrics to plot (one series per item)"
+                    },
+                    "groupBy": {
+                      "type": "string",
+                      "description": "Column to split/group by. Top-level columns use PascalCase (e.g. \"SpanName\", \"StatusCode\"). Span attributes: SpanAttributes['key'] (e.g. SpanAttributes['http.method']). Resource attributes: ResourceAttributes['key'] (e.g. ResourceAttributes['service.name'])."
+                    },
+                    "fillNulls": {
+                      "type": "boolean",
+                      "default": true
+                    },
+                    "alignDateRangeToGranularity": {
+                      "type": "boolean"
+                    },
+                    "asRatio": {
+                      "type": "boolean",
+                      "description": "Plot as ratio of two metrics (requires exactly 2 select items)"
+                    },
+                    "numberFormat": {
+                      "$ref": "#/properties/tiles/items/anyOf/0/properties/config/properties/select/items/properties/numberFormat",
+                      "description": "Controls how the number value(s) are formatted for display. Applies to series or numbers without a series-level numberFormat. Most useful: { output: \"duration\", factor: 0.000000001 } to auto-format nanosecond durations, or { output: \"number\", mantissa: 2, thousandSeparated: true } for clean counts."
+                    },
+                    "compareToPreviousPeriod": {
+                      "type": "boolean",
+                      "description": "Overlay the previous period as a dashed comparison series."
+                    },
+                    "fitYAxisToData": {
+                      "type": "boolean",
+                      "description": "Scale the y-axis to the data range instead of starting at zero."
+                    }
+                  },
+                  "required": [
+                    "displayType",
+                    "sourceId",
+                    "select"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "name",
+                "config"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/name"
+                },
+                "x": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/x"
+                },
+                "y": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/y"
+                },
+                "w": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/w"
+                },
+                "h": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/h"
+                },
+                "id": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/id"
+                },
+                "containerId": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/containerId"
+                },
+                "tabId": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/tabId"
+                },
+                "config": {
+                  "type": "object",
+                  "properties": {
+                    "displayType": {
+                      "type": "string",
+                      "const": "stacked_bar",
+                      "description": "Stacked bar chart over time"
+                    },
+                    "sourceId": {
+                      "type": "string",
+                      "description": "Source ID \u2013 call clickstack_list_sources"
+                    },
+                    "select": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/properties/tiles/items/anyOf/0/properties/config/properties/select/items"
+                      },
+                      "minItems": 1,
+                      "maxItems": 20
+                    },
+                    "groupBy": {
+                      "type": "string"
+                    },
+                    "fillNulls": {
+                      "type": "boolean",
+                      "default": true
+                    },
+                    "alignDateRangeToGranularity": {
+                      "type": "boolean"
+                    },
+                    "asRatio": {
+                      "type": "boolean"
+                    },
+                    "numberFormat": {
+                      "$ref": "#/properties/tiles/items/anyOf/0/properties/config/properties/select/items/properties/numberFormat",
+                      "description": "Controls how the number value(s) are formatted for display. Applies to series or numbers without a series-level numberFormat. Most useful: { output: \"duration\", factor: 0.000000001 } to auto-format nanosecond durations, or { output: \"number\", mantissa: 2, thousandSeparated: true } for clean counts."
+                    }
+                  },
+                  "required": [
+                    "displayType",
+                    "sourceId",
+                    "select"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "name",
+                "config"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/name"
+                },
+                "x": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/x"
+                },
+                "y": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/y"
+                },
+                "w": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/w"
+                },
+                "h": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/h"
+                },
+                "id": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/id"
+                },
+                "containerId": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/containerId"
+                },
+                "tabId": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/tabId"
+                },
+                "config": {
+                  "type": "object",
+                  "properties": {
+                    "displayType": {
+                      "type": "string",
+                      "const": "table",
+                      "description": "Tabular aggregated data"
+                    },
+                    "sourceId": {
+                      "type": "string",
+                      "description": "Source ID \u2013 call clickstack_list_sources"
+                    },
+                    "select": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/properties/tiles/items/anyOf/0/properties/config/properties/select/items"
+                      },
+                      "minItems": 1,
+                      "maxItems": 20
+                    },
+                    "groupBy": {
+                      "type": "string",
+                      "description": "Group rows by this column. Use PascalCase for top-level columns (e.g. \"SpanName\"). For attributes: SpanAttributes['key'] or ResourceAttributes['key']."
+                    },
+                    "having": {
+                      "type": "string",
+                      "maxLength": 10000,
+                      "description": "Post-aggregation SQL HAVING expression. Example: \"Count > 100\" to drop groups with few rows, or \"StatusMessage != ''\" to drop empty-message rows from a groupBy: \"StatusMessage\" table. Mirrors the same field on the REST table chart config in `externalDashboardTableChartConfigSchema`."
+                    },
+                    "orderBy": {
+                      "type": "string",
+                      "description": "Sort results by this column. When ordering by an alias that contains spaces or special characters, wrap the alias in quotes: e.g. '\"P95 Latency\" DESC'."
+                    },
+                    "asRatio": {
+                      "type": "boolean"
+                    },
+                    "groupByColumnsOnLeft": {
+                      "type": "boolean",
+                      "description": "Render Group By columns on the left side of the table, before the series columns. Default false (Group By columns on the right)."
+                    },
+                    "numberFormat": {
+                      "$ref": "#/properties/tiles/items/anyOf/0/properties/config/properties/select/items/properties/numberFormat",
+                      "description": "Controls how the number value(s) are formatted for display. Applies to series or numbers without a series-level numberFormat. Most useful: { output: \"duration\", factor: 0.000000001 } to auto-format nanosecond durations, or { output: \"number\", mantissa: 2, thousandSeparated: true } for clean counts."
+                    },
+                    "onClick": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "search",
+                              "description": "Link to the /search page for a log or trace source."
+                            },
+                            "target": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "mode": {
+                                      "type": "string",
+                                      "const": "id"
+                                    },
+                                    "id": {
+                                      "type": "string",
+                                      "minLength": 1,
+                                      "description": "Concrete source ID (for type=search) or dashboard ID (for type=dashboard). Get source IDs from clickstack_list_sources; get dashboard IDs from clickstack_get_dashboard (no id arg returns the list). For type=search the source kind must be \"log\" or \"trace\"; the /search page does not render metric/session sources."
+                                    }
+                                  },
+                                  "required": [
+                                    "mode",
+                                    "id"
+                                  ],
+                                  "additionalProperties": false,
+                                  "description": "Link to a specific source or dashboard by its concrete ID."
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "mode": {
+                                      "type": "string",
+                                      "const": "template"
+                                    },
+                                    "template": {
+                                      "type": "string",
+                                      "minLength": 1,
+                                      "maxLength": 10000,
+                                      "description": "Handlebars-style template rendered against the clicked row, then resolved by NAME on the destination team. Example: \"ServiceOverview-{{ServiceName}}\" assumes a row column ServiceName whose value is the name of a source/dashboard. Prefer mode=\"id\" when the target is known up-front; it survives renames."
+                                    }
+                                  },
+                                  "required": [
+                                    "mode",
+                                    "template"
+                                  ],
+                                  "additionalProperties": false,
+                                  "description": "Link to a source/dashboard whose name comes from a column on the clicked row."
+                                }
+                              ],
+                              "description": "Destination resolver. mode=\"id\" pins a specific source/dashboard; mode=\"template\" picks one at click time from a row column.Linking by ID is preferred, but using a template is valid when the destination dashboard depends on the clicked row's content"
+                            },
+                            "whereTemplate": {
+                              "type": "string",
+                              "maxLength": 10000,
+                              "description": "Optional Handlebars-style WHERE template rendered against the clicked row and placed in the destination's `where` query param. Example: \"ServiceName = '{{service.name}}'\" pulls service.name from the row. Use Lucene or SQL syntax matching `whereLanguage`. Prefer `filters` (below) for simple equality; filters merge nicely on the destination."
+                            },
+                            "whereLanguage": {
+                              "$ref": "#/properties/tiles/items/anyOf/0/properties/config/properties/select/items/properties/whereLanguage",
+                              "description": "Filter language for `whereTemplate` and `filters` (\"lucene\" or \"sql\"). Optional, but set it explicitly so the destination knows how to parse rendered whereTemplate / filter values."
+                            },
+                            "filters": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "expressionTemplate",
+                                    "description": "Literal \"expressionTemplate\"; only kind supported today."
+                                  },
+                                  "expression": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 10000,
+                                    "description": "Column or SQL expression the rendered template is matched against. Example: \"ServiceName\" or \"SpanAttributes['http.route']\". Filters that share an expression are merged into a single IN clause on the destination."
+                                  },
+                                  "template": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 10000,
+                                    "description": "Handlebars-style template rendered with the clicked row's columns. Example: \"{{ServiceName}}\" pulls the row's ServiceName column value. Columns can be referenced by series alias."
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "expression",
+                                  "template"
+                                ],
+                                "additionalProperties": false,
+                                "description": "One templated equality filter applied on the destination page. Use filters to pre-populate the destination search/dashboard with a row-driven IN clause (e.g. \"ServiceName IN ('api')\") rather than dropping the user into an unscoped view."
+                              },
+                              "maxItems": 50,
+                              "description": "Optional list of templated equality filters. Each filter becomes an `expression IN ('rendered-value')` clause on the destination; filters that share an expression are merged into one IN clause."
+                            }
+                          },
+                          "required": [
+                            "type",
+                            "target"
+                          ],
+                          "additionalProperties": false,
+                          "description": "Row-click handler that opens the /search page. Use this to drill from an aggregated table row down to the underlying log/trace events for that row."
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "dashboard",
+                              "description": "Link to another ClickStack dashboard."
+                            },
+                            "target": {
+                              "$ref": "#/properties/tiles/items/anyOf/2/properties/config/properties/onClick/anyOf/0/properties/target"
+                            },
+                            "whereTemplate": {
+                              "type": "string",
+                              "maxLength": 10000,
+                              "description": "Optional Handlebars-style WHERE template applied to the destination dashboard's global filter. Useful when the target dashboard exposes a single global scope rather than per-tile filters."
+                            },
+                            "whereLanguage": {
+                              "$ref": "#/properties/tiles/items/anyOf/0/properties/config/properties/select/items/properties/whereLanguage",
+                              "description": "Filter language for `whereTemplate` and `filters` (\"lucene\" or \"sql\"). Optional, but set it explicitly so the destination knows how to parse rendered whereTemplate / filter values."
+                            },
+                            "filters": {
+                              "type": "array",
+                              "items": {
+                                "$ref": "#/properties/tiles/items/anyOf/2/properties/config/properties/onClick/anyOf/0/properties/filters/items"
+                              },
+                              "maxItems": 50,
+                              "description": "Optional list of templated equality filters. The destination dashboard auto-populates its filter list with these (matched by expression), so prefer this over whereTemplate when the target dashboard already declares the same filter expressions. If the destination dashboard does not declare a top-level filter whose `expression` matches, that value is dropped at click time and the destination opens unfiltered for that expression."
+                            }
+                          },
+                          "required": [
+                            "type",
+                            "target"
+                          ],
+                          "additionalProperties": false,
+                          "description": "Row-click handler that opens another dashboard. Use this to drill from a high-level overview table down to a per-service or per-endpoint dashboard."
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "external",
+                              "description": "Link to an arbitrary external URL (e.g. Grafana, Langfuse)."
+                            },
+                            "urlTemplate": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 10000,
+                              "description": "Handlebars-style template rendered against the clicked row, e.g. \"https://example.com/d/abc?var-service={{ServiceName}}\". The rendered value MUST be an absolute http(s) URL; relative URLs and non-http(s) schemes (javascript:, data:, etc.) are rejected at click time. This variant references no HyperDX source or dashboard."
+                            }
+                          },
+                          "required": [
+                            "type",
+                            "urlTemplate"
+                          ],
+                          "additionalProperties": false,
+                          "description": "Row-click handler that opens an external URL in a new tab. Use this to link out to a third-party tool (Grafana, Langfuse, runbooks, etc.)."
+                        }
+                      ],
+                      "description": "Row-click navigation for tiles that render as tables (Table tiles always; SQL tiles only when displayType is \"table\"). type=\"search\" links to the /search page for a log/trace source; type=\"dashboard\" links to another dashboard; type=\"external\" links to an arbitrary external http(s) URL. All support Handlebars `{{column}}` templating against the clicked row for the target/url, whereTemplate, and filter values.\n\nExamples:\n1. Drill into search for the clicked service: \n   { \"type\": \"search\", \"target\": { \"mode\": \"id\", \"id\": \"<trace-source-id>\" }, \"whereLanguage\": \"sql\", \"filters\": [{ \"kind\": \"expressionTemplate\", \"expression\": \"ServiceName\", \"template\": \"{{ServiceName}}\" }] }\n2. Drill into a per-service dashboard: \n   { \"type\": \"dashboard\", \"target\": { \"mode\": \"id\", \"id\": \"<dashboard-id>\" }, \"whereLanguage\": \"sql\", \"filters\": [{ \"kind\": \"expressionTemplate\", \"expression\": \"ServiceName\", \"template\": \"{{ServiceName}}\" }] }\n3. Resolve the destination from the row (rare; prefer mode=\"id\"): \n   { \"type\": \"dashboard\", \"target\": { \"mode\": \"template\", \"template\": \"{{TargetDashboardName}}\" }, \"whereLanguage\": \"lucene\" }\n4. Link out to an external tool: \n   { \"type\": \"external\", \"urlTemplate\": \"https://grafana.example.com/d/abc?var-service={{ServiceName}}\" }"
+                    }
+                  },
+                  "required": [
+                    "displayType",
+                    "sourceId",
+                    "select"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "name",
+                "config"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/name"
+                },
+                "x": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/x"
+                },
+                "y": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/y"
+                },
+                "w": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/w"
+                },
+                "h": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/h"
+                },
+                "id": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/id"
+                },
+                "containerId": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/containerId"
+                },
+                "tabId": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/tabId"
+                },
+                "config": {
+                  "type": "object",
+                  "properties": {
+                    "displayType": {
+                      "type": "string",
+                      "const": "number",
+                      "description": "Single aggregate scalar value"
+                    },
+                    "sourceId": {
+                      "type": "string",
+                      "description": "Source ID \u2013 call clickstack_list_sources"
+                    },
+                    "select": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/properties/tiles/items/anyOf/0/properties/config/properties/select/items"
+                      },
+                      "minItems": 1,
+                      "maxItems": 1,
+                      "description": "Exactly one metric to display"
+                    },
+                    "numberFormat": {
+                      "$ref": "#/properties/tiles/items/anyOf/0/properties/config/properties/select/items/properties/numberFormat",
+                      "description": "Controls how the number value(s) are formatted for display. Applies to series or numbers without a series-level numberFormat. Most useful: { output: \"duration\", factor: 0.000000001 } to auto-format nanosecond durations, or { output: \"number\", mantissa: 2, thousandSeparated: true } for clean counts."
+                    },
+                    "color": {
+                      "type": "string",
+                      "enum": [
+                        "chart-blue",
+                        "chart-orange",
+                        "chart-red",
+                        "chart-cyan",
+                        "chart-green",
+                        "chart-pink",
+                        "chart-purple",
+                        "chart-light-blue",
+                        "chart-brown",
+                        "chart-gray",
+                        "chart-success",
+                        "chart-warning",
+                        "chart-error"
+                      ],
+                      "description": "Static color for the displayed number, as a palette token such as \"chart-blue\", \"chart-green\", or \"chart-success\" (see the enum for the full set). Applied unless a colorRules entry matches the value."
+                    },
+                    "colorRules": {
+                      "type": "array",
+                      "items": {
+                        "anyOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "operator": {
+                                "type": "string",
+                                "enum": [
+                                  "gt",
+                                  "gte",
+                                  "lt",
+                                  "lte"
+                                ]
+                              },
+                              "value": {
+                                "type": "number"
+                              },
+                              "color": {
+                                "$ref": "#/properties/tiles/items/anyOf/3/properties/config/properties/color"
+                              },
+                              "label": {
+                                "type": "string",
+                                "maxLength": 40
+                              }
+                            },
+                            "required": [
+                              "operator",
+                              "value",
+                              "color"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "operator": {
+                                "type": "string",
+                                "const": "between"
+                              },
+                              "value": {
+                                "type": "array",
+                                "minItems": 2,
+                                "maxItems": 2,
+                                "items": [
+                                  {
+                                    "type": "number"
+                                  },
+                                  {
+                                    "type": "number"
+                                  }
+                                ]
+                              },
+                              "color": {
+                                "$ref": "#/properties/tiles/items/anyOf/3/properties/config/properties/color"
+                              },
+                              "label": {
+                                "type": "string",
+                                "maxLength": 40
+                              }
+                            },
+                            "required": [
+                              "operator",
+                              "value",
+                              "color"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "operator": {
+                                "type": "string",
+                                "enum": [
+                                  "eq",
+                                  "neq"
+                                ]
+                              },
+                              "value": {
+                                "anyOf": [
+                                  {
+                                    "type": "number"
+                                  },
+                                  {
+                                    "type": "string",
+                                    "maxLength": 200
+                                  }
+                                ]
+                              },
+                              "color": {
+                                "$ref": "#/properties/tiles/items/anyOf/3/properties/config/properties/color"
+                              },
+                              "label": {
+                                "type": "string",
+                                "maxLength": 40
+                              }
+                            },
+                            "required": [
+                              "operator",
+                              "value",
+                              "color"
+                            ],
+                            "additionalProperties": false
+                          }
+                        ]
+                      },
+                      "maxItems": 10,
+                      "description": "Conditional colors for the number, evaluated in array order with the last matching rule winning; falls back to color (then the default text color) when none match. Up to 10 rules. Each rule is { operator, value, color, label? }: operator gt | gte | lt | lte with a number value, between with a [min, max] value, or eq | neq with a number or string value. color is a palette token. Example: [{ operator: \"gte\", value: 500, color: \"chart-error\", label: \"Critical\" }]."
+                    },
+                    "backgroundChart": {
+                      "type": "object",
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "enum": [
+                            "line",
+                            "area"
+                          ]
+                        },
+                        "color": {
+                          "$ref": "#/properties/tiles/items/anyOf/3/properties/config/properties/color"
+                        }
+                      },
+                      "required": [
+                        "type"
+                      ],
+                      "additionalProperties": false,
+                      "description": "Optional background trend sparkline drawn behind the number, derived from a time-bucketed version of the same query (useful for SLO / error-budget tiles where the trend over the window matters). { type, color? }: type is \"line\" or \"area\"; color is an optional palette token override (the sparkline inherits the tile color when unset). Builder number tiles only; raw SQL number tiles have no time dimension to bucket. Example: { type: \"area\", color: \"chart-blue\" }."
+                    }
+                  },
+                  "required": [
+                    "displayType",
+                    "sourceId",
+                    "select"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "name",
+                "config"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/name"
+                },
+                "x": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/x"
+                },
+                "y": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/y"
+                },
+                "w": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/w"
+                },
+                "h": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/h"
+                },
+                "id": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/id"
+                },
+                "containerId": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/containerId"
+                },
+                "tabId": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/tabId"
+                },
+                "config": {
+                  "type": "object",
+                  "properties": {
+                    "displayType": {
+                      "type": "string",
+                      "const": "pie",
+                      "description": "Pie chart"
+                    },
+                    "sourceId": {
+                      "type": "string",
+                      "description": "Source ID \u2013 call clickstack_list_sources"
+                    },
+                    "select": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/properties/tiles/items/anyOf/0/properties/config/properties/select/items"
+                      },
+                      "minItems": 1,
+                      "maxItems": 1
+                    },
+                    "groupBy": {
+                      "type": "string",
+                      "description": "Column that defines pie slices. Use PascalCase for top-level columns. For attributes: SpanAttributes['key'] or ResourceAttributes['key']."
+                    },
+                    "orderBy": {
+                      "type": "string",
+                      "description": "Optional custom SQL ORDER BY expression. Overrides the default value-descending ordering and, combined with `limit`, controls which slices are kept. When ordering by an alias that contains spaces or special characters, wrap the alias in quotes: e.g. '\"P95 Latency\" DESC'."
+                    },
+                    "numberFormat": {
+                      "$ref": "#/properties/tiles/items/anyOf/0/properties/config/properties/select/items/properties/numberFormat",
+                      "description": "Controls how the number value(s) are formatted for display. Applies to series or numbers without a series-level numberFormat. Most useful: { output: \"duration\", factor: 0.000000001 } to auto-format nanosecond durations, or { output: \"number\", mantissa: 2, thousandSeparated: true } for clean counts."
+                    },
+                    "limit": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "description": "Maximum number of slices (SQL LIMIT). Without a custom `orderBy`, keeps the top-N groups by the aggregated value, descending; with an `orderBy` keeps the first N in that order. Omit to fetch all groups."
+                    }
+                  },
+                  "required": [
+                    "displayType",
+                    "sourceId",
+                    "select"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "name",
+                "config"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/name"
+                },
+                "x": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/x"
+                },
+                "y": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/y"
+                },
+                "w": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/w"
+                },
+                "h": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/h"
+                },
+                "id": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/id"
+                },
+                "containerId": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/containerId"
+                },
+                "tabId": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/tabId"
+                },
+                "config": {
+                  "type": "object",
+                  "properties": {
+                    "displayType": {
+                      "type": "string",
+                      "const": "bar",
+                      "description": "Bar chart \u2014 one bar per group value (not a time series)"
+                    },
+                    "sourceId": {
+                      "type": "string",
+                      "description": "Source ID \u2013 call clickstack_list_sources"
+                    },
+                    "select": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/properties/tiles/items/anyOf/0/properties/config/properties/select/items"
+                      },
+                      "minItems": 1,
+                      "maxItems": 1
+                    },
+                    "groupBy": {
+                      "type": "string",
+                      "description": "Column(s) that define the bars. Use PascalCase for top-level columns. For attributes: SpanAttributes['key'] or ResourceAttributes['key']."
+                    },
+                    "orderBy": {
+                      "type": "string",
+                      "description": "Optional custom SQL ORDER BY expression. Overrides the default value-descending ordering and, combined with `limit`, controls which bars are kept. When ordering by an alias that contains spaces or special characters, wrap the alias in quotes: e.g. '\"P95 Latency\" DESC'."
+                    },
+                    "numberFormat": {
+                      "$ref": "#/properties/tiles/items/anyOf/0/properties/config/properties/select/items/properties/numberFormat",
+                      "description": "Controls how the number value(s) are formatted for display. Applies to series or numbers without a series-level numberFormat. Most useful: { output: \"duration\", factor: 0.000000001 } to auto-format nanosecond durations, or { output: \"number\", mantissa: 2, thousandSeparated: true } for clean counts."
+                    },
+                    "limit": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "description": "Maximum number of bars (SQL LIMIT). Without a custom `orderBy`, keeps the top-N groups by the aggregated value, descending; with an `orderBy` keeps the first N in that order. Omit to fetch all groups."
+                    }
+                  },
+                  "required": [
+                    "displayType",
+                    "sourceId",
+                    "select"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "name",
+                "config"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/name"
+                },
+                "x": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/x"
+                },
+                "y": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/y"
+                },
+                "w": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/w"
+                },
+                "h": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/h"
+                },
+                "id": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/id"
+                },
+                "containerId": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/containerId"
+                },
+                "tabId": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/tabId"
+                },
+                "config": {
+                  "type": "object",
+                  "properties": {
+                    "displayType": {
+                      "type": "string",
+                      "const": "heatmap",
+                      "description": "Heatmap chart, requires a Trace source"
+                    },
+                    "sourceId": {
+                      "type": "string",
+                      "description": "Source ID. Must be a Trace source today; use clickstack_list_sources and pick one whose kind is \"trace\"."
+                    },
+                    "select": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "valueExpression": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "Numeric column or expression to bucket. Required and must be non-empty. Use \"Duration\" for trace latency heatmaps, or any other numeric column."
+                          },
+                          "countExpression": {
+                            "type": "string",
+                            "description": "Custom count expression (e.g. \"count()\"). Optional; defaults are applied by the renderer."
+                          },
+                          "heatmapScaleType": {
+                            "type": "string",
+                            "enum": [
+                              "log",
+                              "linear"
+                            ],
+                            "description": "Color scale: \"log\" or \"linear\""
+                          }
+                        },
+                        "required": [
+                          "valueExpression"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "minItems": 1,
+                      "maxItems": 1,
+                      "description": "Exactly one heatmap series"
+                    },
+                    "where": {
+                      "type": "string",
+                      "default": "",
+                      "description": "Row-level filter applied before bucketing. Example: \"level:error\""
+                    },
+                    "whereLanguage": {
+                      "$ref": "#/properties/tiles/items/anyOf/0/properties/config/properties/select/items/properties/whereLanguage",
+                      "default": "lucene"
+                    },
+                    "numberFormat": {
+                      "$ref": "#/properties/tiles/items/anyOf/0/properties/config/properties/select/items/properties/numberFormat",
+                      "description": "Display formatting for bucket values. Example: { output: \"duration\", factor: 0.000000001 } to format nanosecond durations as human-readable time."
+                    }
+                  },
+                  "required": [
+                    "displayType",
+                    "sourceId",
+                    "select"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "name",
+                "config"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/name"
+                },
+                "x": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/x"
+                },
+                "y": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/y"
+                },
+                "w": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/w"
+                },
+                "h": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/h"
+                },
+                "id": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/id"
+                },
+                "containerId": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/containerId"
+                },
+                "tabId": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/tabId"
+                },
+                "config": {
+                  "type": "object",
+                  "properties": {
+                    "displayType": {
+                      "type": "string",
+                      "const": "search",
+                      "description": "Log/event search results list"
+                    },
+                    "sourceId": {
+                      "type": "string",
+                      "description": "Source ID \u2013 call clickstack_list_sources"
+                    },
+                    "where": {
+                      "type": "string",
+                      "default": "",
+                      "description": "Filter in Lucene syntax. Example: \"level:error\""
+                    },
+                    "whereLanguage": {
+                      "$ref": "#/properties/tiles/items/anyOf/0/properties/config/properties/select/items/properties/whereLanguage",
+                      "default": "lucene"
+                    },
+                    "select": {
+                      "type": "string",
+                      "default": "",
+                      "description": "Columns to display (empty = defaults). Example: \"body,service.name,duration\""
+                    }
+                  },
+                  "required": [
+                    "displayType",
+                    "sourceId"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "name",
+                "config"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/name"
+                },
+                "x": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/x"
+                },
+                "y": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/y"
+                },
+                "w": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/w"
+                },
+                "h": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/h"
+                },
+                "id": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/id"
+                },
+                "containerId": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/containerId"
+                },
+                "tabId": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/tabId"
+                },
+                "config": {
+                  "type": "object",
+                  "properties": {
+                    "displayType": {
+                      "type": "string",
+                      "const": "event_patterns",
+                      "description": "Event pattern mining tile"
+                    },
+                    "sourceId": {
+                      "type": "string",
+                      "description": "Source ID \u2013 call clickstack_list_sources"
+                    },
+                    "where": {
+                      "type": "string",
+                      "default": "",
+                      "description": "Filter in Lucene syntax. Example: \"level:error\""
+                    },
+                    "whereLanguage": {
+                      "$ref": "#/properties/tiles/items/anyOf/0/properties/config/properties/select/items/properties/whereLanguage",
+                      "default": "lucene"
+                    },
+                    "select": {
+                      "type": "string",
+                      "default": "",
+                      "description": "Pattern expression \u2014 column or expression to mine patterns from. Leave empty to use the source default (Body for logs, SpanName for traces). Example: \"Body\", \"SpanName\", \"SpanAttributes['http.url']\""
+                    }
+                  },
+                  "required": [
+                    "displayType",
+                    "sourceId"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "name",
+                "config"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/name"
+                },
+                "x": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/x"
+                },
+                "y": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/y"
+                },
+                "w": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/w"
+                },
+                "h": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/h"
+                },
+                "id": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/id"
+                },
+                "containerId": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/containerId"
+                },
+                "tabId": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/tabId"
+                },
+                "config": {
+                  "type": "object",
+                  "properties": {
+                    "displayType": {
+                      "type": "string",
+                      "const": "markdown",
+                      "description": "Free-form Markdown text tile"
+                    },
+                    "markdown": {
+                      "type": "string",
+                      "default": ""
+                    }
+                  },
+                  "required": [
+                    "displayType"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "name",
+                "config"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/name"
+                },
+                "x": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/x"
+                },
+                "y": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/y"
+                },
+                "w": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/w"
+                },
+                "h": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/h"
+                },
+                "id": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/id"
+                },
+                "containerId": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/containerId"
+                },
+                "tabId": {
+                  "$ref": "#/properties/tiles/items/anyOf/0/properties/tabId"
+                },
+                "config": {
+                  "type": "object",
+                  "properties": {
+                    "configType": {
+                      "type": "string",
+                      "const": "sql",
+                      "description": "Must be \"sql\" for raw SQL tiles. ADVANCED: Only use raw SQL tiles when the builder tile types cannot express the query you need."
+                    },
+                    "displayType": {
+                      "type": "string",
+                      "enum": [
+                        "line",
+                        "stacked_bar",
+                        "table",
+                        "number",
+                        "pie",
+                        "bar"
+                      ],
+                      "description": "How to render the SQL results"
+                    },
+                    "connectionId": {
+                      "type": "string",
+                      "description": "Connection ID (not sourceId) \u2013 call clickstack_list_sources to find available connections"
+                    },
+                    "sourceId": {
+                      "type": "string",
+                      "description": "Source ID for the table this query reads from (call clickstack_list_sources). ALWAYS set this for raw SQL tiles UNLESS the query reads from multiple tables (e.g. JOINs or sub-queries spanning several sources), in which case omit it. sourceId is REQUIRED by two macros: $__filters and $__sourceTable. The sourceId must belong to the same connection as connectionId."
+                    },
+                    "sqlTemplate": {
+                      "type": "string",
+                      "description": "\nRaw ClickHouse SQL query. SQL guidelines:\n\n1. ALWAYS include a LIMIT clause to avoid excessive data.\n2. ALWAYS include a date/time filter in the WHERE clause using either macros or raw parameters to ensure the chart responds to user selected time range.\n    - $__timeFilter(col) expands to col >= toDateTime(fromUnixTimestamp64Milli({startDateMilliseconds:Int64})) AND col <= toDateTime(fromUnixTimestamp64Milli({endDateMilliseconds:Int64}))\n    - $__timeFilter_ms(col) is the same but should be used when col has millisecond precision (DateTime64 type)\n    - $__dateFilter(col) is the same but should be used when col has Day granularity (Date type)\n    - $__dateTimeFilter(dateCol, dateTimeCol) should be used when there are both Date and DateTime columns that should be filtered on.\n    - NEVER hardcode a fixed time range unless the user specifically asks for it.\n    - $__fromTime and $__toTime can be expanded to {startDateMilliseconds:Int64} and {endDateMilliseconds:Int64}, but prefer the full filter macros for readability.\n3. ALWAYS include a granularity macro or parameter for time series (line or bar charts) to ensure the chart's granularity responds to user selected time bucket size.\n    - $__timeInterval(col) expands to toStartOfInterval(TimestampTime, INTERVAL {intervalSeconds:Int64} second)\n    - $__interval_s expands to {intervalSeconds:Int64}\n    - These macros are only available for time-series charts; do not use them for other display types.\n4. STRONGLY RECOMMENDED: use the $__filters and $__sourceTable macros to ensure the tile reacts to dashboard-level filters and source selectors.\n    - $__filters and $__sourceTable both require sourceId to be set on this tile.\n\nExample:\n\nSELECT\n  $__timeInterval(TimestampTime) AS ts,\n  count()\nFROM $__sourceTable\nWHERE $__timeFilter(TimestampTime)\n  AND $__filters\nGROUP BY ServiceName, ts\n"
+                    },
+                    "fillNulls": {
+                      "type": "boolean"
+                    },
+                    "alignDateRangeToGranularity": {
+                      "type": "boolean"
+                    },
+                    "numberFormat": {
+                      "$ref": "#/properties/tiles/items/anyOf/0/properties/config/properties/select/items/properties/numberFormat",
+                      "description": "Controls how the number value(s) are formatted for display. Applies to series or numbers without a series-level numberFormat. Most useful: { output: \"duration\", factor: 0.000000001 } to auto-format nanosecond durations, or { output: \"number\", mantissa: 2, thousandSeparated: true } for clean counts."
+                    },
+                    "compareToPreviousPeriod": {
+                      "type": "boolean",
+                      "description": "Overlay the previous period as a dashed comparison series. Valid only when displayType is \"line\", ignored otherwise."
+                    },
+                    "fitYAxisToData": {
+                      "type": "boolean",
+                      "description": "Scale the y-axis to the data range instead of starting at zero. Valid only when displayType is \"line\", ignored otherwise."
+                    },
+                    "color": {
+                      "$ref": "#/properties/tiles/items/anyOf/3/properties/config/properties/color",
+                      "description": "Static color for the displayed number, as a palette token such as \"chart-blue\" or \"chart-success\". Valid only when displayType is \"number\", ignored otherwise. Raw SQL number tiles do not support conditional colorRules."
+                    },
+                    "onClick": {
+                      "$ref": "#/properties/tiles/items/anyOf/2/properties/config/properties/onClick",
+                      "description": "Row-click navigation for tiles that render as tables (Table tiles always; SQL tiles only when displayType is \"table\"). type=\"search\" links to the /search page for a log/trace source; type=\"dashboard\" links to another dashboard; type=\"external\" links to an arbitrary external http(s) URL. All support Handlebars `{{column}}` templating against the clicked row for the target/url, whereTemplate, and filter values.\n\nExamples:\n1. Drill into search for the clicked service: \n   { \"type\": \"search\", \"target\": { \"mode\": \"id\", \"id\": \"<trace-source-id>\" }, \"whereLanguage\": \"sql\", \"filters\": [{ \"kind\": \"expressionTemplate\", \"expression\": \"ServiceName\", \"template\": \"{{ServiceName}}\" }] }\n2. Drill into a per-service dashboard: \n   { \"type\": \"dashboard\", \"target\": { \"mode\": \"id\", \"id\": \"<dashboard-id>\" }, \"whereLanguage\": \"sql\", \"filters\": [{ \"kind\": \"expressionTemplate\", \"expression\": \"ServiceName\", \"template\": \"{{ServiceName}}\" }] }\n3. Resolve the destination from the row (rare; prefer mode=\"id\"): \n   { \"type\": \"dashboard\", \"target\": { \"mode\": \"template\", \"template\": \"{{TargetDashboardName}}\" }, \"whereLanguage\": \"lucene\" }\n4. Link out to an external tool: \n   { \"type\": \"external\", \"urlTemplate\": \"https://grafana.example.com/d/abc?var-service={{ServiceName}}\" }"
+                    }
+                  },
+                  "required": [
+                    "configType",
+                    "displayType",
+                    "connectionId",
+                    "sqlTemplate"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "name",
+                "config"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "description": "Array of dashboard tiles. Each tile needs a name, optional layout (x/y/w/h), and a config block. The config block varies by displayType \u2013 use clickstack_list_sources for sourceId and connectionId values.\n\nExample tiles:\n1. Line chart: { \"name\": \"Error Rate\", \"config\": { \"displayType\": \"line\", \"sourceId\": \"<from list_sources>\", \"groupBy\": \"ResourceAttributes['service.name']\", \"select\": [{ \"aggFn\": \"count\", \"where\": \"StatusCode:STATUS_CODE_ERROR\", \"alias\": \"Errors\" }] } }\n2. Table: { \"name\": \"Top Endpoints\", \"config\": { \"displayType\": \"table\", \"sourceId\": \"<from list_sources>\", \"groupBy\": \"SpanAttributes['http.route']\", \"select\": [{ \"aggFn\": \"count\", \"alias\": \"Requests\" }, { \"aggFn\": \"avg\", \"valueExpression\": \"Duration\", \"alias\": \"Avg Duration\", \"numberFormat\": { \"output\": \"duration\", \"factor\": 0.000000001 } }] } }\n   (per-series numberFormat lets one column render as a duration while a sibling count column stays a plain number)\n3. Number: { \"name\": \"Total Requests\", \"config\": { \"displayType\": \"number\", \"sourceId\": \"<from list_sources>\", \"select\": [{ \"aggFn\": \"count\", \"alias\": \"Requests\" }], \"numberFormat\": { \"output\": \"number\", \"average\": true } } }\n4. Number (duration): { \"name\": \"P95 Latency\", \"config\": { \"displayType\": \"number\", \"sourceId\": \"<from list_sources>\", \"select\": [{ \"aggFn\": \"quantile\", \"level\": 0.95, \"valueExpression\": \"Duration\", \"alias\": \"P95 Latency\" }], \"numberFormat\": { \"output\": \"duration\", \"factor\": 0.000000001 } } }\n5. Heatmap: { \"name\": \"Latency Heatmap\", \"config\": { \"displayType\": \"heatmap\", \"sourceId\": \"<from list_sources, must be a Trace source>\", \"select\": [{ \"valueExpression\": \"Duration\" }], \"numberFormat\": { \"output\": \"duration\", \"factor\": 0.000000001 } } }"
+      },
+      "tags": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "maxItems": 50,
+        "description": "Dashboard tags. Up to 50 tags, each at most 32 characters."
+      },
+      "containers": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "title": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "collapsed": {
+              "type": "boolean"
+            },
+            "collapsible": {
+              "type": "boolean"
+            },
+            "bordered": {
+              "type": "boolean"
+            },
+            "tabs": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  },
+                  "title": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  }
+                },
+                "required": [
+                  "id",
+                  "title"
+                ],
+                "additionalProperties": false
+              },
+              "maxItems": 20
+            }
+          },
+          "required": [
+            "id",
+            "title",
+            "collapsed"
+          ],
+          "additionalProperties": false
+        },
+        "maxItems": 50,
+        "description": "Optional dashboard organization layer. Each container groups one or more tiles visually and may carry a tab bar. Tiles join a container by setting tile.containerId; tiles further select a tab by setting tile.tabId.\n\nRules:\n- Container ids must be unique on the dashboard.\n- Tab ids must be unique within a container.\n- A tile.containerId must reference a container id in this array.\n- A tile.tabId must reference a tab id on the same container.\n- tile.tabId requires tile.containerId.\n\nContainer shape: { id, title, collapsed, collapsible?, bordered?, tabs? }. `collapsed` is required. `collapsible` and `bordered` are optional and persisted absent when omitted; the renderer treats absence as true. Two or more tabs render as a tab bar; zero or one tab renders as a plain group header.\n\nExample:\n[\n  { \"id\": \"service-health\", \"title\": \"Service Health\", \"collapsed\": false,\n    \"tabs\": [ { \"id\": \"errors\", \"title\": \"Errors\" }, { \"id\": \"latency\", \"title\": \"Latency\" } ] },\n  { \"id\": \"overview\", \"title\": \"Overview\", \"collapsed\": true }\n]"
+      },
+      "filters": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "Filter identity. On UPDATE of an existing dashboard, every filter in the array MUST carry an id: pass the exact id returned by clickstack_get_dashboard for any filter you are keeping (so saved values bound to it stay attached), and generate a fresh random hex/ObjectId string for any filter you are adding in this update. Omitting `id` on an existing filter would orphan its saved values; reusing an existing id for a new filter would silently overwrite the old one. On CREATE (no top-level `id` on the dashboard call), filter `id` may be omitted and one will be generated server-side."
+            },
+            "type": {
+              "type": "string",
+              "enum": [
+                "QUERY_EXPRESSION"
+              ],
+              "description": "Filter type. Currently only \"QUERY_EXPRESSION\" is supported."
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Human-readable filter label shown in the dashboard filter bar dropdown."
+            },
+            "expression": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Column or SQL expression this filter binds to. Example: \"ServiceName\" or \"SpanAttributes['http.method']\". IMPORTANT: This is the key that table-tile onClick filters match against when a row click navigates here. An onClick filter whose `expression` is not declared in any of this dashboard's filters is silently dropped at click time. Declare an expression here for every column you plan to drive via row-click."
+            },
+            "sourceId": {
+              "$ref": "#/properties/id",
+              "description": "Source the filter values are pulled from (for the dropdown). Get IDs from clickstack_list_sources."
+            },
+            "sourceMetricType": {
+              "type": "string",
+              "enum": [
+                "gauge",
+                "histogram",
+                "sum",
+                "summary",
+                "exponential histogram"
+              ],
+              "description": "Required only when `sourceId` is a Metric source; picks which metric table the dropdown values come from."
+            },
+            "where": {
+              "type": "string",
+              "description": "Optional WHERE clause scoping the dropdown values (e.g. \"level:error\" in Lucene)."
+            },
+            "whereLanguage": {
+              "$ref": "#/properties/tiles/items/anyOf/0/properties/config/properties/select/items/properties/whereLanguage",
+              "description": "Filter language for `where` (\"lucene\" or \"sql\"). Optional, but set it explicitly."
+            },
+            "appliesToSourceIds": {
+              "type": "array",
+              "items": {
+                "$ref": "#/properties/id"
+              },
+              "description": "Optional list of source IDs that this filter is applied to. Omit (or pass `undefined`) to apply the filter to ALL tiles regardless of source \u2014 this is the recommended default. A non-empty array restricts the filter to only tiles whose source ID is in the list; tiles on other sources are not affected by the dropdown value at all. Useful on mixed-source dashboards where a column (e.g. SpanName) only exists on a subset of sources."
+            }
+          },
+          "required": [
+            "type",
+            "name",
+            "expression",
+            "sourceId"
+          ],
+          "additionalProperties": false,
+          "description": "A dashboard-level filter the user can adjust in the dashboard filter bar. Each filter binds a label/name to a column expression on a source. Filters are also the contract for row-click navigation: a table tile's onClick.filters[i].expression must match a filter declared here for the value to land."
+        },
+        "description": "Optional dashboard-level filters. These define the dropdowns in the dashboard filter bar AND the expressions that table-tile row-click navigation can populate. If another tile's onClick targets THIS dashboard with `filters: [{ expression: \"X\", ... }]`, this array MUST declare a filter whose `expression` is \"X\". Otherwise the value is dropped on arrival and the destination opens unfiltered.\n\nBy default a filter applies to every tile on the dashboard. On mixed-source dashboards, use the optional `appliesToSourceIds` field to restrict a filter to only the tiles whose source carries the referenced column \u2014 leave `appliesToSourceIds` omitted to keep the broadcast-to-all-tiles default.\n\nExample (broadcast to every tile):\n[\n  { \"type\": \"QUERY_EXPRESSION\", \"name\": \"Service\", \"expression\": \"ServiceName\",\n    \"sourceId\": \"<trace-source-id>\", \"whereLanguage\": \"sql\" }\n]\n\nExample (scoped on a mixed log/trace/metric dashboard):\n[\n  { \"type\": \"QUERY_EXPRESSION\", \"name\": \"Service\", \"expression\": \"SpanName\",\n    \"sourceId\": \"<trace-source-id>\", \"whereLanguage\": \"sql\",\n    \"appliesToSourceIds\": [\"<trace-source-id>\"] }\n]"
+      }
+    },
+    "required": [
+      "name",
+      "tiles"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+}

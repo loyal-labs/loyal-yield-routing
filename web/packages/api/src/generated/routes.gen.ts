@@ -18,7 +18,9 @@ export type Get = {
   "/api/smart-accounts/earn-forecast/summary": Types.EarnForecastSummaryResponse;
   "/api/smart-accounts/earn-max/activity": Types.EarnMaxActivity;
   "/api/smart-accounts/earn-max/invite": Types.InviteStatus;
+  "/api/smart-accounts/earn-max/release-controls": Types.ReleaseControlsView;
   "/api/smart-accounts/earn-max/summary": Types.EarnMaxSummaryResponse;
+  "/api/smart-accounts/earn-max/withdrawal-consent": Types.WithdrawalConsentView;
   "/api/smart-accounts/earn-transactions": Types.EarnTransactionsResponse;
   "/api/smart-accounts/mobile/earn-max": Types.MobileEarnMaxResponse;
   "/api/smart-accounts/mobile/earn/autodeposit/state": Types.MobileEarnAutodepositStateResponse;
@@ -58,7 +60,10 @@ export type Post = {
   "/api/push/mixpanel-cohort": Types.CampaignAck;
   "/api/referrals/claim": Types.ReferralClaim;
   "/api/smart-accounts/earn-max/context": Types.EarnMaxContextResponse;
+  "/api/smart-accounts/earn-max/deposit-quote": Types.DepositQuote;
   "/api/smart-accounts/earn-max/invite": Types.InviteStatus;
+  "/api/smart-accounts/earn-max/withdrawal-claim-attempt": Types.WithdrawalAttemptOutputBody;
+  "/api/smart-accounts/earn-max/withdrawal-consent": Types.WithdrawalApprovalOutputBody;
   "/api/smart-accounts/earn/session": Types.EarnSessionResponse;
   "/api/smart-accounts/yield-optimization/autodeposit/close/confirm": Types.AutodepositTargetResponse;
   "/api/smart-accounts/yield-optimization/autodeposit/floor/confirm": Types.AutodepositFloorConfirmResponse;

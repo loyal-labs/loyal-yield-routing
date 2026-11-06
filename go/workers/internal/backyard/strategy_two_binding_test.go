@@ -3,6 +3,7 @@ package backyard
 import (
 	"encoding/hex"
 	"testing"
+	"time"
 
 	"github.com/solana-foundation/solana-go/v2"
 )
@@ -12,12 +13,14 @@ func TestStrategyTwoBridgeLegsRespectPerExecutionCap(t *testing.T) {
 	digest := make([]byte, 32)
 	digest[0] = 1
 	request := func(action Action, amountRaw uint64) BridgeBuildRequest {
-		return BridgeBuildRequest{
+		r := BridgeBuildRequest{
 			Action: BridgeAction(action), AmountRaw: amountRaw, Policy: testPolicyAccount(policyKey{action: action}),
 			Report:        BridgeReport{Sequence: 100, ObservedSlot: 100, NAVAfterRaw: 1_000_000, SnapshotDigest: navDigest(hex.EncodeToString(digest))},
 			AdaptorConfig: bridgeStrategy, Settings: backyardSettings,
 			RecentBlockhash: bridgeVault, LastValidBlockHeight: 99,
 		}
+		r.net = &certifiedNAV{vault: rwa.squads, manifest: rwa.manifest.SHA256, slot: 100, report: r.Report, validUntil: time.Now().Add(exitQuoteInterval)}
+		return bindBridgeRequest(r)
 	}
 	for _, action := range []Action{VoltrAllocateToSquads, StageSquadsToVoltr, VoltrRestoreIdle} {
 		if _, err := CompileBridgeMessage(request(action, strategyTwoBridgeLegCapRaw)); err != nil {

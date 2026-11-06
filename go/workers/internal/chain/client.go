@@ -6,6 +6,7 @@ package chain
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -180,6 +181,46 @@ func (c *Client) Blockhash(ctx context.Context, commitment rpc.CommitmentType, m
 		return solana.Hash{}, 0, 0, errors.New("getLatestBlockhash: empty blockhash")
 	}
 	return out.Value.Blockhash, out.Value.LastValidBlockHeight, out.Context.Slot, nil
+}
+
+func (c *Client) QuotedMessageFee(ctx context.Context, message []byte, commitment rpc.CommitmentType, minContextSlot uint64) (fee, slot uint64, err error) {
+	if len(message) == 0 {
+		return 0, 0, errors.New("getFeeForMessage: empty message")
+	}
+	out, err := c.rpc.GetFeeForMessageWithOpts(ctx, base64.StdEncoding.EncodeToString(message), &rpc.GetFeeForMessageOpts{Commitment: commitment, MinContextSlot: atLeast(minContextSlot)})
+	if err != nil {
+		return 0, 0, failed("getFeeForMessage", err)
+	}
+	if out == nil || out.Value == nil || out.Context.Slot == 0 {
+		return 0, 0, errors.New("getFeeForMessage: fee or blockhash unavailable")
+	}
+	if out.Context.Slot < minContextSlot {
+		return 0, 0, fmt.Errorf("getFeeForMessage: %w", ErrBehind)
+	}
+	return *out.Value, out.Context.Slot, nil
+}
+
+func (c *Client) BlockhashValid(ctx context.Context, hash solana.Hash, commitment rpc.CommitmentType, minContextSlot uint64) (valid bool, slot uint64, err error) {
+	if hash.IsZero() {
+		return false, 0, errors.New("isBlockhashValid: zero blockhash")
+	}
+	var out *struct {
+		Context struct {
+			Slot uint64 `json:"slot"`
+		} `json:"context"`
+		Value *bool `json:"value"`
+	}
+	err = c.batch.CallForInto(ctx, &out, "isBlockhashValid", []any{hash, map[string]any{"commitment": commitment, "minContextSlot": minContextSlot}})
+	if err != nil {
+		return false, 0, failed("isBlockhashValid", err)
+	}
+	if out == nil || out.Value == nil || out.Context.Slot == 0 {
+		return false, 0, errors.New("isBlockhashValid: missing result")
+	}
+	if out.Context.Slot < minContextSlot {
+		return false, 0, fmt.Errorf("isBlockhashValid: %w", ErrBehind)
+	}
+	return *out.Value, out.Context.Slot, nil
 }
 
 // MessageFee is what the cluster charges for the compiled message: 5000 lamports

@@ -116,7 +116,7 @@ func TestRestartJournalRecoveryPrecedesFreshDecisions(t *testing.T) {
 			ambiguous.add("observe")
 			return Observation{}, nil
 		},
-		recordDecision: func(context.Context, string, Observation, Decision, string) (DecisionRecord, error) {
+		recordDecision: func(context.Context, string, Observation, Decision, string, *releaseRequest) (DecisionRecord, error) {
 			ambiguous.add("journal")
 			return DecisionRecord{}, nil
 		},
@@ -152,7 +152,7 @@ func TestRestartJournalRecoveryPrecedesFreshDecisions(t *testing.T) {
 			recovered.add("observe")
 			return tickObservation(Snapshot{ObservationID: "post-recovery", Slot: 11, RouteKind: RouteKind, Fresh: true}), nil
 		},
-		recordDecision: func(_ context.Context, _ string, _ Observation, decision Decision, _ string) (DecisionRecord, error) {
+		recordDecision: func(_ context.Context, _ string, _ Observation, decision Decision, _ string, _ *releaseRequest) (DecisionRecord, error) {
 			t.Fatalf("post-recovery hold wrote a journal row: %+v", decision)
 			return DecisionRecord{}, nil
 		},

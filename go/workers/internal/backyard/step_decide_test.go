@@ -108,7 +108,7 @@ func TestWorkerDispatchesAtomicStep(t *testing.T) {
 			order = append(order, "prepare")
 			return o, StepExecutionEvidence{Request: request}, nil
 		},
-		recordDecision: func(context.Context, string, Observation, Decision, string) (DecisionRecord, error) {
+		recordDecision: func(context.Context, string, Observation, Decision, string, *releaseRequest) (DecisionRecord, error) {
 			order = append(order, "record")
 			return DecisionRecord{OperationID: "local-step", Status: Decided}, nil
 		},
@@ -187,5 +187,32 @@ func TestStepNeverSpendsBridgeCash(t *testing.T) {
 	}
 	if st.debtBalance != 50_000_000 || st.heldDebt() != 0 {
 		t.Fatalf("OnRe step state: balance %d held %d", st.debtBalance, st.heldDebt())
+	}
+}
+
+func TestReleaseHoldNeverBlocksEmergencyDelever(t *testing.T) {
+	s := leverageExitSnapshot(autoAUTOPYUSD.Lane)
+	s.LTVBPS = 7000
+	o := tickObservation(s)
+	if Decide(s).Reason != hardLTVDeleverReason {
+		t.Fatal("fixture is not a hard-LTV delever")
+	}
+	built := false
+	worker := &Worker{routeKey: productionRouteKey, manifest: readyWorkerManifest(t), runtime: tickRuntime{
+		loadNonterminal: func(context.Context, string) (*PersistedOperation, error) { return nil, nil },
+		observe:         func(context.Context) (Observation, error) { return o, nil },
+		prepareStep: func(context.Context, RouteManifest, Decision, Observation) (Observation, StepExecutionEvidence, error) {
+			return o, StepExecutionEvidence{Request: StepRequest{Open: KaminoLegRequest{RouteLane: s.RouteLane}}}, nil
+		},
+		recordDecision: func(_ context.Context, _ string, _ Observation, _ Decision, _ string, release *releaseRequest) (DecisionRecord, error) {
+			if release != nil {
+				return DecisionRecord{}, staleHold("release_control_held")
+			}
+			return DecisionRecord{OperationID: "emergency", Status: Decided}, nil
+		},
+		build: func(context.Context, string, any, ExpectedEffects) error { built = true; return nil },
+	}}
+	if err := worker.Tick(context.Background()); err != nil || !built {
+		t.Fatalf("a release hold blocked emergency risk reduction: %v", err)
 	}
 }

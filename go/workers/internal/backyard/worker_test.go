@@ -29,6 +29,7 @@ func readyWorkerManifest(t *testing.T) RouteManifest {
 // names none), and its target is computed, a flat vault's Voltr idle entering
 // that lane under the selector's current quote.
 func tickObservation(snapshot Snapshot) Observation {
+	snapshot.net = fixtureSnapshotCertificate(snapshot)
 	if snapshot.RouteLane == "" {
 		snapshot.RouteLane, snapshot.StrategyKey = MapleSyrupUSDCLaneID, MapleSyrupUSDCLaneID
 	}
@@ -70,7 +71,7 @@ func TestTickRecordsBeforeBridgeBuildAndDispatchesExactAction(t *testing.T) {
 			}
 			return observation, BridgeExecutionEvidence{Request: BridgeBuildRequest{Action: BridgeAction(got.Action)}}, nil
 		},
-		recordDecision: func(_ context.Context, route string, _ Observation, got Decision, _ string) (DecisionRecord, error) {
+		recordDecision: func(_ context.Context, route string, _ Observation, got Decision, _ string, _ *releaseRequest) (DecisionRecord, error) {
 			order = append(order, "record")
 			if route != productionRouteKey || got != decision {
 				t.Fatalf("recorded route or decision drifted")
@@ -121,7 +122,7 @@ func TestTickBuildOnUnavailableRPCLeavesTheOperationDecided(t *testing.T) {
 		prepareBridge: func(_ context.Context, _ RouteManifest, d Decision, _ Observation) (Observation, BridgeExecutionEvidence, error) {
 			return observation, BridgeExecutionEvidence{Request: BridgeBuildRequest{Action: BridgeAction(d.Action)}}, nil
 		},
-		recordDecision: func(context.Context, string, Observation, Decision, string) (DecisionRecord, error) {
+		recordDecision: func(context.Context, string, Observation, Decision, string, *releaseRequest) (DecisionRecord, error) {
 			return DecisionRecord{OperationID: "operation", Status: Decided}, nil
 		},
 		build: func(context.Context, string, any, ExpectedEffects) error {
@@ -164,7 +165,7 @@ func TestTickHoldsUtilizationWithoutPreparingBorrow(t *testing.T) {
 			t.Fatal("utilization-blocked reserve attempted to prepare another borrow")
 			return Observation{}, KaminoExecutionEvidence{}, nil
 		},
-		recordDecision: func(context.Context, string, Observation, Decision, string) (DecisionRecord, error) {
+		recordDecision: func(context.Context, string, Observation, Decision, string, *releaseRequest) (DecisionRecord, error) {
 			recorded = true
 			return DecisionRecord{}, nil
 		},
@@ -279,7 +280,7 @@ func TestWorkerRetriesPreparationBeforeRecordingOrBuilding(t *testing.T) {
 			}
 			return tickObservation(actionable), BridgeExecutionEvidence{}, nil
 		},
-		recordDecision: func(context.Context, string, Observation, Decision, string) (DecisionRecord, error) {
+		recordDecision: func(context.Context, string, Observation, Decision, string, *releaseRequest) (DecisionRecord, error) {
 			records++
 			return DecisionRecord{Status: Decided, OperationID: "operation"}, nil
 		},
@@ -327,7 +328,7 @@ func TestTickAdvancesOnlyItsDurablySignedWireWithoutPollDelay(t *testing.T) {
 				prepareBridge: func(context.Context, RouteManifest, Decision, Observation) (Observation, BridgeExecutionEvidence, error) {
 					return o, BridgeExecutionEvidence{}, nil
 				},
-				recordDecision: func(context.Context, string, Observation, Decision, string) (DecisionRecord, error) {
+				recordDecision: func(context.Context, string, Observation, Decision, string, *releaseRequest) (DecisionRecord, error) {
 					return DecisionRecord{OperationID: "report-op", Status: Decided}, nil
 				},
 				build: func(context.Context, string, any, ExpectedEffects) error {

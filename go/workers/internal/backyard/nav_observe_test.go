@@ -382,8 +382,8 @@ func TestComputeRouteNAVRejectsOverflowNegativeNAVAndReceiptDrift(t *testing.T) 
 	t.Run("negative NAV", func(t *testing.T) {
 		accounts := routeNAVFixture(t, 77)
 		accounts[6] = obligationFixture(t, 77, 10, 100)
-		if _, err := ComputeRouteNAV(77, accounts, manifest, nil); err == nil || !strings.Contains(err.Error(), "underflow") {
-			t.Fatalf("negative NAV accepted: %v", err)
+		if nav, err := ComputeRouteNAV(77, accounts, manifest, nil); err != nil || nav.net != nil || nav.PositionDebtValue == 0 {
+			t.Fatalf("negative net lost risk book or certified: %v %+v", err, nav)
 		}
 	})
 	t.Run("receipt binding", func(t *testing.T) {
@@ -446,7 +446,7 @@ func TestRouteNAVEntryBelowMarkIsFlat(t *testing.T) {
 	route, cash := onreEntryNAVFixture(t, 1_000_000_000, 0)
 	var mark kamino.ScaledFraction
 	putScaledFraction(mark[:], new(big.Int).Quo(new(big.Int).Mul(big.NewInt(11_558), new(big.Int).Lsh(big.NewInt(1), 60)), big.NewInt(10_000)))
-	exits := exitCosts{route.Lane: {Quote: &ExitCost{Lane: route.Lane, BPS: 18_500_000, QuotedCollateralRaw: 866_701_334_720, MarkSF: mark, Source: exitCostQuote, Slot: 77, At: time.Unix(kaminoFixtureUnix, 0)}}}
+	exits := exitCosts{route.Lane: {Quote: &ExitCost{Lane: route.Lane, BPS: 18_500_000, QuotedCollateralRaw: 866_701_334_720, MarkSF: mark, Source: exitCostQuote, Slot: 77, At: time.Now().UTC(), scope: &exitQuoteScope{vault: manifest.vault.squads, manifest: manifest.SHA256, usdc: kaminoOne(), path: route.Kamino.CollateralMint + ":" + fleet.USDCMint}}}}
 	before, err := ComputeRouteNAVForRoutes(77, cash, manifest, nil, []RuntimeRoute{route}, exits)
 	if err != nil || before.StrategyNAVRaw != 1_000_000_000 {
 		t.Fatalf("cash book: %d %v", before.StrategyNAVRaw, err)
@@ -472,7 +472,7 @@ func TestFirstTickValuesUnseededLane(t *testing.T) {
 			recorded = append(recorded, c.Lane)
 			return true, nil
 		},
-		now: func() time.Time { return time.Unix(kaminoFixtureUnix, 0).UTC() },
+		now: func() time.Time { return time.Now().UTC() },
 	}
 	o, _, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), manifest, routeObservationRuntime{state: testVaultState, inputs: targetInputs{ExitCosts: exitCosts{}},
 		read:             fixtureBatchRuntime(77, accounts),
@@ -495,7 +495,7 @@ func TestUnpricedLaneHoldsOnlyItsVault(t *testing.T) {
 			return ExitCost{}, fmt.Errorf("jupiter unavailable")
 		},
 		record: func(context.Context, ExitCost) (bool, error) { return true, nil },
-		now:    func() time.Time { return time.Unix(kaminoFixtureUnix, 0).UTC() },
+		now:    func() time.Time { return time.Now().UTC() },
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	var observeErr error
@@ -510,8 +510,7 @@ func TestUnpricedLaneHoldsOnlyItsVault(t *testing.T) {
 		return observeErr
 	}
 	err := (&Worker{wake: make(chan struct{}, 1), interval: time.Hour}).runTicks(ctx, tick)
-	var hold *PreSendHold
-	if !errors.Is(err, context.Canceled) || !errors.As(observeErr, &hold) || holdCause(hold) != "exit_unpriced" {
+	if !errors.Is(err, context.Canceled) || observeErr != nil {
 		t.Fatalf("unpriced lane: worker stopped with %v, observation %v", err, observeErr)
 	}
 }
@@ -530,14 +529,14 @@ func TestDustLaneWithoutExitCostDoesNotHoldVault(t *testing.T) {
 		custody.Owner = route.CollateralTokenProgram
 		upsertConfirmedAccount(accounts, custody)
 	})
-	costs := fixtureExitCosts()
+	costs := fixtureExitCosts(manifest, 77, accounts)
 	delete(costs, onreONycUSDC)
 	quoter := &exitQuoter{
 		price: func(context.Context, heldExitBasis, int64, time.Time) (ExitCost, error) {
 			return ExitCost{}, fmt.Errorf("jupiter refuses dust")
 		},
 		record: func(context.Context, ExitCost) (bool, error) { return true, nil },
-		now:    func() time.Time { return time.Unix(kaminoFixtureUnix, 0).UTC() },
+		now:    func() time.Time { return time.Now().UTC() },
 	}
 	o, _, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), manifest, routeObservationRuntime{state: testVaultState, inputs: targetInputs{ExitCosts: costs},
 		read:             fixtureBatchRuntime(77, accounts),
@@ -567,7 +566,7 @@ func TestIdleOnlyLaneWithoutObligationIsQuoted(t *testing.T) {
 		custody.Owner = route.CollateralTokenProgram
 		upsertConfirmedAccount(accounts, custody)
 	})
-	costs := fixtureExitCosts()
+	costs := fixtureExitCosts(manifest, 77, accounts)
 	delete(costs, onreONycUSDC)
 	var recorded []string
 	quoter := &exitQuoter{
@@ -578,7 +577,7 @@ func TestIdleOnlyLaneWithoutObligationIsQuoted(t *testing.T) {
 			recorded = append(recorded, c.Lane)
 			return true, nil
 		},
-		now: func() time.Time { return time.Unix(kaminoFixtureUnix, 0).UTC() },
+		now: func() time.Time { return time.Now().UTC() },
 	}
 	o, _, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), manifest, routeObservationRuntime{state: testVaultState, inputs: targetInputs{ExitCosts: costs},
 		read:             fixtureBatchRuntime(77, accounts),
@@ -590,7 +589,7 @@ func TestIdleOnlyLaneWithoutObligationIsQuoted(t *testing.T) {
 		t.Fatalf("idle-only lane with no obligation held the vault: %v", err)
 	}
 	// A formerly free AUTO exit cannot suppress its newly priced cost as an outlier.
-	if o.Snapshot.StrategyNAVRaw != 33_968_010 || o.Snapshot.ExitLiabilityRaw != 32_000 || !slices.Contains(recorded, onreONycUSDC) {
+	if o.Snapshot.StrategyNAVRaw != 33_998_010 || o.Snapshot.ExitLiabilityRaw != 2_000 || !slices.Contains(recorded, onreONycUSDC) {
 		t.Fatalf("idle-only lane NAV %d exit %d recorded %v, want 33968010, 32000 and an OnRe quote", o.Snapshot.StrategyNAVRaw, o.Snapshot.ExitLiabilityRaw, recorded)
 	}
 }

@@ -7,19 +7,12 @@ import {
   earnMaxPendingMessage,
   earnMaxPendingSubtitle,
   earnMaxWithdrawalPending,
+  earnMaxWithdrawalCostView,
+  formatEarnMaxWithdrawalAmount,
   formatEarnMaxApyLabel,
 } from "@loyal-labs/shared";
-import {
-  CircleCheck,
-  Clock3,
-  Infinity as InfinityIcon,
-} from "lucide-react";
-import {
-  useEffect,
-  useLayoutEffect,
-  useRef,
-  useState,
-} from "react";
+import { CircleCheck, Clock3, Infinity as InfinityIcon } from "lucide-react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import {
   HistoricalApyChart,
@@ -89,7 +82,6 @@ import { useAuthCapability } from "@/lib/auth/capability";
 
 const ASSET_BASE = "/wallet-workspace/facelift";
 
-
 function usdcRawLabel(amountRaw: string): string {
   return `${formatEarnMaxUsdcAmount(amountRaw)} USDC`;
 }
@@ -124,11 +116,14 @@ export function isEarnMaxUntouched(view: EarnMaxViewModel): boolean {
     !view.isLoading &&
     view.balanceUsd <= 0 &&
     view.activity.length === 0 &&
+    !(view.recoverableUsdcRaw && BigInt(view.recoverableUsdcRaw) > BigInt(0)) &&
     !view.withdrawal
   );
 }
 
-export function buildEarnMaxEarnedBars(view: EarnMaxViewModel): EarnedChartBar[] {
+export function buildEarnMaxEarnedBars(
+  view: EarnMaxViewModel,
+): EarnedChartBar[] {
   return (view.earnings?.days ?? []).map((day) => ({
     apyBps: null,
     earnedUsd: day.performanceUsd,
@@ -148,9 +143,7 @@ export function buildEarnMaxEarnedBars(view: EarnMaxViewModel): EarnedChartBar[]
 // daily APY series from the public read, one point per sample as served.
 // Fewer than two points render the chart's empty state; an undefined sample
 // list would plot Earn's own history under the MAX label.
-function buildEarnMaxApySamples(
-  apy: EarnMaxApy | null
-): HistoricalApySample[] {
+function buildEarnMaxApySamples(apy: EarnMaxApy | null): HistoricalApySample[] {
   const samples = (apy?.history ?? []).map((point) => ({
     apyPercent: point.apyBps / 100,
     observedAtMs: Date.parse(point.observedAt),
@@ -205,6 +198,103 @@ function GroupHeaderWithIcon({
 
 const TRANSACTIONS_LIMIT = 5;
 
+function WithdrawalApproval({
+  actions,
+  view,
+}: {
+  actions: EarnMaxActions;
+  view: EarnMaxViewModel;
+}) {
+  const [minimum, setMinimum] = useState("");
+  const [fee, setFee] = useState("");
+  const [inputError, setInputError] = useState<string | null>(null);
+  const approval = view.withdrawalApproval;
+  useEffect(() => { setMinimum(""); setFee(""); setInputError(null); }, [approval?.generationKey]);
+  const exactUsdc = (raw: string) => formatEarnMaxWithdrawalAmount(raw,"USDC") ?? "Unavailable";
+  if (!approval || !actions.approveWithdrawal) return null;
+  const costStatus=approval.costStatus;
+  const costs=earnMaxWithdrawalCostView({status:costStatus??null,approved:approval.approvedReferenceRaw && approval.floorRaw && approval.approvedFeeLamports ? {referenceUsdcRaw:approval.approvedReferenceRaw,minClaimUsdcRaw:approval.floorRaw,maxUserFeeLamports:approval.approvedFeeLamports}:null});
+  const parse = (text: string, decimals: number) => {
+    if (!new RegExp(`^\\d+(?:\\.\\d{1,${decimals}})?$`).test(text))
+      throw new Error("Enter a valid amount.");
+    const [whole, fraction = ""] = text.split(".");
+    return (
+      BigInt(whole) * BigInt(10) ** BigInt(decimals) +
+      BigInt(fraction.padEnd(decimals, "0"))
+    );
+  };
+  return (
+    <form
+      className="flex flex-col gap-2 px-4 py-3"
+      onSubmit={(event) => {
+        event.preventDefault();
+        try {
+          const floor = parse(minimum, 6);
+          const maxFee = parse(fee, 9);
+          setInputError(null);
+          void actions.approveWithdrawal?.(floor, maxFee);
+        } catch (error) {
+          setInputError(
+            error instanceof Error ? error.message : "Enter valid amounts.",
+          );
+        }
+      }}
+    >
+      <p className="text-[13px] text-muted-foreground">
+        {approval.reason === "waiting_price"
+          ? "Waiting for your approved minimum. You can wait or approve a lower amount."
+          : approval.reason === "expired"
+            ? "Your approval expired. A claim you already signed may still finish. Review and approve before signing again."
+            : approval.floorRaw
+              ? approval.reason === "needs_consent" ? "Withdrawal protection changed. Review and approve a minimum again." : `Approved minimum: ${exactUsdc(approval.floorRaw)}.`
+              : "Approve a minimum USDC amount to continue your withdrawal."}
+      </p>
+      <p className="text-[13px] text-muted-foreground">
+        Current withdrawal value: {exactUsdc(approval.referenceRaw)}.
+      </p>
+      {approval.floorRaw ? <div className="flex flex-col gap-2"><dl aria-label="Withdrawal costs" className="text-[12px] text-muted-foreground">{costs.rows.map(({label,value})=><div className="flex justify-between gap-3 py-0.5" key={label}><dt>{label}</dt><dd className="text-right">{value ?? "Unavailable"}</dd></div>)}</dl><p className="text-[12px] text-muted-foreground">The operator pays its own network fees. Your claim fees are shown separately.</p>{!costStatus ? <p className="text-[12px] text-muted-foreground">Cost status is unavailable. Check status before signing again.</p>:costStatus.unknownReason ? <p className="text-[12px] text-muted-foreground">Some costs are awaiting confirmation. The remaining allowance is unavailable.</p>:null}{costStatus?.claimPending ? <p className="text-[12px] text-muted-foreground">A claim you signed is pending and may still finish under that approval.</p>:null}</div>:null}
+      <label className="text-[13px]">
+        Minimum USDC to receive
+        <input
+          aria-label="Minimum USDC to receive"
+          className="mt-1 w-full rounded-xl bg-accent px-3 py-2"
+          inputMode="decimal"
+          onChange={(event) => setMinimum(event.target.value)}
+          required
+          value={minimum}
+        />
+      </label>
+      <label className="text-[13px]">
+        Maximum network fees (SOL)
+        <input
+          aria-label="Maximum network fees in SOL"
+          className="mt-1 w-full rounded-xl bg-accent px-3 py-2"
+          inputMode="decimal"
+          onChange={(event) => setFee(event.target.value)}
+          required
+          value={fee}
+        />
+      </label>
+      <p className="text-[12px] text-muted-foreground">
+        Failed attempts can charge network fees. A claim you already signed may
+        finish under its earlier approval. A new minimum needs a new wallet approval.
+      </p>
+      {inputError ? (
+        <p role="alert" className="text-[13px]">
+          {inputError}
+        </p>
+      ) : null}
+      <button
+        className="self-start rounded-full bg-accent px-4 py-2 text-[13px] disabled:opacity-40"
+        disabled={view.isBusy}
+        type="submit"
+      >
+        Approve minimum
+      </button>
+    </form>
+  );
+}
+
 function minutesLeftLabel(readyBy: string): string {
   const msLeft = new Date(readyBy).getTime() - Date.now();
   if (!Number.isFinite(msLeft) || msLeft <= 0) {
@@ -229,9 +319,7 @@ function EarnMaxActivityCard({
   view: EarnMaxViewModel;
 }) {
   const { isBalanceHidden } = useBalanceVisibility();
-  const [tab, setTab] = useState<"Positions" | "Transactions">(
-    "Transactions"
-  );
+  const [tab, setTab] = useState<"Positions" | "Transactions">("Transactions");
 
   const tabContentRef = useRef<HTMLDivElement>(null);
   const outgoingHeightRef = useRef<number | null>(null);
@@ -272,11 +360,12 @@ function EarnMaxActivityCard({
         window.clearTimeout(resizeTimerRef.current);
       }
     },
-    []
+    [],
   );
   const { tabBarRef, underlineRef } = useUnderlineTabs(tab);
 
   const withdrawal = view.withdrawal;
+  const healthReason = withdrawal?.health && "reason" in withdrawal.health && typeof withdrawal.health.reason === "string" ? withdrawal.health.reason : null;
   const pending = earnMaxPending(withdrawal);
   const needsAttention = pending === "operator_attention";
   const groups: { items: EarnMaxActivityItem[]; label: string }[] = [];
@@ -335,7 +424,9 @@ function EarnMaxActivityCard({
               <StaggerLine index={0}>
                 <EarnPositionRow
                   action={
-                    <PendingWithdrawalTooltip pending={earnMaxWithdrawalPending(withdrawal)}>
+                      <PendingWithdrawalTooltip
+                        pending={earnMaxWithdrawalPending(withdrawal)}
+                      >
                       <SmallPill
                         disabled={!view.canWithdraw}
                         label="Withdraw"
@@ -361,7 +452,10 @@ function EarnMaxActivityCard({
         ) : view.isLoading && groups.length === 0 && !withdrawal ? (
           <div className="t-skel-rows flex flex-col gap-2 px-4 py-3">
             {[0, 1, 2].map((index) => (
-              <div className="h-[60px] w-full rounded-2xl bg-accent" key={index} />
+                <div
+                  className="h-[60px] w-full rounded-2xl bg-accent"
+                  key={index}
+                />
             ))}
           </div>
         ) : (
@@ -370,9 +464,16 @@ function EarnMaxActivityCard({
               let lineIndex = 0;
               return (
                 <>
+                  {view.recoverableUsdcRaw && BigInt(view.recoverableUsdcRaw) > BigInt(0) && actions.recoverClaimRemainder ? <div className="flex flex-col items-start gap-2 px-4 py-3"><p className="text-[13px] text-muted-foreground">{usdcRawLabel(view.recoverableUsdcRaw)} remains available in your Earn MAX account.</p><SmallPill disabled={view.isBusy} label="Move remaining USDC to wallet" onClick={() => void actions.recoverClaimRemainder?.()} variant="light" /></div> : null}
+                    {withdrawal ? (
+                      <WithdrawalApproval actions={actions} view={view} />
+                    ) : null}
                   {withdrawal?.canClaim ? (
                     <StaggerLine index={lineIndex++}>
-                      <GroupHeaderWithIcon icon="check" label="Ready to claim" />
+                        <GroupHeaderWithIcon
+                          icon="check"
+                          label="Ready to claim"
+                        />
                       <div className="flex w-full flex-col rounded-2xl">
                         <OperationRow
                           amountLabel={usdcRawLabel(withdrawal.amountRaw)}
@@ -382,7 +483,10 @@ function EarnMaxActivityCard({
                         />
                         <div className="flex w-full items-start gap-2 px-4 pt-1 pb-2">
                           <SmallPill
-                            disabled={view.isBusy}
+                              disabled={
+                                view.isBusy ||
+                                Boolean(view.withdrawalApproval?.reason)
+                              }
                             label="Claim withdrawal"
                             onClick={() => void actions.claim()}
                             variant="dark"
@@ -403,7 +507,12 @@ function EarnMaxActivityCard({
                   !withdrawal.canClaim &&
                   withdrawal.status !== "claimed" ? (
                     <StaggerLine index={lineIndex++}>
-                      <GroupHeaderWithIcon icon="clock" label={needsAttention ? "Withdrawal delayed" : "Pending"} />
+                        <GroupHeaderWithIcon
+                          icon="clock"
+                          label={
+                            needsAttention ? "Withdrawal delayed" : "Pending"
+                          }
+                        />
                       <div className="flex w-full flex-col rounded-2xl">
                         <OperationRow
                           amountLabel={usdcRawLabel(withdrawal.amountRaw)}
@@ -418,7 +527,7 @@ function EarnMaxActivityCard({
                         {pending ? (
                           <div className="flex flex-col items-start gap-2 px-4 pt-1 pb-2">
                             <p className="text-[13px] text-muted-foreground leading-4">
-                              {earnMaxPendingMessage(pending)}
+                              {healthReason === "certified_nav_unavailable" ? "Waiting for an updated vault value. Your request remains pending." : healthReason === "withdrawal_price_limit" ? "Waiting for a price within the approved withdrawal limit." : earnMaxPendingMessage(pending)}
                             </p>
                             <SmallPill
                               disabled={view.isBusy}
@@ -448,7 +557,10 @@ function EarnMaxActivityCard({
                   ) : (
                     <>
                       {groups.map((group) => (
-                        <div className="flex w-full flex-col" key={group.label}>
+                          <div
+                            className="flex w-full flex-col"
+                            key={group.label}
+                          >
                           <StaggerLine index={lineIndex++}>
                             <GroupHeader label={group.label} />
                           </StaggerLine>
@@ -462,13 +574,13 @@ function EarnMaxActivityCard({
                                 }
                                 isSelected={selectedTransactionId === item.id}
                                 isWithdraw={isEarnMaxWithdrawishAction(
-                                  item.action
+                                    item.action,
                                 )}
                                 onSelect={() => onSelectTransaction(item)}
                                 subtitle={[
                                   item.timestamp
                                     ? new Date(
-                                        item.timestamp
+                                          item.timestamp,
                                       ).toLocaleTimeString([], {
                                         hour: "2-digit",
                                         minute: "2-digit",
@@ -541,8 +653,9 @@ function EarnMaxMainPane({
 }) {
   const { isBalanceHidden } = useBalanceVisibility();
   const balance = splitUsdBalance(view.balanceUsd);
-  const earnedCents =
-    view.earnings ? Math.round(view.earnings.netEarnedUsd * 100) : null;
+  const earnedCents = view.earnings
+    ? Math.round(view.earnings.netEarnedUsd * 100)
+    : null;
   const earnedLabel =
     earnedCents === null
       ? null
@@ -663,7 +776,10 @@ function EarnMaxMainPane({
             </p>
           </div>
         </div>
-        <PolicyUpdateBanner count={policyUpdateCount} onReview={onReviewPolicies} />
+          <PolicyUpdateBanner
+            count={policyUpdateCount}
+            onReview={onReviewPolicies}
+          />
         <div className="flex w-full flex-col p-2 pt-0">
           <div className="group flex w-full items-center rounded-2xl px-4 transition-colors duration-150 hover:bg-accent">
             <span className="flex items-center py-2">
@@ -714,7 +830,11 @@ function EarnMaxMainPane({
                     variant="light"
                   />
                 </PendingWithdrawalTooltip>
-                <SmallPill label="Deposit" onClick={onDeposit} variant="dark" />
+                  <SmallPill
+                    label="Deposit"
+                    onClick={onDeposit}
+                    variant="dark"
+                  />
               </div>
             </div>
           </div>
@@ -941,7 +1061,7 @@ export function EarnMaxWorkspace({
               selectedChartTab={chartTab}
               onSelectTransaction={(item) =>
                 setSelectedTransaction((current) =>
-                  current?.id === item.id ? null : item
+                  current?.id === item.id ? null : item,
                 )
               }
               onViewAllActivity={onViewAllActivity}
@@ -972,7 +1092,10 @@ export function EarnMaxWorkspace({
         ) : null}
       </SheetReveal>
       {screen !== "main" ? null : selectedTransaction && transactionDetail ? (
-        <aside data-earn-banner-room className="hidden h-full w-[400px] shrink-0 flex-col overflow-clip rounded-3xl bg-card min-[1204px]:flex">
+        <aside
+          data-earn-banner-room
+          className="hidden h-full w-[400px] shrink-0 flex-col overflow-clip rounded-3xl bg-card min-[1204px]:flex"
+        >
           <PaneReveal key={transactionDetail.id}>
             <EarnMaxTransactionDetailPane
               item={transactionDetail}
@@ -990,9 +1113,7 @@ export function EarnMaxWorkspace({
           onExpandedChange={setIsChartExpanded}
           onSelectTab={setChartTab}
           selectedTab={chartTab}
-          statsPanel={
-            <EarnMaxInfoFaqsCard className="flex w-full shrink-0" />
-          }
+          statsPanel={<EarnMaxInfoFaqsCard className="flex w-full shrink-0" />}
         />
       )}
     </div>

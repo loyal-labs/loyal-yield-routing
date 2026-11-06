@@ -16,6 +16,7 @@ type leverageStepCost struct {
 	UnwindSwapCostMicros usdMicros `json:"exitSwapLossMicros"`
 	NetworkMicros        usdMicros `json:"networkMicros"`
 	TotalMicros          usdMicros `json:"totalMicros"`
+	QuotedTotalMicros    usdMicros `json:"quotedTotalMicros"`
 }
 
 type usdMicros int64
@@ -51,6 +52,7 @@ func (l leverageStepLegs) cost() (leverageStepCost, error) {
 		return out, staleHoldFrom(err, leverageReasonCostUnavailable)
 	}
 	out.TotalMicros = max(fees+out.EntrySwapCostMicros+out.UnwindSwapCostMicros, 0)
+	out.QuotedTotalMicros = out.TotalMicros
 	return out, nil
 }
 
@@ -65,6 +67,7 @@ func (c leverageStepCost) plus(d leverageStepCost) (leverageStepCost, error) {
 		{&out.UnwindSwapCostMicros, c.UnwindSwapCostMicros, d.UnwindSwapCostMicros},
 		{&out.NetworkMicros, c.NetworkMicros, d.NetworkMicros},
 		{&out.TotalMicros, c.TotalMicros, d.TotalMicros},
+		{&out.QuotedTotalMicros, c.QuotedTotalMicros, d.QuotedTotalMicros},
 	} {
 		if v.a > 0 && v.b > math.MaxInt64-v.a || v.a < 0 && v.b < math.MinInt64-v.a {
 			return out, staleHold(leverageReasonCostUnavailable)

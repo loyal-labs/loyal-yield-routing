@@ -7,6 +7,8 @@ import type {
   ReferralClaimRequest,
   Summary,
 } from "@loyal-labs/api";
+import type { VoltrWithdrawalConsent, ProtectedVoltrClaimBroadcast } from "@loyal-labs/smart-account-vaults";
+import { Buffer } from "buffer";
 
 import { earnHeaders, earnWalletRead } from "@/lib/solana/earn/earn-session";
 
@@ -15,53 +17,75 @@ import { fetchWithTimeout } from "@/lib/network/fetch-with-timeout";
 import { EarnApiError } from "@/lib/solana/earn/earn-api";
 
 type EarnMaxReadPath =
+  | "/api/smart-accounts/earn-max/withdrawal-consent"
   | "/api/smart-accounts/earn-max/summary"
   | "/api/smart-accounts/earn-max/activity";
+
+export async function saveEarnMaxWithdrawalConsent(
+  walletAddress: string,
+  consent: VoltrWithdrawalConsent,
+) {
+  const response = await earnWalletRead(
+    walletAddress,
+    `${env.apiBaseUrl}/api/smart-accounts/earn-max/withdrawal-consent`,
+    { method: "POST", body: JSON.stringify(consent) },
+  );
+  if (!response.ok)
+    throw await earnMaxFailure(response, "Unable to save withdrawal approval.");
+}
+
+export async function reserveEarnMaxWithdrawalClaim(walletAddress: string, claim: ProtectedVoltrClaimBroadcast) {
+  const response = await earnWalletRead(walletAddress, `${env.apiBaseUrl}/api/smart-accounts/earn-max/withdrawal-claim-attempt`, { method: "POST", body: JSON.stringify({ ...claim, wire: undefined, wireBase64: Buffer.from(claim.wire).toString("base64") }) });
+  if (!response.ok) throw await earnMaxFailure(response, "This withdrawal claim could not be reserved. Check status before signing again.");
+}
 
 async function earnMaxFailure(response: Response, fallback: string) {
   const payload = await response.json().catch(() => null);
   return new EarnApiError(
     payload?.error?.message || fallback,
     payload?.error?.code ?? "earn_max_unavailable",
-    response.status
+    response.status,
   );
 }
 
 export async function fetchEarnMax<P extends EarnMaxReadPath>(
   walletAddress: string,
-  path: P
+  path: P,
 ): Promise<Get[P] | null> {
-  const response = await earnWalletRead(walletAddress, `${env.apiBaseUrl}${path}`);
+  const response = await earnWalletRead(
+    walletAddress,
+    `${env.apiBaseUrl}${path}`,
+  );
   if (response.ok) return (await response.json()) as Get[P];
   const failure = await earnMaxFailure(
     response,
-    "Unable to update Earn MAX. Please try again."
+    "Unable to update Earn MAX. Please try again.",
   );
   if (failure.code === "smart_account_required") return null;
   throw failure;
 }
 
 export async function provisionEarnMaxAccount(
-  walletAddress: string
+  walletAddress: string,
 ): Promise<EarnMaxContextResponse> {
   const response = await earnWalletRead(
     walletAddress,
     `${env.apiBaseUrl}/api/smart-accounts/earn-max/context`,
-    { method: "POST", body: "{}" }
+    { method: "POST", body: "{}" },
   );
   if (response.ok) return (await response.json()) as EarnMaxContextResponse;
   throw await earnMaxFailure(
     response,
-    "Earn MAX is temporarily unavailable. Please try again later."
+    "Earn MAX is temporarily unavailable. Please try again later.",
   );
 }
 
 export async function fetchReferrals(
-  walletAddress: string
+  walletAddress: string,
 ): Promise<Get["/api/referrals"]> {
   const response = await earnWalletRead(
     walletAddress,
-    `${env.apiBaseUrl}/api/referrals`
+    `${env.apiBaseUrl}/api/referrals`,
   );
   if (!response.ok) {
     throw new Error(`Failed to fetch referrals: ${response.status}`);
@@ -75,13 +99,13 @@ export type ReferralClaimAnswer =
 
 export async function claimReferral(
   walletAddress: string,
-  request: ReferralClaimRequest
+  request: ReferralClaimRequest,
 ): Promise<ReferralClaimAnswer> {
   try {
     const response = await earnWalletRead(
       walletAddress,
       `${env.apiBaseUrl}/api/referrals/claim`,
-      { method: "POST", body: JSON.stringify(request) }
+      { method: "POST", body: JSON.stringify(request) },
     );
     if (response.ok) {
       return {
@@ -96,11 +120,13 @@ export async function claimReferral(
   return { answered: false };
 }
 
-export async function lookupReferralCode(code: string): Promise<boolean | null> {
+export async function lookupReferralCode(
+  code: string,
+): Promise<boolean | null> {
   try {
     const response = await fetchWithTimeout(
       `${env.apiBaseUrl}/api/referrals/codes/${encodeURIComponent(code)}`,
-      { headers: earnHeaders() }
+      { headers: earnHeaders() },
     );
     if (!response.ok) return null;
     const data: Get["/api/referrals/codes/{code}"] = await response.json();
@@ -138,8 +164,8 @@ export async function fetchSummariesByGroup(
 ): Promise<Summary[]> {
   const response = await fetch(
     `${env.apiBaseUrl}/api/summaries?groupChatId=${encodeURIComponent(
-      groupChatId
-    )}`
+      groupChatId,
+    )}`,
   );
   if (!response.ok) {
     throw new Error(`Failed to fetch summaries: ${response.status}`);
@@ -150,12 +176,12 @@ export async function fetchSummariesByGroup(
 
 export async function fetchTokenDetailMarket(
   mint: string,
-  timeframe: TokenDetailTimeframe = "1d"
+  timeframe: TokenDetailTimeframe = "1d",
 ): Promise<MobileTokenDetailResponse> {
   const response = await fetch(
     `${env.apiBaseUrl}/api/mobile/tokens/${encodeURIComponent(
-      mint
-    )}?timeframe=${timeframe}`
+      mint,
+    )}?timeframe=${timeframe}`,
   );
 
   if (!response.ok) {
@@ -190,9 +216,7 @@ export async function fetchLibrary(): Promise<Get["/api/mobile/library"]> {
  * Transform flat summaries array into deduplicated group list.
  * Keeps the most recent summary per group (input assumed sorted newest-first from API).
  */
-export function transformSummariesToGroups(
-  summaries: Summary[],
-): GroupChat[] {
+export function transformSummariesToGroups(summaries: Summary[]): GroupChat[] {
   const groupMap = new Map<string, GroupChat>();
 
   for (const summary of summaries) {

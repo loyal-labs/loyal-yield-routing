@@ -106,6 +106,7 @@ func TestUnleveredEntryLifecycleAndNoLoop(t *testing.T) {
 	t.Parallel()
 	s := base()
 	s.Slot = 42
+	s.net = fixtureSnapshotCertificate(s)
 	s.RouteLane, s.StrategyKey = onreONycUSDC, onreONycUSDC
 	s.BorrowUtilizationBlocked = true
 	s.CapacityRaw, s.MaxTargetLTVEntryRaw, s.PolicyLimitRaw = 2_000_000_000, 2_000_000_000, int64(strategyTwoBridgeLegCapRaw)

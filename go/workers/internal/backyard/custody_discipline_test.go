@@ -122,11 +122,13 @@ func TestRefreshRequiresEmptyStrategyCustody(t *testing.T) {
 	s.LastReportAgeSeconds = 60
 	s.VoltrStrategyIdleRaw = 5
 	s.StagedAmountKnown, s.StagedAmountRaw = true, 5
+	s.net = fixtureSnapshotCertificate(s)
 	if got := Decide(s); got.Action != VoltrRestoreIdle || got.Reason != "withdrawal_staged" || got.AmountRaw != 5 {
 		t.Fatalf("journaled stage was not restored before refresh: %+v", got)
 	}
 	resolved := s
 	resolved.VoltrStrategyIdleRaw = 0
+	resolved.net = fixtureSnapshotCertificate(resolved)
 	if got := Decide(resolved); got.Action != ReportNAV || got.Reason != "nav_due" {
 		t.Fatalf("empty custody was blocked from reporting: %+v", got)
 	}
@@ -135,11 +137,13 @@ func TestRefreshRequiresEmptyStrategyCustody(t *testing.T) {
 	// fails closed.
 	canary := s
 	canary.RouteLane = "AUTO/AUTO/PYUSD"
+	canary.net = fixtureSnapshotCertificate(canary)
 	if got := Decide(canary); got.Action != VoltrRestoreIdle || got.Reason != "withdrawal_staged" || got.AmountRaw != 5 {
 		t.Fatalf("non-USDC journaled stage was not restored before refresh: %+v", got)
 	}
 	resolvedCanary := canary
 	resolvedCanary.VoltrStrategyIdleRaw = 0
+	resolvedCanary.net = fixtureSnapshotCertificate(resolvedCanary)
 	if got := Decide(resolvedCanary); got.Action != ReportNAV || got.Reason != "nav_due" {
 		t.Fatalf("empty non-USDC custody was blocked from reporting: %+v", got)
 	}

@@ -17,8 +17,6 @@ const (
 )
 
 const (
-	navDriftToleranceBPS     = int64(50)
-	navDriftFloorRaw         = int64(1_000)
 	routineNAVReportInterval = time.Hour
 	feeAccumulatorWarningBPS = int64(100)
 )

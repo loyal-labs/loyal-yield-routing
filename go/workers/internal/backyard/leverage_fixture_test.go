@@ -51,6 +51,9 @@ func targeted(s Snapshot) Snapshot {
 // targetedWith is targeted with explicit exits and selector result; the
 // snapshot's level fields stay its level unless in sets one.
 func targetedWith(s Snapshot, in targetInputs) Snapshot {
+	if s.net != nil {
+		s.net = fixtureSnapshotCertificate(s)
+	}
 	if s.HeldLanes == "" && (s.HasPosition || s.CollateralIdleRaw > 0) {
 		s.HeldLanes = s.RouteLane
 	}
@@ -64,5 +67,8 @@ func targetedWith(s Snapshot, in targetInputs) Snapshot {
 	in.Levels = levels
 	_, t := target([]Snapshot{s}, in)
 	s.Target = t
+	if s.net != nil {
+		s.net = fixtureSnapshotCertificate(s)
+	}
 	return s
 }

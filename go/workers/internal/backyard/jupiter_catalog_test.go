@@ -83,6 +83,7 @@ func TestWorkerDispatchesWYLDSDebtConversionsToHastra(t *testing.T) {
 				s.DebtIdleRaw, s.Target = 5_000, exitAllTarget
 			}
 			o := tickObservation(s)
+			s.net = fixtureSnapshotCertificate(s)
 			want := Decide(s)
 			if want.Action != action || want.StrategyKey != autoAUTOWYLDSLane {
 				t.Fatal(want)
@@ -101,7 +102,7 @@ func TestWorkerDispatchesWYLDSDebtConversionsToHastra(t *testing.T) {
 					order = append(order, "hastra")
 					return o, HastraExecutionEvidence{Request: HastraConversionRequest{Action: d.Action, RouteLane: d.StrategyKey}}, nil
 				},
-				recordDecision: func(context.Context, string, Observation, Decision, string) (DecisionRecord, error) {
+				recordDecision: func(context.Context, string, Observation, Decision, string, *releaseRequest) (DecisionRecord, error) {
 					order = append(order, "record")
 					return DecisionRecord{OperationID: "local-conversion", Status: Decided}, nil
 				},

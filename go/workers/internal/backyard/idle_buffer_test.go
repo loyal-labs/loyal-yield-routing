@@ -22,6 +22,9 @@ func TestCashReserveSizesEntryAndLeavesWithdrawalsUsable(t *testing.T) {
 		if got := in.Policy.idleBufferRaw(c.nav); got != c.reserve {
 			t.Fatalf("NAV %d reserve %d want %d", c.nav, got, c.reserve)
 		}
+		if in.Snapshot.net != nil {
+			in.Snapshot.net = fixtureSnapshotCertificate(in.Snapshot)
+		}
 		first := SelectOpportunity(in, SelectorState{})
 		if c.nav == c.reserve {
 			if first.Action != SelectorKeep || first.Reason != "no_investable_equity" {
@@ -34,6 +37,9 @@ func TestCashReserveSizesEntryAndLeavesWithdrawalsUsable(t *testing.T) {
 			t.Fatalf("reserve consumed by entry: %+v", candidate)
 		}
 		q.EquityRaw++
+		if in.Snapshot.net != nil {
+			in.Snapshot.net = fixtureSnapshotCertificate(in.Snapshot)
+		}
 		if got := SelectOpportunity(in, SelectorState{}); got.Candidates[0].CostsKnown {
 			t.Fatal("quote spent reserved cash")
 		}

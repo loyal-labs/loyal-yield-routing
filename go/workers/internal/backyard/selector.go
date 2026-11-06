@@ -414,6 +414,9 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 	if !s.Fresh || s.SquadsIdleRaw < 0 || s.TotalVaultNAVRaw > 1<<53 || s.TotalVaultNAVRaw < 0 || s.PositionCollateralValueRaw < 0 || s.PositionDebtValueRaw < 0 || s.CollateralIdleValueRaw < 0 {
 		return hold("invalid_holdings")
 	}
+	if !s.netKnown(time.Now()) {
+		return hold(exitUnpriced)
+	}
 	buffer := p.idleBufferRaw(s.TotalVaultNAVRaw)
 	equity := s.TotalVaultNAVRaw - s.WithdrawalDemandRaw - buffer
 	if equity <= 0 {

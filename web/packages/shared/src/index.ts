@@ -21,6 +21,8 @@ export type {
 } from "./expo-push";
 export type { ChatSummary, SummariesApiResponse, Topic } from "./summaries";
 export type * from "./earn-max";
+export { earnMaxWithdrawalCostView, formatEarnMaxWithdrawalAmount } from "./earn-max-withdrawal-costs";
+export type { EarnMaxWithdrawalCostStatus } from "./earn-max-withdrawal-costs";
 
 export { buildEarnMaxDailySeries } from "./earn-max-history";
 export {

@@ -81,6 +81,9 @@ func TestAdaptorWireMatchesRustFixture(t *testing.T) {
 
 	request := bridgeTestRequest(VoltrAllocateToSquads, f.VoltrDeposit.Amount)
 	request.Report = report
+	request.net.report = report
+	request.net.slot = int64(report.ObservedSlot)
+	request = bindBridgeRequest(request)
 	envelope, err := bridgeInstruction(rwa, request)
 	if err != nil || !bytes.Equal(envelope.data, unhex(t, f.VoltrDeposit.Data)) {
 		t.Fatalf("Voltr deposit envelope drifted: %x err=%v", envelope.data, err)
@@ -108,6 +111,9 @@ func TestAdaptorWireMatchesRustFixture(t *testing.T) {
 		want := f.BridgeBuilders[name]
 		request := bridgeTestRequest(c.action, c.amount)
 		request.Report = report
+		request.net.report = report
+		request.net.slot = int64(report.ObservedSlot)
+		request = bindBridgeRequest(request)
 		got, err := bridgeInstruction(rwa, request)
 		if err != nil || solana.PublicKey(got.program).String() != want.Program || !bytes.Equal(got.data, unhex(t, want.Data)) || len(got.accounts) != len(want.Accounts) {
 			t.Fatalf("%s instruction drifted: program %s data %x err=%v", name, solana.PublicKey(got.program), got.data, err)

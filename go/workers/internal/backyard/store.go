@@ -26,6 +26,7 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/releasecontrol"
 )
 
 const OperationInsert = `INSERT INTO loyal_yield.multiply_operations (operation_id, route_key, cycle, engine_version, action, status, idempotency_key, strategy_key, expected_effects, recovery_reason) VALUES ($1, $2, $3, 'backyard_rwa_v1', $4, $5, $6, $7, $8, $9)`
@@ -275,6 +276,7 @@ func (d *Database) RecordDecisionOnManifest(
 	observation Observation,
 	decision Decision,
 	manifestSHA256 string,
+	release *releaseRequest,
 ) (DecisionRecord, error) {
 	if decision.Action == Hold || decision.Action == HoldManualRecovery {
 		return DecisionRecord{}, fmt.Errorf("a hold is not a journal row")
@@ -284,7 +286,23 @@ func (d *Database) RecordDecisionOnManifest(
 	}
 	var record DecisionRecord
 	err := d.inTx(ctx, func(tx pgx.Tx) (err error) {
+		var admission *releasecontrol.Admission
+		if release != nil {
+			a, err := releasecontrol.Check(ctx, tx, manifest.vault.VoltrVault, release.action, release.owners, release.amount)
+			var refusal *releasecontrol.Refusal
+			if errors.As(err, &refusal) {
+				return staleHold(refusal.Reason)
+			}
+			if err != nil {
+				return err
+			}
+			admission = &a
+		}
 		record, err = d.recordDecisionTx(ctx, tx, manifest.vault.Strategy, routeKey, observation, decision, manifestSHA256)
+		if err != nil || admission == nil {
+			return err
+		}
+		_, err = tx.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET release_control_vault=$2,release_control_action=$3,release_control_version=$4 WHERE operation_id=$1`, record.OperationID, admission.Vault, string(admission.Action), admission.Version)
 		return err
 	})
 	if err != nil {
@@ -546,6 +564,13 @@ func (d *Database) readReconciledBridgeJournal(ctx context.Context, routeKey str
 }
 
 type routeObservationProjection struct {
+	NAVKnown                    bool   `json:"navKnown"`
+	NAVUnavailable              string `json:"navUnavailable,omitempty"`
+	PositionCollateralRaw       string `json:"positionCollateralRaw"`
+	PositionDebtRaw             string `json:"positionDebtRaw"`
+	PositionCollateralValueRaw  string `json:"positionCollateralValueRaw"`
+	PositionDebtValueRaw        string `json:"positionDebtValueRaw"`
+	LTVBPS                      int64  `json:"ltvBps"`
 	ValuationSource             string `json:"valuationSource,omitempty"`
 	ValuationSlot               int64  `json:"valuationSlot,omitempty"`
 	ObservedSlot                int64  `json:"observedSlot"`
@@ -558,12 +583,12 @@ type routeObservationProjection struct {
 	PayoffDebtRaw               string `json:"payoffDebtRaw"`
 	CollateralIdleValueRaw      string `json:"collateralIdleValueRaw"`
 	MinimumCollateralDepositRaw string `json:"minimumCollateralDepositRaw"`
-	AUMRaw                      string `json:"aumRaw"`
-	AUMUSDMicros                string `json:"aumUsdMicros"`
-	NAVRaw                      string `json:"navRaw"`
-	NAVUSDMicros                string `json:"navUsdMicros"`
+	AUMRaw                      string `json:"aumRaw,omitempty"`
+	AUMUSDMicros                string `json:"aumUsdMicros,omitempty"`
+	NAVRaw                      string `json:"navRaw,omitempty"`
+	NAVUSDMicros                string `json:"navUsdMicros,omitempty"`
 	ReportedNAVRaw              string `json:"reportedNavRaw"`
-	ComputedStrategyNAV         string `json:"computedStrategyNavRaw"`
+	ComputedStrategyNAV         string `json:"computedStrategyNavRaw,omitempty"`
 	ReportSequence              int64  `json:"reportSequence"`
 	ReportSlot                  int64  `json:"reportSlot"`
 	ReportObservedAt            string `json:"reportObservedAt"`
@@ -572,13 +597,17 @@ type routeObservationProjection struct {
 }
 
 func (p routeObservationProjection) navReport() (navReport, bool, error) {
-	computed, computedErr := strconv.ParseInt(p.ComputedStrategyNAV, 10, 64)
+	var computed int64
+	var computedErr error
+	if p.ComputedStrategyNAV != "" {
+		computed, computedErr = strconv.ParseInt(p.ComputedStrategyNAV, 10, 64)
+	}
 	reported, reportedErr := strconv.ParseInt(p.ReportedNAVRaw, 10, 64)
 	at, atErr := time.Parse(time.RFC3339, p.ReportObservedAt)
 	if err := errors.Join(computedErr, reportedErr, atErr); err != nil {
 		return navReport{}, false, fmt.Errorf("persisted route observation NAV fields: %w", err)
 	}
-	return navReport{at: at, holdsValue: computed > 0 || reported > 0 || p.RouteStatus == "positioned"}, true, nil
+	return navReport{at: at, holdsValue: computed > 0 || reported > 0 || p.RouteStatus == "positioned" || p.PositionCollateralRaw != "" && p.PositionCollateralRaw != "0"}, true, nil
 }
 
 func newRouteObservationProjection(observation Observation) (routeObservationProjection, error) {
@@ -587,20 +616,21 @@ func newRouteObservationProjection(observation Observation) (routeObservationPro
 		return routeObservationProjection{}, err
 	}
 	snapshot := observation.Snapshot
+	netKnown := snapshot.netKnown(observation.ObservedAt)
 	if snapshot.VoltrIdleRaw < 0 || snapshot.VoltrStrategyIdleRaw < 0 || snapshot.SquadsIdleRaw < 0 || snapshot.DebtIdleRaw < 0 || snapshot.PayoffDebtRaw < 0 ||
 		snapshot.PositionCollateralRaw < 0 || snapshot.PositionDebtRaw < 0 || snapshot.CollateralIdleValueRaw < 0 || snapshot.MinimumCollateralDepositRaw < 0 ||
 		snapshot.PositionCollateralValueRaw < 0 || snapshot.PositionDebtValueRaw < 0 ||
 		snapshot.StrategyNAVRaw < 0 || snapshot.TotalVaultNAVRaw < 0 || snapshot.PriorReportedNAVRaw < 0 ||
-		snapshot.LTVBPS < 0 || snapshot.LTVBPS > 10_000 || snapshot.LastReportAgeSeconds < 0 ||
+		snapshot.LTVBPS < 0 || snapshot.LastReportAgeSeconds < 0 ||
 		snapshot.ReportSequence <= 0 || !sha256Pattern.MatchString(snapshot.ReportSnapshotDigest) {
 		return routeObservationProjection{}, fmt.Errorf("route observation projection is incoherent")
 	}
-	if snapshot.VoltrIdleRaw > math.MaxInt64-snapshot.StrategyNAVRaw ||
-		snapshot.TotalVaultNAVRaw != snapshot.VoltrIdleRaw+snapshot.StrategyNAVRaw {
+	if netKnown && (snapshot.VoltrIdleRaw > math.MaxInt64-snapshot.StrategyNAVRaw ||
+		snapshot.TotalVaultNAVRaw != snapshot.VoltrIdleRaw+snapshot.StrategyNAVRaw) {
 		return routeObservationProjection{}, fmt.Errorf("route AUM does not match confirmed custody NAV")
 	}
 	if snapshot.HasPosition {
-		if snapshot.PositionCollateralRaw <= 0 || snapshot.PositionCollateralValueRaw < snapshot.PositionDebtValueRaw ||
+		if snapshot.PositionCollateralRaw <= 0 ||
 			(snapshot.PositionDebtRaw > 0 && snapshot.PositionDebtValueRaw <= 0) {
 			return routeObservationProjection{}, fmt.Errorf("position projection is incoherent")
 		}
@@ -619,7 +649,10 @@ func newRouteObservationProjection(observation Observation) (routeObservationPro
 	if snapshot.WithdrawalDemandRaw > 0 {
 		status = "withdrawal_pending"
 	}
-	return routeObservationProjection{
+	projection := routeObservationProjection{
+		NAVKnown:              netKnown,
+		PositionCollateralRaw: fmt.Sprint(snapshot.PositionCollateralRaw), PositionDebtRaw: fmt.Sprint(snapshot.PositionDebtRaw),
+		PositionCollateralValueRaw: fmt.Sprint(snapshot.PositionCollateralValueRaw), PositionDebtValueRaw: fmt.Sprint(snapshot.PositionDebtValueRaw), LTVBPS: snapshot.LTVBPS,
 		ValuationSource: source, ValuationSlot: valuationSlot,
 		ObservedSlot: snapshot.Slot, ObservedAt: observation.ObservedAt.UTC().Format(time.RFC3339Nano), RouteStatus: status,
 		VoltrIdleRaw: fmt.Sprint(snapshot.VoltrIdleRaw), VoltrStrategyIdleRaw: fmt.Sprint(snapshot.VoltrStrategyIdleRaw),
@@ -632,8 +665,25 @@ func newRouteObservationProjection(observation Observation) (routeObservationPro
 		ComputedStrategyNAV: fmt.Sprint(snapshot.StrategyNAVRaw), ReportSequence: snapshot.ReportSequence,
 		ReportSlot: snapshot.ReportSequence, ReportObservedAt: reportUpdatedAt.Format(time.RFC3339),
 		ReportSnapshotDigest: snapshot.ReportSnapshotDigest,
-		NAVFresh:             !snapshot.CapitalMutated && !snapshot.PostMutationNAVRequired && snapshot.LastReportAgeSeconds < int64(routineNAVReportInterval.Seconds()),
-	}, nil
+		NAVFresh:             netKnown && !snapshot.CapitalMutated && !snapshot.PostMutationNAVRequired && snapshot.LastReportAgeSeconds < int64(routineNAVReportInterval.Seconds()),
+	}
+	if !netKnown {
+		projection.NAVUnavailable = snapshot.NAVUnavailable
+		if projection.NAVUnavailable == "" {
+			projection.NAVUnavailable = "certified_nav_unavailable"
+		}
+		projection.AUMRaw, projection.AUMUSDMicros = "", ""
+		projection.NAVRaw, projection.NAVUSDMicros, projection.ComputedStrategyNAV = "", "", ""
+	}
+	return projection, nil
+}
+
+func snapshotEquity(snapshot Snapshot, at time.Time) *int64 {
+	if !snapshot.netKnown(at) {
+		return nil
+	}
+	value := snapshot.StrategyNAVRaw
+	return &value
 }
 
 func (d *Database) RecordPositionSnapshot(ctx context.Context, routeKey string, observation Observation) error {
@@ -676,7 +726,7 @@ func (d *Database) RecordPositionSnapshot(ctx context.Context, routeKey string, 
 		}
 		if _, err := tx.Exec(ctx, PositionSnapshotInsert,
 			routeKey, generation, snapshot.Slot, observation.ObservedAt.UTC(), strategyKey, claimRaw,
-			snapshot.PositionCollateralRaw, snapshot.PositionDebtRaw, snapshot.StrategyNAVRaw,
+			snapshot.PositionCollateralRaw, snapshot.PositionDebtRaw, snapshotEquity(snapshot, observation.ObservedAt),
 			snapshot.PositionCollateralValueRaw, snapshot.PositionDebtValueRaw, snapshot.LTVBPS, forecastAPYBPS, valuationSource, valuationSlot,
 		); err != nil {
 			return fmt.Errorf("persist route position snapshot: %w", err)

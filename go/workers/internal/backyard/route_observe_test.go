@@ -49,6 +49,7 @@ func TestPilotUSDCObservationBoundsDepositRemainderWithoutLosingNAV(t *testing.T
 func cadenceNAV(slot, current, reported uint64, lastUpdated time.Time) RouteNAVSnapshot {
 	digest := navDigest(strings.Repeat("a", 64))
 	return RouteNAVSnapshot{
+		net:  &certifiedNAV{vault: rwa.squads, manifest: rwa.manifest.SHA256, slot: int64(slot), validUntil: time.Now().Add(exitQuoteInterval)},
 		Slot: int64(slot), StrategyNAVRaw: current, TotalVaultNAVRaw: current, PriorReportedNAVRaw: reported,
 		PriorReportUpdatedTS: uint64(lastUpdated.Unix()), SnapshotDigest: digest,
 		Voltr:  VoltrVaultBook{Vault: voltr.Vault{AdminPerformanceFeeBPS: uint16(rwa.AdminPerformanceFeeBPS)}},
@@ -131,6 +132,7 @@ func TestRouteEconomicObservationIdentityExcludesReportSlot(t *testing.T) {
 	firstSnapshot, laterSnapshot := base(), base()
 	firstSnapshot.ObservationID, laterSnapshot.ObservationID = first, second
 	laterSnapshot.Slot++
+	laterSnapshot.net = fixtureSnapshotCertificate(laterSnapshot)
 	if Decide(firstSnapshot).IdempotencyKey != Decide(laterSnapshot).IdempotencyKey {
 		t.Fatal("a later slot changed the durable decision for unchanged economics")
 	}
@@ -244,7 +246,7 @@ func TestCoveredDemandObservationDepositsSwappedCollateral(t *testing.T) {
 	})
 	address, data := receiptFixture(t, m.vault.VoltrVault, testPublicKey(44), 5, 5<<48)
 	read := fixtureBatchRuntime(77, accounts)
-	o, _, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), m, routeObservationRuntime{state: testVaultState, inputs: targetInputs{ExitCosts: fixtureExitCosts()},
+	o, _, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), m, routeObservationRuntime{state: testVaultState, inputs: targetInputs{ExitCosts: fixtureExitCosts(m, 77, accounts)},
 		read: func(ctx context.Context, addresses []string, minSlot int64) (int64, []ConfirmedAccount, []programAccount, error) {
 			slot, observed, _, err := read(ctx, addresses, minSlot)
 			return slot, observed, []programAccount{{Address: address, Account: ConfirmedAccount{Address: address, Owner: voltr.ProgramID.String(), Lamports: 1, Data: data}}}, err

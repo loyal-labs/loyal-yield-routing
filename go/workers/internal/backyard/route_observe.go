@@ -21,7 +21,11 @@ import (
 )
 
 func ObserveConfirmedRouteSnapshot(ctx context.Context, rpc *chain.Client, view *View, manifest RouteManifest, state *vaultState, ownWriteSlot int64, inputs targetInputs) (Observation, []ConfirmedAccount, error) {
-	return observeQuotingRouteSnapshot(ctx, rpc, view, manifest, state, ownWriteSlot, inputs, nil)
+	var exits *exitQuoter
+	if state != nil {
+		exits = state.exits
+	}
+	return observeQuotingRouteSnapshot(ctx, rpc, view, manifest, state, ownWriteSlot, inputs, exits)
 }
 
 func observeQuotingRouteSnapshot(ctx context.Context, rpc *chain.Client, view *View, manifest RouteManifest, state *vaultState, ownWriteSlot int64, inputs targetInputs, exits *exitQuoter) (Observation, []ConfirmedAccount, error) {
@@ -113,6 +117,7 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 	if err != nil {
 		return Observation{}, nil, err
 	}
+	demand = runtime.inputs.withdrawalDemand(fingerprint, demand)
 	if strategyReceiptIntegrityFault(accountAt(accounts, v.strategyReceipt)) {
 		o := receiptIntegrityObservation(slot, selectedRoute)
 		o.Snapshot.Trustful = v.trustful()
@@ -181,6 +186,7 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 			if demand, fingerprint, err = decodeConfirmedWithdrawalDemand(v, receipts); err != nil {
 				return Observation{}, nil, err
 			}
+			demand = runtime.inputs.withdrawalDemand(fingerprint, demand)
 		} else {
 			detail := ""
 			if te := holdTransactionError(refreshErr); te != "" {
@@ -198,9 +204,6 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 			runtime.state.events.noteCause(holdDetail(refreshErr))
 		}
 	}
-	if runtime.exits != nil {
-		runtime.inputs.ExitCosts = runtime.exits.quote(ctx, manifest, slot, accounts, valued, runtime.inputs.ExitCosts)
-	}
 	views := make([]Observation, 0, len(viewLanes))
 	for _, lane := range viewLanes {
 		route, err := v.route(lane)
@@ -215,6 +218,27 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 			return Observation{}, nil, err
 		}
 		views = append(views, view)
+	}
+	urgent := false
+	for _, o := range views {
+		s := o.Snapshot
+		urgent = urgent || s.HasPosition && (s.LTVBPS >= hardLTVBPS(s.LiquidationThresholdBPS, s.MaxLTVBPS) || termDebtUnknown(s) || s.DebtTermEndUnix > 0 && s.DebtTermEndUnix <= s.ChainUnix)
+	}
+	if runtime.exits != nil && !urgent {
+		quoteCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		runtime.inputs.ExitCosts = runtime.exits.quote(quoteCtx, manifest, slot, accounts, valued, runtime.inputs.ExitCosts)
+		cancel()
+		for i := range views {
+			route, _ := v.route(views[i].Snapshot.RouteLane)
+			updated, hold, err := observeLaneView(ctx, manifest, runtime, slot, accounts, route, held, valued, demand, fingerprint, refreshExhausted)
+			if err != nil || hold != nil {
+				if hold != nil {
+					return *hold, accounts, nil
+				}
+				return Observation{}, nil, err
+			}
+			views[i] = updated
+		}
 	}
 	var allowance *StageAllowance
 	if views[0].Snapshot.SquadsIdleRaw > 0 && runtime.stageAllowance != nil {
@@ -248,6 +272,7 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 	working.Snapshot.ObservationID = observationID
 	working.routeBatch.ObservationID = working.Snapshot.ObservationID
 	working.lanes = snapshots
+	working.quotedExits = runtime.inputs.ExitCosts
 	return working, accounts, nil
 }
 
@@ -686,6 +711,7 @@ func applyRouteNAVSnapshot(snapshot *Snapshot, nav RouteNAVSnapshot, now time.Ti
 	if lastUpdated > currentUnix {
 		age = 0
 	}
+	snapshot.net, snapshot.NAVUnavailable = nav.net, nav.NAVUnavailable
 	snapshot.LastReportAgeSeconds = age
 	snapshot.TotalVaultNAVRaw = int64(nav.TotalVaultNAVRaw)
 	snapshot.PriorReportedNAVRaw = int64(nav.PriorReportedNAVRaw)
@@ -711,6 +737,9 @@ func applyRouteNAVSnapshot(snapshot *Snapshot, nav RouteNAVSnapshot, now time.Ti
 	snapshot.ProtocolPerformanceFeeBPS = int64(nav.Voltr.ProtocolPerformanceFeeBPS)
 	snapshot.ProtocolManagementFeeBPS = int64(nav.Voltr.ProtocolManagementFeeBPS)
 	snapshot.MonitorsArmed = true
+	snapshot.StrategyNAVRaw = int64(nav.StrategyNAVRaw)
+	snapshot.ExitLiabilityRaw = int64(nav.ExitLiabilityRaw)
+	bindSnapshotNAV(snapshot)
 	return nil
 }
 

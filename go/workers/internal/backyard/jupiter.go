@@ -79,6 +79,8 @@ type JupiterSwapInstruction struct {
 }
 
 type JupiterSwapRequest struct {
+	admission            *addAdmission
+	riskOnly             bool
 	Action               Action
 	AmountRaw            uint64
 	QuotedOutputRaw      uint64

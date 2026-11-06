@@ -36,7 +36,7 @@ func TestRouteRefreshValuesNoncashFromOneBankAndRejectsStaleOracle(t *testing.T)
 			}
 		})
 		refreshCalls, read, readSlots := 0, fixtureBatchRuntime(77, initial), []int64{}
-		o, accounts, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), m, routeObservationRuntime{state: testVaultState, inputs: targetInputs{ExitCosts: fixtureExitCosts()},
+		o, accounts, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), m, routeObservationRuntime{state: testVaultState, inputs: targetInputs{ExitCosts: fixtureExitCosts(m, 77, initial)},
 			read: func(ctx context.Context, addresses []string, minSlot int64) (int64, []ConfirmedAccount, []programAccount, error) {
 				readSlots = append(readSlots, minSlot)
 				return read(ctx, addresses, minSlot)
@@ -74,7 +74,7 @@ func TestRouteRefreshValuesNoncashFromOneBankAndRejectsStaleOracle(t *testing.T)
 		if err != nil {
 			t.Fatal(err)
 		}
-		nav, err := ComputeRouteNAVForRoute(78, navAccounts, m, nil, route)
+		nav, err := ComputeRouteNAVForRoutes(78, navAccounts, m, nil, []RuntimeRoute{route}, fixtureExitCosts(m, 77, initial))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -86,7 +86,7 @@ func TestRouteRefreshValuesNoncashFromOneBankAndRejectsStaleOracle(t *testing.T)
 			navAccounts[i].ValuationSource = ""
 			navAccounts[i].ValuationSlot = 0
 		}
-		confirmed, err := ComputeRouteNAVForRoute(78, navAccounts, m, nil, route)
+		confirmed, err := ComputeRouteNAVForRoutes(78, navAccounts, m, nil, []RuntimeRoute{route}, fixtureExitCosts(m, 77, initial))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -95,7 +95,7 @@ func TestRouteRefreshValuesNoncashFromOneBankAndRejectsStaleOracle(t *testing.T)
 		}
 		navAccounts[0].ValuationSource = routeRefreshValuationSource
 		navAccounts[0].ValuationSlot = 78
-		if _, err := ComputeRouteNAVForRoute(78, navAccounts, m, nil, route); err == nil {
+		if _, err := ComputeRouteNAVForRoutes(78, navAccounts, m, nil, []RuntimeRoute{route}, fixtureExitCosts(m, 77, initial)); err == nil {
 			t.Fatal("mixed provenance accepted")
 		}
 	}
@@ -208,7 +208,7 @@ func TestRouteRefreshTransientFailureRetriesInsteadOfLatching(t *testing.T) {
 			binary.LittleEndian.PutUint64(accountAt(a, primePRIMEUSDC.Kamino.CollateralReserve).Data[16:24], 1)
 			binary.LittleEndian.PutUint64(accountAt(a, primePRIMEUSDC.Kamino.DebtReserve).Data[16:24], 1)
 		})
-		o, _, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), m, routeObservationRuntime{state: testVaultState, inputs: targetInputs{ExitCosts: fixtureExitCosts()},
+		o, _, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), m, routeObservationRuntime{state: testVaultState, inputs: targetInputs{ExitCosts: fixtureExitCosts(m, 77, initial)},
 			read: fixtureBatchRuntime(77, initial),
 			now:  func() time.Time { return time.Unix(1_700_000_000, 0).UTC() },
 			refreshValuation: func(context.Context, []RuntimeRoute, []string, int64) (int64, []ConfirmedAccount, error) {
@@ -247,7 +247,7 @@ func TestRouteRefreshAgedCaptureRetriesWithoutManualStop(t *testing.T) {
 	kaminoStaleSince.Store(1)
 	for _, malformed := range []bool{false, true} {
 		for i := 0; i <= refreshSimulationLatchAfter; i++ {
-			o, accounts, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), m, routeObservationRuntime{state: testVaultState, inputs: targetInputs{ExitCosts: fixtureExitCosts()},
+			o, accounts, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), m, routeObservationRuntime{state: testVaultState, inputs: targetInputs{ExitCosts: fixtureExitCosts(m, 77, initial)},
 				read: fixtureBatchRuntime(77, initial),
 				now:  func() time.Time { return time.Unix(1_700_000_000, 0).UTC() },
 				refreshValuation: func(_ context.Context, _ []RuntimeRoute, addresses []string, min int64) (int64, []ConfirmedAccount, error) {
@@ -293,7 +293,7 @@ func TestRejectedRefreshRetriesUntilThirdFailureInARow(t *testing.T) {
 	})
 	rejected := true
 	observe := func() (Observation, error) {
-		o, _, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), m, routeObservationRuntime{state: testVaultState, inputs: targetInputs{ExitCosts: fixtureExitCosts()},
+		o, _, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), m, routeObservationRuntime{state: testVaultState, inputs: targetInputs{ExitCosts: fixtureExitCosts(m, 77, initial)},
 			read: fixtureBatchRuntime(77, initial),
 			now:  func() time.Time { return time.Unix(1_700_000_000, 0).UTC() },
 			refreshValuation: func(context.Context, []RuntimeRoute, []string, int64) (int64, []ConfirmedAccount, error) {

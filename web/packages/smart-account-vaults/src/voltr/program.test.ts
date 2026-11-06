@@ -8,7 +8,7 @@ import {
   readVoltrPosition,
   VOLTR_LP_MINT,
   voltrUserAccounts,
-  withdrawVaultInstruction,
+  unprotectedWithdrawVaultInstruction,
 } from "./program";
 
 // Wire format of hand-encoded Voltr instructions. A wrong discriminator,
@@ -66,7 +66,7 @@ describe("Voltr instruction wire format", () => {
   });
 
   test("withdrawVault pays the authority's USDC account", () => {
-    const ix = withdrawVaultInstruction(authority);
+    const ix = unprotectedWithdrawVaultInstruction(authority);
     expect([...ix.data]).toEqual([135, 7, 237, 120, 149, 94, 95, 7]);
     const keys = shape(ix);
     expect(keys[0]).toEqual([authority.toBase58(), true, true]);

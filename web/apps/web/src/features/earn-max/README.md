@@ -1,5 +1,31 @@
 # Earn MAX claim availability
 
+## Protected withdrawal approval
+
+The current web/mobile flow requires an owner-signed minimum USDC claim and a
+remaining SOL network-fee budget. Approval is scoped to the active request's
+transaction/invocation, smart account and current Squads policy seed. Changing
+the minimum requires a new signature. Expiry gates new signing/admission; an
+already reserved exact wire remains budgeted and may finish until its blockhash
+expires. Expiry or a new approval never releases an ambiguous claim attempt.
+Legacy receipts adopt the fence in their first protected claim.
+
+Official request/cancel preparation advances the monotonic policy seed. Claims
+atomically create an owner-only temporary policy, check the receipt's LP,
+request ceiling and deadline, sweep existing user USDC, close/recreate the ATA,
+claim, transfer exactly the approved minimum and remove the policy. Remaining
+USDC is shown separately with a recovery action. This protects the updated
+official flow; owners retain access to public protocol entrypoints.
+
+Preparation checks the complete outer-inclusive wire and current existing
+lookup-table state. Both wallet paths check the returned signed message and
+packet, then persist the exact signed claim and fee reservation before broadcast.
+An unresolved attempt blocks a replacement. Failed transactions can charge
+network fees; an unlimited-retry or all-fees guarantee is not offered. Release
+still requires the recorded current-program runtime, wire and ledger checks.
+
+## Liquidity availability
+
 Loyal reports a Voltr claim as available only after the receipt cooldown has
 elapsed and pooled idle USDC covers the full estimated receipt payout.
 The idle account is read with the position snapshot and must be a valid,
@@ -20,20 +46,21 @@ classification. This guard does not restore liquidity or reserve it; another
 claim can consume the pool balance before execution.
 
 Coverage uses the full `pending.payoutRaw`, never existing user USDC or the
-smaller post-rounding wallet sweep. The local Voltr SDK 2.1.1
+smaller approved claim floor. The local Voltr SDK 2.1.1
 `src/extensions/withdrawals.ts` computes the effective payout as the minimum
 of the request quote and current redemption-fee-adjusted assets;
 `src/extensions/math.ts` floors that asset redemption. This matches the
-existing payout estimate. The existing estimate still ignores unrealised
-management-fee LP and assumes those fees remain disabled. Changes in fees,
-NAV or time between prepare and execution can still affect the claim.
+existing payout estimate. The current estimate includes unrealised
+management-fee LP dilution. Changes in fees, NAV or time between preparation
+and execution can still block a protected claim.
 
 ## Pending requests and operator attention
 
 Only one withdrawal receipt can be open for an Earn MAX smart-account vault.
 The header, RWA Loop, Positions tab and mobile Withdraw controls are disabled
 while it is pending. A hover, keyboard-focus or touch tooltip explains why.
-Claim and Check status remain available. The form and fresh plan preparation
+Approval and Check status remain available; claiming also needs a valid approved
+minimum. The form and fresh plan preparation
 also reject duplicate requests, including requests from a stale open form.
 
 The authenticated Voltr summary may include display-only withdrawal health

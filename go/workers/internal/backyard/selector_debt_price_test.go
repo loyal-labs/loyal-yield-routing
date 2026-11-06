@@ -105,6 +105,7 @@ func TestExitOnlyLaneNeverReachesFeedEconomics(t *testing.T) {
 	route, _ := runtimeRoute(ethenaUSDePYUSD.Lane)
 	in := selectorFixture()
 	in.Snapshot.Slot = 42
+	in.Snapshot.net = fixtureSnapshotCertificate(in.Snapshot)
 	in.Markets = []LaneEconomics{{Lane: route.Lane, EvidenceID: "rates", ObservedAt: in.Now, NativeObservedAt: in.Now, NativeAPY: .15, SupplyAPY: 0, CurrentBorrowAPY: .04, BorrowCurve: []BorrowCurvePoint{{0, 400}, {8000, 400}, {10000, 10000}}, DebtSupplyRaw: 1e15, DebtBorrowRaw: 1e14, EntryCapacity: Capacity{Known: true, Unlimited: true}}}
 	in.Quotes = []MoveQuote{autoMoveQuote(1_000_000)}
 	first := SelectOpportunity(in, SelectorState{})

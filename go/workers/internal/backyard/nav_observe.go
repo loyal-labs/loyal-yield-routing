@@ -9,6 +9,7 @@ import (
 	"math/big"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
@@ -73,6 +74,8 @@ type RouteNAVCustodies struct {
 }
 
 type RouteNAVSnapshot struct {
+	net                     *certifiedNAV
+	NAVUnavailable          string
 	Slot                    int64
 	Custodies               RouteNAVCustodies
 	VaultIdleRaw            uint64
@@ -333,6 +336,7 @@ func computeRouteNAVForRoutes(slot int64, accounts []ConfirmedAccount, manifest 
 		return RouteNAVSnapshot{}, fmt.Errorf("NAV lane set is empty")
 	}
 	route, v := routes[0], manifest.vault
+	exits = exits.applicable(manifest, slot, time.Now())
 	for i, other := range routes {
 		for _, earlier := range routes[:i] {
 			if other.Lane == earlier.Lane {
@@ -395,13 +399,24 @@ func computeRouteNAVForRoutes(slot int64, accounts []ConfirmedAccount, manifest 
 	if err != nil {
 		return RouteNAVSnapshot{}, err
 	}
+	owners := collateralValuationOwners(v, accounts, routes)
+	navCollateralIdle := custodies.SquadsPRIMEraw
+	if owners[route.CollateralCustody] != route.Lane {
+		navCollateralIdle = 0
+	}
 	var held laneValues
 	if !cashOnly {
-		if held, err = reserves.value(obligation, custodies.SquadsPRIMEraw, custodies.SquadsDebtRaw, route.Lane, exits); err != nil {
+		if held, err = reserves.value(obligation, navCollateralIdle, custodies.SquadsDebtRaw, route.Lane, exits); err != nil {
 			return RouteNAVSnapshot{}, err
 		}
 	}
 	primeIdleValue, collateralValue, debtValue, debtIdleValue := held.collateralIdle, held.collateral, held.debt, held.debtIdle
+	if navCollateralIdle != custodies.SquadsPRIMEraw {
+		primeIdleValue, err = valueBetweenTokenRaw(custodies.SquadsPRIMEraw, reserves.collateral.mintDecimals, 6, reserves.collateral.terms.MarketPriceSF, reserves.usdc.terms.MarketPriceSF, false)
+		if err != nil {
+			return RouteNAVSnapshot{}, err
+		}
+	}
 	values := []uint64{custodies.VoltrIdleRaw, custodies.StrategyUSDCraw, custodies.SquadsUSDCraw, primeIdleValue, collateralValue, debtValue, debtIdleValue, held.exit}
 	for _, value := range values {
 		if value > math.MaxInt64 {
@@ -415,13 +430,16 @@ func computeRouteNAVForRoutes(slot int64, accounts []ConfirmedAccount, manifest 
 	// custody: Squads cash, idle collateral, and the Kamino net position.
 	components := []NAVComponent{
 		{Account: v.cash, Owner: v.squads, Raw: int64(custodies.SquadsUSDCraw), Slot: slot, Known: true},
-		{Account: route.CollateralCustody, Owner: v.squads, Raw: int64(primeIdleValue), Slot: slot, Known: true},
 		{Account: kaminoConfig.Obligation + ":collateral", Owner: kamino.ProgramID.String(), Raw: int64(collateralValue), Slot: slot, Known: true},
 		{Account: kaminoConfig.Obligation + ":debt", Owner: kamino.ProgramID.String(), Raw: int64(debtValue), Slot: slot, Known: true, Liability: true},
+	}
+	if owners[route.CollateralCustody] == route.Lane {
+		components = append(components, NAVComponent{Account: route.CollateralCustody, Owner: v.squads, Raw: int64(held.collateralIdle), Slot: slot, Known: true})
 	}
 	if kaminoConfig.DebtMint != fleet.USDCMint {
 		components = append(components, NAVComponent{Account: route.DebtCustody, Owner: v.squads, Raw: int64(debtIdleValue), Slot: slot, Known: true})
 	}
+	unknown := held.unpriced
 	var usedExits []ExitCost
 	exitLiability := held.exit
 	if held.hasExit() {
@@ -436,10 +454,11 @@ func computeRouteNAVForRoutes(slot int64, accounts []ConfirmedAccount, manifest 
 	}
 	otherLanes := make([]heldLaneState, 0, len(routes)-1)
 	for _, other := range routes[1:] {
-		value, err := valueHeldLane(v, slot, accounts, other, counted, exits)
+		value, err := valueHeldLane(v, slot, accounts, other, counted, owners, exits)
 		if err != nil {
 			return RouteNAVSnapshot{}, fmt.Errorf("value held lane %s: %w", other.Lane, err)
 		}
+		unknown = unknown || value.unpriced
 		components = append(components, value.components...)
 		otherLanes = append(otherLanes, value.state)
 		if value.exitCost != nil {
@@ -451,12 +470,18 @@ func computeRouteNAVForRoutes(slot int64, accounts []ConfirmedAccount, manifest 
 	if err != nil {
 		return RouteNAVSnapshot{}, err
 	}
+	negativeNet := false
 	nav, err := ComputeNAV(NAVSnapshotContext{
 		Slot: slot, ReceiptFingerprint: fingerprint,
 		ManifestSHA256: manifest.SHA256,
 	}, components)
-	if err != nil || nav.Raw < 0 {
-		return RouteNAVSnapshot{}, fmt.Errorf("compute route NAV: %w", err)
+	if err != nil {
+		if err.Error() != "NAV underflow" {
+			return RouteNAVSnapshot{}, fmt.Errorf("compute route NAV: %w", err)
+		}
+		unknown = true
+		negativeNet = true
+		nav = NAVReportInput{SnapshotDigest: navDigest(sha256Bytes([]byte(fingerprint + ":negative-net")))}
 	}
 	if uint64(nav.Raw) > bridgeMaxNAV {
 		return RouteNAVSnapshot{}, fmt.Errorf("route NAV exceeds adaptor bounds")
@@ -464,9 +489,27 @@ func computeRouteNAVForRoutes(slot int64, accounts []ConfirmedAccount, manifest 
 	if custodies.VoltrIdleRaw > math.MaxUint64-uint64(nav.Raw) {
 		return RouteNAVSnapshot{}, fmt.Errorf("total vault NAV overflows")
 	}
+	var cert *certifiedNAV
+	if !unknown {
+		cert = certifyNAV(manifest, slot, nav, usedExits, exitLiability)
+	}
+	reason := ""
+	if cert == nil {
+		reason = exitUnpriced
+		if negativeNet {
+			reason = "negative_net_value"
+		}
+		nav.Raw = 0
+	}
 	return RouteNAVSnapshot{
+		net: cert, NAVUnavailable: reason,
 		Slot: slot, Custodies: custodies, VaultIdleRaw: custodies.VoltrIdleRaw, StrategyNAVRaw: uint64(nav.Raw),
-		TotalVaultNAVRaw: custodies.VoltrIdleRaw + uint64(nav.Raw), PriorReportedNAVRaw: receipt.PositionValueRaw,
+		TotalVaultNAVRaw: func() uint64 {
+			if cert == nil {
+				return 0
+			}
+			return custodies.VoltrIdleRaw + uint64(nav.Raw)
+		}(), PriorReportedNAVRaw: receipt.PositionValueRaw,
 		PriorReportUpdatedTS: receipt.LastUpdatedTS,
 		PrimeIdleValueRaw:    primeIdleValue, PositionCollateralValue: collateralValue, PositionDebtValue: debtValue,
 		DebtIdleValueRaw: debtIdleValue,
@@ -494,6 +537,7 @@ type heldLaneValue struct {
 	state      heldLaneState
 	exit       uint64
 	exitCost   *ExitCost
+	unpriced   bool
 }
 
 type laneReserves struct {
@@ -503,6 +547,7 @@ type laneReserves struct {
 type laneValues struct {
 	collateralIdle, collateral, debt, debtIdle, exit uint64
 	exitCost                                         *ExitCost
+	unpriced                                         bool
 }
 
 func (v laneValues) hasExit() bool { return v.exitCost != nil || v.exit > 0 }
@@ -577,7 +622,7 @@ func (r laneReserves) value(o decodedKaminoObligation, collateralIdleRaw, debtId
 		worth := v.collateral + v.collateralIdle
 		cost, priced := exits.at(lane, held, r.collateral.terms.MarketPriceSF)
 		switch {
-		case priced:
+		case priced && cost.scope.usdc == r.usdc.terms.MarketPriceSF:
 			if v.exit, err = cost.liabilityRaw(worth); err != nil {
 				return laneValues{}, err
 			}
@@ -585,17 +630,17 @@ func (r laneReserves) value(o decodedKaminoObligation, collateralIdleRaw, debtId
 		case worth < unpricedExitDustFloorRaw:
 			v.exit = worth
 		default:
-			return laneValues{}, unpricedExitHold(lane)
+			v.unpriced = true
 		}
 	}
 	return v, nil
 }
 
-func valueHeldLane(v *Vault, slot int64, accounts []ConfirmedAccount, route RuntimeRoute, counted map[string]bool, exits exitCosts) (heldLaneValue, error) {
+func valueHeldLane(v *Vault, slot int64, accounts []ConfirmedAccount, route RuntimeRoute, counted map[string]bool, owners map[string]string, exits exitCosts) (heldLaneValue, error) {
 	config := route.Kamino
 	var collateralIdle, debtIdle uint64
 	var err error
-	countCollateral := !counted[route.CollateralCustody]
+	countCollateral := owners[route.CollateralCustody] == route.Lane
 	if countCollateral {
 		if collateralIdle, err = vaultCustodyRaw(v, accounts, route.CollateralCustody, config.CollateralMint, route.CollateralTokenProgram); err != nil {
 			return heldLaneValue{}, err
@@ -639,7 +684,7 @@ func valueHeldLane(v *Vault, slot int64, accounts []ConfirmedAccount, route Runt
 			return heldLaneValue{}, fmt.Errorf("NAV component exceeds signed range")
 		}
 	}
-	out := heldLaneValue{state: state, exit: values.exit, exitCost: values.exitCost}
+	out := heldLaneValue{state: state, exit: values.exit, exitCost: values.exitCost, unpriced: values.unpriced}
 	out.components = append(out.components,
 		NAVComponent{Account: config.Obligation + ":collateral", Owner: kamino.ProgramID.String(), Raw: int64(values.collateral), Slot: slot, Known: true},
 		NAVComponent{Account: config.Obligation + ":debt", Owner: kamino.ProgramID.String(), Raw: int64(values.debt), Slot: slot, Known: true, Liability: true})
@@ -653,4 +698,31 @@ func valueHeldLane(v *Vault, slot int64, accounts []ConfirmedAccount, route Runt
 		out.components = append(out.components, NAVComponent{Account: config.Obligation + ":exit", Owner: kamino.ProgramID.String(), Raw: int64(values.exit), Slot: slot, Known: true, Liability: true})
 	}
 	return out, nil
+}
+
+func collateralValuationOwners(v *Vault, accounts []ConfirmedAccount, routes []RuntimeRoute) map[string]string {
+	included := map[string]bool{}
+	for _, r := range routes {
+		included[r.Lane] = true
+	}
+	owners := map[string]string{}
+	for pass := 0; pass < 2; pass++ {
+		for _, r := range v.routes {
+			if !included[r.Lane] || owners[r.CollateralCustody] != "" {
+				continue
+			}
+			if pass == 0 {
+				a := accountAt(accounts, r.Kamino.Obligation)
+				if a.Lamports == 0 {
+					continue
+				}
+				o, err := decodeKaminoObligation(a, r.Kamino)
+				if err != nil || !o.hasPosition {
+					continue
+				}
+			}
+			owners[r.CollateralCustody] = r.Lane
+		}
+	}
+	return owners
 }

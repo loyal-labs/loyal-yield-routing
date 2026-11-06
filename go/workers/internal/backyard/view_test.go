@@ -302,7 +302,7 @@ func TestViewStreamPlansAtS(t *testing.T) {
 		t.Fatalf("subscription does not start after the start-up read: %v", request)
 	}
 	manifest := readyWorkerManifest(t)
-	if _, _, err := ObserveConfirmedRouteSnapshot(context.Background(), client, view, manifest, testVaultState, 0, targetInputs{ExitCosts: fixtureExitCosts()}); !errors.Is(err, errConfirmedObservationUnavailable) {
+	if _, _, err := ObserveConfirmedRouteSnapshot(context.Background(), client, view, manifest, testVaultState, 0, targetInputs{ExitCosts: fixtureExitCosts(manifest, 77, viewRouteBatch(t, nil))}); !errors.Is(err, errConfirmedObservationUnavailable) {
 		t.Fatalf("a view without confirmed slots planned: %v", err)
 	}
 	squadsUSDC := accountAt(viewRouteBatch(t, nil), bridgeSquadsATA)
@@ -315,7 +315,7 @@ func TestViewStreamPlansAtS(t *testing.T) {
 		accountFrame(usdcAmount(squadsUSDC, 111), 79, 9, viewAccountsFilter),
 		accountFrame(usdcAmount(squadsUSDC, 222), 80, 4, viewAccountsFilter),
 		slotFrame(80), slotFrame(81))
-	observation, _, err := ObserveConfirmedRouteSnapshot(context.Background(), client, view, manifest, testVaultState, 0, targetInputs{ExitCosts: fixtureExitCosts()})
+	observation, _, err := ObserveConfirmedRouteSnapshot(context.Background(), client, view, manifest, testVaultState, 0, targetInputs{ExitCosts: fixtureExitCosts(manifest, 77, viewRouteBatch(t, nil))})
 	if err != nil || observation.Snapshot.Slot != 80 || observation.Snapshot.SquadsIdleRaw != 900 {
 		t.Fatalf("observed slot %d squads USDC %d, want 80 and 900: %v", observation.Snapshot.Slot, observation.Snapshot.SquadsIdleRaw, err)
 	}
@@ -333,13 +333,13 @@ func TestViewStreamPlansAtS(t *testing.T) {
 	view.now = func() time.Time { return time.Unix(kaminoFixtureUnix+60, 0) }
 	state := productionObserveState{routeKey: productionRouteKey, manifest: manifest, journal: &stubProductionJournal{journal: reconciledJournal()}, identity: pinnedIdentityObservation,
 		batch: func(ctx context.Context) (Observation, error) {
-			observation, _, err := ObserveConfirmedRouteSnapshot(ctx, client, view, manifest, testVaultState, 0, targetInputs{ExitCosts: fixtureExitCosts()})
+			observation, _, err := ObserveConfirmedRouteSnapshot(ctx, client, view, manifest, testVaultState, 0, targetInputs{ExitCosts: fixtureExitCosts(manifest, 77, viewRouteBatch(t, nil))})
 			return observation, err
 		}}
 	worker := &Worker{routeKey: productionRouteKey, manifest: manifest, runtime: tickRuntime{
 		loadNonterminal: func(context.Context, string) (*PersistedOperation, error) { return nil, nil },
 		observe:         state.observe,
-		recordDecision: func(context.Context, string, Observation, Decision, string) (DecisionRecord, error) {
+		recordDecision: func(context.Context, string, Observation, Decision, string, *releaseRequest) (DecisionRecord, error) {
 			t.Fatal("a view a minute behind reached a decision")
 			return DecisionRecord{}, nil
 		},

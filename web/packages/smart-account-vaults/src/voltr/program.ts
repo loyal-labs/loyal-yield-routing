@@ -33,7 +33,22 @@ export const VOLTR_ASSET_MINT = new PublicKey(
 export const VOLTR_ASSET_DECIMALS = 6;
 export const EARN_MAX_VOLTR_ACCOUNT_INDEX = 2;
 const IS_AMOUNT_IN_LP = 1;
-const VAULT_TOTAL_VALUE_OFFSET = 168;
+export const VOLTR_VAULT_SIZE = 928;
+export const VOLTR_VAULT_TOTAL_VALUE_OFFSET = 168;
+// Vault bytes deposit issuance reads: total value, locked-profit duration, fee
+// bps, management-fee clock and accumulators, dead weight, high-water mark,
+// locked profit and its report time.
+export const VOLTR_DEPOSIT_PRICING_RANGES: readonly (readonly [
+  number,
+  number,
+])[] = [
+  [168, 176],
+  [448, 456],
+  [512, 528],
+  [568, 600],
+  [616, 640],
+  [672, 688],
+];
 const VAULT_LOCKED_PROFIT_DURATION_OFFSET = 448;
 const VAULT_LOCKED_PROFIT_OFFSET = 672;
 const VAULT_LAST_REPORT_OFFSET = 680;
@@ -164,7 +179,7 @@ export function requestWithdrawVaultInstruction(args: {
 }
 
 /** Claim: burns the escrowed LP and pays USDC to the authority's ATA. */
-export function withdrawVaultInstruction(
+export function unprotectedWithdrawVaultInstruction(
   authority: PublicKey,
 ): TransactionInstruction {
   const user = voltrUserAccounts(authority);
@@ -226,6 +241,7 @@ export type VoltrPosition = {
   observedSlot?: string;
   /** USDC already sitting in the smart-account vault's USDC ATA. */
   assetRaw: bigint;
+  assetAtaExists: boolean;
   /** Smart-account vault lamports (rent payer for withdrawal requests). */
   authorityLamports: number;
   escrowLpAtaExists: boolean;
@@ -236,6 +252,7 @@ export type VoltrPosition = {
   /** USDC raw the free LP redeems for right now. */
   valueRaw: bigint;
   withdrawal: {
+    receiptBytes: Uint8Array;
     escrowedLpRaw: bigint;
     /** Program pays min(request-time quote, present value) at claim. */
     payoutRaw: bigint;
@@ -319,7 +336,8 @@ export async function readVoltrPosition(
       : sinceReport <= BigInt(0)
         ? lockedAmount
         : (lockedAmount * (lockedDuration - sinceReport)) / lockedDuration;
-  const unlockedValue = readU64(v, VAULT_TOTAL_VALUE_OFFSET) - lockedProfit;
+  const unlockedValue =
+    readU64(v, VOLTR_VAULT_TOTAL_VALUE_OFFSET) - lockedProfit;
   const redemptionKeepBps = BPS - readU16(v, 520);
   const accountedLp =
     lpMint.data.readBigUInt64LE(36) +
@@ -331,7 +349,7 @@ export async function readVoltrPosition(
     accountedLp +
     unrealisedManagementFeeLp(
       accountedLp,
-      readU64(v, VAULT_TOTAL_VALUE_OFFSET),
+      readU64(v, VOLTR_VAULT_TOTAL_VALUE_OFFSET),
       readU64(v, 568),
       readU16(v, 516) + readU16(v, 518) + readU16(v, 526),
       nowSec,
@@ -348,12 +366,14 @@ export async function readVoltrPosition(
     const atRequest = readU80F48(r, 80);
     const atPresent = lpToAssets(escrowedLpRaw);
     withdrawal = {
+      receiptBytes: new Uint8Array(r),
       escrowedLpRaw,
       payoutRaw: atPresent < atRequest ? atPresent : atRequest,
       withdrawableFromTs: Number(readU64(r, 96)),
     };
   }
   return {
+    assetAtaExists: assetAta !== null,
     assetRaw: assetAta ? assetAta.data.readBigUInt64LE(64) : BigInt(0),
     observedSlot: String(snapshot.context.slot),
     assetsToLp: (assetRaw) =>

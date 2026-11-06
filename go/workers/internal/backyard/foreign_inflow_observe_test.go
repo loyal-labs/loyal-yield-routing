@@ -183,6 +183,7 @@ func TestForeignInflowAuditedAnchor(t *testing.T) {
 func TestForeignObservationEnablesProtectionAndLatchesUnexplainedChanges(t *testing.T) {
 	s := monitorSnapshot(t, nil)
 	s.Slot = foreignInflowAnchorSlot + 1
+	s.net = fixtureSnapshotCertificate(s)
 	idle := foreignFixture(rwa.idleATA, uint64(s.VoltrIdleRaw), 1)
 	custody := foreignFixture(rwa.strategyATA, 0, 1)
 	custody.Transaction.Signatures[0] = solana.Signature{2}
@@ -198,12 +199,18 @@ func TestForeignObservationEnablesProtectionAndLatchesUnexplainedChanges(t *test
 	if err := observeForeignInflows(context.Background(), db, c, rwa, &s); err != nil {
 		t.Fatal(err)
 	}
+	if s.net != nil {
+		s.net = fixtureSnapshotCertificate(s)
+	}
 	if got := Decide(s); got.Action != VoltrRestoreIdle || got.AmountRaw != 1 {
 		t.Fatalf("proven gifts blocked restore: %+v", got)
 	}
 	s.HasPosition = true
 	s.PositionCollateralRaw, s.PositionDebtRaw = 100, 70
 	s.LiquidationThresholdBPS, s.MaxLTVBPS, s.LTVBPS = 7500, 7000, 6500
+	if s.net != nil {
+		s.net = fixtureSnapshotCertificate(s)
+	}
 	if got := Decide(s); got.Action != DeleverRouteStep {
 		t.Fatalf("gift blocked hard-LTV protection: %+v", got)
 	}
@@ -213,6 +220,9 @@ func TestForeignObservationEnablesProtectionAndLatchesUnexplainedChanges(t *test
 	c.executions[idleSig] = idle
 	if err := observeForeignInflows(context.Background(), db, c, rwa, &s); err != nil {
 		t.Fatal(err)
+	}
+	if s.net != nil {
+		s.net = fixtureSnapshotCertificate(s)
 	}
 	if got := Decide(s); got.Action != HoldManualRecovery || got.Reason != "foreign_inflow_unexplained" {
 		t.Fatalf("unexplained surplus did not latch: %+v", got)

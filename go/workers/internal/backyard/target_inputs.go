@@ -24,6 +24,21 @@ type targetInputs struct {
 	Exits     map[string]laneExit
 	Entry     *SelectorResult
 	ExitCosts exitCosts
+	admitted  *admittedWithdrawalDemand
+}
+
+// admittedWithdrawalDemand caps the demand a cost-bearing sale may fund to
+// the receipts that can bear it, for exactly the receipt set it was read from.
+type admittedWithdrawalDemand struct {
+	fingerprint string
+	raw         int64
+}
+
+func (in targetInputs) withdrawalDemand(fingerprint string, demand int64) int64 {
+	if in.admitted != nil && in.admitted.fingerprint == fingerprint {
+		return min(demand, in.admitted.raw)
+	}
+	return demand
 }
 
 func validLevel(level float64) bool {

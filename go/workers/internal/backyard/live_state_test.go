@@ -32,7 +32,7 @@ type liveRead struct {
 // version 87096): both AUTO lanes at a stored 1.75 level, no exits. The
 // approval column starts false; the next selector sample decides it.
 func liveInputs(approved bool) targetInputs {
-	return targetInputs{ExitCosts: fixtureExitCosts(), Levels: map[string]laneLevel{
+	return targetInputs{Levels: map[string]laneLevel{
 		autoAUTOPYUSD.Lane: {Level: 1.75, UpApproved: approved},
 		autoAUTOWYLDSLane:  {Level: 1.75, UpApproved: approved},
 	}}
@@ -63,6 +63,18 @@ func observeLive(t *testing.T, c liveCapture, in targetInputs) Observation {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if len(c.Reads) > 0 {
+		accounts := slices.Clone(c.Reads[0].Accounts)
+		slot := c.Reads[0].Slot
+		if len(c.Refreshes) > 0 {
+			slot = c.Refreshes[0].Slot
+			for _, a := range c.Refreshes[0].Accounts {
+				upsertConfirmedAccount(&accounts, a)
+			}
+		}
+		in.ExitCosts = fixtureExitCosts(manifest, slot, accounts)
+	}
+
 	reads := 0
 	runtime := routeObservationRuntime{state: testVaultState,
 		inputs: in,

@@ -23,6 +23,7 @@ import (
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnmax"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/releasecontrol"
 )
 
 const earnMaxContract = "earn-max-v4"
@@ -85,9 +86,14 @@ func (c InviteCodes) admit(code *string) (string, bool) {
 }
 
 type EarnMax struct {
-	Reader  *earnmax.Reader
-	Cluster SolanaCluster
-	Invites InviteCodes
+	Reader           *earnmax.Reader
+	Consents         *earnmax.WithdrawalConsentStore
+	Attempts         WithdrawalClaimAttempts
+	WithdrawalStatus *earnmax.WithdrawalCostStatusReader
+	Deposits         *earnmax.DepositQuoter
+	Releases         releasecontrol.Querier
+	Cluster          SolanaCluster
+	Invites          InviteCodes
 }
 
 type EarnMaxHeaders struct {
@@ -269,6 +275,8 @@ func newEarnMaxRoutes(auth *Auth, appDB *pgxpool.Pool, cfg EarnMax, release stri
 }
 
 func (h earnMaxRoutes) registerReads(api huma.API) {
+	h.registerWithdrawalConsents(api)
+	h.registerRelease(api)
 	errs := func(codes ...int) map[string]*huma.Response {
 		return errorResponses[routeError](api, codes...)
 	}

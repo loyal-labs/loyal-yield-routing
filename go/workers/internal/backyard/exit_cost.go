@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 	"math"
 	"math/big"
+	"sync"
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
@@ -24,7 +26,8 @@ type microBPS uint64
 
 const microBPSWhole microBPS = 10_000_000_000
 
-const exitQuoteInterval = time.Hour
+const exitQuoteInterval = 30 * time.Second
+const exitQuoteRetryInterval = 5 * time.Second
 
 const selectorDestinationExitUnpriced = "selector_destination_exit_unpriced"
 
@@ -33,6 +36,7 @@ const exitUnpriced = "exit_unpriced"
 const unpricedExitDustFloorRaw = uint64(bridgeUSDCDollarRaw)
 
 type ExitCost struct {
+	scope               *exitQuoteScope
 	Lane                string
 	BPS                 microBPS
 	QuotedCollateralRaw uint64
@@ -43,7 +47,7 @@ type ExitCost struct {
 }
 
 func newExitCost(c ExitCost) (ExitCost, error) {
-	if !earnHeldLane(c.Lane) || c.BPS == 0 || c.BPS >= microBPSWhole || c.QuotedCollateralRaw == 0 ||
+	if !earnHeldLane(c.Lane) || c.BPS >= microBPSWhole || c.QuotedCollateralRaw == 0 ||
 		littleInt(c.MarkSF[:]).Sign() <= 0 || c.Slot <= 0 || c.At.IsZero() ||
 		(c.Source != exitCostQuote && c.Source != exitCostRealized) {
 		return ExitCost{}, fmt.Errorf("invalid_exit_cost")
@@ -56,7 +60,7 @@ func exitCostOf(lane string, source exitCostSource, soldRaw, markValueRaw, retur
 		return ExitCost{}, fmt.Errorf("exit_cost_mark_unavailable")
 	}
 	// One millionth of a basis point distinguishes a free exit from unpriced.
-	bps := big.NewInt(1)
+	bps := big.NewInt(0)
 	if returnedRaw < markValueRaw {
 		bps.Mul(new(big.Int).SetUint64(markValueRaw-returnedRaw), new(big.Int).SetUint64(uint64(microBPSWhole)))
 		bps.Add(bps, new(big.Int).SetUint64(markValueRaw-1)).Quo(bps, new(big.Int).SetUint64(markValueRaw))
@@ -68,7 +72,7 @@ func exitCostOf(lane string, source exitCostSource, soldRaw, markValueRaw, retur
 }
 
 func (c ExitCost) fresh(heldRaw uint64, mark kamino.ScaledFraction) bool {
-	return c.Source == exitCostQuote && c.QuotedCollateralRaw >= heldRaw && c.MarkSF == mark
+	return c.Source == exitCostQuote && c.QuotedCollateralRaw == heldRaw && c.MarkSF == mark
 }
 
 func (c ExitCost) liabilityRaw(valueRaw uint64) (uint64, error) {
@@ -94,12 +98,7 @@ const exitQuoteOutlierRatio = 3
 
 func (e exitCosts) at(lane string, heldRaw uint64, mark kamino.ScaledFraction) (ExitCost, bool) {
 	costs := e[lane]
-	switch {
-	case costs.Quote != nil && costs.Quote.fresh(heldRaw, mark) && !costs.Quote.outlier(costs.Realized):
-		return *costs.Quote, true
-	case costs.Realized != nil:
-		return *costs.Realized, true
-	case costs.Quote != nil:
+	if costs.Quote != nil && costs.Quote.fresh(heldRaw, mark) && costs.Quote.scope != nil {
 		return *costs.Quote, true
 	}
 	return ExitCost{}, false
@@ -124,13 +123,10 @@ func (c ExitCost) outlier(realized *ExitCost) bool {
 
 func (e exitCosts) quoteDue(b heldExitBasis, lastAttempt, now time.Time) bool {
 	costs := e[b.st.route.Lane]
-	switch {
-	case costs.Quote != nil && costs.Quote.fresh(b.heldRaw, b.mark):
+	if costs.Quote != nil && costs.Quote.fresh(b.heldRaw, b.mark) && costs.Quote.scope != nil && costs.Quote.scope.usdc == b.usdc && costs.Quote.validAt(now, b.st.position.Slot) {
 		return false
-	case costs.Realized == nil:
-		return true
 	}
-	return now.Sub(lastAttempt) >= exitQuoteInterval
+	return lastAttempt.IsZero() || lastAttempt.After(now) || now.Sub(lastAttempt) >= exitQuoteRetryInterval
 }
 
 func (e exitCosts) withQuote(c ExitCost) exitCosts {
@@ -145,6 +141,8 @@ func (e exitCosts) withQuote(c ExitCost) exitCosts {
 }
 
 type exitQuoter struct {
+	mu        sync.Mutex
+	cached    exitCosts
 	price     func(context.Context, heldExitBasis, int64, time.Time) (ExitCost, error)
 	record    func(context.Context, ExitCost) (bool, error)
 	now       func() time.Time
@@ -153,9 +151,29 @@ type exitQuoter struct {
 }
 
 func (q *exitQuoter) quote(ctx context.Context, m RouteManifest, slot int64, accounts []ConfirmedAccount, lanes []string, costs exitCosts) exitCosts {
+	q.mu.Lock()
 	if q.attempted == nil {
 		q.attempted = map[string]time.Time{}
 	}
+	pruneAt := q.now()
+	for key, at := range q.attempted {
+		if at.IsZero() || at.After(pruneAt) || pruneAt.Sub(at) >= exitQuoteRetryInterval {
+			delete(q.attempted, key)
+		}
+	}
+	for _, c := range q.cached.candidates(m, slot, q.now()) {
+		if c.Quote != nil {
+			costs = costs.withQuote(*c.Quote)
+		}
+	}
+	q.mu.Unlock()
+	routes := []RuntimeRoute{}
+	for _, lane := range lanes {
+		if r, err := m.route(lane); err == nil {
+			routes = append(routes, r)
+		}
+	}
+	owners := collateralValuationOwners(m.vault, accounts, routes)
 	for _, lane := range lanes {
 		route, err := m.route(lane)
 		if err != nil {
@@ -163,28 +181,57 @@ func (q *exitQuoter) quote(ctx context.Context, m RouteManifest, slot int64, acc
 		}
 		basis, held, err := readHeldExitBasis(m, accounts, route, slot)
 		now := q.now()
+		if err == nil && held && owners[route.CollateralCustody] != route.Lane {
+			basis.heldRaw -= basis.st.collateralBalance
+			prices, priceErr := batchLanePrices(accounts, route)
+			if priceErr == nil {
+				value, e := prices.collateralMicros(basis.heldRaw)
+				err = e
+				basis.markValue = uint64(value)
+			} else {
+				err = priceErr
+			}
+			held = basis.heldRaw > 0
+		}
 		if err != nil {
 			q.events.exitQuoteFailed(lane, err)
 			continue
 		}
-		if !held || !costs.quoteDue(basis, q.attempted[lane], now) {
+		if candidate := costs[lane].Quote; candidate != nil && candidate.pendingFor(m, slot, now, basis) {
 			continue
 		}
-		q.attempted[lane] = now
+		if !held || !costs.applicable(m, slot, now).quoteDue(basis, time.Time{}, now) {
+			continue
+		}
+		key := fmt.Sprintf("%s|%s|%s|%d|%x|%x", m.vault.squads, m.SHA256, lane, basis.heldRaw, basis.mark, basis.usdc)
+		q.mu.Lock()
+		if last := q.attempted[key]; !last.IsZero() && !now.Before(last) && now.Sub(last) < exitQuoteRetryInterval {
+			q.mu.Unlock()
+			continue
+		}
+		q.attempted[key] = now
+		q.mu.Unlock()
 		cost, err := q.price(ctx, basis, slot, now)
-		var stored bool
 		if err == nil {
-			stored, err = q.record(ctx, cost)
+			cost.scope = &exitQuoteScope{vault: m.vault.squads, manifest: m.SHA256, usdc: basis.usdc, path: basis.st.route.Kamino.CollateralMint + ":" + fleet.USDCMint}
+			if q.record != nil {
+				_, _ = q.record(ctx, cost)
+			}
 		}
 		if err != nil {
 			q.events.exitQuoteFailed(lane, err)
 			continue
 		}
-		if stored {
+		if err == nil {
 			if cost.outlier(costs[lane].Realized) {
 				q.events.exitQuoteOutlier(cost, *costs[lane].Realized)
 			}
 			costs = costs.withQuote(cost)
+			q.mu.Lock()
+			cachedCost, scope := cost, *cost.scope
+			cachedCost.scope = &scope
+			q.cached = q.cached.withQuote(cachedCost)
+			q.mu.Unlock()
 		}
 	}
 	return costs
@@ -209,6 +256,7 @@ type heldExitBasis struct {
 	st                 stepState
 	heldRaw, markValue uint64
 	mark               kamino.ScaledFraction
+	usdc               kamino.ScaledFraction
 }
 
 func readHeldExitBasis(m RouteManifest, accounts []ConfirmedAccount, route RuntimeRoute, slot int64) (heldExitBasis, bool, error) {
@@ -232,7 +280,7 @@ func readHeldExitBasis(m RouteManifest, accounts []ConfirmedAccount, route Runti
 	if err != nil {
 		return heldExitBasis{}, false, err
 	}
-	return heldExitBasis{st: st, heldRaw: held, markValue: uint64(value), mark: prices.collateral}, true, nil
+	return heldExitBasis{st: st, heldRaw: held, markValue: uint64(value), mark: prices.collateral, usdc: prices.usdc}, true, nil
 }
 
 func readExitStepState(v *Vault, accounts []ConfirmedAccount, route RuntimeRoute, slot int64) (stepState, error) {
@@ -431,4 +479,14 @@ func (s ExpectedSale) proceedsValue(raw uint64) (uint64, error) {
 		return uint64(value), nil
 	}
 	return raw, nil
+}
+
+func newExitQuoter(database *Database, client *jupiter.Client, m RouteManifest, events *events) *exitQuoter {
+	q := &exitQuoter{events: events, now: func() time.Time { return time.Now().UTC() }, price: func(ctx context.Context, b heldExitBasis, slot int64, at time.Time) (ExitCost, error) {
+		return (lanePricer{client: client, manifest: m}).priceHeldExit(ctx, b, slot, at)
+	}}
+	if database != nil {
+		q.record = database.RecordExitCost
+	}
+	return q
 }

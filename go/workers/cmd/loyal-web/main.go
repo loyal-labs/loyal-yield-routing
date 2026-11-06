@@ -26,6 +26,7 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnprep"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/jwt"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/releasecontrol"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/webapp"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/webserve"
 )
@@ -139,7 +140,7 @@ func buildAuth(appDB *pgxpool.Pool, sessionGranted bool) (*webapp.Auth, *chain.C
 	return auth, rpcClient, err
 }
 
-type grantVerdicts struct{ Content, Stats, Session, EarnMax, Push, PushSend, Yield bool }
+type grantVerdicts struct{ Content, Stats, Session, EarnMax, Push, PushSend, Yield, WithdrawalConsent, WithdrawalAttempt, WithdrawalStatus, ReleaseControl bool }
 
 func checkGrants(ctx context.Context, appDB, yieldDB *pgxpool.Pool) grantVerdicts {
 	ctx, cancel := context.WithTimeout(ctx, grantBound)
@@ -159,6 +160,10 @@ func checkGrants(ctx context.Context, appDB, yieldDB *pgxpool.Pool) grantVerdict
 		{&v.Push, appDB, "push tokens", webapp.PushGrants},
 		{&v.PushSend, appDB, "wallet push sends", webapp.PushSendGrants},
 		{&v.Yield, yieldDB, "Earn MAX route state", webapp.YieldGrants},
+		{&v.WithdrawalConsent, yieldDB, "Earn MAX withdrawal consent", webapp.WithdrawalConsentGrants},
+		{&v.WithdrawalAttempt, yieldDB, "Earn MAX withdrawal claim accounting", webapp.WithdrawalAttemptGrants},
+		{&v.WithdrawalStatus, yieldDB, "Earn MAX withdrawal cost status", webapp.WithdrawalStatusGrants},
+		{&v.ReleaseControl, yieldDB, "Earn MAX release controls and deposit quotes", webapp.ReleaseControlGrants},
 	} {
 		if c.pool != nil {
 			wg.Go(func() { *c.ok = webapp.GrantsHeld(ctx, c.pool, c.routes, c.grants) })
@@ -188,7 +193,25 @@ func earnMax(rpcClient *chain.Client, grants grantVerdicts, yieldDB *pgxpool.Poo
 	if yieldDB != nil && grants.Yield {
 		yield = yieldDB
 	}
-	return &webapp.EarnMax{Reader: earnmax.NewReader(rpcClient, yield), Cluster: cluster, Invites: invites}
+	var consents *earnmax.WithdrawalConsentStore
+	if yieldDB != nil && grants.WithdrawalConsent {
+		consents = earnmax.NewWithdrawalConsentStore(yieldDB)
+	}
+	var attempts webapp.WithdrawalClaimAttempts
+	if consents != nil && grants.WithdrawalAttempt {
+		attempts = earnmax.NewWithdrawalAttemptStore(yieldDB, rpcClient)
+	}
+	var withdrawalStatus *earnmax.WithdrawalCostStatusReader
+	if consents != nil && grants.WithdrawalStatus {
+		withdrawalStatus = earnmax.NewWithdrawalCostStatusReader(yieldDB)
+	}
+	var deposits *earnmax.DepositQuoter
+	var releases releasecontrol.Querier
+	if yieldDB != nil && grants.ReleaseControl {
+		deposits = earnmax.NewDepositQuoter(yieldDB, rpcClient)
+		releases = yieldDB
+	}
+	return &webapp.EarnMax{Reader: earnmax.NewReader(rpcClient, yield), Consents: consents, Attempts: attempts, WithdrawalStatus: withdrawalStatus, Deposits: deposits, Releases: releases, Cluster: cluster, Invites: invites}
 }
 
 func earn(ctx context.Context, registry *prometheus.Registry, rpcClient *chain.Client, appDB, yieldDB, timescaleDB *pgxpool.Pool) *webapp.Earn {

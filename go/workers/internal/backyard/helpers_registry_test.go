@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"testing"
 	"time"
 )
@@ -15,15 +16,58 @@ func pinnedKaminoObservationConfig() (KaminoObservationConfig, error) {
 }
 
 func ComputeRouteNAV(slot int64, accounts []ConfirmedAccount, manifest RouteManifest, override *RouteNAVCustodies) (RouteNAVSnapshot, error) {
-	return ComputeRouteNAVForRoutes(slot, accounts, manifest, override, []RuntimeRoute{primePRIMEUSDC}, fixtureExitCosts())
+	return ComputeRouteNAVForRoutes(slot, accounts, manifest, override, []RuntimeRoute{primePRIMEUSDC}, fixtureExitCosts(manifest, slot, accounts))
 }
 
-func fixtureExitCosts() exitCosts {
+func fixtureExitCosts(m RouteManifest, slot int64, accounts []ConfirmedAccount, selected ...RuntimeRoute) exitCosts {
 	out := exitCosts{}
-	for _, lane := range earnLanes {
-		out[lane.route.Lane] = laneExitCosts{Realized: &ExitCost{Lane: lane.route.Lane, BPS: 1, QuotedCollateralRaw: 1, MarkSF: kaminoOne(), Source: exitCostRealized, Slot: 1, At: time.Unix(kaminoFixtureUnix, 0).UTC()}}
+	if len(selected) == 0 {
+		for _, lane := range earnLanes {
+			if route, err := m.route(lane.route.Lane); err == nil {
+				selected = append(selected, route)
+			}
+		}
+	}
+	owners := collateralValuationOwners(m.vault, accounts, selected)
+	for _, route := range selected {
+		var err error
+		obligation := decodedKaminoObligation{}
+		ob := accountAt(accounts, route.Kamino.Obligation)
+		if ob.Lamports != 0 {
+			obligation, err = decodeKaminoObligation(ob, route.Kamino)
+			if err != nil {
+				continue
+			}
+		}
+		reserves, err := decodeLaneReserves(accounts, route.Kamino, slot, obligation, true)
+		if err != nil {
+			continue
+		}
+		liquidity, err := reserves.collateral.redeemLiquidityRaw(obligation.collateralDepositedRaw)
+		if err != nil {
+			continue
+		}
+		custody, err := vaultCustodyRaw(m.vault, accounts, route.CollateralCustody, route.Kamino.CollateralMint, route.CollateralTokenProgram)
+		if err != nil {
+			continue
+		}
+		if owners[route.CollateralCustody] != route.Lane {
+			custody = 0
+		}
+		heldRaw := liquidity + custody
+		if heldRaw == 0 {
+			continue
+		}
+		basis := heldExitBasis{heldRaw: heldRaw, mark: reserves.collateral.terms.MarketPriceSF, usdc: reserves.usdc.terms.MarketPriceSF}
+
+		c := ExitCost{Lane: route.Lane, Source: exitCostQuote, QuotedCollateralRaw: basis.heldRaw, MarkSF: basis.mark, Slot: slot, At: time.Now().UTC(), scope: &exitQuoteScope{vault: m.vault.squads, manifest: m.SHA256, usdc: basis.usdc, path: route.Kamino.CollateralMint + ":" + fleet.USDCMint}}
+		out[route.Lane] = laneExitCosts{Quote: &c}
 	}
 	return out
+}
+
+func fixtureSnapshotCertificate(s Snapshot) *certifiedNAV {
+	return &certifiedNAV{snapshotBook: snapshotNAVBook(s), vault: rwa.squads, manifest: rwa.manifest.SHA256, slot: s.Slot, validUntil: time.Now().Add(exitQuoteInterval), report: BridgeReport{Sequence: uint64(s.Slot), ObservedSlot: uint64(s.Slot), NAVAfterRaw: uint64(max(s.StrategyNAVRaw, 0)), SnapshotDigest: navDigest(s.ReportSnapshotDigest)}}
 }
 
 func kaminoOne() (sf [16]byte) {
@@ -32,7 +76,7 @@ func kaminoOne() (sf [16]byte) {
 }
 
 func ComputeRouteNAVForRoute(slot int64, accounts []ConfirmedAccount, manifest RouteManifest, override *RouteNAVCustodies, route RuntimeRoute) (RouteNAVSnapshot, error) {
-	return ComputeRouteNAVForRoutes(slot, accounts, manifest, override, []RuntimeRoute{route}, fixtureExitCosts())
+	return ComputeRouteNAVForRoutes(slot, accounts, manifest, override, []RuntimeRoute{route}, fixtureExitCosts(manifest, slot, accounts, route))
 }
 
 // fixtureRefresh is a valuation refresh over a fixture bank whose reserves

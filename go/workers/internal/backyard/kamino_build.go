@@ -17,6 +17,8 @@ type KaminoLegAccounts []struct {
 }
 
 type KaminoLegRequest struct {
+	admission            *addAdmission
+	riskOnly             bool
 	Action               Action
 	AmountRaw            uint64
 	Policy               string

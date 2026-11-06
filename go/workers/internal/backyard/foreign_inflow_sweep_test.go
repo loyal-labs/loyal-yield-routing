@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"testing"
@@ -108,7 +109,7 @@ func TestForeignSweepDoesNotRaisePrincipalCapAndWireStillPersists(t *testing.T) 
 	m := readyWorkerManifest(t)
 	accounts := append(routeNAVFixture(t, 77), exactReportTicketAccount(t, 4))
 	binary.LittleEndian.PutUint64(accountAt(accounts, bridgeStrategyATA).Data[64:72], total)
-	o := Observation{ObservedAt: time.Now().UTC(), Snapshot: Snapshot{Slot: 77, RouteLane: PrimeUSDCLaneID, StrategyKey: PrimeUSDCLaneID, VoltrIdleRaw: 11, VoltrStrategyIdleRaw: int64(total), SquadsIdleRaw: 6, ForeignCustodyRaw: 1}, policies: testPolicies(t), planning: &routePlanningState{inputs: targetInputs{ExitCosts: fixtureExitCosts()}}}
+	o := Observation{ObservedAt: time.Now().UTC(), Snapshot: Snapshot{Slot: 77, RouteLane: PrimeUSDCLaneID, StrategyKey: PrimeUSDCLaneID, VoltrIdleRaw: 11, VoltrStrategyIdleRaw: int64(total), SquadsIdleRaw: 6, ForeignCustodyRaw: 1}, policies: testPolicies(t), planning: &routePlanningState{inputs: targetInputs{ExitCosts: fixtureExitCosts(m, 77, accounts)}}}
 	client := newFakeChain(t, roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		return response(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":78},"value":{"blockhash":%q,"lastValidBlockHeight":999}}}`, bridgeVault)), nil
 	}))
@@ -129,5 +130,44 @@ func TestForeignSweepDoesNotRaisePrincipalCapAndWireStillPersists(t *testing.T) 
 	}
 	if err := result.validateForDelegate(delegate); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestForeignSweepCatchupDefersThenReconcilesWithoutDuplicateCredit(t *testing.T) {
+	const principal, gifts = uint64(7), uint64(70)
+	effects, _, _, _, err := bridgeExpectedEffects(rwa, Decision{Action: VoltrRestoreIdle, AmountRaw: int64(principal)}, 10, principal, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	effects.Kind = effectsBridge
+	foreign := uint64(0)
+	effects.ForeignCustodyRaw = &foreign
+	sweep := foreignSweepFixture(principal + gifts)
+	sweepSig := sweep.Transaction.Signatures[0]
+	anchor := foreignCheckpoint{Signature: foreignInflowAnchor, Slot: foreignInflowAnchorSlot, BalanceRaw: principal}
+	db := &foreignMemoryStore{checkpoints: map[string]foreignCheckpoint{rwa.strategyATA: anchor}}
+	c := &foreignChainFixture{finalized: sweep.Slot, executions: map[solana.Signature]chain.Execution{sweepSig: sweep}, history: map[solana.PublicKey][]chain.Signed{solanaKey(rwa.strategyATA): {{Signature: solana.MustSignatureFromBase58(anchor.Signature), Slot: anchor.Slot}}}}
+	for i := uint64(0); i < gifts; i++ {
+		x := foreignFixture(rwa.strategyATA, principal+i, 1)
+		sig := solana.Signature{byte(i + 10)}
+		x.Transaction.Signatures[0] = sig
+		c.executions[sig] = x
+		c.history[solanaKey(rwa.strategyATA)] = append([]chain.Signed{{Signature: sig, Slot: x.Slot}}, c.history[solanaKey(rwa.strategyATA)]...)
+	}
+	c.history[solanaKey(rwa.strategyATA)] = append([]chain.Signed{{Signature: sweepSig, Slot: sweep.Slot}}, c.history[solanaKey(rwa.strategyATA)]...)
+	pre, _ := transactionTokenBalances(sweep.Pre)
+	post, _ := transactionTokenBalances(sweep.Post)
+	receipt := ConfirmedTransactionEvidence{Signature: sweepSig.String(), Slot: int64(sweep.Slot), Finalized: true, PreTokenBalances: pre, PostTokenBalances: post}
+	ctx := context.Background()
+	if err := proveForeignSweep(ctx, db, c, rwa, effects, &receipt); !errors.Is(err, errConfirmedObservationUnavailable) || db.checkpoints[rwa.strategyATA].ForeignRaw != 64 || receipt.foreignSweepExtraRaw != 0 {
+		t.Fatalf("bounded sweep proof did not defer at durable prefix: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := proveForeignSweep(ctx, db, c, rwa, effects, &receipt); err != nil || receipt.foreignSweepExtraRaw != gifts || len(db.writes) != int(gifts) {
+			t.Fatalf("sweep proof did not resume exactly once: writes=%d extra=%d err=%v", len(db.writes), receipt.foreignSweepExtraRaw, err)
+		}
+		if _, _, err := ReconcileConfirmedTransaction(rwa, effects, receipt); err != nil {
+			t.Fatal(err)
+		}
 	}
 }

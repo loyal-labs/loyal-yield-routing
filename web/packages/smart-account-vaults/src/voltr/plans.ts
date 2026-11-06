@@ -11,23 +11,50 @@ import {
 } from "@solana/web3.js";
 
 import {
+  type EarnMaxDepositQuote,
+  EarnMaxDepositQuoteError,
+} from "./deposit-quote";
+import {
+  assertAccountBytes,
+  assertAccountU64,
+  assertClockSlot,
+  assertClockUnixTimestamp,
+  assertMintSupply,
+  assertTokenAmount,
+  IntegerOperator,
+} from "./lighthouse";
+import {
   depositVaultInstruction,
   readVoltrPosition,
   requestWithdrawVaultInstruction,
   VOLTR_ASSET_DECIMALS,
   VOLTR_ASSET_MINT,
+  VOLTR_DEPOSIT_PRICING_RANGES,
   VOLTR_LP_MINT,
+  VOLTR_PROGRAM_ID,
+  VOLTR_VAULT,
+  VOLTR_VAULT_TOTAL_VALUE_OFFSET,
   voltrClaimBlockReason,
   type VoltrClaimBlockReason,
   voltrUserAccounts,
-  withdrawVaultInstruction,
+  unprotectedWithdrawVaultInstruction,
 } from "./program";
 
 /** `outer` is wallet-signed and runs first; `vault` runs as the index-2
- * smart-account vault inside one executeTransactionSyncV2. */
+ * smart-account vault inside one executeTransactionSyncV2; `after` runs last. */
 export type VoltrPlan = {
   outer: TransactionInstruction[];
   vault: TransactionInstruction[];
+  after?: TransactionInstruction[];
+  claimProtection?: {
+    consent: VoltrWithdrawalConsent;
+    receiptBytes: Uint8Array;
+    connection: Connection;
+    expiresAt: bigint;
+    maxFeeLamports: bigint;
+    settings: string;
+  };
+  lifecycleFence?: boolean;
 };
 
 type PlanContext = { authority: PublicKey; owner: PublicKey };
@@ -36,44 +63,183 @@ type PlanContext = { authority: PublicKey; owner: PublicKey };
 // allocates 112 bytes (measured on mainnet), not the SDK's
 // getRequestWithdrawVaultReceiptSize() of 106.
 const RECEIPT_SPACE = 112;
-const CLAIM_ROUNDING_HEADROOM_RAW = BigInt(1);
 
+export type VoltrWithdrawalConsent = {
+  authority: string;
+  cluster: string;
+  destination: string;
+  expiresAt: string;
+  feeBasisHash: string;
+  lpRaw: string;
+  maxUserFeeLamports: string;
+  minClaimUsdcRaw: string;
+  nonce: string;
+  owner: string;
+  ownerSignature: string;
+  program: string;
+  referenceSlot: string;
+  referenceUsdcRaw: string;
+  requestInstruction: number;
+  requestSignature: string;
+  settings: string;
+  vault: string;
+  version: string;
+  policySeed: string;
+};
+
+export function voltrWithdrawalConsentMessage(
+  c: VoltrWithdrawalConsent,
+): Uint8Array {
+  return new TextEncoder().encode(
+    JSON.stringify([
+      "loyal:earn-max:withdrawal-consent:v1",
+      c.cluster,
+      c.program,
+      c.vault,
+      c.settings,
+      c.owner,
+      c.authority,
+      c.destination,
+      c.requestSignature,
+      String(c.requestInstruction),
+    c.policySeed,
+      c.lpRaw,
+      c.referenceUsdcRaw,
+      c.referenceSlot,
+      c.feeBasisHash,
+      c.minClaimUsdcRaw,
+      c.maxUserFeeLamports,
+      c.version,
+      c.nonce,
+      c.expiresAt,
+    ]),
+  );
+}
+
+export class VoltrWithdrawalConsentError extends Error {
+  readonly code: "needs_consent" | "waiting_price" | "expired";
+  constructor(code: VoltrWithdrawalConsentError["code"]) {
+    super(
+      code === "waiting_price"
+        ? "This withdrawal is below your approved minimum. Wait or approve a new minimum."
+        : code === "expired"
+          ? "Your withdrawal approval expired. Review and approve a new minimum."
+          : "Review and approve a minimum USDC amount before claiming.",
+    );
+    this.name = "VoltrWithdrawalConsentError";
+    this.code = code;
+  }
+}
+
+const MAX_U64 = (BigInt(1) << BigInt(64)) - BigInt(1);
+
+function pinnedTotalValue(quote: EarnMaxDepositQuote): bigint {
+  const pinned = new Map<number, number>();
+  for (const pin of quote.vaultPins)
+    pin.bytes.forEach((byte, i) => pinned.set(pin.offset + i, byte));
+  for (const [start, end] of VOLTR_DEPOSIT_PRICING_RANGES)
+    for (let at = start; at < end; at++)
+      if (!pinned.has(at)) throw new EarnMaxDepositQuoteError("invalid_quote");
+  let value = BigInt(0);
+  for (let i = 7; i >= 0; i--)
+    value =
+      (value << BigInt(8)) |
+      BigInt(pinned.get(VOLTR_VAULT_TOTAL_VALUE_OFFSET + i) ?? 0);
+  return value;
+}
+
+/** Official deposit: Lighthouse asserts the certified pricing basis before the
+ * deposit and the certified LP and supply bounds after it, in one transaction.
+ * Direct Voltr deposits outside this client are not covered. */
 export function voltrDepositPlan(
   { authority, owner }: PlanContext,
-  amountRaw: bigint
+  quote: EarnMaxDepositQuote,
+  nowSec = BigInt(Math.floor(Date.now() / 1000)),
 ): VoltrPlan {
   const user = voltrUserAccounts(authority);
+  const amount = quote.amountRaw;
+  const totalValue = pinnedTotalValue(quote);
+  if (
+    !quote.vault.equals(VOLTR_VAULT) ||
+    !quote.lpMint.equals(VOLTR_LP_MINT) ||
+    !quote.authority.equals(authority) ||
+    !quote.lpAta.equals(user.lpAta) ||
+    amount <= BigInt(0) ||
+    quote.lpMinRaw <= BigInt(0) ||
+    quote.lpMinRaw > quote.lpMaxRaw ||
+    quote.lpBaselineRaw + quote.lpMaxRaw > MAX_U64 ||
+    quote.supplyMaxRaw < quote.lpSupplyRaw + quote.lpMinRaw ||
+    totalValue + amount > MAX_U64 ||
+    quote.notAfterSlot < quote.certifiedSlot
+  )
+    throw new EarnMaxDepositQuoteError("invalid_quote");
+  if (quote.expiresAt <= nowSec)
+    throw new EarnMaxDepositQuoteError("quote_expired");
+  const { equal, greaterThanOrEqual, lessThanOrEqual } = IntegerOperator;
   return {
     outer: [
       createAssociatedTokenAccountIdempotentInstruction(
         owner,
         user.assetAta,
         authority,
-        VOLTR_ASSET_MINT
+        VOLTR_ASSET_MINT,
       ),
       createAssociatedTokenAccountIdempotentInstruction(
         owner,
         user.lpAta,
         authority,
-        VOLTR_LP_MINT
+        VOLTR_LP_MINT,
       ),
       createTransferCheckedInstruction(
         getAssociatedTokenAddressSync(VOLTR_ASSET_MINT, owner),
         VOLTR_ASSET_MINT,
         user.assetAta,
         owner,
-        amountRaw,
-        VOLTR_ASSET_DECIMALS
+        amount,
+        VOLTR_ASSET_DECIMALS,
       ),
+      assertAccountBytes(VOLTR_VAULT, quote.vaultPins),
+      assertMintSupply(VOLTR_LP_MINT, {
+        operator: equal,
+        value: quote.lpSupplyRaw,
+      }),
+      assertTokenAmount(user.lpAta, [
+        { operator: equal, value: quote.lpBaselineRaw },
+      ]),
+      assertClockSlot({ operator: lessThanOrEqual, value: quote.notAfterSlot }),
+      assertClockUnixTimestamp({
+        operator: lessThanOrEqual,
+        value: quote.expiresAt,
+      }),
     ],
-    vault: [depositVaultInstruction(authority, amountRaw)],
+    vault: [depositVaultInstruction(authority, amount)],
+    after: [
+      assertTokenAmount(user.lpAta, [
+        {
+          operator: greaterThanOrEqual,
+          value: quote.lpBaselineRaw + quote.lpMinRaw,
+        },
+        {
+          operator: lessThanOrEqual,
+          value: quote.lpBaselineRaw + quote.lpMaxRaw,
+        },
+      ]),
+      assertMintSupply(VOLTR_LP_MINT, {
+        operator: lessThanOrEqual,
+        value: quote.supplyMaxRaw,
+      }),
+      assertAccountU64(VOLTR_VAULT, VOLTR_VAULT_TOTAL_VALUE_OFFSET, {
+        operator: equal,
+        value: totalValue + amount,
+      }),
+    ],
   };
 }
 
 export async function voltrRequestWithdrawalPlan(
   connection: Connection,
   { authority, owner }: PlanContext,
-  amountRaw: bigint | "max"
+  amountRaw: bigint | "max",
 ): Promise<VoltrPlan> {
   const position = await readVoltrPosition(connection, authority);
   if (position.withdrawal) {
@@ -94,6 +260,7 @@ export async function voltrRequestWithdrawalPlan(
   const needed = receipt + floor;
   const user = voltrUserAccounts(authority);
   return {
+    lifecycleFence: true,
     outer: [
       // Voltr requires the escrow LP account (owned by the receipt PDA) to
       // exist before the request; it persists across requests.
@@ -104,7 +271,7 @@ export async function voltrRequestWithdrawalPlan(
               owner,
               user.escrowLpAta,
               user.receipt,
-              VOLTR_LP_MINT
+              VOLTR_LP_MINT,
             ),
           ]),
       ...(position.authorityLamports >= needed
@@ -133,7 +300,7 @@ export class VoltrClaimLiquidityError extends Error {
     super(
       reason === "insufficient_liquidity"
         ? "The vault does not have enough available USDC to pay this withdrawal yet. Check again later."
-        : "Vault liquidity could not be verified. Check status before claiming."
+        : "Vault liquidity could not be verified. Check status before claiming.",
     );
     this.name = "VoltrClaimLiquidityError";
   }
@@ -141,8 +308,23 @@ export class VoltrClaimLiquidityError extends Error {
 
 export async function voltrClaimPlan(
   connection: Connection,
-  { authority, owner }: PlanContext
+  { authority, owner }: PlanContext,
+  consent?: VoltrWithdrawalConsent,
 ): Promise<VoltrPlan> {
+  if (!consent) throw new VoltrWithdrawalConsentError("needs_consent");
+  if (
+    consent.owner !== owner.toBase58() ||
+    consent.authority !== authority.toBase58() ||
+    consent.destination !== owner.toBase58() ||
+    consent.cluster !== "mainnet-beta" ||
+    consent.program !== VOLTR_PROGRAM_ID.toBase58() ||
+    consent.vault !== VOLTR_VAULT.toBase58()
+  ) {
+    throw new VoltrWithdrawalConsentError("needs_consent");
+  }
+  if (BigInt(consent.expiresAt) <= BigInt(Math.floor(Date.now() / 1000))) {
+    throw new VoltrWithdrawalConsentError("expired");
+  }
   const position = await readVoltrPosition(connection, authority);
   const pending = position.withdrawal;
   const blocked = voltrClaimBlockReason(position);
@@ -150,29 +332,83 @@ export async function voltrClaimPlan(
     throw new Error("Earn MAX withdrawal is not claimable yet.");
   }
   if (blocked) throw new VoltrClaimLiquidityError(blocked);
+  const floor = BigInt(consent.minClaimUsdcRaw);
+  if (floor <= BigInt(0) || BigInt(consent.lpRaw) !== pending.escrowedLpRaw) {
+    throw new VoltrWithdrawalConsentError("needs_consent");
+  }
+  if (pending.payoutRaw < floor)
+    throw new VoltrWithdrawalConsentError("waiting_price");
   const walletAta = getAssociatedTokenAddressSync(VOLTR_ASSET_MINT, owner);
-  const payout =
-    pending.payoutRaw > BigInt(0)
-      ? pending.payoutRaw - CLAIM_ROUNDING_HEADROOM_RAW
-      : BigInt(0);
+  const assetAta = voltrUserAccounts(authority).assetAta;
+  // USDC already in the authority ATA is the baseline: the payout transfer
+  // moves baseline plus floor, so only new proceeds can meet the floor and a
+  // later donation can only add to what the owner receives.
+  const baseline = position.assetAtaExists ? position.assetRaw : BigInt(0);
+  if (baseline + floor > MAX_U64)
+    throw new VoltrWithdrawalConsentError("needs_consent");
+  return {
+    claimProtection: {
+      consent,
+      receiptBytes: pending.receiptBytes,
+      connection,
+      expiresAt: BigInt(consent.expiresAt),
+      maxFeeLamports: BigInt(consent.maxUserFeeLamports),
+      settings: consent.settings,
+    },
+    outer: [
+      createAssociatedTokenAccountIdempotentInstruction(
+        owner,
+        walletAta,
+        owner,
+        VOLTR_ASSET_MINT,
+      ),
+      createAssociatedTokenAccountIdempotentInstruction(
+        owner,
+        assetAta,
+        authority,
+        VOLTR_ASSET_MINT,
+      ),
+    ],
+    vault: [
+      unprotectedWithdrawVaultInstruction(authority),
+      createTransferCheckedInstruction(
+        assetAta,
+        VOLTR_ASSET_MINT,
+        walletAta,
+        authority,
+        baseline + floor,
+        VOLTR_ASSET_DECIMALS,
+      ),
+    ],
+  };
+}
+
+/** Recover only existing user-owned USDC; never consumes a withdrawal receipt. */
+export async function voltrRecoverClaimRemainderPlan(
+  connection: Connection,
+  { authority, owner }: PlanContext,
+): Promise<VoltrPlan> {
+  const position = await readVoltrPosition(connection, authority);
+  if (position.assetRaw <= BigInt(0))
+    throw new Error("No remaining USDC to recover.");
+  const walletAta = getAssociatedTokenAddressSync(VOLTR_ASSET_MINT, owner);
   return {
     outer: [
       createAssociatedTokenAccountIdempotentInstruction(
         owner,
         walletAta,
         owner,
-        VOLTR_ASSET_MINT
+        VOLTR_ASSET_MINT,
       ),
     ],
     vault: [
-      withdrawVaultInstruction(authority),
       createTransferCheckedInstruction(
         voltrUserAccounts(authority).assetAta,
         VOLTR_ASSET_MINT,
         walletAta,
         authority,
-        position.assetRaw + payout,
-        VOLTR_ASSET_DECIMALS
+        position.assetRaw,
+        VOLTR_ASSET_DECIMALS,
       ),
     ],
   };

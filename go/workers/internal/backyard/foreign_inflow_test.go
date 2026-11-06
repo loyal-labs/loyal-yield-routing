@@ -81,15 +81,24 @@ func TestForeignInflowsDistinguishVoltrCPIAndMixedTransaction(t *testing.T) {
 func TestForeignCustodyCanRestoreButCannotHideMissingStagedFunds(t *testing.T) {
 	s := monitorSnapshot(t, nil)
 	s.ForeignCustodyRaw, s.VoltrStrategyIdleRaw = 1, 1
+	if s.net != nil {
+		s.net = fixtureSnapshotCertificate(s)
+	}
 	if got := Decide(s); got.Action != VoltrRestoreIdle || got.AmountRaw != 1 {
 		t.Fatalf("gift blocked: %+v", got)
 	}
 	s.StageTransient, s.StagedAmountKnown, s.StagedAmountRaw = true, true, 7
 	s.VoltrStrategyIdleRaw = 8
+	if s.net != nil {
+		s.net = fixtureSnapshotCertificate(s)
+	}
 	if got := Decide(s); got.Action != VoltrRestoreIdle || got.AmountRaw != 8 {
 		t.Fatalf("staged+gift blocked: %+v", got)
 	}
 	s.VoltrStrategyIdleRaw--
+	if s.net != nil {
+		s.net = fixtureSnapshotCertificate(s)
+	}
 	if got := Decide(s); got.Action != HoldManualRecovery {
 		t.Fatalf("missing principal accepted: %+v", got)
 	}
