@@ -241,7 +241,22 @@ func (e *events) exitQuoteFailed(lane string, err error) {
 	if e == nil {
 		return
 	}
-	e.log.Warn("backyard_exit_quote_unavailable", "lane", lane, "code", sanitizedSelectorEvaluateFailure(err))
+	e.log.Warn("backyard_exit_quote_unavailable", "lane", lane, "code", exitQuoteFailureCode(err))
+}
+
+func exitQuoteFailureCode(err error) string {
+	var rejected jupiterQuoteRejected
+	var status *jupiter.StatusError
+	switch {
+	case errors.As(err, &rejected):
+		return "jupiter_quote_" + string(rejected)
+	case errors.As(err, &status):
+		return fmt.Sprintf("jupiter_quote_http_%d", status.Code)
+	}
+	if reason, ok := kaminoHealthReason(err); ok {
+		return reason
+	}
+	return errorCode(err)
 }
 
 func (e *events) exitQuoteOutlier(quote, realized ExitCost) {
