@@ -2,6 +2,12 @@
 
 Status: local implementation plus an ordered follow-on plan, November 5, 2026. Source base: `68cc8b42a634468fc7105cc02e108b0712a1164b`. No deployment, live policy change, migration or transaction is part of this change. The current patches do not complete the NAV or withdrawal-price contracts below.
 
+## Implementation status — November 5 follow-up
+
+NAV certification, official Earn MAX withdrawal consent and claim enforcement, durable cost accounting, and ClickStack repair are implemented in the follow-up branch. The current NAV definition is preserved; full-size fresh quote coverage is required and financed liquidation is a separate qualification. The updated official claim flow uses the deployed Squads receipt predicate and atomic payout floor. Public protocol entrypoints and old clients remain outside that flow. Looping ordinary withdrawal funding explicitly holds until its consent verifier is supported; urgent risk reductions retain priority.
+
+The implementation and deployment gates are recorded in [the release procedure](../workers/vault-protection-release.md). Unit D below remains the research and optimization roadmap, not a claim of measured profitability or completed financed lifecycle qualification.
+
 ## Outcome and evidence
 
 Deposits, withdrawals and leverage changes must be explainable in token units: what the user paid, what they received, the fees, the execution expense, and the value still owned. Optional allocation must earn its costs under conservative execution assumptions. Missing valuation evidence must block new exposure and NAV certification without disabling observation of debt, custody or urgent risk reduction.
