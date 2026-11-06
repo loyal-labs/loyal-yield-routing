@@ -106,3 +106,16 @@ func TestDepositQuoteBoundsWidenAsManagementFeeAccrues(t *testing.T) {
 		t.Fatalf("bounds [%s,%s], mint at observation %d and at expiry %d", quote.LPMinRaw, quote.LPMaxRaw, lo, hi)
 	}
 }
+
+// Certified NAV above the published value mints extra LP to the depositor;
+// only the issuance fee left in the vault pays holders for it.
+func TestDepositWaitsWhileCertifiedNAVExceedsPublishedValuePastIssuanceFee(t *testing.T) {
+	v := capturedDepositState(t).Vault
+	nav := v.TotalValueRaw + v.TotalValueRaw*(uint64(v.IssuanceFeeBPS)+5)/10_000
+	if depositPricePublished(nav, v) {
+		t.Fatalf("deposit priced %d bps below certified NAV on a %d bps issuance fee", v.IssuanceFeeBPS+5, v.IssuanceFeeBPS)
+	}
+	if within := v.TotalValueRaw + v.TotalValueRaw*(uint64(v.IssuanceFeeBPS)-5)/10_000; !depositPricePublished(within, v) {
+		t.Fatalf("deposit refused %d bps below certified NAV on a %d bps issuance fee", v.IssuanceFeeBPS-5, v.IssuanceFeeBPS)
+	}
+}

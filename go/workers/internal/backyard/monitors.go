@@ -75,7 +75,7 @@ func unexplainedNAVDriftHold(s Snapshot) (Decision, bool) {
 	if !s.netKnown(time.Now()) || !s.MonitorsArmed || s.PostMutationNAVRequired || s.CapitalMutated {
 		return Decision{}, false
 	}
-	if earnmax.NAVDriftOutsideTolerance(uint64(s.StrategyNAVRaw)+uint64(s.ExitLiabilityRaw), uint64(s.PriorReportedNAVRaw)+uint64(s.JournalExitAtReportRaw)) {
+	if earnmax.NAVOutside(uint64(s.StrategyNAVRaw)+uint64(s.ExitLiabilityRaw), uint64(s.PriorReportedNAVRaw)+uint64(s.JournalExitAtReportRaw), earnmax.NAVAnomalyBPS) {
 		return monitorHold(s, "nav_drift_unexplained"), true
 	}
 	return Decision{}, false
@@ -85,7 +85,10 @@ func capitalMutationReports(s Snapshot) bool {
 	return s.CapitalMutated && navDriftOutsideBand(s)
 }
 
-const capitalMutationReportAgeSeconds int64 = 60
+const (
+	capitalMutationReportAgeSeconds int64 = 60
+	navDriftReportSpacingSeconds    int64 = 300
+)
 
 func scheduledNAVReportDue(s Snapshot) bool {
 	return s.netKnown(time.Now()) && (s.LastReportAgeSeconds >= int64(routineNAVReportInterval.Seconds()) ||
@@ -93,12 +96,19 @@ func scheduledNAVReportDue(s Snapshot) bool {
 }
 
 func trustfulReportDue(s Snapshot) bool {
-	return s.netKnown(time.Now()) && (navDriftOutsideBand(s) ||
+	return s.netKnown(time.Now()) && (navDriftReportDue(s) ||
 		s.LastReportAgeSeconds >= int64(routineNAVReportInterval.Seconds()))
 }
 
+// Spacing only rate-limits small drift; a stale price past the anomaly band
+// is published at once.
+func navDriftReportDue(s Snapshot) bool {
+	return navDriftOutsideBand(s) && (s.LastReportAgeSeconds >= navDriftReportSpacingSeconds ||
+		earnmax.NAVOutside(uint64(s.StrategyNAVRaw), uint64(s.PriorReportedNAVRaw), earnmax.NAVAnomalyBPS))
+}
+
 func navDriftOutsideBand(s Snapshot) bool {
-	return s.netKnown(time.Now()) && earnmax.NAVDriftOutsideTolerance(uint64(s.StrategyNAVRaw), uint64(s.PriorReportedNAVRaw))
+	return s.netKnown(time.Now()) && earnmax.NAVOutside(uint64(s.StrategyNAVRaw), uint64(s.PriorReportedNAVRaw), earnmax.NAVPublicationBandBPS)
 }
 
 func approvedVoltrFeeTerms(s Snapshot) bool {

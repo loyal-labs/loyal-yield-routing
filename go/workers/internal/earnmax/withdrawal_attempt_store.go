@@ -134,6 +134,9 @@ func (s *WithdrawalAttemptStore) Reserve(ctx context.Context, c WithdrawalConsen
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return "", err
 	}
+	if err := s.claimNAVPublished(ctx); err != nil {
+		return "", err
+	}
 	if err := s.qualifyWithdrawalClaim(ctx, c, &a); err != nil {
 		return "", err
 	}

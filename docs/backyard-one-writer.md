@@ -24,7 +24,7 @@ looping (Voltr GrHZD…, Squads index 2) runs on Voltr's Trustful adaptor,
 where the strategy receipt is the report: an allocation is
 `deposit_strategy(amount, book after)` paying the Squads vault's USDC
 account, a NAV report is `deposit_strategy(0, book)` when the book differs
-from the receipt by more than 50 bps or the receipt is an hour old, and a
+from the receipt by more than 10 bps (at most every 300 s) or the receipt is an hour old, and a
 withdrawal is one transaction (Squads cash to the Trustful holding account,
 then `withdraw_strategy(amount, book after)`). Its two bridge policies are
 `VOLTR_ALLOCATE_TO_SQUADS` (deposits and reports) and `STAGE_SQUADS_TO_VOLTR`

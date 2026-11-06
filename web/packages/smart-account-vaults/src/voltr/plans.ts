@@ -306,6 +306,29 @@ export class VoltrClaimLiquidityError extends Error {
   }
 }
 
+const CLAIM_HELD_MESSAGES = {
+  claim_waiting_nav_publication:
+    "Earn MAX is waiting for the next vault price update. Your withdrawal stays pending. Try claiming again in a few minutes.",
+} as const;
+
+export type VoltrClaimHeldReason = keyof typeof CLAIM_HELD_MESSAGES;
+
+/** The server held a signed claim before broadcast; nothing was sent. */
+export class VoltrClaimHeldError extends Error {
+  readonly code: VoltrClaimHeldReason;
+  constructor(code: VoltrClaimHeldReason) {
+    super(CLAIM_HELD_MESSAGES[code]);
+    this.name = "VoltrClaimHeldError";
+    this.code = code;
+  }
+}
+
+export function voltrClaimHeld(code: unknown): VoltrClaimHeldError | null {
+  return typeof code === "string" && code in CLAIM_HELD_MESSAGES
+    ? new VoltrClaimHeldError(code as VoltrClaimHeldReason)
+    : null;
+}
+
 export async function voltrClaimPlan(
   connection: Connection,
   { authority, owner }: PlanContext,

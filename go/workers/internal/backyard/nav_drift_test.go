@@ -76,3 +76,17 @@ func TestReportChurnToleranceSuppressesUnchangedValuation(t *testing.T) {
 		})
 	}
 }
+
+// A worse exit quote lowers net NAV with no capital mutation and no hourly
+// report due; the published price must follow within the publication band.
+func TestNetNAVDriftPastPublicationBandReports(t *testing.T) {
+	t.Parallel()
+	s := base()
+	s.PriorReportedNAVRaw, s.JournalExitAtReportRaw = 10_000_000_000, 20_000_000
+	s.StrategyNAVRaw, s.ExitLiabilityRaw = 10_000_000_000-15_000_000, 20_000_000+15_000_000
+	s.LastReportAgeSeconds = 600
+	s.net = fixtureSnapshotCertificate(s)
+	if got := Decide(s); got.Action != ReportNAV || got.Reason != "nav_due" {
+		t.Fatalf("15 bps net drift was not published: %+v", got)
+	}
+}

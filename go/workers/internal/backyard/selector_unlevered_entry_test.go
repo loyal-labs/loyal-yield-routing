@@ -127,7 +127,7 @@ func TestUnleveredEntryLifecycleAndNoLoop(t *testing.T) {
 	s.SquadsIdleRaw, s.CollateralIdleRaw = 0, 1_670_000_000
 	check(OpenRouteStep, entryDepositReason)
 	s.CollateralIdleRaw = 0
-	s.HasPosition, s.PositionCollateralRaw, s.PositionCollateralValueRaw, s.StrategyNAVRaw = true, 1_670_000_000, 1_670_000_000, 1_670_000_000
+	s.HasPosition, s.PositionCollateralRaw, s.PositionCollateralValueRaw, s.StrategyNAVRaw, s.PriorReportedNAVRaw = true, 1_670_000_000, 1_670_000_000, 1_670_000_000, 1_670_000_000
 	check(Hold, string(holdAtTarget))
 	s.LeverageTargetLevel = 1
 	check(Hold, string(holdAtTarget))
