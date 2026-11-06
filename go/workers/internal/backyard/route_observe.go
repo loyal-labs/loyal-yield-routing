@@ -100,6 +100,32 @@ type routeObservationRuntime struct {
 }
 
 func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest RouteManifest, runtime routeObservationRuntime) (Observation, []ConfirmedAccount, error) {
+	for attempt := 0; ; attempt++ {
+		observation, accounts, err := observeRouteSnapshotOnce(ctx, manifest, runtime)
+		if err != nil || attempt == 2 || observation.Snapshot.NAVUnavailable != exitUnpriced {
+			return observation, accounts, err
+		}
+		for _, s := range observation.lanes {
+			if s.HasPosition && (s.LTVBPS >= hardLTVBPS(s.LiquidationThresholdBPS, s.MaxLTVBPS) || termDebtUnknown(s) || s.DebtTermEndUnix > 0 && s.DebtTermEndUnix <= s.ChainUnix) {
+				return observation, accounts, nil
+			}
+		}
+		now, nextSlot := runtime.now(), observation.Snapshot.Slot
+		for lane, costs := range observation.quotedExits {
+			if q := costs.Quote; q != nil && q.scopedTo(manifest, lane) && q.validAt(now, q.Slot) && q.Slot-observation.Snapshot.Slot <= min(observationLagSlots(), adaptorMaxReportAgeSlots) {
+				nextSlot = max(nextSlot, q.Slot)
+			}
+		}
+		if nextSlot <= observation.Snapshot.Slot {
+			return observation, accounts, nil
+		}
+		// Quotes can advance while the account snapshot is being priced. Recapture
+		// the whole book at that slot; every quantity and price is checked again.
+		runtime.minSlot, runtime.inputs.ExitCosts = nextSlot, observation.quotedExits
+	}
+}
+
+func observeRouteSnapshotOnce(ctx context.Context, manifest RouteManifest, runtime routeObservationRuntime) (Observation, []ConfirmedAccount, error) {
 	if runtime.read == nil || runtime.now == nil || runtime.state == nil {
 		return Observation{}, nil, fmt.Errorf("route observation runtime is incomplete")
 	}

@@ -139,3 +139,71 @@ func TestQuoteCandidateWaitsForAccountSlotCatchupWithoutRequoting(t *testing.T) 
 		t.Fatal("candidate exceeded its original lifetime", calls)
 	}
 }
+
+func TestProductionObserverCatchesUpToExitQuotes(t *testing.T) {
+	for _, scenario := range []string{"unchanged holdings", "custody changed", "quotes keep advancing"} {
+		t.Run(scenario, func(t *testing.T) {
+			m := readyWorkerManifest(t)
+			m.RuntimeActivation.SelectedLane = PrimeUSDCLaneID
+			bank := int64(77)
+			batch := func(slot int64) []ConfirmedAccount {
+				return productionRouteBatchAccounts(t, slot, func(a []ConfirmedAccount) {
+					cash := uint64(1_000_000_000)
+					if scenario == "custody changed" && slot >= 79 {
+						cash += 50
+					}
+					if scenario == "quotes keep advancing" {
+						cash += uint64(slot-77) * 50
+					}
+					binary.LittleEndian.PutUint64(accountAt(a, primePRIMEUSDC.CollateralCustody).Data[64:72], cash)
+				})
+			}
+			quotes, refreshes := 0, 0
+			var quoted []uint64
+			q := &exitQuoter{now: time.Now, price: func(_ context.Context, b heldExitBasis, slot int64, at time.Time) (ExitCost, error) {
+				quotes++
+				quoted = append(quoted, b.heldRaw)
+				quoteSlot := slot
+				if quotes == 1 || scenario == "quotes keep advancing" {
+					quoteSlot += 2
+				}
+				return exitCostOf(b.st.route.Lane, exitCostQuote, b.heldRaw, b.markValue, b.markValue, b.mark, quoteSlot, at)
+			}}
+			o, accounts, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), m, routeObservationRuntime{
+				state: &vaultState{}, exits: q, now: time.Now,
+				read: func(ctx context.Context, addresses []string, minSlot int64) (int64, []ConfirmedAccount, []programAccount, error) {
+					bank = max(bank, minSlot)
+					return fixtureBatchRuntime(bank, batch(bank))(ctx, addresses, minSlot)
+				},
+				refreshValuation: func(ctx context.Context, routes []RuntimeRoute, addresses []string, minSlot int64) (int64, []ConfirmedAccount, error) {
+					refreshes++
+					return fixtureRefresh(bank, batch(bank))(ctx, routes, addresses, minSlot)
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if scenario == "quotes keep advancing" {
+				if refreshes != 3 || o.Snapshot.netKnown(time.Now()) || o.Snapshot.NAVUnavailable != exitUnpriced {
+					t.Fatal("unbounded catchup or future quote certified", refreshes, o.Snapshot.NAVUnavailable)
+				}
+				return
+			}
+			if !o.Snapshot.netKnown(time.Now()) || o.Snapshot.Slot != 79 || refreshes != 2 {
+				t.Fatal("fresh quote and coherent recapture did not certify", refreshes, o.Snapshot.Slot, o.Snapshot.NAVUnavailable)
+			}
+			if scenario == "custody changed" {
+				if quotes != 2 || quoted[1] != quoted[0]+50 || o.Snapshot.CollateralIdleRaw != 1_000_000_050 {
+					t.Fatal("recapture reused a quote for the old holding", quotes, quoted, o.Snapshot.CollateralIdleRaw)
+				}
+			} else if quotes != 1 {
+				t.Fatal("unchanged holdings were needlessly requoted", quotes)
+			}
+			for _, account := range accounts {
+				if account.ValuationSlot != o.Snapshot.Slot {
+					t.Fatal("mixed banks after recapture", account.Address, account.ValuationSlot)
+				}
+			}
+		})
+	}
+}
