@@ -120,7 +120,7 @@ func (q *DepositQuoter) Quote(ctx context.Context, authority solana.PublicKey, a
 	if err != nil {
 		return DepositQuote{}, err
 	}
-	if !nav.validAt(time.Now(), slot) {
+	if !nav.depositValidAt(time.Now(), slot) {
 		return DepositQuote{}, &DepositRefusal{DepositNAVUncertified}
 	}
 	var lockedProfit, lastReport string
