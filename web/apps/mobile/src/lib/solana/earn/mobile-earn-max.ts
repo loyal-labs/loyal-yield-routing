@@ -3,6 +3,7 @@ import {
   fetchEarnMaxDepositQuote,
   prepareEarnMaxVoltr,
   voltrClaimPlan,
+  VoltrClaimHeldError,
   VoltrClaimLiquidityError,
   voltrDepositPlan,
   type VoltrPlanBuilder,
@@ -189,6 +190,11 @@ export async function executeMobileEarnMax(
       flow.fail("prepare", {
         chainState: "not_submitted",
         errorCode: "earn_max_liquidity_unavailable",
+      });
+    } else if (error instanceof VoltrClaimHeldError) {
+      flow.fail(stage, {
+        chainState: "not_submitted",
+        errorCode: "state_not_ready",
       });
     } else {
       flow.failFrom(stage, error);

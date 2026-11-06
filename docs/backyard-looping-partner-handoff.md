@@ -34,7 +34,7 @@ A depositor talks only to the Voltr program, using `@voltr/vault-sdk`. The adapt
 Loyal's worker manages the vault through its own Squads account. Squads policies bind each act to these exact programs and accounts.
 
 - **Put money to work:** deposited USDC moves from Voltr idle to the Squads account, then into Kamino looping lanes. The worker enters a lane only when its expected 30-day gain exceeds the full move cost, including the lane's one-time setup rent (about $2.50). On Oct 14 2026 that was about $490 idle for ONyc and $710 for Maple 1.5x. Below that, USDC stays in Voltr idle.
-- **Report value:** the worker reports the Squads book through Voltr `deposit_strategy`: cash plus each lane's collateral minus debt, read from chain at one slot. It reports when the book moves more than 50 bps from the last reported value, and at least hourly.
+- **Report value:** the worker reports the Squads book through Voltr `deposit_strategy`: cash plus each lane's collateral minus debt, read from chain at one slot. It reports when the book moves more than 10 bps from the last reported value (at most every 300 s), and at least hourly.
 - **Pay withdrawals:** a pending request makes the worker unwind enough of a lane. It then returns the USDC to Voltr idle in one transaction, before the 600 s wait ends.
 
 The reported value is the manager's statement of the Squads book. It is not computed on chain by Voltr. Anyone can recompute it from the Squads vault's token accounts and Kamino obligations.

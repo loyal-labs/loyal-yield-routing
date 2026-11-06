@@ -7,7 +7,7 @@ import type {
   ReferralClaimRequest,
   Summary,
 } from "@loyal-labs/api";
-import type { VoltrWithdrawalConsent, ProtectedVoltrClaimBroadcast } from "@loyal-labs/smart-account-vaults";
+import { voltrClaimHeld, type VoltrWithdrawalConsent, type ProtectedVoltrClaimBroadcast } from "@loyal-labs/smart-account-vaults";
 import { Buffer } from "buffer";
 
 import { earnHeaders, earnWalletRead } from "@/lib/solana/earn/earn-session";
@@ -36,7 +36,10 @@ export async function saveEarnMaxWithdrawalConsent(
 
 export async function reserveEarnMaxWithdrawalClaim(walletAddress: string, claim: ProtectedVoltrClaimBroadcast) {
   const response = await earnWalletRead(walletAddress, `${env.apiBaseUrl}/api/smart-accounts/earn-max/withdrawal-claim-attempt`, { method: "POST", body: JSON.stringify({ ...claim, wire: undefined, wireBase64: Buffer.from(claim.wire).toString("base64") }) });
-  if (!response.ok) throw await earnMaxFailure(response, "This withdrawal claim could not be reserved. Check status before signing again.");
+  if (!response.ok) {
+    const failure = await earnMaxFailure(response, "This withdrawal claim could not be reserved. Check status before signing again.");
+    throw voltrClaimHeld(failure.code) ?? failure;
+  }
 }
 
 async function earnMaxFailure(response: Response, fallback: string) {

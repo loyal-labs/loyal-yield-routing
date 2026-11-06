@@ -196,6 +196,9 @@ func (h earnMaxRoutes) registerWithdrawalClaimAttempts(api huma.API) {
 			if errors.Is(err, earnmax.ErrWithdrawalFeeBudget) {
 				return nil, h.fail(http.StatusConflict, "fee_budget_exhausted", "The approved network-fee budget is used. Review and approve a higher budget before signing again.")
 			}
+			if errors.Is(err, earnmax.ErrClaimWaitingNAVPublication) {
+				return nil, h.fail(http.StatusConflict, earnmax.ErrClaimWaitingNAVPublication.Error(), "Earn MAX is waiting for the next vault price update. Your withdrawal stays pending. Try claiming again in a few minutes.")
+			}
 			if errors.Is(err, earnmax.ErrWithdrawalClaimPending) {
 				return nil, h.fail(http.StatusConflict, "withdrawal_claim_pending", "A claim you already signed is still pending. Check status before signing another transaction.")
 			}

@@ -161,3 +161,13 @@ func TestWithdrawalAttemptDatabaseFeeReservationSurvivesWideningAndRetries(t *te
 		t.Fatal("attempt ID detached from exact wire")
 	}
 }
+
+// A claim pays at the published total value, so a stale-high price would pay
+// the claimant out of the remaining holders.
+func TestClaimWaitsWhilePublishedValueExceedsCertifiedNAV(t *testing.T) {
+	now := time.Now()
+	nav := &certifiedVaultNAV{totalRaw: 10_000_000_000, certifiedSlot: 100, maxSlot: 132, validUntil: now.Add(30 * time.Second)}
+	if err := claimPricePublished(nav, now, 110, 10_000_000_000+15_000_000); err != ErrClaimWaitingNAVPublication {
+		t.Fatalf("claim admitted 15 bps above certified NAV: %v", err)
+	}
+}

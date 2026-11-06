@@ -607,7 +607,7 @@ func decideSnapshot(s Snapshot, initializationReady func(Snapshot) bool) Decisio
 		if hold, drifted := unexplainedNAVDriftHold(s); drifted {
 			return hold
 		}
-		if (s.ExitLiabilityRaw != s.JournalExitAtReportRaw && navDriftOutsideBand(s)) || capitalMutationReports(s) || (scheduledNAVReportDue(s) && !(t.Rule == ruleEntry && t.EntryRaw > 0)) {
+		if navDriftReportDue(s) || capitalMutationReports(s) || (scheduledNAVReportDue(s) && !(t.Rule == ruleEntry && t.EntryRaw > 0)) {
 			return report("nav_due")
 		}
 	}

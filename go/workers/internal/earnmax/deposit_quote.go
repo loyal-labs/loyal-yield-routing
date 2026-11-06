@@ -116,16 +116,12 @@ func (q *DepositQuoter) Quote(ctx context.Context, authority solana.PublicKey, a
 	if err != nil {
 		return DepositQuote{}, err
 	}
-	var certifiedNAV string
-	var certifiedSlot, maxSlot int64
-	var validUntil time.Time
-	err = tx.QueryRow(ctx, `SELECT total_nav_raw::text,certified_slot,max_slot,valid_until FROM loyal_yield.backyard_certified_nav WHERE vault=$1`, Vault.String()).Scan(&certifiedNAV, &certifiedSlot, &maxSlot, &validUntil)
-	now := time.Now()
-	if errors.Is(err, pgx.ErrNoRows) || (err == nil && (!now.Before(validUntil) || int64(slot) < certifiedSlot || int64(slot) > maxSlot)) {
-		return DepositQuote{}, &DepositRefusal{DepositNAVUncertified}
-	}
+	nav, err := readCertifiedVaultNAV(ctx, tx)
 	if err != nil {
 		return DepositQuote{}, err
+	}
+	if !nav.validAt(time.Now(), slot) {
+		return DepositQuote{}, &DepositRefusal{DepositNAVUncertified}
 	}
 	var lockedProfit, lastReport string
 	err = tx.QueryRow(ctx, `SELECT locked_profit_raw::text,last_report_unix::text FROM loyal_yield.backyard_confirmed_nav_publications WHERE vault=$1`, Vault.String()).Scan(&lockedProfit, &lastReport)
@@ -135,14 +131,10 @@ func (q *DepositQuoter) Quote(ctx context.Context, authority solana.PublicKey, a
 	if err != nil {
 		return DepositQuote{}, err
 	}
-	nav, err := strconv.ParseUint(certifiedNAV, 10, 64)
-	if err != nil {
-		return DepositQuote{}, err
-	}
-	if lockedProfit != strconv.FormatUint(vault.LastUpdatedLockedProfitRaw, 10) || lastReport != strconv.FormatUint(vault.LastLockedProfitReportUnix, 10) || NAVDriftOutsideTolerance(nav, vault.TotalValueRaw) {
+	if lockedProfit != strconv.FormatUint(vault.LastUpdatedLockedProfitRaw, 10) || lastReport != strconv.FormatUint(vault.LastLockedProfitReportUnix, 10) || !depositPricePublished(nav.totalRaw, vault) {
 		return DepositQuote{}, &DepositRefusal{DepositWaitingNAVPublication}
 	}
-	quote, err := newDepositQuote(depositState{Authority: authority, LPATA: lpATA, VaultData: accounts[0].Data, Vault: vault, SupplyRaw: supply, AssetDecimals: assetDecimals, LPDecimals: lpDecimals, BaselineRaw: baseline}, amountRaw, chainNow, validUntil, certifiedSlot, maxSlot)
+	quote, err := newDepositQuote(depositState{Authority: authority, LPATA: lpATA, VaultData: accounts[0].Data, Vault: vault, SupplyRaw: supply, AssetDecimals: assetDecimals, LPDecimals: lpDecimals, BaselineRaw: baseline}, amountRaw, chainNow, nav.validUntil, nav.certifiedSlot, nav.maxSlot)
 	if err != nil {
 		return DepositQuote{}, err
 	}
@@ -157,7 +149,7 @@ func (q *DepositQuoter) Quote(ctx context.Context, authority solana.PublicKey, a
 	if err != nil {
 		return DepositQuote{}, err
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO loyal_yield.earn_max_deposit_quotes(certificate_id,vault,authority,amount_raw,lp_min_raw,lp_max_raw,certified_slot,not_after_slot,release_control_version,expires_at,quote) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT (certificate_id) DO NOTHING`, quote.CertificateID, quote.Vault, quote.Authority, quote.AmountRaw, quote.LPMinRaw, quote.LPMaxRaw, certifiedSlot, maxSlot, admission.Version, expires, stored); err != nil {
+	if _, err := tx.Exec(ctx, `INSERT INTO loyal_yield.earn_max_deposit_quotes(certificate_id,vault,authority,amount_raw,lp_min_raw,lp_max_raw,certified_slot,not_after_slot,release_control_version,expires_at,quote) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT (certificate_id) DO NOTHING`, quote.CertificateID, quote.Vault, quote.Authority, quote.AmountRaw, quote.LPMinRaw, quote.LPMaxRaw, nav.certifiedSlot, nav.maxSlot, admission.Version, expires, stored); err != nil {
 		return DepositQuote{}, err
 	}
 	return quote, tx.Commit(ctx)

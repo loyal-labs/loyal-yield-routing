@@ -7,6 +7,8 @@ import {
   isVoltrOperationVisible,
   prepareEarnMaxVoltr,
   sendPreparedWithWallet,
+  VoltrClaimHeldError,
+  voltrClaimHeld,
   VoltrClaimLiquidityError,
   voltrClaimPlan,
   voltrDepositPlan,
@@ -321,6 +323,8 @@ export function useEarnMaxVoltr(input: {
             const response = await fetch("/api/smart-accounts/earn-max/withdrawal-claim-attempt", { method: "POST", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...claim, wire: undefined, wireBase64: Buffer.from(claim.wire).toString("base64") }) });
             if (!response.ok) {
               const failure = z.object({ error: z.object({ code: z.string(), message: z.string().optional() }) }).safeParse(await response.json());
+              const held = failure.success ? voltrClaimHeld(failure.data.error.code) : null;
+              if (held) throw held;
               throw new Error(failure.success ? failure.data.error.message ?? "This withdrawal claim could not be reserved. Check status before signing another transaction." : "This withdrawal claim could not be reserved. Check status before signing another transaction.");
             }
           },
@@ -354,6 +358,12 @@ export function useEarnMaxVoltr(input: {
           tracker.fail("prepare", {
             chainState: "not_submitted",
             errorCode: "earn_max_liquidity_unavailable",
+          });
+          await refresh();
+        } else if (nextError instanceof VoltrClaimHeldError) {
+          tracker.fail(stage, {
+            chainState: "not_submitted",
+            errorCode: "state_not_ready",
           });
           await refresh();
         } else if (

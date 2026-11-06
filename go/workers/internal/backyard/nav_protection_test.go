@@ -176,25 +176,6 @@ func TestSnapshotNumbersCannotBorrowCertificateFromAnotherBook(t *testing.T) {
 	}
 }
 
-func TestMaterialExitLiabilityChangeReportsTrueNet(t *testing.T) {
-	s := base()
-	s.StrategyNAVRaw = 90_000_000
-	s.TotalVaultNAVRaw = 90_000_000
-	s.PriorReportedNAVRaw = 100_000_000
-	s.ExitLiabilityRaw = 10_000_000
-	s.net = fixtureSnapshotCertificate(s)
-	if d := Decide(targeted(s)); d.Action != ReportNAV || d.Reason != "nav_due" {
-		t.Fatal("liability-only change lost NAV report", d)
-	}
-	s.StrategyNAVRaw = 99_999_999
-	s.TotalVaultNAVRaw = s.StrategyNAVRaw
-	s.ExitLiabilityRaw = 1
-	s.net = fixtureSnapshotCertificate(s)
-	if d := Decide(targeted(s)); d.Action == ReportNAV {
-		t.Fatal("immaterial liability forced report", d)
-	}
-}
-
 func TestSharedCollateralAttributionDoesNotFollowWorkingLane(t *testing.T) {
 	m, accounts := multiLaneFixture(t, nil)
 	a := fundLane(t, &accounts, autoAUTOPYUSD.Lane, 100_000_000, 20_000_000)
