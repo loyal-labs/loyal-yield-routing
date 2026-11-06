@@ -5,9 +5,11 @@ import (
 	"encoding/binary"
 	"fmt"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/voltr"
 	"net/http"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -298,6 +300,31 @@ func TestNAVQuoteRequestsFullHoldingWithoutBuildingExecution(t *testing.T) {
 	cost, err := (lanePricer{client: client, manifest: m}).priceHeldExit(context.Background(), basis, 77, time.Now())
 	if err != nil || requests != 1 || cost.QuotedCollateralRaw != basis.heldRaw || cost.BPS != 0 {
 		t.Fatalf("full holding unavailable: %+v %v requests=%d", cost, err, requests)
+	}
+}
+
+func TestNAVQuotePricesLargeAUTOHoldingOnAnExecutableRoute(t *testing.T) {
+	m := readyWorkerManifest(t)
+	route, err := m.route(autoAUTOPYUSDTemplate.Lane)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mark kamino.ScaledFraction
+	mark[8] = 1
+	basis := heldExitBasis{st: stepState{route: route}, heldRaw: 49_593_308_342, markValue: 51_152_508_103, mark: mark, usdc: mark}
+	client, err := fixtureJupiter(roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		maxAccounts, _ := strconv.Atoi(r.URL.Query().Get("maxAccounts"))
+		// Measured 2026-11-06 on this holding: 5 legs at 64 accounts, 4 at 50.
+		legs := strings.TrimSuffix(strings.Repeat("{},", min(maxAccounts/12, 5)), ",")
+		out := basis.markValue - basis.markValue/1000
+		return response(fmt.Sprintf(`{"inputMint":%q,"outputMint":%q,"inAmount":%q,"outAmount":"%d","otherAmountThreshold":"%d","swapMode":"ExactIn","slippageBps":50,"contextSlot":77,"routePlan":[%s],"platformFee":null}`, route.Kamino.CollateralMint, fleet.USDCMint, r.URL.Query().Get("amount"), out, jupiterOutputFloor(out, 50), legs)), nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cost, err := (lanePricer{client: client, manifest: m}).priceHeldExit(context.Background(), basis, 77, time.Now())
+	if err != nil || cost.QuotedCollateralRaw != basis.heldRaw {
+		t.Fatalf("full AUTO holding left unpriced: %+v %v", cost, err)
 	}
 }
 
