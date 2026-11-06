@@ -8,6 +8,7 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 	"math"
 	"math/big"
+	"slices"
 	"sync"
 	"time"
 
@@ -88,8 +89,22 @@ func (c ExitCost) evidence() string {
 	return fmt.Sprintf("exit:%s:%s:%d:%d:%x:%d", c.Lane, c.Source, c.BPS, c.QuotedCollateralRaw, c.MarkSF, c.Slot)
 }
 
+// Quote prices the last observed slot; Pending is a newer quote whose slot
+// leads it.
 type laneExitCosts struct {
-	Quote, Realized *ExitCost
+	Quote, Pending, Realized *ExitCost
+}
+
+func (c *ExitCost) cloned() *ExitCost {
+	if c == nil {
+		return nil
+	}
+	out := *c
+	if c.scope != nil {
+		scope := *c.scope
+		out.scope = &scope
+	}
+	return &out
 }
 
 type exitCosts map[string]laneExitCosts
@@ -98,8 +113,10 @@ const exitQuoteOutlierRatio = 3
 
 func (e exitCosts) at(lane string, heldRaw uint64, mark kamino.ScaledFraction) (ExitCost, bool) {
 	costs := e[lane]
-	if costs.Quote != nil && costs.Quote.fresh(heldRaw, mark) && costs.Quote.scope != nil {
-		return *costs.Quote, true
+	for _, c := range []*ExitCost{costs.Pending, costs.Quote} {
+		if c != nil && c.fresh(heldRaw, mark) && c.scope != nil {
+			return *c, true
+		}
 	}
 	return ExitCost{}, false
 }
@@ -121,28 +138,43 @@ func (c ExitCost) outlier(realized *ExitCost) bool {
 	return realized != nil && realized.BPS > 1 && c.BPS > exitQuoteOutlierRatio*realized.BPS
 }
 
-func (e exitCosts) quoteDue(b heldExitBasis, lastAttempt, now time.Time) bool {
+func (e exitCosts) covers(m RouteManifest, b heldExitBasis, slot int64, now time.Time) bool {
 	costs := e[b.st.route.Lane]
-	if costs.Quote != nil && costs.Quote.fresh(b.heldRaw, b.mark) && costs.Quote.scope != nil && costs.Quote.scope.usdc == b.usdc && costs.Quote.validAt(now, b.st.position.Slot) {
-		return false
+	for _, c := range []*ExitCost{costs.Pending, costs.Quote} {
+		if c != nil && c.scopedTo(m, b.st.route.Lane) && c.fresh(b.heldRaw, b.mark) && c.scope.usdc == b.usdc && c.validAt(now, max(slot, c.Slot)) {
+			return true
+		}
 	}
-	return lastAttempt.IsZero() || lastAttempt.After(now) || now.Sub(lastAttempt) >= exitQuoteRetryInterval
+	return false
 }
 
-func (e exitCosts) withQuote(c ExitCost) exitCosts {
+func (e exitCosts) withQuote(c ExitCost, slot int64) exitCosts {
 	out := make(exitCosts, len(e)+1)
 	for lane, costs := range e {
 		out[lane] = costs
 	}
 	costs := out[c.Lane]
-	costs.Quote = &c
+	if p := costs.Pending; p != nil && p.Slot <= slot {
+		costs.Quote, costs.Pending = p, nil
+	}
+	if c.Slot <= slot {
+		costs.Quote = &c
+	} else {
+		costs.Pending = &c
+	}
 	out[c.Lane] = costs
 	return out
 }
 
+const exitQuoteGapSamples = 8
+
 type exitQuoter struct {
 	mu        sync.Mutex
 	cached    exitCosts
+	bases     map[string]heldExitBasis
+	slot      int64
+	gaps      [exitQuoteGapSamples]int64
+	gapAt     int
 	price     func(context.Context, heldExitBasis, int64, time.Time) (ExitCost, error)
 	record    func(context.Context, ExitCost) (bool, error)
 	now       func() time.Time
@@ -150,23 +182,74 @@ type exitQuoter struct {
 	attempted map[string]time.Time
 }
 
-func (q *exitQuoter) quote(ctx context.Context, m RouteManifest, slot int64, accounts []ConfirmedAccount, lanes []string, costs exitCosts) exitCosts {
+// refresh runs before the snapshot is read, so a quote's slot does not lead
+// the snapshot it prices. It quotes the basis the last observation held,
+// only where no quote covers the slot the next snapshot is expected at.
+func (q *exitQuoter) refresh(ctx context.Context, m RouteManifest, costs exitCosts) {
 	q.mu.Lock()
 	if q.attempted == nil {
 		q.attempted = map[string]time.Time{}
 	}
-	pruneAt := q.now()
+	now := q.now()
 	for key, at := range q.attempted {
-		if at.IsZero() || at.After(pruneAt) || pruneAt.Sub(at) >= exitQuoteRetryInterval {
+		if at.IsZero() || at.After(now) || now.Sub(at) >= exitQuoteRetryInterval {
 			delete(q.attempted, key)
 		}
 	}
-	for _, c := range q.cached.candidates(m, slot, q.now()) {
-		if c.Quote != nil {
-			costs = costs.withQuote(*c.Quote)
+	gap := min(observationLagSlots(), adaptorMaxReportAgeSlots)
+	if q.gapAt >= exitQuoteGapSamples {
+		gap = slices.Max(q.gaps[:])
+	}
+	last, expected := q.slot, q.slot+gap
+	due := map[string]heldExitBasis{}
+	for _, b := range q.bases {
+		key := fmt.Sprintf("%s|%s|%s|%d|%x|%x", m.vault.squads, m.SHA256, b.st.route.Lane, b.heldRaw, b.mark, b.usdc)
+		if q.cached.covers(m, b, expected, now) || !q.attempted[key].IsZero() {
+			continue
 		}
+		q.attempted[key] = now
+		due[key] = b
 	}
 	q.mu.Unlock()
+	for key, b := range due {
+		lane := b.st.route.Lane
+		cost, err := q.price(ctx, b, expected, now)
+		if err != nil {
+			q.events.exitQuoteFailed(lane, err)
+			continue
+		}
+		cost.scope = &exitQuoteScope{vault: m.vault.squads, manifest: m.SHA256, usdc: b.usdc, path: b.st.route.Kamino.CollateralMint + ":" + fleet.USDCMint}
+		if q.record != nil {
+			_, _ = q.record(ctx, cost)
+		}
+		if cost.outlier(costs[lane].Realized) {
+			q.events.exitQuoteOutlier(cost, *costs[lane].Realized)
+		}
+		q.mu.Lock()
+		delete(q.attempted, key)
+		q.cached = q.cached.withQuote(*cost.cloned(), last)
+		q.mu.Unlock()
+	}
+}
+
+func (q *exitQuoter) merged(costs exitCosts) exitCosts {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	out := make(exitCosts, len(costs)+len(q.cached))
+	for lane, c := range costs {
+		out[lane] = c
+	}
+	for lane, cached := range q.cached {
+		c := out[lane]
+		c.Quote, c.Pending = cached.Quote.cloned(), cached.Pending.cloned()
+		out[lane] = c
+	}
+	return out
+}
+
+// observed records the snapshot's slot and the held basis of lanes, which the
+// next refresh quotes.
+func (q *exitQuoter) observed(m RouteManifest, slot int64, accounts []ConfirmedAccount, lanes []string) {
 	routes := []RuntimeRoute{}
 	for _, lane := range lanes {
 		if r, err := m.route(lane); err == nil {
@@ -174,13 +257,9 @@ func (q *exitQuoter) quote(ctx context.Context, m RouteManifest, slot int64, acc
 		}
 	}
 	owners := collateralValuationOwners(m.vault, accounts, routes)
-	for _, lane := range lanes {
-		route, err := m.route(lane)
-		if err != nil {
-			continue
-		}
+	bases := map[string]heldExitBasis{}
+	for _, route := range routes {
 		basis, held, err := readHeldExitBasis(m, accounts, route, slot)
-		now := q.now()
 		if err == nil && held && owners[route.CollateralCustody] != route.Lane {
 			basis.heldRaw -= basis.st.collateralBalance
 			prices, priceErr := batchLanePrices(accounts, route)
@@ -194,47 +273,21 @@ func (q *exitQuoter) quote(ctx context.Context, m RouteManifest, slot int64, acc
 			held = basis.heldRaw > 0
 		}
 		if err != nil {
-			q.events.exitQuoteFailed(lane, err)
+			q.events.exitQuoteFailed(route.Lane, err)
 			continue
 		}
-		if candidate := costs[lane].Quote; candidate != nil && candidate.pendingFor(m, slot, now, basis) {
-			continue
-		}
-		if !held || !costs.applicable(m, slot, now).quoteDue(basis, time.Time{}, now) {
-			continue
-		}
-		key := fmt.Sprintf("%s|%s|%s|%d|%x|%x", m.vault.squads, m.SHA256, lane, basis.heldRaw, basis.mark, basis.usdc)
-		q.mu.Lock()
-		if last := q.attempted[key]; !last.IsZero() && !now.Before(last) && now.Sub(last) < exitQuoteRetryInterval {
-			q.mu.Unlock()
-			continue
-		}
-		q.attempted[key] = now
-		q.mu.Unlock()
-		cost, err := q.price(ctx, basis, slot, now)
-		if err == nil {
-			cost.scope = &exitQuoteScope{vault: m.vault.squads, manifest: m.SHA256, usdc: basis.usdc, path: basis.st.route.Kamino.CollateralMint + ":" + fleet.USDCMint}
-			if q.record != nil {
-				_, _ = q.record(ctx, cost)
-			}
-		}
-		if err != nil {
-			q.events.exitQuoteFailed(lane, err)
-			continue
-		}
-		if err == nil {
-			if cost.outlier(costs[lane].Realized) {
-				q.events.exitQuoteOutlier(cost, *costs[lane].Realized)
-			}
-			costs = costs.withQuote(cost)
-			q.mu.Lock()
-			cachedCost, scope := cost, *cost.scope
-			cachedCost.scope = &scope
-			q.cached = q.cached.withQuote(cachedCost)
-			q.mu.Unlock()
+		if held {
+			bases[route.Lane] = basis
 		}
 	}
-	return costs
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.slot > 0 && slot > q.slot {
+		q.gaps[q.gapAt%exitQuoteGapSamples] = slot - q.slot
+		q.gapAt++
+	}
+	q.slot = max(q.slot, slot)
+	q.bases = bases
 }
 
 func (e *events) exitQuoteFailed(lane string, err error) {
