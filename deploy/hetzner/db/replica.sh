@@ -318,39 +318,9 @@ cmd_check() {
 
 cmd_metrics() {
   local out=/var/lib/prometheus/node-exporter/loyal_db_replica.prom
-  local spec src sub sql row active lag enabled workers last
   {
-    echo '# TYPE loyal_db_subscription_enabled gauge'
-    echo '# TYPE loyal_db_subscription_worker_up gauge'
-    echo '# TYPE loyal_db_subscription_last_msg_receipt_timestamp_seconds gauge'
-    for spec in "${DATABASES[@]}"; do
-      sub=loyal_hz_$(field "$spec" 1)
-      [[ -n $(local_sql -d postgres -c "select 1 from pg_subscription where subname='$sub'") ]] || continue
-      sql="select coalesce((select subenabled::int from pg_subscription where subname='$sub'), 0), (select count(*) from pg_stat_subscription where subname='$sub' and worker_type='apply' and pid is not null), coalesce((select extract(epoch from max(last_msg_receipt_time))::bigint::text from pg_stat_subscription where subname='$sub' and worker_type='apply'), '')"
-      IFS='|' read -r enabled workers last < <(local_sql -d postgres -c "$sql")
-      echo "loyal_db_subscription_enabled{subscription=\"$sub\"} $enabled"
-      echo "loyal_db_subscription_worker_up{subscription=\"$sub\"} $((workers > 0 ? 1 : 0))"
-      [[ -z $last ]] || echo "loyal_db_subscription_last_msg_receipt_timestamp_seconds{subscription=\"$sub\"} $last"
-    done
-    echo '# TYPE loyal_db_neon_probe_success gauge'
-    echo '# TYPE loyal_db_neon_slot_active gauge'
-    echo '# TYPE loyal_db_neon_slot_lag_bytes gauge'
-    for spec in "${DATABASES[@]}"; do
-      src=$(field "$spec" 1) sub=loyal_hz_$(field "$spec" 1)
-      [[ -n $(local_sql -d postgres -c "select 1 from pg_subscription where subname='$sub'") ]] || continue
-      if row=$(PGCONNECT_TIMEOUT=10 NEON_STATEMENT_TIMEOUT=20000 neon_ro "$src" -c "select coalesce(bool_or(active), false)::int || ' ' || coalesce(max(pg_wal_lsn_diff(pg_current_wal_lsn(), confirmed_flush_lsn))::bigint, 0) from pg_replication_slots where slot_name='$sub'" 2>/dev/null); then
-        read -r active lag <<<"$row"
-        echo "loyal_db_neon_probe_success{source=\"$src\"} 1"
-        echo "loyal_db_neon_slot_active{slot=\"$sub\"} $active"
-        echo "loyal_db_neon_slot_lag_bytes{slot=\"$sub\"} $lag"
-      else
-        echo "loyal_db_neon_probe_success{source=\"$src\"} 0"
-      fi
-    done
     echo '# TYPE loyal_db_pg_wal_bytes gauge'
     echo "loyal_db_pg_wal_bytes $(local_sql -d postgres -c 'select coalesce(sum(size), 0) from pg_ls_waldir()')"
-    echo '# TYPE loyal_db_replica_metrics_last_success_timestamp_seconds gauge'
-    echo "loyal_db_replica_metrics_last_success_timestamp_seconds $(date +%s)"
   } >"$out.tmp"
   chmod 0644 "$out.tmp"
   mv -f "$out.tmp" "$out"

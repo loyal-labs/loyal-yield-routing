@@ -548,8 +548,11 @@ proxying, remove the drop-in, daemon-reload and restart.
 
 ### Cron jobs and push webhooks
 
-Both timers were installed and enabled on loyal-workers on Nov 5 2026 (14:00 PST), and
-`web/apps/web/vercel.json` no longer schedules them.
+Both timers were installed and enabled on loyal-workers on Nov 5 2026 (14:00 PST).
+The Vercel projects loyal-frontend and loyal-app are git-linked to the old
+loyal-app repository, so `vercel.json` in this repo does not deploy to them.
+Their cron jobs were disabled on Nov 5 2026 15:02 PST in each project's
+dashboard (Settings > Cron Jobs), and re-enabling is the same page.
 
 The jobs `web/apps/web/vercel.json` used to schedule run from `loyal-web`:
 
@@ -764,14 +767,8 @@ The alerts are:
 | LoyalUnitDown | Any `loyal-*` unit is `failed`, or stuck `activating`, for 2m |
 | LoyalUnitRestartLoop | Any `loyal-*` unit restarts more than 3 times in 15m |
 | LoyalMonitoringDown | node_exporter, Prometheus or Alertmanager is not scrapeable for 2m |
-| LoyalDbReplicaSubscriptionDown | A Neon replica subscription on loyal-db-primary has no apply worker for 5m (disabled, dropped or crashing) |
-| LoyalDbReplicaSubscriptionStale | `pg_stat_subscription.last_msg_receipt_time` is over 15m old (keepalives arrive every minute when healthy), sustained for 1m |
-| LoyalDbNeonSlotInactive | Neon reports a `loyal_hz_*` slot with no consumer for 10m. Neon drops an inactive slot after about 40h |
-| LoyalDbNeonSlotLag | A Neon slot trails the Neon write position by over 5 GiB for 10m |
-| LoyalDbNeonProbeFailing | The slot query against Neon failed on every run for 15m, so the slot alerts are blind |
 | LoyalDbVolumeLow | `/srv/postgresql` on loyal-db-primary has under 100 GiB free for 5m |
 | LoyalDbWalLarge | `pg_wal` on loyal-db-primary is over 60 GB for 5m |
-| LoyalDbReplicaMetricsStale | The replica metrics timer has not completed for 10m, or its series is gone |
 | Watchdog | Always firing. It goes to the heartbeat receiver, and the external switch pages when it stops |
 
 Known Autodeposit gaps:
@@ -796,29 +793,28 @@ python3 monitoring/verify-alert-messages.py  # requires python3-yaml and amtool
 systemd-analyze verify deploy/hetzner/systemd/*.service   # Linux only
 ```
 
-### Replica guards (loyal-db-primary)
+### DB guards (loyal-db-primary)
 
 The DB box runs a node_exporter bound to `10.92.1.1:9100` with only the
 filesystem and textfile collectors. Prometheus scrapes it as a second target
 of job `node`, so `LoyalMonitoringDown` covers it. The textfile
 `/var/lib/prometheus/node-exporter/loyal_db_replica.prom` is written every
-minute by `loyal-db-replica-metrics.timer` (`replica.sh metrics`). It reads
-subscription state locally and the Neon slots through the replica's own
-read-only `pg_service.conf`, so no Neon API key is involved. Install or
-refresh the box side with `deploy/hetzner/db/remote.sh guards`.
+minute by `loyal-db-replica-metrics.timer` (`replica.sh metrics`) and carries
+`loyal_db_pg_wal_bytes`, which `LoyalDbWalLarge` reads. `LoyalDbVolumeLow` reads
+the filesystem collector. Install or refresh the box side with
+`deploy/hetzner/db/remote.sh guards`.
 
 `loyal-db-retention.timer` runs `replica.sh retain` daily at 04:30 UTC. It
 calls `drop_chunks(..., older_than => interval '62 days')` on the two
-hypertables of the replica only. `remote.sh retain --dry-run` lists the chunks
-it would drop.
+hypertables only. `remote.sh retain --dry-run` lists the chunks it would drop.
 
-Remove: `systemctl disable --now loyal-db-replica-metrics.timer
-loyal-db-retention.timer prometheus-node-exporter` on the box, delete the four
-units in `/etc/systemd/system`, `apt-get remove prometheus-node-exporter`,
-drop the `10.92.1.1:9100` target from `prometheus.yml` and the
-`loyal-db-replica` rule group. After `cutover.sh pause-neon` drops the
-subscriptions, `replica.sh metrics` stops emitting their series and those
-alerts resolve, so the group can stay until the guards go.
+### After the cutover
+
+Replication from Neon is retired. `cutover.sh pause-neon` dropped the
+subscriptions `loyal_hz_{app,yield,timescale}` and their Neon slots on Nov 5
+2026 (16:15 PST), and the subscription and Neon slot alerts and their metrics
+are gone from the rules. Apply migrations to loyal-db-primary only. The Neon
+projects are paused (endpoints disabled), not deleted, as the owner chose.
 
 ### Withdrawal attention
 

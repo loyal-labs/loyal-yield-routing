@@ -374,68 +374,10 @@ groups:
           action: "Read the retail engine's 'bridge incoming scan incomplete' warning for the error and Privy status. Check Privy rate limits and that the address still exists as an Ethereum wallet in the Privy app."
           recovery: "Confirm the failed-addresses gauge is back to 0 on the next scan."
 
-  - name: loyal-db-replica
+  - name: loyal-db
     rules:
-      # Series come from `loyal-db-replica metrics` on loyal-db-primary (a
-      # node_exporter textfile, deploy/hetzner/db/replica.sh). Neon drops a
-      # slot that stays inactive for about 40h, so every threshold leaves
-      # most of that window to act in. Delete this group when the
-      # subscriptions are dropped after cutover.
-      - alert: LoyalDbReplicaSubscriptionDown
-        expr: loyal_db_subscription_worker_up == 0
-        for: 5m
-        labels: {severity: page}
-        annotations:
-          summary: "Replica subscription {{ $labels.subscription }} has no apply worker"
-          trigger: "The subscription has had no running apply worker on loyal-db-primary for 5 minutes. It is disabled, dropped or crashing."
-          impact: "The Hetzner copy stops following Neon. Neon drops an inactive slot after about 40 hours and the database must then be copied again."
-          action: "On loyal-db-primary run `loyal-db-replica verify`, then read the postgresql@18-main log for the apply error. A disabled subscription is resumed with ALTER SUBSCRIPTION ... ENABLE. Do not drop it."
-          recovery: "Verify the apply worker is back (`loyal-db-replica verify` shows a fresh last_msg) and the slot lag is falling to 0."
-
-      - alert: LoyalDbReplicaSubscriptionStale
-        expr: time() - loyal_db_subscription_last_msg_receipt_timestamp_seconds > 900
-        for: 1m
-        labels: {severity: page}
-        annotations:
-          summary: "Replica subscription {{ $labels.subscription }} has received nothing for 15m"
-          trigger: "pg_stat_subscription.last_msg_receipt_time is more than 15 minutes old. A healthy walsender sends a keepalive at least every minute."
-          impact: "The apply worker is attached but not receiving from Neon, so the replica falls behind and the slot pins WAL on Neon."
-          action: "On loyal-db-primary run `loyal-db-replica verify` and read the postgresql@18-main log for connection or apply errors. Check Neon status and that the Neon compute is awake."
-          recovery: "Verify last_msg in `loyal-db-replica verify` is seconds old and stays so."
-
-      - alert: LoyalDbNeonSlotInactive
-        expr: loyal_db_neon_slot_active == 0
-        for: 10m
-        labels: {severity: page}
-        annotations:
-          summary: "Neon slot {{ $labels.slot }} is inactive"
-          trigger: "Neon reports the replication slot has no connected consumer for 10 minutes."
-          impact: "Neon removes an inactive slot after about 40 hours. Until then it pins WAL and grows Neon storage; after that the database must be copied again."
-          action: "Find why the subscription is not connected (`loyal-db-replica verify`, apply worker, Neon reachability) and fix it within hours, not days."
-          recovery: "Verify the slot is active=true in `loyal-db-replica verify` and its lag is falling."
-
-      - alert: LoyalDbNeonSlotLag
-        expr: loyal_db_neon_slot_lag_bytes > 5368709120
-        for: 10m
-        labels: {severity: page}
-        annotations:
-          summary: "Neon slot {{ $labels.slot }} lags by {{ $value | humanize1024 }}B"
-          trigger: "confirmed_flush_lsn trails the Neon write position by more than 5 GiB for 10 minutes."
-          impact: "The replica is far behind and the slot pins that much WAL on Neon storage."
-          action: "Check whether the apply worker is running, the box disk is full, or a large write is in flight (`loyal-db-replica verify`). Do not drop the slot."
-          recovery: "Verify the lag is below 5 GiB and falling."
-
-      - alert: LoyalDbNeonProbeFailing
-        expr: loyal_db_neon_probe_success == 0
-        for: 15m
-        labels: {severity: page}
-        annotations:
-          summary: "Cannot read the Neon {{ $labels.source }} slot from loyal-db-primary"
-          trigger: "The slot query against Neon failed on every run for 15 minutes."
-          impact: "Slot activity and lag for that source are unknown, so the slot alerts cannot fire."
-          action: "On loyal-db-primary run `loyal-db-replica check`. Check Neon status, the Neon URL in /etc/loyal-db/replica and that the compute accepts connections."
-          recovery: "Verify the metrics file shows loyal_db_neon_probe_success 1 for that source."
-
+      # loyal_db_pg_wal_bytes comes from `loyal-db-replica metrics` on
+      # loyal-db-primary (a node_exporter textfile, deploy/hetzner/db/replica.sh).
       - alert: LoyalDbVolumeLow
         expr: node_filesystem_avail_bytes{mountpoint="/srv/postgresql"} < 100 * 1024 * 1024 * 1024
         for: 5m
@@ -457,17 +399,6 @@ groups:
           impact: "WAL is not being archived or a slot holds it, and the volume fills."
           action: "Check the pgbackrest archive backlog and Storage Box reachability, and any stalled replication slot (`loyal-db-replica verify`)."
           recovery: "Verify pg_wal is back below 60 GB and shrinking."
-
-      - alert: LoyalDbReplicaMetricsStale
-        expr: time() - max(loyal_db_replica_metrics_last_success_timestamp_seconds) > 600 or absent(loyal_db_replica_metrics_last_success_timestamp_seconds)
-        for: 5m
-        labels: {severity: page}
-        annotations:
-          summary: "Replica health metrics from loyal-db-primary are not updating"
-          trigger: "The loyal-db-replica-metrics timer has not completed a run for 10 minutes, or the series is gone."
-          impact: "Every replica alert above is blind, so a stopped subscription would go unnoticed."
-          action: "On loyal-db-primary run `systemctl status loyal-db-replica-metrics.service` and `journalctl -u loyal-db-replica-metrics`. Check node_exporter is scraped (LoyalMonitoringDown for job node)."
-          recovery: "Verify the last-success timestamp advances every minute."
 
   - name: monitoring
     rules:
