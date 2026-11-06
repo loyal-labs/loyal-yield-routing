@@ -769,6 +769,7 @@ The alerts are:
 | LoyalMonitoringDown | node_exporter, Prometheus or Alertmanager is not scrapeable for 2m |
 | LoyalDbVolumeLow | `/srv/postgresql` on loyal-db-primary has under 100 GiB free for 5m |
 | LoyalDbWalLarge | `pg_wal` on loyal-db-primary is over 60 GB for 5m |
+| LoyalDbMetricsStale | The pg_wal textfile has not been rewritten for 10m, or `loyal_db_pg_wal_bytes` is gone, so LoyalDbWalLarge is blind |
 | Watchdog | Always firing. It goes to the heartbeat receiver, and the external switch pages when it stops |
 
 Known Autodeposit gaps:

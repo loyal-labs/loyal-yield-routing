@@ -385,7 +385,7 @@ groups:
         annotations:
           summary: "loyal-db-primary data volume has {{ $value | humanize1024 }}B free"
           trigger: "Free space on /srv/postgresql stayed below 100 GiB for 5 minutes."
-          impact: "Postgres stops when the volume is full, which also stops the replica."
+          impact: "Postgres stops when the volume is full, which takes down every Loyal database."
           action: "Look at pg_wal and the archive backlog first (`loyal-db-replica verify`), then the largest relations. Free space before the volume fills; do not delete WAL files by hand."
           recovery: "Verify free space is above 100 GiB and not falling."
 
@@ -396,9 +396,20 @@ groups:
         annotations:
           summary: "loyal-db-primary pg_wal is {{ $value | humanize1024 }}B"
           trigger: "pg_wal stayed above 60 GB for 5 minutes."
-          impact: "WAL is not being archived or a slot holds it, and the volume fills."
+          impact: "WAL archiving to pgbackrest is behind or a slot holds the WAL, and the volume fills until Postgres stops."
           action: "Check the pgbackrest archive backlog and Storage Box reachability, and any stalled replication slot (`loyal-db-replica verify`)."
           recovery: "Verify pg_wal is back below 60 GB and shrinking."
+
+      - alert: LoyalDbMetricsStale
+        expr: time() - max(node_textfile_mtime_seconds{file="loyal_db_replica.prom"}) > 600 or absent(loyal_db_pg_wal_bytes)
+        for: 5m
+        labels: {severity: page}
+        annotations:
+          summary: "pg_wal size from loyal-db-primary is not updating"
+          trigger: "The loyal-db-replica-metrics timer has not rewritten the pg_wal textfile for 10 minutes, or loyal_db_pg_wal_bytes is gone."
+          impact: "LoyalDbWalLarge is blind, so WAL growing behind a stalled pgbackrest archive would go unnoticed."
+          action: "On loyal-db-primary run `systemctl status loyal-db-replica-metrics.service` and `journalctl -u loyal-db-replica-metrics`. Check node_exporter is scraped (LoyalMonitoringDown for job node)."
+          recovery: "Verify the textfile modification time advances every minute."
 
   - name: monitoring
     rules:
