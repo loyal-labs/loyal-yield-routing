@@ -614,10 +614,9 @@ the value is safe before the credentials above exist) with the secret unchanged.
 `activate.sh` reads the running release from the
 `40-verified-release.conf` drop-in, and the deploy refuses to run without
 one, so the first release is installed by hand. Build the linux binary from
-a checkout at `<sha>`: the bundle inlines `NEXT_PUBLIC_*` from the build
-environment (as Next does), so run it under
-`op run --env-file=.env.1password --`, which carries the `NEXT_PUBLIC_*` set
-Vercel production inlines (`NEXT_PUBLIC_PRIVY_APP_ID` is required;
+a checkout at `<sha>`: the bundle inlines the names listed in
+`web/apps/loyal/vite/public-env.ts` from the build environment, so run it under
+`op run --env-file=.env.1password --`, which carries them (`NEXT_PUBLIC_PRIVY_APP_ID` is required;
 `NEXT_PUBLIC_APP_ENVIRONMENT` stays unset, as on Vercel, and means prod).
 Values are never echoed. The deploy always sets `NEXT_PUBLIC_GIT_COMMIT_HASH=<sha>` and
 `NEXT_PUBLIC_GIT_BRANCH=main` itself.
