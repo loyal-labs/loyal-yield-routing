@@ -224,8 +224,9 @@ func parseRetailKey(material string) (ed25519.PrivateKey, error) {
 	return key, nil
 }
 
+// PollInterval only paces candidate discovery; the 15s evidence rule is met by the read at lease time.
 func (c retailConfig) fleetConfig() fleet.Config {
-	return fleet.Config{DatabaseURL: c.databaseURL, TimescaleURL: c.timescaleURL, TimescaleSchema: c.timescaleSchema, RPCURL: c.rpcURL, Cluster: "mainnet-beta", PollInterval: 15 * time.Second, DelegatedSigner: base58.Encode(c.delegate[32:]), RevalidationOwner: "retail", RevalidationLeaseTTL: 30 * time.Second, RevalidationComputeLimit: 1_400_000, CrossMintEnabled: c.crossMintEnabled, CrossMintMaxValueLossBPS: c.crossMintMaxValueLossBPS, CrossMintMaxSlippageBPS: c.crossMintMaxSlippageBPS, JupiterBuildURL: c.jupiterBuildURL, JupiterAPIKey: c.jupiterAPIKey}
+	return fleet.Config{DatabaseURL: c.databaseURL, TimescaleURL: c.timescaleURL, TimescaleSchema: c.timescaleSchema, RPCURL: c.rpcURL, Cluster: "mainnet-beta", PollInterval: 30 * time.Second, DelegatedSigner: base58.Encode(c.delegate[32:]), RevalidationOwner: "retail", RevalidationLeaseTTL: 30 * time.Second, RevalidationComputeLimit: 1_400_000, CrossMintEnabled: c.crossMintEnabled, CrossMintMaxValueLossBPS: c.crossMintMaxValueLossBPS, CrossMintMaxSlippageBPS: c.crossMintMaxSlippageBPS, JupiterBuildURL: c.jupiterBuildURL, JupiterAPIKey: c.jupiterAPIKey}
 }
 
 type retailStageFailure struct {
@@ -349,9 +350,10 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 	if err != nil {
 		return retailError("lookup writer", err)
 	}
+	// The planner probes RPC every tick; provisioning a table up to 5s later costs nothing a second poll bought.
 	lookupPlanner, err := fleetexec.NewLookupPlanner(dStore, cluster, fleetexec.LookupPlannerConfig{
 		Cluster: "mainnet-beta", Owner: owner, LeaseTTL: 30 * time.Second,
-		TickDeadline: 20 * time.Second, PollInterval: time.Second,
+		TickDeadline: 20 * time.Second, PollInterval: 5 * time.Second,
 		CatalogInterval: time.Minute, GrowthReservation: fleetexec.SourceGrowthReservation, MaximumVaultCohort: fleetexec.SourceMaximumVaultCohort,
 		ReconcileOnly: !cfg.lookup.active, Facts: facts,
 		OnHealth: laneHealth(facts, engine.FamilyLookup, "lookup_planner"),

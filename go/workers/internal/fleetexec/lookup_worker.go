@@ -89,8 +89,7 @@ func (w *LookupWorker) tick(ctx context.Context) (worked bool, err error) {
 		return false, err
 	}
 	if op == nil {
-		_, _, _, err = lookupBlockhash(ctx, w.chain)
-		return false, err
+		return false, nil
 	}
 	defer func() {
 		if errors.Is(err, chain.ErrBehind) {
