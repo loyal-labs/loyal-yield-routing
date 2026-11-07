@@ -1,8 +1,10 @@
 import "server-only";
 
-import type { SolanaEndpoints, SolanaEnv } from "@loyal-labs/solana-rpc";
-
-import { getFrontendSolanaEndpoints } from "./rpc-endpoints";
+import {
+  getSolanaEndpoints,
+  type SolanaEndpoints,
+  type SolanaEnv,
+} from "@loyal-labs/solana-rpc";
 
 function readServerEndpointOverride(env: SolanaEnv): SolanaEndpoints | null {
   if (env === "localnet") {
@@ -17,16 +19,16 @@ function readServerEndpointOverride(env: SolanaEnv): SolanaEndpoints | null {
     return null;
   }
 
-  const publicEndpoints = getFrontendSolanaEndpoints(env);
+  const sharedEndpoints = getSolanaEndpoints(env);
   return {
     rpcEndpoint,
     websocketEndpoint:
       process.env[`SOLANA_${envPrefix}_WEBSOCKET_URL`]?.trim() ||
       process.env.SOLANA_WEBSOCKET_URL?.trim() ||
-      publicEndpoints.websocketEndpoint,
+      sharedEndpoints.websocketEndpoint,
   };
 }
 
 export function getServerSolanaEndpoints(env: SolanaEnv): SolanaEndpoints {
-  return readServerEndpointOverride(env) ?? getFrontendSolanaEndpoints(env);
+  return readServerEndpointOverride(env) ?? getSolanaEndpoints(env);
 }
