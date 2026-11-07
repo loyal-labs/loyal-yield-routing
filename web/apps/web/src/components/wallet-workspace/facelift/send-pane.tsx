@@ -12,6 +12,7 @@ import type { SwapToken } from "@/components/wallet-sidebar/types";
 import {
   actionPaneOverflowClass,
   ActionErrorBody,
+  ActionStatusUnknownBody,
   ActionProcessingBody,
   ActionSuccessBody,
   formatTokenAmount,
@@ -120,6 +121,7 @@ export function SendPane({
   onFormActiveChange,
   onOpenAssetSelect,
   onOpenRecipientSelect,
+  onProcessingChange,
   onSuccess,
   recipient,
   recordRecent,
@@ -130,6 +132,7 @@ export function SendPane({
   onFormActiveChange?: (isFormActive: boolean) => void;
   onOpenAssetSelect: () => void;
   onOpenRecipientSelect: () => void;
+  onProcessingChange?: (isProcessing: boolean) => void;
   onSuccess: () => void;
   recipient: string | null;
   recordRecent: (address: string) => void;
@@ -142,14 +145,19 @@ export function SendPane({
   const [isUsdInput, setIsUsdInput] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [step, setStep] = useState<"form" | "processing" | "success" | "error">(
-    "form"
-  );
+  const [step, setStep] = useState<
+    "form" | "processing" | "success" | "error" | "status-unknown"
+  >("form");
   const [txSignature, setTxSignature] = useState<string | null>(null);
 
   useEffect(() => {
     onFormActiveChange?.(step === "form");
   }, [step, onFormActiveChange]);
+
+  useEffect(() => {
+    onProcessingChange?.(step === "processing");
+    return () => onProcessingChange?.(false);
+  }, [step, onProcessingChange]);
 
   const numericInput = Number.parseFloat(amountInput.replace(/,/g, "")) || 0;
   const tokenAmount = isUsdInput
@@ -231,6 +239,14 @@ export function SendPane({
       setStep("success");
       return;
     }
+    if (result.transactionWasSubmitted) {
+      setTxSignature(result.transactionSignature);
+      setErrorMessage(result.error);
+      setAmountInput("");
+      onSuccess();
+      setStep("status-unknown");
+      return;
+    }
     setErrorMessage(result.error ?? "Send failed. Please try again.");
     setStep("error");
   };
@@ -255,7 +271,8 @@ export function SendPane({
         <div className="flex shrink-0 items-center pr-3">
           <button
             aria-label="Back"
-            className="t-hover flex size-11 items-center justify-center rounded-3xl hover:bg-accent"
+            className="t-hover flex size-11 items-center justify-center rounded-3xl hover:bg-accent disabled:opacity-40 disabled:hover:bg-transparent"
+            disabled={step === "processing"}
             onClick={onBack}
             type="button"
           >
@@ -465,6 +482,13 @@ export function SendPane({
             onDone={onDone}
             signature={txSignature}
             source="send_success"
+          />
+        ) : step === "status-unknown" ? (
+          <ActionStatusUnknownBody
+            message={errorMessage}
+            onDone={onDone}
+            signature={txSignature}
+            source="send_status_unknown"
           />
         ) : (
           <ActionErrorBody

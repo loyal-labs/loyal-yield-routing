@@ -19,6 +19,13 @@ import {
 } from "@/features/observability/lifecycle-contract";
 import { trackWalletSwapCompleted } from "@/lib/core/analytics";
 import {
+  sendRecoveringSignature,
+  settleSentTransaction,
+  transactionFailedMessage,
+  type TransactionStatusUnknown,
+  transactionStatusUnknown,
+} from "@/lib/solana/confirm-sent-transaction";
+import {
   isSwapVisible,
   type SwapBalanceSnapshot,
 } from "@/features/observability/swap-visibility";
@@ -76,12 +83,10 @@ export type SwapQuote = {
   fee?: string;
 };
 
-export type SwapResult = {
-  signature?: string;
-  success: boolean;
-  error?: string;
-  status?: "executed" | "proposed";
-};
+export type SwapResult =
+  | { signature?: string; status?: "executed" | "proposed"; success: true }
+  | { error?: string; success: false; transactionWasSubmitted?: false }
+  | TransactionStatusUnknown;
 
 export type SwapExecutionContext = {
   executeTransaction: (
@@ -368,7 +373,7 @@ export function useSwap(visibleBalances: SwapBalanceSnapshot) {
       tracker.start("intent");
       const before = visibleBalancesRef.current;
 
-      try {
+      const broadcastUntilSettled = async () => {
         logger.debug("Executing swap with quote:", quoteResponse);
 
         // The stored quote is as old as the user's review pause + wallet
@@ -448,12 +453,20 @@ export function useSwap(visibleBalances: SwapBalanceSnapshot) {
             const executionResult = executionContext
               ? await executionContext.executeTransaction(transaction)
               : {
-                  signature: await sendTransaction(transaction, connection),
-                  success: true,
+                  signature: await sendRecoveringSignature(() =>
+                    sendTransaction(transaction, connection)
+                  ),
+                  success: true as const,
                   status: "executed" as const,
                 };
 
             if (!executionResult.success) {
+              if (executionResult.transactionWasSubmitted) {
+                return {
+                  kind: "status-unknown" as const,
+                  signature: executionResult.transactionSignature,
+                };
+              }
               throw new Error(executionResult.error ?? "Swap execution failed");
             }
 
@@ -466,64 +479,22 @@ export function useSwap(visibleBalances: SwapBalanceSnapshot) {
 
             if (!executionContext && signature) {
               logger.debug("Confirming transaction...");
-              const latestBlockhash = await connection.getLatestBlockhash(
-                "confirmed"
-              );
-              const confirmation = await connection.confirmTransaction(
-                {
-                  signature,
-                  blockhash: latestBlockhash.blockhash,
-                  lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
-                },
-                "confirmed"
-              );
-
-              if (confirmation.value.err) {
-                throw new Error(
-                  `Transaction failed: ${JSON.stringify(
-                    confirmation.value.err
-                  )}`
-                );
+              const outcome = await settleSentTransaction(connection, {
+                lastValidBlockHeight: swapData.lastValidBlockHeight,
+                signature,
+              });
+              if (outcome.kind === "failed") {
+                throw new Error(transactionFailedMessage(outcome.err));
+              }
+              if (outcome.kind === "status-unknown") {
+                return { kind: "status-unknown" as const, signature };
               }
             }
 
-            logger.debug("Transaction confirmed!");
-            tracker.observe("wallet_submit_confirm", {
-              chainState:
-                executionResult.status === "proposed"
-                  ? "submitted"
-                  : "confirmed",
-            });
-            setLoading(false);
-            if (executionResult.status === "proposed") {
-              tracker.observe("ui_commit", { chainState: "submitted" });
-            } else {
-              tracker.observe("ui_commit", { chainState: "confirmed" });
-              if (
-                before.owner === swapUserPublicKey.toBase58() &&
-                visibleBalancesRef.current.owner === before.owner
-              ) {
-                pendingVisibility.current.set(tracker.flowId, {
-                  tracker,
-                  before,
-                  atConfirmation: visibleBalancesRef.current,
-                  inputMint: activeQuote.inputMint,
-                  outputMint: activeQuote.outputMint,
-                  signature,
-                  successProperties: successTrackingProperties,
-                  timer: setTimeout(() => {
-                    if (pendingVisibility.current.has(tracker.flowId))
-                      tracker.timeout("balance_visible", {
-                        chainState: "confirmed",
-                        errorCode: "realtime_unresolved",
-                      });
-                  }, 60_000),
-                });
-              }
-            }
             return {
+              activeQuote,
+              kind: "landed" as const,
               signature,
-              success: true,
               status: executionResult.status,
             };
           } catch (attemptError) {
@@ -540,6 +511,11 @@ export function useSwap(visibleBalances: SwapBalanceSnapshot) {
             throw attemptError;
           }
         }
+      };
+
+      let settled: Awaited<ReturnType<typeof broadcastUntilSettled>>;
+      try {
+        settled = await broadcastUntilSettled();
       } catch (err) {
         let errorMessage = "Swap execution failed";
         const rawMessage = err instanceof Error ? err.message : "";
@@ -579,6 +555,52 @@ export function useSwap(visibleBalances: SwapBalanceSnapshot) {
         setLoading(false);
         return { success: false, error: errorMessage };
       }
+
+      if (settled.kind === "status-unknown") {
+        const unknown = transactionStatusUnknown(settled.signature);
+        tracker.fail(lifecycleStage, {
+          errorCode: "unconfirmed_signature",
+          errorMessage: unknown.error,
+          ...(walletProvider ? { walletProvider } : {}),
+        });
+        setError(unknown.error);
+        setLoading(false);
+        return unknown;
+      }
+
+      const { activeQuote, signature, status } = settled;
+      logger.debug("Transaction confirmed!");
+      tracker.observe("wallet_submit_confirm", {
+        chainState: status === "proposed" ? "submitted" : "confirmed",
+      });
+      setLoading(false);
+      if (status === "proposed") {
+        tracker.observe("ui_commit", { chainState: "submitted" });
+      } else {
+        tracker.observe("ui_commit", { chainState: "confirmed" });
+        if (
+          before.owner === swapUserPublicKey.toBase58() &&
+          visibleBalancesRef.current.owner === before.owner
+        ) {
+          pendingVisibility.current.set(tracker.flowId, {
+            tracker,
+            before,
+            atConfirmation: visibleBalancesRef.current,
+            inputMint: activeQuote.inputMint,
+            outputMint: activeQuote.outputMint,
+            signature,
+            successProperties: successTrackingProperties,
+            timer: setTimeout(() => {
+              if (pendingVisibility.current.has(tracker.flowId))
+                tracker.timeout("balance_visible", {
+                  chainState: "confirmed",
+                  errorCode: "realtime_unresolved",
+                });
+            }, 60_000),
+          });
+        }
+      }
+      return { signature, success: true, status };
     },
     [
       connection,

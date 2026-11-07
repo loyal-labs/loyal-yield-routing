@@ -14,11 +14,11 @@ const RESULT_DOG_CLASS =
   "-bottom-2 pointer-events-none absolute inset-x-0 flex justify-center max-[795px]:bottom-0 max-[795px]:overflow-clip max-[795px]:rounded-b-3xl";
 
 export function actionPaneOverflowClass(
-  step: "form" | "processing" | "success" | "error"
+  step: "form" | "processing" | "success" | "error" | "status-unknown"
 ): string {
-  return step === "success" || step === "error"
-    ? "max-[795px]:overflow-clip"
-    : "overflow-clip";
+  return step === "form" || step === "processing"
+    ? "overflow-clip"
+    : "max-[795px]:overflow-clip";
 }
 
 // Keeps the SOL a transfer can't spend so the wallet can still pay fees —
@@ -152,16 +152,65 @@ export function ActionSuccessBody({
   );
 }
 
+export function ActionStatusUnknownBody({
+  message,
+  onDone,
+  signature,
+  source,
+}: {
+  message: string | null;
+  onDone: () => void;
+  signature: string | null;
+  source: string;
+}) {
+  const publicEnv = usePublicEnv();
+  return (
+    <ActionErrorBody
+      backLabel="Done"
+      explorer={
+        signature ? (
+          <>
+            <p className="max-w-[400px] break-all text-center text-[14px] leading-5 text-muted-foreground">
+              {signature}
+            </p>
+            <button
+              className="t-hover flex h-12 items-center justify-center rounded-full bg-accent px-5 font-medium text-[16px] text-foreground leading-5 hover:bg-accent-active"
+              onClick={() =>
+                openTrackedLink(publicEnv, {
+                  href: getExplorerTxUrl(signature),
+                  linkText: "View in Explorer",
+                  source,
+                })
+              }
+              type="button"
+            >
+              View in Explorer
+            </button>
+          </>
+        ) : null
+      }
+      message={message}
+      onBack={onDone}
+      title="Status unknown"
+      wrapMessage
+    />
+  );
+}
+
 export function ActionErrorBody({
   backLabel = "Back",
   explorer,
   message,
   onBack,
+  title = "Failed",
+  wrapMessage = false,
 }: {
   backLabel?: string;
   explorer?: ReactNode;
   message: string | null;
   onBack: () => void;
+  title?: string;
+  wrapMessage?: boolean;
 }) {
   return (
     <div className="relative flex w-full flex-1 flex-col items-center pt-8 pb-[68px]">
@@ -180,10 +229,14 @@ export function ActionErrorBody({
           src={`${ASSET_BASE}/icon-swap-failed.svg`}
         />
         <p className="text-center font-semibold text-[28px] text-foreground leading-8 tracking-[-0.28px]">
-          Failed
+          {title}
         </p>
         {message ? (
-          <p className="max-w-[400px] truncate text-center text-[16px] leading-5 tracking-[-0.16px] text-destructive">
+          <p
+            className={`max-w-[400px] text-center text-[16px] leading-5 tracking-[-0.16px] text-destructive ${
+              wrapMessage ? "text-balance" : "truncate"
+            }`}
+          >
             {message}
           </p>
         ) : null}

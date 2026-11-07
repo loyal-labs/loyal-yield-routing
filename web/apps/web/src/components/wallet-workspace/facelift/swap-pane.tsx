@@ -19,6 +19,7 @@ import {
 import { LOYL_TOKEN, type SwapToken } from "@/components/wallet-sidebar/types";
 import {
   ActionErrorBody,
+  ActionStatusUnknownBody,
   ActionProcessingBody,
   ActionSuccessBody,
   formatTokenAmount,
@@ -96,6 +97,7 @@ export function SwapPane({
   onBack,
   onDone,
   onFlipTokens,
+  onProcessingChange,
   onRequestSelect,
   onSuccess,
   visibleBalances,
@@ -106,6 +108,7 @@ export function SwapPane({
   onBack: () => void;
   onDone: () => void;
   onFlipTokens: () => void;
+  onProcessingChange?: (isProcessing: boolean) => void;
   onRequestSelect: (side: "from" | "to") => void;
   visibleBalances: SwapBalanceSnapshot;
   onSuccess: () => void;
@@ -129,9 +132,14 @@ export function SwapPane({
   const [quoteAttempt, setQuoteAttempt] = useState(0);
   const [isSwapping, setIsSwapping] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [step, setStep] = useState<"form" | "processing" | "success" | "error">(
-    "form"
-  );
+  const [step, setStep] = useState<
+    "form" | "processing" | "success" | "error" | "status-unknown"
+  >("form");
+
+  useEffect(() => {
+    onProcessingChange?.(step === "processing");
+    return () => onProcessingChange?.(false);
+  }, [step, onProcessingChange]);
   const [txSignature, setTxSignature] = useState<string | null>(null);
   const quoteTimerRef = useRef<number | null>(null);
 
@@ -298,6 +306,15 @@ export function SwapPane({
       setStep("success");
       return;
     }
+    if (result.transactionWasSubmitted) {
+      setTxSignature(result.transactionSignature);
+      setErrorMessage(result.error);
+      setAmountInput("");
+      resetQuote();
+      onSuccess();
+      setStep("status-unknown");
+      return;
+    }
     setErrorMessage(result.error ?? "Swap failed. Please try again.");
     setStep("error");
   };
@@ -331,16 +348,17 @@ export function SwapPane({
   return (
     <section
       className={`flex h-full w-full min-w-0 flex-1 flex-col rounded-3xl bg-card max-[795px]:rounded-none ${
-        step === "success" || step === "error"
-          ? PANE_CLIP_MOBILE_ONLY
-          : PANE_CLIP
+        step === "form" || step === "processing"
+          ? PANE_CLIP
+          : PANE_CLIP_MOBILE_ONLY
       }`}
     >
       <header className="flex w-full shrink-0 items-center p-2">
         <div className="flex shrink-0 items-center pr-3">
           <button
             aria-label="Back"
-            className="t-hover flex size-11 items-center justify-center rounded-3xl hover:bg-accent"
+            className="t-hover flex size-11 items-center justify-center rounded-3xl hover:bg-accent disabled:opacity-40 disabled:hover:bg-transparent"
+            disabled={step === "processing"}
             onClick={onBack}
             type="button"
           >
@@ -577,6 +595,13 @@ export function SwapPane({
             onDone={onDone}
             signature={txSignature}
             source="swap_success"
+          />
+        ) : step === "status-unknown" ? (
+          <ActionStatusUnknownBody
+            message={errorMessage}
+            onDone={onDone}
+            signature={txSignature}
+            source="swap_status_unknown"
           />
         ) : (
           <ActionErrorBody
