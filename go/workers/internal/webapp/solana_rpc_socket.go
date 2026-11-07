@@ -39,7 +39,7 @@ func (s *SolanaRPC) serveSocket(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, http.StatusText(http.StatusUpgradeRequired), http.StatusUpgradeRequired)
 		return
 	}
-	ip := clientIP(r)
+	ip := clientKey(r)
 	if !s.spend(w, solanaReads, ip, 1) {
 		return
 	}

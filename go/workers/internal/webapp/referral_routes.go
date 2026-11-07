@@ -89,7 +89,7 @@ type referralCodeInput struct {
 
 func (i *referralCodeInput) Resolve(ctx huma.Context) []error {
 	r, _ := humachi.Unwrap(ctx)
-	i.client = clientIP(r)
+	i.client = clientKey(r)
 	return nil
 }
 

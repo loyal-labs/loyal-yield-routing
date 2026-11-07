@@ -313,7 +313,7 @@ func (s *SolanaRPC) spendCalls(w http.ResponseWriter, r *http.Request, calls []s
 			sends++
 		}
 	}
-	ip := clientIP(r)
+	ip := clientKey(r)
 	return s.spend(w, solanaReads, ip, len(calls)-sends) && s.spend(w, solanaSends, ip, sends)
 }
 
