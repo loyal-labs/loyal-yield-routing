@@ -4,24 +4,47 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
+	"golang.org/x/time/rate"
 )
 
 const (
 	// One wallet tab opens 3 sockets, and past the cap a tab cannot confirm
 	// its sends, so this allows 8 tabs behind one address.
-	solanaSocketsPerClient       = 24
+	solanaSocketsPerClient = 24
+	// Worst case, per socket: 47 KiB idle (measured), a 64 KiB upstream frame and
+	// a 16 KiB client frame in Go, 4 kernel buffers of 32 KiB (Linux doubles the
+	// asked 16). At 512 sockets that is 64 MiB of Go and 64 MiB of kernel. 128 calls
+	// in flight add 13 MiB. MemoryMax is 384 MiB: 288 go to Go (GOMEMLIMIT in
+	// main.go), 64 to the kernel, 32 spare, which leaves the site 211 MiB of Go.
+	solanaSocketsTotal           = 512
 	solanaSubscriptionsPerSocket = 32
 	solanaSocketFrameBytes       = 16 << 10
+	// The largest browser subscription is logsNotification: the runtime caps a
+	// transaction's logs at 10,000 bytes, and JSON escapes a byte to at most 6,
+	// so 60,000 bytes and an envelope. Account watches (wallet, token accounts)
+	// are far smaller. An attacker can own a 10 MiB account, so the limit is real.
+	solanaUpstreamFrameBytes = 64 << 10
+	// Helius bills a socket by data. A proof socket with slot, account, program
+	// and busy logs watches together took 36 to 50 KB/s, so a wallet has room. The
+	// route budget is what keeps 512 sockets from billing 64 KiB/s each.
+	solanaSocketBytes       rate.Limit = 64 << 10
+	solanaSocketBurst                  = 256 << 10
+	solanaRouteSocketBytes  rate.Limit = 512 << 10
+	solanaRouteSocketBurst             = 4 << 20
+	solanaSocketBufferBytes            = 16 << 10
 	// A subscribe reply is a short id and integer, so a longer upstream frame
-	// is a notification and is never decoded.
+	// is a notification with nothing the peek needs.
 	solanaSubscribeReplyBytes = 1 << 10
 	solanaSocketDialWait      = 10 * time.Second
 	solanaSocketWriteWait     = 10 * time.Second
@@ -30,9 +53,33 @@ const (
 )
 
 var (
-	solanaSocketUpgrader = websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
-	solanaSocketDialer   = websocket.Dialer{HandshakeTimeout: solanaSocketDialWait}
+	solanaSocketUpgrader = websocket.Upgrader{
+		CheckOrigin:     func(*http.Request) bool { return true },
+		ReadBufferSize:  1 << 10,
+		WriteBufferSize: 1 << 10,
+	}
+	solanaSocketDialer = websocket.Dialer{
+		HandshakeTimeout: solanaSocketDialWait,
+		ReadBufferSize:   1 << 10,
+		WriteBufferSize:  1 << 10,
+		NetDialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			conn, err := (&net.Dialer{}).DialContext(ctx, network, address)
+			if err == nil {
+				boundSocketBuffers(conn)
+			}
+			return conn, err
+		},
+	}
 )
+
+// boundSocketBuffers keeps kernel memory in the arithmetic: the kernel charges
+// socket buffers to the unit and autotunes them to megabytes.
+func boundSocketBuffers(conn net.Conn) {
+	if tcp, ok := conn.(*net.TCPConn); ok {
+		_ = tcp.SetReadBuffer(solanaSocketBufferBytes)
+		_ = tcp.SetWriteBuffer(solanaSocketBufferBytes)
+	}
+}
 
 func (s *SolanaRPC) serveSocket(w http.ResponseWriter, r *http.Request) {
 	if !websocket.IsWebSocketUpgrade(r) {
@@ -40,7 +87,13 @@ func (s *SolanaRPC) serveSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ip := clientKey(r)
-	if !s.spend(w, solanaReads, ip, 1) {
+	if !s.acquireSocket(ip) {
+		w.Header().Set("Retry-After", "5")
+		http.Error(w, http.StatusText(http.StatusTooManyRequests), http.StatusTooManyRequests)
+		return
+	}
+	defer s.releaseSocket(ip)
+	if !s.spend(w, solanaSocketOpens, ip, 1) {
 		return
 	}
 	if origin := r.Header.Get("Origin"); !s.allowedSocketOrigin(origin) {
@@ -48,12 +101,6 @@ func (s *SolanaRPC) serveSocket(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, http.StatusText(http.StatusForbidden), http.StatusForbidden)
 		return
 	}
-	if !s.acquireSocket(ip) {
-		w.Header().Set("Retry-After", "5")
-		http.Error(w, http.StatusText(http.StatusTooManyRequests), http.StatusTooManyRequests)
-		return
-	}
-	defer s.releaseSocket(ip)
 
 	dial, cancel := context.WithTimeout(r.Context(), solanaSocketDialWait)
 	defer cancel()
@@ -69,9 +116,32 @@ func (s *SolanaRPC) serveSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() { _ = client.Close() }()
+	boundSocketBuffers(client.NetConn())
 	client.SetReadLimit(solanaSocketFrameBytes)
+	upstream.SetReadLimit(solanaUpstreamFrameBytes)
 	socket := &solanaSocket{rpc: s, ip: ip, client: client, upstream: upstream, subscriptions: newSolanaSubscriptions()}
 	socket.run()
+}
+
+// CloseSockets sends every browser socket a close frame, so clients reconnect
+// at once instead of waiting out a cut connection. http.Server.Shutdown does
+// not reach hijacked connections.
+func (s *SolanaRPC) CloseSockets(ctx context.Context) {
+	s.socketsMu.Lock()
+	if !s.closingNow {
+		s.closingNow = true
+		close(s.closing)
+	}
+	s.socketsMu.Unlock()
+	drained := make(chan struct{})
+	go func() {
+		s.socketsOpen.Wait()
+		close(drained)
+	}()
+	select {
+	case <-drained:
+	case <-ctx.Done():
+	}
 }
 
 // allowedSocketOrigin stops other sites' pages from using the route. A
@@ -92,10 +162,12 @@ func (s *SolanaRPC) allowedSocketOrigin(origin string) bool {
 func (s *SolanaRPC) acquireSocket(ip string) bool {
 	s.socketsMu.Lock()
 	defer s.socketsMu.Unlock()
-	if s.sockets[ip] >= solanaSocketsPerClient {
+	if s.closingNow || s.socketsTotal >= solanaSocketsTotal || s.sockets[ip] >= solanaSocketsPerClient {
 		return false
 	}
 	s.sockets[ip]++
+	s.socketsTotal++
+	s.socketsOpen.Add(1)
 	return true
 }
 
@@ -105,6 +177,8 @@ func (s *SolanaRPC) releaseSocket(ip string) {
 	if s.sockets[ip]--; s.sockets[ip] <= 0 {
 		delete(s.sockets, ip)
 	}
+	s.socketsTotal--
+	s.socketsOpen.Done()
 }
 
 type solanaSocket struct {
@@ -117,22 +191,22 @@ type solanaSocket struct {
 
 // run returns once both sides are closed and its goroutines have ended.
 func (s *solanaSocket) run() {
-	stop := make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
 	end := sync.OnceFunc(func() {
-		close(stop)
+		cancel()
 		_ = s.client.Close()
 		_ = s.upstream.Close()
 	})
 	var relays sync.WaitGroup
 	relays.Go(func() {
 		defer end()
-		s.relayUpstream()
+		s.relayUpstream(ctx)
 	})
 	relays.Go(func() {
 		defer end()
-		s.ping(stop)
+		s.ping(ctx)
 	})
-	s.relayClient()
+	s.relayClient(ctx)
 	end()
 	relays.Wait()
 }
@@ -141,7 +215,7 @@ func awaitSocketPeer(conn *websocket.Conn) {
 	_ = conn.SetReadDeadline(time.Now().Add(solanaSocketReadWait))
 }
 
-func (s *solanaSocket) relayClient() {
+func (s *solanaSocket) relayClient(ctx context.Context) {
 	defer closeSolanaSocket(s.upstream, websocket.CloseNormalClosure, "")
 	awaitSocketPeer(s.client)
 	s.client.SetPongHandler(func(string) error {
@@ -151,6 +225,12 @@ func (s *solanaSocket) relayClient() {
 	for {
 		kind, frame, err := s.client.ReadMessage()
 		if err != nil {
+			return
+		}
+		// A frame waits rather than being refused: web3.js retries a refused
+		// subscribe at once, so a refusal would only make the storm.
+		frames := s.rpc.buckets.get(limiterKey{solanaSocketFrames.name, "client", s.ip}, solanaSocketFrames.client, time.Now())
+		if frames.Wait(ctx) != nil {
 			return
 		}
 		awaitSocketPeer(s.client)
@@ -174,32 +254,43 @@ func (s *solanaSocket) relayClient() {
 
 // relayUpstream never forwards a normal close: rpc-websockets does not
 // reconnect after code 1000, and a browser must reconnect when upstream ends.
-func (s *solanaSocket) relayUpstream() {
+func (s *solanaSocket) relayUpstream(ctx context.Context) {
 	defer closeSolanaSocket(s.client, websocket.CloseGoingAway, "upstream closed")
 	awaitSocketPeer(s.upstream)
 	s.upstream.SetPongHandler(func(string) error {
 		awaitSocketPeer(s.upstream)
 		return nil
 	})
+	spent := rate.NewLimiter(solanaSocketBytes, solanaSocketBurst)
 	for {
 		kind, frame, err := s.upstream.ReadMessage()
 		if err != nil {
+			if errors.Is(err, websocket.ErrReadLimit) {
+				slog.Warn("solana rpc upstream frame over the limit")
+			}
 			return
 		}
-		awaitSocketPeer(s.upstream)
 		s.subscriptions.observe(frame)
 		if s.writeClient(kind, frame) != nil {
 			return
 		}
+		// The frame is paid for after it is sent, so a paused socket holds none.
+		if spent.WaitN(ctx, len(frame)) != nil || s.rpc.socketBytes.WaitN(ctx, len(frame)) != nil {
+			return
+		}
+		awaitSocketPeer(s.upstream)
 	}
 }
 
-func (s *solanaSocket) ping(stop <-chan struct{}) {
+func (s *solanaSocket) ping(ctx context.Context) {
 	ticker := time.NewTicker(solanaSocketPingEvery)
 	defer ticker.Stop()
 	for {
 		select {
-		case <-stop:
+		case <-ctx.Done():
+			return
+		case <-s.rpc.closing:
+			closeSolanaSocket(s.client, websocket.CloseGoingAway, "restarting")
 			return
 		case <-ticker.C:
 		}
@@ -239,15 +330,11 @@ func (s *solanaSocket) admit(kind int, frame []byte) ([]byte, *solanaRPCRefusal)
 	if method.class == solanaKeepalive {
 		return nil, nil
 	}
-	now := time.Now()
-	if !s.rpc.buckets.get(limiterKey{solanaReads.name, "client", s.ip}, solanaReads.client, now).AllowN(now, 1) {
-		return refuse(call.ID, jsonRPCServerError, "rate limited")
-	}
 	if method.class != solanaSubscribe && method.class != solanaUnsubscribe {
 		logSolanaRefusal("socket", "method", call.Method)
 		return refuse(call.ID, jsonRPCMethodNotFound, "method not allowed: "+clipSolanaLog(call.Method))
 	}
-	params, ok := parseSolanaSocketParams(call.Params)
+	params, ok := parseSolanaParams(call.Params)
 	if !ok {
 		return refuse(call.ID, jsonRPCInvalidParams, "invalid params")
 	}
@@ -255,19 +342,29 @@ func (s *solanaSocket) admit(kind int, frame []byte) ([]byte, *solanaRPCRefusal)
 		logSolanaRefusal("socket", "unscoped", call.Method)
 		return refuse(call.ID, jsonRPCInvalidParams, "params not allowed: "+call.Method)
 	}
-	if !solanaScalarID(call.ID) {
-		return refuse(call.ID, jsonRPCInvalidRequest, "a scalar id is required")
+	id, ok := canonicalSolanaID(call.ID)
+	if !ok {
+		return refuse(call.ID, jsonRPCInvalidRequest, "an integer or short string id is required")
 	}
-	id := string(call.ID)
+	call.ID = id
+	var reservation solanaReservation
 	if method.class == solanaSubscribe {
-		switch s.subscriptions.reserve(id) {
-		case solanaReservationDuplicate:
-			return refuse(call.ID, jsonRPCInvalidRequest, "id is already in flight")
-		case solanaReservationFull:
-			return refuse(call.ID, jsonRPCServerError, "too many subscriptions on this socket")
+		reservation = s.subscriptions.reserve(string(id))
+	} else {
+		if len(params) != 1 {
+			return refuse(call.ID, jsonRPCInvalidParams, "invalid params")
 		}
-	} else if !s.subscriptions.release(id, params) {
+		target, err := json.Marshal(params[0])
+		if err != nil {
+			return refuse(call.ID, jsonRPCInvalidParams, "invalid params")
+		}
+		reservation = s.subscriptions.reserveUnsubscribe(string(id), string(target))
+	}
+	switch reservation {
+	case solanaReservationDuplicate:
 		return refuse(call.ID, jsonRPCInvalidRequest, "id is already in flight")
+	case solanaReservationFull:
+		return refuse(call.ID, jsonRPCServerError, "too many subscriptions on this socket")
 	}
 	// Re-encoded params collapse duplicate keys, so upstream parses what scope checked.
 	encoded, err := json.Marshal(params)
@@ -282,7 +379,7 @@ func (s *solanaSocket) admit(kind int, frame []byte) ([]byte, *solanaRPCRefusal)
 	return payload, nil
 }
 
-func parseSolanaSocketParams(raw json.RawMessage) ([]any, bool) {
+func parseSolanaParams(raw json.RawMessage) ([]any, bool) {
 	if len(raw) == 0 {
 		return []any{}, true
 	}
@@ -295,19 +392,13 @@ func parseSolanaSocketParams(raw json.RawMessage) ([]any, bool) {
 	return params, true
 }
 
-func solanaScalarID(id json.RawMessage) bool {
-	if len(id) == 0 {
-		return false
-	}
-	var scalar any
-	if json.Unmarshal(id, &scalar) != nil {
-		return false
-	}
-	switch scalar.(type) {
-	case string, float64:
-		return true
-	}
-	return false
+var solanaIDForm = regexp.MustCompile(`^(?:[0-9]{1,18}|"[A-Za-z0-9_:-]{1,64}")$`)
+
+// canonicalSolanaID admits only the forms upstream echoes byte for byte: "\u0061"
+// and "a" would be two ids here and one upstream, and one's reply settles the
+// other's reservation.
+func canonicalSolanaID(id json.RawMessage) (json.RawMessage, bool) {
+	return id, solanaIDForm.Match(id)
 }
 
 type solanaReservation int
@@ -318,64 +409,110 @@ const (
 	solanaReservationFull
 )
 
-// solanaSubscriptions counts what a socket holds upstream. Only ids upstream
-// handed out free a slot: counting unsubscribe frames instead would let a
-// client free slots with made-up ids and exceed the cap.
+// solanaSubscriptions counts what a socket may hold upstream. A slot is taken
+// when a subscribe goes up and freed only on upstream's word: an error reply, a
+// true unsubscribe reply, or the final notification of a signature subscription,
+// which upstream disposes of by itself. Any frame it cannot read leaves the slot
+// taken.
 type solanaSubscriptions struct {
-	mu      sync.Mutex
-	pending map[string]struct{}
-	live    map[string]struct{}
+	mu            sync.Mutex
+	subscribing   map[string]struct{}
+	unsubscribing map[string]string
+	live          map[string]struct{}
 }
 
 func newSolanaSubscriptions() *solanaSubscriptions {
-	return &solanaSubscriptions{pending: map[string]struct{}{}, live: map[string]struct{}{}}
+	return &solanaSubscriptions{subscribing: map[string]struct{}{}, unsubscribing: map[string]string{}, live: map[string]struct{}{}}
+}
+
+func (t *solanaSubscriptions) inFlight(id string) bool {
+	_, subscribing := t.subscribing[id]
+	_, unsubscribing := t.unsubscribing[id]
+	return subscribing || unsubscribing
 }
 
 func (t *solanaSubscriptions) reserve(id string) solanaReservation {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if _, inFlight := t.pending[id]; inFlight {
+	if t.inFlight(id) {
 		return solanaReservationDuplicate
 	}
-	if len(t.pending)+len(t.live) >= solanaSubscriptionsPerSocket {
+	if len(t.subscribing)+len(t.live) >= solanaSubscriptionsPerSocket {
 		return solanaReservationFull
 	}
-	t.pending[id] = struct{}{}
+	t.subscribing[id] = struct{}{}
 	return solanaReserved
 }
 
-// release refuses an unsubscribe that reuses an in-flight subscribe id: its
-// reply would settle that subscribe and leave the real subscription uncounted.
-func (t *solanaSubscriptions) release(id string, params []any) bool {
+func (t *solanaSubscriptions) reserveUnsubscribe(id, target string) solanaReservation {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if _, inFlight := t.pending[id]; inFlight {
-		return false
+	if t.inFlight(id) {
+		return solanaReservationDuplicate
 	}
-	if len(params) == 1 {
-		if subscription, err := json.Marshal(params[0]); err == nil {
-			delete(t.live, string(subscription))
-		}
+	if len(t.unsubscribing) >= solanaSubscriptionsPerSocket {
+		return solanaReservationFull
 	}
-	return true
+	t.unsubscribing[id] = target
+	return solanaReserved
+}
+
+type solanaUpstreamFrame struct {
+	ID     json.RawMessage `json:"id"`
+	Result json.RawMessage `json:"result"`
+	Error  json.RawMessage `json:"error"`
+	Method string          `json:"method"`
+	Params struct {
+		Subscription json.RawMessage `json:"subscription"`
+		Result       struct {
+			Value json.RawMessage `json:"value"`
+		} `json:"result"`
+	} `json:"params"`
 }
 
 func (t *solanaSubscriptions) observe(frame []byte) {
+	if len(frame) > solanaSubscribeReplyBytes {
+		return
+	}
+	var seen solanaUpstreamFrame
+	if json.Unmarshal(frame, &seen) != nil {
+		return
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if len(t.pending) == 0 || len(frame) > solanaSubscribeReplyBytes {
+	if seen.Method == "signatureNotification" {
+		// "receivedSignature" is an early notice; only the final {"err":...} ends it.
+		if bytes.HasPrefix(seen.Params.Result.Value, []byte("{")) {
+			delete(t.live, string(seen.Params.Subscription))
+		}
 		return
 	}
-	var reply map[string]json.RawMessage
-	if json.Unmarshal(frame, &reply) != nil {
+	id := string(seen.ID)
+	if _, subscribing := t.subscribing[id]; subscribing {
+		if isSolanaSubscriptionID(seen.Result) {
+			delete(t.subscribing, id)
+			t.live[string(seen.Result)] = struct{}{}
+		} else if len(seen.Error) > 0 && string(seen.Error) != "null" {
+			delete(t.subscribing, id)
+		}
 		return
 	}
-	id := string(reply["id"])
-	if _, inFlight := t.pending[id]; !inFlight {
-		return
+	if target, unsubscribing := t.unsubscribing[id]; unsubscribing {
+		delete(t.unsubscribing, id)
+		if string(seen.Result) == "true" {
+			delete(t.live, target)
+		}
 	}
-	delete(t.pending, id)
-	if result, ok := reply["result"]; ok {
-		t.live[string(result)] = struct{}{}
+}
+
+func isSolanaSubscriptionID(result json.RawMessage) bool {
+	if len(result) == 0 {
+		return false
 	}
+	for _, digit := range result {
+		if digit < '0' || digit > '9' {
+			return false
+		}
+	}
+	return true
 }

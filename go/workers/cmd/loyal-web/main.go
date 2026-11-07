@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"syscall"
@@ -313,6 +314,11 @@ func enableEarnPush(e *webapp.Earn, push *webapp.WalletPush) {
 }
 
 func run(ctx context.Context) error {
+	// The browser RPC arithmetic leaves 288 MiB of MemoryMax to Go (solana_rpc_socket.go).
+	// Without a limit the collector lets the heap reach twice what is live.
+	if os.Getenv("GOMEMLIMIT") == "" {
+		debug.SetMemoryLimit(288 << 20)
+	}
 	cfg, err := config()
 	if err != nil {
 		return err
@@ -392,6 +398,9 @@ func run(ctx context.Context) error {
 	}
 	shutdown, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
+	if cfg.SolanaRPC != nil {
+		cfg.SolanaRPC.CloseSockets(shutdown)
+	}
 	if err := server.Shutdown(shutdown); err != nil {
 		return fmt.Errorf("shutdown: %w", err)
 	}

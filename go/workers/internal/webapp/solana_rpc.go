@@ -12,6 +12,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/mr-tron/base58"
+	"golang.org/x/time/rate"
 )
 
 const (
@@ -22,6 +25,7 @@ const (
 	// overfetches by 2 (default-activity-provider.ts).
 	solanaRPCBatchEntries = 128
 	solanaRPCBodyBytes    = 64 << 10
+	solanaRPCInFlight     = 128
 )
 
 const (
@@ -37,6 +41,7 @@ type solanaMethodClass int
 
 const (
 	solanaRead solanaMethodClass = iota + 1
+	solanaScan
 	solanaSend
 	solanaSubscribe
 	solanaUnsubscribe
@@ -45,17 +50,32 @@ const (
 
 type solanaMethod struct {
 	class solanaMethodClass
-	// scope limits what a subscription may stream, because Helius bills
-	// sockets by data: nil allows any params.
+	// credits is the Helius price of one call, zero meaning 1.
+	credits int
+	// scope limits what a call may read or stream: nil allows any params.
 	scope func(params []any) bool
 }
 
 // solanaMethods is the allowlist: a method absent here is refused, and a
 // method is served only on the transport its class belongs to.
+//
+// Prices are helius.dev/docs/billing/credits, read Nov 6 2026: 1 credit by
+// default, getProgramAccounts 10, DAS 10, sockets 2 per 0.1 MB.
+//
+// One address, per second: reads 3 (1 credit each, 259K a day), scans 0.2 (at
+// most 173K credits a day), burst 300 reads, because one activity page is 3
+// getSignaturesForAddress and 3 batches of 60 getTransaction. The class is by
+// cost to serve, so getProgramAccountsV2 and getSignaturesForAddress are scans
+// at 1 credit.
+//
+// The whole route, per second: 20 credits for calls and 512 KiB for sockets
+// (10.5 credits), 2.6M credits or about $13 a day at worst, so no set of
+// addresses can spend the key that sign-in shares. The Secure URL, of which the
+// browser is a part, averaged 2.6 calls a second at its Nov 6 reading (9.4K an
+// hour, reports/helius-rpc-cuts-2026-11-06.md), so 20 is 7 times the whole of
+// it. The credit burst of 1200 is 6 activity pages at once.
 var solanaMethods = map[string]solanaMethod{
 	"getAccountInfo":                    {class: solanaRead},
-	"getAsset":                          {class: solanaRead},
-	"getAssetsByOwner":                  {class: solanaRead},
 	"getBalance":                        {class: solanaRead},
 	"getBlockHeight":                    {class: solanaRead},
 	"getEpochInfo":                      {class: solanaRead},
@@ -64,15 +84,18 @@ var solanaMethods = map[string]solanaMethod{
 	"getLatestBlockhash":                {class: solanaRead},
 	"getMinimumBalanceForRentExemption": {class: solanaRead},
 	"getMultipleAccounts":               {class: solanaRead},
-	"getProgramAccounts":                {class: solanaRead},
-	"getProgramAccountsV2":              {class: solanaRead},
 	"getSignatureStatuses":              {class: solanaRead},
-	"getSignaturesForAddress":           {class: solanaRead},
 	"getSlot":                           {class: solanaRead},
 	"getTokenAccountBalance":            {class: solanaRead},
 	"getTokenAccountsByOwner":           {class: solanaRead},
 	"getTransaction":                    {class: solanaRead},
 	"simulateTransaction":               {class: solanaRead},
+
+	"getAsset":                {class: solanaScan, credits: 10},
+	"getAssetsByOwner":        {class: solanaScan, credits: 10},
+	"getProgramAccounts":      {class: solanaScan, credits: 10, scope: programAccountsOfOneAddress},
+	"getProgramAccountsV2":    {class: solanaScan, scope: programAccountsOfOneAddress},
+	"getSignaturesForAddress": {class: solanaScan},
 
 	"sendTransaction": {class: solanaSend},
 
@@ -92,22 +115,87 @@ var solanaMethods = map[string]solanaMethod{
 	"ping": {class: solanaKeepalive},
 }
 
+const (
+	solanaTokenProgram     = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+	solanaToken2022Program = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+	solanaSmartAccounts    = "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+	solanaPrivateTransfer  = "97FzQdWi26mFNR21AbQNg4KqofiCLqQydQfAvRQMcXhV"
+	solanaDelegation       = "DELeGGvXpWV2fqJUhqcF5ZSYMS4JTLjteaAMARRSaeSh"
+)
+
+// solanaBusyPrograms stream far more logs than a wallet. The list cannot name
+// every busy program, so the socket byte budgets are what bound the bill.
+var solanaBusyPrograms = map[string]bool{
+	solanaTokenProgram:                             true,
+	solanaToken2022Program:                         true,
+	"11111111111111111111111111111111":             true,
+	"ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL": true,
+	"ComputeBudget111111111111111111111111111111":  true,
+	"MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr":  true,
+	"Vote111111111111111111111111111111111111111":  true,
+	"Stake11111111111111111111111111111111111111":  true,
+	"JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4":  true,
+	"675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8": true,
+	"CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK": true,
+	"whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc":  true,
+	"LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo":  true,
+	"6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P":  true,
+}
+
+func oneSolanaAddress(value any) (string, bool) {
+	text, _ := value.(string)
+	if solanaAddressOrEmpty(text) == "" {
+		return "", false
+	}
+	decoded, err := base58.Decode(text)
+	return text, err == nil && len(decoded) == 32
+}
+
+// filtersOnOneAddress holds when a filter pins the given offset to one 32-byte
+// address. A shorter value matches most accounts, and an empty one all of them.
+// web3.js adds encoding base58 to every memcmp, and base64 would make bytes a
+// different, shorter value.
+func filtersOnOneAddress(config any, offset string) bool {
+	fields, _ := config.(map[string]any)
+	filters, _ := fields["filters"].([]any)
+	for _, filter := range filters {
+		entry, _ := filter.(map[string]any)
+		memcmp, _ := entry["memcmp"].(map[string]any)
+		at, _ := memcmp["offset"].(json.Number)
+		encoding, encoded := memcmp["encoding"]
+		size := 2
+		if encoded {
+			size = 3
+		}
+		if at.String() != offset || len(memcmp) != size || (encoded && encoding != "base58") {
+			continue
+		}
+		if _, ok := oneSolanaAddress(memcmp["bytes"]); ok {
+			return true
+		}
+	}
+	return false
+}
+
 // tokenAccountsOfOneOwner is the wallet's balance watch (frontend-asset-provider.ts).
 func tokenAccountsOfOneOwner(params []any) bool {
 	if len(params) < 2 {
 		return false
 	}
-	if program, _ := params[0].(string); program != "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA" && program != "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb" {
+	program, _ := params[0].(string)
+	return (program == solanaTokenProgram || program == solanaToken2022Program) && filtersOnOneAddress(params[1], "32")
+}
+
+// programAccountsOfOneAddress is every browser scan: policies of one settings
+// account (smart-account-vaults client.ts) and deposits of one user
+// (private-transactions getAllDepositsByUser), the owner at offset 8 in all.
+func programAccountsOfOneAddress(params []any) bool {
+	if len(params) < 2 {
 		return false
 	}
-	config, _ := params[1].(map[string]any)
-	filters, _ := config["filters"].([]any)
-	for _, filter := range filters {
-		entry, _ := filter.(map[string]any)
-		memcmp, _ := entry["memcmp"].(map[string]any)
-		if offset, _ := memcmp["offset"].(json.Number); offset == "32" {
-			return true
-		}
+	switch program, _ := params[0].(string); program {
+	case solanaSmartAccounts, solanaPrivateTransfer, solanaDelegation:
+		return filtersOnOneAddress(params[1], "8")
 	}
 	return false
 }
@@ -119,12 +207,20 @@ func logsMentioningOneAddress(params []any) bool {
 	}
 	filter, _ := params[0].(map[string]any)
 	mentions, _ := filter["mentions"].([]any)
-	return len(filter) == 1 && len(mentions) == 1
+	if len(filter) != 1 || len(mentions) != 1 {
+		return false
+	}
+	address, ok := oneSolanaAddress(mentions[0])
+	return ok && !solanaBusyPrograms[address]
 }
 
 var (
-	solanaReads = routeClass{name: "solana-reads", client: budget{every: time.Second / 10, burst: 300}}
-	solanaSends = routeClass{name: "solana-sends", client: budget{every: 2 * time.Second, burst: 30}}
+	solanaReads        = routeClass{name: "solana-reads", client: budget{every: time.Second / 3, burst: 300}}
+	solanaScans        = routeClass{name: "solana-scans", client: budget{every: 5 * time.Second, burst: 60}}
+	solanaSends        = routeClass{name: "solana-sends", client: budget{every: 2 * time.Second, burst: 30}}
+	solanaSocketFrames = routeClass{name: "solana-socket-frames", client: budget{every: time.Second / 10, burst: 300}}
+	solanaSocketOpens  = routeClass{name: "solana-socket-opens", client: budget{every: time.Second, burst: 60}}
+	solanaRouteCredits = budget{every: time.Second / 20, burst: 1200}
 )
 
 // SolanaRPC serves the browser's mainnet RPC, so the upstream URL stays on the server.
@@ -134,9 +230,17 @@ type SolanaRPC struct {
 	environment string
 	client      *http.Client
 	buckets     *limiters
+	credits     *rate.Limiter
+	creditsDry  rate.Sometimes
+	inFlight    chan struct{}
+	socketBytes *rate.Limiter
 
-	socketsMu sync.Mutex
-	sockets   map[string]int
+	socketsMu    sync.Mutex
+	sockets      map[string]int
+	socketsTotal int
+	socketsOpen  sync.WaitGroup
+	closing      chan struct{}
+	closingNow   bool
 }
 
 func NewSolanaRPC(endpoint, environment string) (*SolanaRPC, error) {
@@ -163,8 +267,13 @@ func NewSolanaRPC(endpoint, environment string) (*SolanaRPC, error) {
 				return http.ErrUseLastResponse
 			},
 		},
-		buckets: newLimiters(),
-		sockets: map[string]int{},
+		buckets:     newLimiters(),
+		credits:     rate.NewLimiter(rate.Every(solanaRouteCredits.every), solanaRouteCredits.burst),
+		creditsDry:  rate.Sometimes{Interval: time.Minute},
+		inFlight:    make(chan struct{}, solanaRPCInFlight),
+		socketBytes: rate.NewLimiter(solanaRouteSocketBytes, solanaRouteSocketBurst),
+		sockets:     map[string]int{},
+		closing:     make(chan struct{}),
 	}, nil
 }
 
@@ -270,16 +379,15 @@ func (s *SolanaRPC) serveCalls(w http.ResponseWriter, r *http.Request) {
 	if !s.spendCalls(w, r, calls) {
 		return
 	}
-	if refused, ok := firstRefusedCall(calls); ok {
-		logSolanaRefusal("http", "method", refused)
-		message := "method not allowed: " + clipSolanaLog(refused)
+	if name, code, message, refused := refusedCall(calls); refused {
+		logSolanaRefusal("http", "method", name)
 		if !batch {
-			writeSolanaRefusal(w, refuseSolanaCall(calls[0].ID, jsonRPCMethodNotFound, message))
+			writeSolanaRefusal(w, refuseSolanaCall(calls[0].ID, code, message))
 			return
 		}
 		refusals := make([]solanaRPCRefusal, len(calls))
 		for i, call := range calls {
-			refusals[i] = refuseSolanaCall(call.ID, jsonRPCMethodNotFound, message)
+			refusals[i] = refuseSolanaCall(call.ID, code, message)
 		}
 		writeSolanaRefusal(w, refusals)
 		return
@@ -294,27 +402,73 @@ func (s *SolanaRPC) serveCalls(w http.ResponseWriter, r *http.Request) {
 		writeSolanaRefusal(w, refuseSolanaCall(nil, jsonRPCParseError, "parse error"))
 		return
 	}
+	select {
+	case s.inFlight <- struct{}{}:
+		defer func() { <-s.inFlight }()
+	default:
+		w.Header().Set("Retry-After", "1")
+		http.Error(w, http.StatusText(http.StatusTooManyRequests), http.StatusTooManyRequests)
+		return
+	}
+	if !s.spendRouteCredits(w, calls) {
+		return
+	}
 	s.forwardCalls(w, r, payload)
 }
 
-func firstRefusedCall(calls []solanaCall) (string, bool) {
-	for _, call := range calls {
-		if class := solanaMethods[call.Method].class; class != solanaRead && class != solanaSend {
-			return call.Method, true
+// refusedCall checks every call and narrows scoped params to what scope read,
+// so upstream parses the same thing whatever duplicate keys the body held.
+func refusedCall(calls []solanaCall) (string, int, string, bool) {
+	for i := range calls {
+		name := calls[i].Method
+		method := solanaMethods[name]
+		switch method.class {
+		case solanaRead, solanaScan, solanaSend:
+		default:
+			return name, jsonRPCMethodNotFound, "method not allowed: " + clipSolanaLog(name), true
 		}
+		if method.scope == nil {
+			continue
+		}
+		params, ok := parseSolanaParams(calls[i].Params)
+		if !ok || !method.scope(params) {
+			return name, jsonRPCInvalidParams, "params not allowed: " + name, true
+		}
+		encoded, err := json.Marshal(params)
+		if err != nil {
+			return name, jsonRPCInvalidParams, "params not allowed: " + name, true
+		}
+		calls[i].Params = encoded
 	}
-	return "", false
+	return "", 0, "", false
 }
 
 func (s *SolanaRPC) spendCalls(w http.ResponseWriter, r *http.Request, calls []solanaCall) bool {
-	sends := 0
+	scans, sends := 0, 0
 	for _, call := range calls {
-		if solanaMethods[call.Method].class == solanaSend {
+		switch solanaMethods[call.Method].class {
+		case solanaScan:
+			scans++
+		case solanaSend:
 			sends++
 		}
 	}
 	ip := clientKey(r)
-	return s.spend(w, solanaReads, ip, len(calls)-sends) && s.spend(w, solanaSends, ip, sends)
+	return s.spend(w, solanaReads, ip, len(calls)-scans-sends) && s.spend(w, solanaScans, ip, scans) && s.spend(w, solanaSends, ip, sends)
+}
+
+func (s *SolanaRPC) spendRouteCredits(w http.ResponseWriter, calls []solanaCall) bool {
+	credits := 0
+	for _, call := range calls {
+		credits += max(solanaMethods[call.Method].credits, 1)
+	}
+	now := time.Now()
+	if !s.credits.AllowN(now, credits) {
+		s.creditsDry.Do(func() { slog.Warn("solana rpc route budget is empty") })
+		tooMany(w, s.credits, solanaRouteCredits, now)
+		return false
+	}
+	return true
 }
 
 func (s *SolanaRPC) spend(w http.ResponseWriter, class routeClass, ip string, tokens int) bool {
