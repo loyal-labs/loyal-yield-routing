@@ -16,6 +16,7 @@ import { SOL_FEE_RESERVE } from "@/components/wallet-workspace/facelift/action-s
 import { usePublicEnv } from "@/contexts/public-env-context";
 import { useSend } from "@/hooks/use-send";
 import { openTrackedLink, trackWalletSendPressed } from "@/lib/core/analytics";
+import type { TransactionStatusUnknown } from "@/lib/solana/confirm-sent-transaction";
 import { getExplorerTxUrl } from "@/lib/solana/explorer";
 
 import type { SubView, SwapToken } from "./types";
@@ -34,7 +35,13 @@ export function truncateAddress(addr: string): string {
   return `${addr.slice(0, 4)}…${addr.slice(-4)}`;
 }
 
-type SendPhase = "form" | "processing" | "success" | "error" | "details";
+type SendPhase =
+  | "form"
+  | "processing"
+  | "success"
+  | "error"
+  | "status-unknown"
+  | "details";
 
 function SendStatusHeader({
   title,
@@ -234,15 +241,17 @@ function SendResult({
   amount,
   recipient,
   errorMessage,
+  signature,
   onClose,
   onDone,
   onDetails,
 }: {
-  variant: "success" | "error";
+  variant: "success" | "error" | "status-unknown";
   token: SwapToken;
   amount: string;
   recipient: string;
   errorMessage?: string;
+  signature?: string;
   onClose: () => void;
   onDone: () => void;
   onDetails: () => void;
@@ -326,7 +335,11 @@ function SendResult({
                 color: "#000",
               }}
             >
-              {isSuccess ? `${token.symbol} sent` : "Send failed"}
+              {isSuccess
+                ? `${token.symbol} sent`
+                : variant === "status-unknown"
+                  ? "Status unknown"
+                  : "Send failed"}
             </span>
             {isSuccess ? (
               <span
@@ -357,6 +370,21 @@ function SendResult({
                 }}
               >
                 {errorMessage || "Something went wrong. Please try again."}
+                {variant === "status-unknown" && signature ? (
+                  <a
+                    href={getExplorerTxUrl(signature)}
+                    rel="noreferrer"
+                    style={{
+                      color: "#000",
+                      display: "block",
+                      marginTop: "8px",
+                      wordBreak: "break-all",
+                    }}
+                    target="_blank"
+                  >
+                    {signature}
+                  </a>
+                ) : null}
               </span>
             )}
           </div>
@@ -786,17 +814,19 @@ function SendTransactionDetail({
   );
 }
 
-export type SendContentVaultExecuteResult = {
-  success: boolean;
-  signature?: string;
-  error?: string;
-  /**
-   * "executed" — funds actually moved.
-   * "proposed" — proposal queued on chain.
-   * "draft" — local-only preview created in Approvals; no on-chain action yet.
-   */
-  status?: "executed" | "proposed" | "draft";
-};
+export type SendContentVaultExecuteResult =
+  | {
+      success: true;
+      signature?: string;
+      /**
+       * "executed": funds actually moved.
+       * "proposed": proposal queued on chain.
+       * "draft": local-only preview created in Approvals; no on-chain action yet.
+       */
+      status?: "executed" | "proposed" | "draft";
+    }
+  | { success: false; error?: string; transactionWasSubmitted?: false }
+  | TransactionStatusUnknown;
 
 export type SendContentVaultExecutor = (request: {
   mint: string;
@@ -940,12 +970,7 @@ export function SendContent({
       is_private: false,
     });
 
-    let result: {
-      success: boolean;
-      signature?: string;
-      error?: string;
-      status?: SendContentVaultExecuteResult["status"];
-    };
+    let result: SendContentVaultExecuteResult;
 
     if (vaultContext?.mode === "ready") {
       if (!token.mint) {
@@ -1003,6 +1028,12 @@ export function SendContent({
           console.error("[SendContent] onSuccess callback failed", err);
         });
       }
+    } else if (result.transactionWasSubmitted) {
+      setResultSignature(result.transactionSignature);
+      setErrorMessage(result.error);
+      setAmount("");
+      setRecipient("");
+      setPhase("status-unknown");
     } else {
       setErrorMessage(result.error);
       setPhase("error");
@@ -1048,7 +1079,7 @@ export function SendContent({
     if (p === "processing") {
       return <SendProcessing onClose={onClose} token={token} />;
     }
-    if (p === "success" || p === "error") {
+    if (p === "success" || p === "error" || p === "status-unknown") {
       return (
         <SendResult
           amount={resultAmount}
@@ -1057,6 +1088,7 @@ export function SendContent({
           onDetails={() => setPhase("details")}
           onDone={onDone}
           recipient={resultRecipient}
+          signature={resultSignature}
           token={token}
           variant={p}
         />

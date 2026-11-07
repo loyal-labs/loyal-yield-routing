@@ -195,7 +195,13 @@ function TokenPill({
   );
 }
 
-type SwapPhase = "form" | "processing" | "success" | "error" | "details";
+type SwapPhase =
+  | "form"
+  | "processing"
+  | "success"
+  | "error"
+  | "status-unknown"
+  | "details";
 
 function SwapStatusHeader({
   fromToken,
@@ -446,16 +452,18 @@ function SwapResult({
   toToken,
   receivedAmount,
   errorMessage,
+  signature,
   onClose,
   onDone,
   onDetails,
   onBack,
 }: {
-  variant: "success" | "error";
+  variant: "success" | "error" | "status-unknown";
   fromToken: SwapToken;
   toToken: SwapToken;
   receivedAmount: string;
   errorMessage?: string;
+  signature?: string;
   onClose: () => void;
   onDone: () => void;
   onDetails: () => void;
@@ -543,7 +551,11 @@ function SwapResult({
                 color: "#000",
               }}
             >
-              {isSuccess ? "Swap Completed" : "Swap Failed"}
+              {isSuccess
+                ? "Swap Completed"
+                : variant === "status-unknown"
+                  ? "Status unknown"
+                  : "Swap Failed"}
             </span>
             {isSuccess ? (
               <span
@@ -573,6 +585,21 @@ function SwapResult({
                 }}
               >
                 {errorMessage || "Something went wrong. Please try again."}
+                {variant === "status-unknown" && signature ? (
+                  <a
+                    href={getExplorerTxUrl(signature)}
+                    rel="noreferrer"
+                    style={{
+                      color: "#000",
+                      display: "block",
+                      marginTop: "8px",
+                      wordBreak: "break-all",
+                    }}
+                    target="_blank"
+                  >
+                    {signature}
+                  </a>
+                ) : null}
               </span>
             )}
           </div>
@@ -1172,6 +1199,12 @@ export function SwapContent({
         .catch((error) => {
           console.warn("Failed to refresh balances after swap", error);
         });
+    } else if (result.transactionWasSubmitted) {
+      setResultSignature(result.transactionSignature);
+      setErrorMessage(result.error);
+      setFromAmount("");
+      resetQuote();
+      setPhase("status-unknown");
     } else {
       setErrorMessage(result.error);
       setPhase("error");
@@ -1254,10 +1287,11 @@ export function SwapContent({
         />
       );
     }
-    if (p === "success" || p === "error") {
+    if (p === "success" || p === "error" || p === "status-unknown") {
       return (
         <SwapResult
           errorMessage={errorMessage}
+          signature={resultSignature}
           fromToken={fromToken}
           onBack={onBack}
           onClose={onClose}

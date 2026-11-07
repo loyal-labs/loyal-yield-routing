@@ -398,6 +398,38 @@ test("real swap hook ignores a quote that completes after reset", async ({
   );
 });
 
+test("a rate limited read after the wallet broadcast cannot fail the swap", async ({
+  page,
+}) => {
+  await page.route("https://api.jup.ag/**", async (route) => {
+    if (route.request().method() === "POST") {
+      const wire = await page.evaluate(() => window.swapFixture.transaction);
+      await route.fulfill({
+        json: { lastValidBlockHeight: 10, swapTransaction: wire },
+      });
+    } else {
+      await route.fulfill({
+        json: {
+          inputMint: "input",
+          outputMint: "output",
+          inAmount: "1000000",
+          outAmount: "1000000",
+          priceImpactPct: "0",
+          otherAmountThreshold: "990000",
+        },
+      });
+    }
+  });
+  await page.goto("/swap?scenario=post_send_rate_limited");
+  await page.evaluate(() => window.swapFixture.quote());
+  await expect
+    .poll(() => page.evaluate(() => window.swapFixture.ready))
+    .toBe(true);
+  expect(await page.evaluate(() => window.swapFixture.execute())).toMatchObject(
+    { success: true, signature: "fixture-signature-never-broadcast" }
+  );
+});
+
 test("real swap hook waits for both rendered balance changes after confirmation", async ({
   page,
 }) => {

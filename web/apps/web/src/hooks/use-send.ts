@@ -19,6 +19,13 @@ import { useCallback, useState } from "react";
 
 import { usePublicEnv } from "@/contexts/public-env-context";
 import { trackWalletSendCompleted } from "@/lib/core/analytics";
+import {
+  type SentTransaction,
+  settleSentTransaction,
+  transactionFailedMessage,
+  type TransactionStatusUnknown,
+  transactionStatusUnknown,
+} from "@/lib/solana/confirm-sent-transaction";
 
 function cleanSolanaErrorMessage(message: string): string {
   const logsIndex = message.indexOf("Logs:");
@@ -28,11 +35,10 @@ function cleanSolanaErrorMessage(message: string): string {
   return message;
 }
 
-export type SendResult = {
-  signature?: string;
-  success: boolean;
-  error?: string;
-};
+export type SendResult =
+  | { signature: string; success: true }
+  | { error: string; success: false; transactionWasSubmitted?: false }
+  | TransactionStatusUnknown;
 
 const getTokenMint = (symbol: string): string | undefined => {
   const normalizedSymbol = symbol.toUpperCase();
@@ -68,7 +74,7 @@ export function useSend() {
       setLoading(true);
       setError(null);
 
-      try {
+      const broadcast = async (): Promise<SentTransaction> => {
         const publicKey = walletPublicKey;
         const isSol = currency.toUpperCase() === "SOL";
 
@@ -101,33 +107,9 @@ export function useSend() {
 
           const transaction = new VersionedTransaction(messageV0);
 
-          const signature = await sendTransaction(transaction, connection);
-
-          const confirmation = await connection.confirmTransaction(
-            {
-              signature,
-              blockhash,
-              lastValidBlockHeight,
-            },
-            "confirmed"
-          );
-
-          if (confirmation.value.err) {
-            throw new Error(
-              `Transaction failed: ${JSON.stringify(confirmation.value.err)}`
-            );
-          }
-
-          setLoading(false);
-          if (successTrackingProperties) {
-            trackWalletSendCompleted(publicEnv, {
-              ...successTrackingProperties,
-              signature,
-            });
-          }
           return {
-            signature,
-            success: true,
+            lastValidBlockHeight,
+            signature: await sendTransaction(transaction, connection),
           };
         }
         const resolvedTokenMint = tokenMint || getTokenMint(currency);
@@ -209,34 +191,15 @@ export function useSend() {
 
         const transaction = new VersionedTransaction(messageV0);
 
-        const signature = await sendTransaction(transaction, connection);
-
-        const confirmation = await connection.confirmTransaction(
-          {
-            signature,
-            blockhash,
-            lastValidBlockHeight,
-          },
-          "confirmed"
-        );
-
-        if (confirmation.value.err) {
-          throw new Error(
-            `Transaction failed: ${JSON.stringify(confirmation.value.err)}`
-          );
-        }
-
-        setLoading(false);
-        if (successTrackingProperties) {
-          trackWalletSendCompleted(publicEnv, {
-            ...successTrackingProperties,
-            signature,
-          });
-        }
         return {
-          signature,
-          success: true,
+          lastValidBlockHeight,
+          signature: await sendTransaction(transaction, connection),
         };
+      };
+
+      let sent: SentTransaction;
+      try {
+        sent = await broadcast();
       } catch (err) {
         let errorMessage = "Send execution failed";
 
@@ -259,6 +222,26 @@ export function useSend() {
         setLoading(false);
         return { success: false, error: errorMessage };
       }
+
+      const outcome = await settleSentTransaction(connection, sent);
+      setLoading(false);
+      if (outcome.kind === "failed") {
+        const errorMessage = transactionFailedMessage(outcome.err);
+        setError(errorMessage);
+        return { success: false, error: errorMessage };
+      }
+      if (outcome.kind === "status-unknown") {
+        const unknown = transactionStatusUnknown(sent.signature);
+        setError(unknown.error);
+        return unknown;
+      }
+      if (successTrackingProperties) {
+        trackWalletSendCompleted(publicEnv, {
+          ...successTrackingProperties,
+          signature: sent.signature,
+        });
+      }
+      return { signature: sent.signature, success: true };
     },
     [isConnected, walletPublicKey, sendTransaction, connection, publicEnv]
   );

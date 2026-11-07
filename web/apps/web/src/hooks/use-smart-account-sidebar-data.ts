@@ -93,6 +93,10 @@ import {
   writeClientCache,
 } from "@/lib/client-cache/client-cache";
 import { fetchTokenMarkets } from "@/lib/market/token-markets.client";
+import {
+  type TransactionStatusUnknown,
+  transactionStatusUnknown,
+} from "@/lib/solana/confirm-sent-transaction";
 import { getTokenIconUrl } from "@/lib/token-icon";
 import {
   getStablecoinMintSetForSolanaEnv,
@@ -453,12 +457,10 @@ export type VaultTransferRequest = {
   recipientAddress: string;
 };
 
-export type VaultTransferResult = {
-  success: boolean;
-  signature?: string;
-  error?: string;
-  status?: "executed" | "proposed";
-};
+export type VaultTransferResult =
+  | { success: true; signature?: string; status?: "executed" | "proposed" }
+  | { success: false; error?: string; transactionWasSubmitted?: false }
+  | TransactionStatusUnknown;
 
 export type VaultSwapRequest = {
   accountIndex: number;
@@ -5700,6 +5702,18 @@ export function useSmartAccountSidebarData(
           status: "executed",
         };
       } catch (err) {
+        const submittedSignature =
+          readErrorField(err, "transactionWasSubmitted") === true
+            ? getSubmittedTransactionSignature(err)
+            : null;
+        if (submittedSignature) {
+          reportWalletActionFailure(
+            "executeVaultTransfer",
+            "vault.transfer.execute",
+            err
+          );
+          return transactionStatusUnknown(submittedSignature);
+        }
         const rawMessage =
           err instanceof Error ? err.message : "Stash transfer failed.";
         const haystack = rawMessage.toLowerCase();
@@ -5898,6 +5912,13 @@ export function useSmartAccountSidebarData(
           "vault.swap.execute",
           err
         );
+        const submittedSignature =
+          readErrorField(err, "transactionWasSubmitted") === true
+            ? getSubmittedTransactionSignature(err)
+            : null;
+        if (submittedSignature) {
+          return transactionStatusUnknown(submittedSignature);
+        }
         return { success: false, error };
       }
     },
