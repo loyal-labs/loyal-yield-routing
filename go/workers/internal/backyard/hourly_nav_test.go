@@ -47,6 +47,49 @@ func TestHourlyRoutineNAVKeepsUrgentReportsAndSafety(t *testing.T) {
 	}
 }
 
+func TestUnfundedWithdrawalCannotStarveNAV(t *testing.T) {
+	for _, lane := range []string{onreONycUSDC, MapleSyrupUSDCLaneID, autoAUTOPYUSD.Lane} {
+		for _, demand := range []int64{100_658_737_179, 200_000_000_000} {
+			b := book{voltr: 2_961_393_654, demand: demand, now: bookNow,
+				lanes: []*bookLane{{lane: lane, coll: 206_696_625_546, debt: 68_875_562_002}},
+				in:    targetInputs{Levels: map[string]laneLevel{lane: {Level: 1.75}}}}
+			s, original := b.next()
+			if original.Action != DeleverRouteStep || s.Target.Rule != ruleWithdrawal {
+				t.Fatalf("fixture does not need a withdrawal sale: %+v", original)
+			}
+			for _, trustful := range []bool{false, true} {
+				s.Trustful = trustful
+				for _, age := range []int64{59, 60, 3600, 7200} {
+					s.LastReportAgeSeconds = age
+					got := Decide(s)
+					if age < capitalMutationReportAgeSeconds {
+						if got.Action != original.Action || got.MaxSlippageBPS != original.MaxSlippageBPS {
+							t.Fatalf("fresh report changed the protected withdrawal: %+v", got)
+						}
+					} else if got.Action != ReportNAV || got.Reason != "withdrawal_waiting_nav_due" {
+						t.Fatalf("%s trustful=%t demand=%d age=%d: %+v", lane, trustful, demand, age, got)
+					}
+				}
+				unpriced := s
+				unpriced.net = nil
+				if got := Decide(unpriced); got.Action == ReportNAV {
+					t.Fatal("unpriced assets reported", got)
+				}
+				unsafe := s
+				unsafe.LTVBPS = 7000
+				if got := Decide(unsafe); got.Reason != hardLTVDeleverReason {
+					t.Fatal("NAV displaced emergency deleveraging", got)
+				}
+				pending := s
+				pending.Nonterminal, pending.HasAmbiguousSubmission = Signed, true
+				if got := Decide(pending); got.Action != RecoverTransaction {
+					t.Fatal("NAV displaced signed transaction recovery", got)
+				}
+			}
+		}
+	}
+}
+
 func TestHourlyFeeBudgetUsesPilotShareGranularity(t *testing.T) {
 	t.Parallel()
 	const wealth, supply = 1_207_762_608, 3_256_644

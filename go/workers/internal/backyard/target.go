@@ -581,6 +581,16 @@ func decideSnapshot(s Snapshot, initializationReady func(Snapshot) bool) Decisio
 	if !s.Trustful && s.netKnown(time.Now()) && s.PostMutationNAVRequired && !withdrawalIdleUnderfunded(s) {
 		return report("post_mutation_nav_due")
 	}
+	// A price-blocked withdrawal must not starve reporting of the remaining assets.
+	if t.Rule == ruleWithdrawal && withdrawalShortfallRaw(s) > 0 &&
+		s.LastReportAgeSeconds >= capitalMutationReportAgeSeconds && s.netKnown(time.Now()) {
+		if !s.Trustful {
+			if hold, drifted := unexplainedNAVDriftHold(s); drifted {
+				return hold
+			}
+		}
+		return report("withdrawal_waiting_nav_due")
+	}
 	if t.Level == levelDebtZero && s.PositionDebtRaw > 0 {
 		return d(DeleverRouteStep, debtZeroReason, stepDownMarker)
 	}
