@@ -5,7 +5,7 @@
 #                                               bin/loyal-<app> with loyal-web
 #                                               for loyal; GOOS/GOARCH pass through)
 #
-# NEXT_PUBLIC_* in the environment are inlined into the app, as Next does.
+# The names listed in web/apps/loyal/vite/public-env.ts are inlined from the environment.
 set -eu
 
 root=$(cd "$(dirname "$0")/../.." && pwd)

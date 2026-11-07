@@ -91,7 +91,7 @@ fi
 
 if [[ $family == web ]]; then
   if [[ -z ${NEXT_PUBLIC_PRIVY_APP_ID:-} ]]; then
-    echo "the web bundle inlines NEXT_PUBLIC_* from this environment; missing: NEXT_PUBLIC_PRIVY_APP_ID" >&2
+    echo "the web bundle inlines the names in web/apps/loyal/vite/public-env.ts from this environment; missing: NEXT_PUBLIC_PRIVY_APP_ID" >&2
     echo "it lives in the 1Password Environment loyal-noncritical-env (mounted at .env.1password);" >&2
     echo "run the deploy under: op run --env-file=.env.1password -- bun run deploy web [sha]" >&2
     exit 1
