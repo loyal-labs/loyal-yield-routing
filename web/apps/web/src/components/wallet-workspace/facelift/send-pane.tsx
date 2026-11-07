@@ -12,6 +12,7 @@ import type { SwapToken } from "@/components/wallet-sidebar/types";
 import {
   actionPaneOverflowClass,
   ActionErrorBody,
+  ActionStatusUnknownBody,
   ActionProcessingBody,
   ActionSuccessBody,
   formatTokenAmount,
@@ -142,6 +143,7 @@ export function SendPane({
   const [isUsdInput, setIsUsdInput] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [unknownSignature, setUnknownSignature] = useState<string | null>(null);
   const [step, setStep] = useState<"form" | "processing" | "success" | "error">(
     "form"
   );
@@ -204,6 +206,7 @@ export function SendPane({
     }
     setIsSubmitting(true);
     setErrorMessage(null);
+    setUnknownSignature(null);
     setTxSignature(null);
     setStep("processing");
     const tracking = {
@@ -230,6 +233,10 @@ export function SendPane({
       onSuccess();
       setStep("success");
       return;
+    }
+    if (result.statusUnknown) {
+      setUnknownSignature(result.signature ?? null);
+      setAmountInput("");
     }
     setErrorMessage(result.error ?? "Send failed. Please try again.");
     setStep("error");
@@ -465,6 +472,13 @@ export function SendPane({
             onDone={onDone}
             signature={txSignature}
             source="send_success"
+          />
+        ) : unknownSignature ? (
+          <ActionStatusUnknownBody
+            message={errorMessage}
+            onDone={onDone}
+            signature={unknownSignature}
+            source="send_status_unknown"
           />
         ) : (
           <ActionErrorBody

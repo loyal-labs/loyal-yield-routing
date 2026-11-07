@@ -19,6 +19,7 @@ import {
 import { LOYL_TOKEN, type SwapToken } from "@/components/wallet-sidebar/types";
 import {
   ActionErrorBody,
+  ActionStatusUnknownBody,
   ActionProcessingBody,
   ActionSuccessBody,
   formatTokenAmount,
@@ -129,6 +130,7 @@ export function SwapPane({
   const [quoteAttempt, setQuoteAttempt] = useState(0);
   const [isSwapping, setIsSwapping] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [unknownSignature, setUnknownSignature] = useState<string | null>(null);
   const [step, setStep] = useState<"form" | "processing" | "success" | "error">(
     "form"
   );
@@ -275,6 +277,7 @@ export function SwapPane({
     });
     setIsSwapping(true);
     setErrorMessage(null);
+    setUnknownSignature(null);
     setTxSignature(null);
     if (activeSelectSide) {
       onRequestSelect(activeSelectSide);
@@ -297,6 +300,10 @@ export function SwapPane({
       onSuccess();
       setStep("success");
       return;
+    }
+    if (result.statusUnknown) {
+      setUnknownSignature(result.signature ?? null);
+      setAmountInput("");
     }
     setErrorMessage(result.error ?? "Swap failed. Please try again.");
     setStep("error");
@@ -577,6 +584,13 @@ export function SwapPane({
             onDone={onDone}
             signature={txSignature}
             source="swap_success"
+          />
+        ) : unknownSignature ? (
+          <ActionStatusUnknownBody
+            message={errorMessage}
+            onDone={onDone}
+            signature={unknownSignature}
+            source="swap_status_unknown"
           />
         ) : (
           <ActionErrorBody

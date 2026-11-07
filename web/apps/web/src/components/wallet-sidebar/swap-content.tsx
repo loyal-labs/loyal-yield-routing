@@ -446,6 +446,7 @@ function SwapResult({
   toToken,
   receivedAmount,
   errorMessage,
+  unknownSignature,
   onClose,
   onDone,
   onDetails,
@@ -456,6 +457,7 @@ function SwapResult({
   toToken: SwapToken;
   receivedAmount: string;
   errorMessage?: string;
+  unknownSignature?: string;
   onClose: () => void;
   onDone: () => void;
   onDetails: () => void;
@@ -543,7 +545,11 @@ function SwapResult({
                 color: "#000",
               }}
             >
-              {isSuccess ? "Swap Completed" : "Swap Failed"}
+              {isSuccess
+                ? "Swap Completed"
+                : unknownSignature
+                  ? "Status unknown"
+                  : "Swap Failed"}
             </span>
             {isSuccess ? (
               <span
@@ -573,6 +579,21 @@ function SwapResult({
                 }}
               >
                 {errorMessage || "Something went wrong. Please try again."}
+                {unknownSignature ? (
+                  <a
+                    href={getExplorerTxUrl(unknownSignature)}
+                    rel="noreferrer"
+                    style={{
+                      color: "#000",
+                      display: "block",
+                      marginTop: "8px",
+                      wordBreak: "break-all",
+                    }}
+                    target="_blank"
+                  >
+                    {unknownSignature}
+                  </a>
+                ) : null}
               </span>
             )}
           </div>
@@ -1173,6 +1194,9 @@ export function SwapContent({
           console.warn("Failed to refresh balances after swap", error);
         });
     } else {
+      if (result.statusUnknown) {
+        setResultSignature(result.signature);
+      }
       setErrorMessage(result.error);
       setPhase("error");
     }
@@ -1258,6 +1282,7 @@ export function SwapContent({
       return (
         <SwapResult
           errorMessage={errorMessage}
+          unknownSignature={p === "error" ? resultSignature : undefined}
           fromToken={fromToken}
           onBack={onBack}
           onClose={onClose}
