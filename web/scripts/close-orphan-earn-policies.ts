@@ -196,7 +196,6 @@ function resolveRpcUrl(solanaEnv: SolanaEnv, override: string | null): string {
     process.env.RPC_URL ??
     process.env[`SOLANA_${solanaEnv.toUpperCase()}_RPC_URL`] ??
     (solanaEnv === "mainnet" ? process.env.SOLANA_RPC_URL : undefined) ??
-    process.env.NEXT_PUBLIC_SOLANA_RPC_ENDPOINT ??
     getSolanaEndpoints(solanaEnv).rpcEndpoint
   );
 }
