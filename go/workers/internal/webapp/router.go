@@ -42,6 +42,7 @@ type Config struct {
 	Environment string
 
 	CoinGeckoAPIKey string
+	SolanaRPC       *SolanaRPC
 }
 
 func New(cfg Config) http.Handler {
@@ -56,6 +57,9 @@ func New(cfg Config) http.Handler {
 	})
 	proxied := forward(cfg.Upstream)
 	r.Handle(mobileEarnPrefix+"*", limitMobileEarn(proxied))
+	if cfg.SolanaRPC != nil {
+		r.Handle(solanaRPCPath, servedByGo(cfg.SolanaRPC))
+	}
 	r.Handle("/api/*", proxied)
 	r.Handle("/ingest/*", newIngestProxy(mixpanelOrigin))
 	r.Handle("/*", site(cfg))

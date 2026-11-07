@@ -318,6 +318,11 @@ func run(ctx context.Context) error {
 		return err
 	}
 	cfg.CoinGeckoAPIKey, _ = optionalCredential("token detail routes", "COINGECKO_API_KEY")
+	if endpoint, ok := optionalCredential("browser Solana RPC", "WEB_SOLANA_RPC_URL"); ok && endpoint != "" {
+		if cfg.SolanaRPC, err = webapp.NewSolanaRPC(endpoint, cfg.Environment); err != nil {
+			degraded("browser Solana RPC", err)
+		}
+	}
 	appDB := openDB(ctx, "app database routes", "WEB_APP_DATABASE_URL")
 	if appDB != nil {
 		defer appDB.Close()
