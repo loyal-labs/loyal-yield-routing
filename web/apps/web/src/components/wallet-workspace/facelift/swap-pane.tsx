@@ -97,6 +97,7 @@ export function SwapPane({
   onBack,
   onDone,
   onFlipTokens,
+  onProcessingChange,
   onRequestSelect,
   onSuccess,
   visibleBalances,
@@ -107,6 +108,7 @@ export function SwapPane({
   onBack: () => void;
   onDone: () => void;
   onFlipTokens: () => void;
+  onProcessingChange?: (isProcessing: boolean) => void;
   onRequestSelect: (side: "from" | "to") => void;
   visibleBalances: SwapBalanceSnapshot;
   onSuccess: () => void;
@@ -133,6 +135,11 @@ export function SwapPane({
   const [step, setStep] = useState<
     "form" | "processing" | "success" | "error" | "status-unknown"
   >("form");
+
+  useEffect(() => {
+    onProcessingChange?.(step === "processing");
+    return () => onProcessingChange?.(false);
+  }, [step, onProcessingChange]);
   const [txSignature, setTxSignature] = useState<string | null>(null);
   const quoteTimerRef = useRef<number | null>(null);
 
@@ -350,7 +357,8 @@ export function SwapPane({
         <div className="flex shrink-0 items-center pr-3">
           <button
             aria-label="Back"
-            className="t-hover flex size-11 items-center justify-center rounded-3xl hover:bg-accent"
+            className="t-hover flex size-11 items-center justify-center rounded-3xl hover:bg-accent disabled:opacity-40 disabled:hover:bg-transparent"
+            disabled={step === "processing"}
             onClick={onBack}
             type="button"
           >

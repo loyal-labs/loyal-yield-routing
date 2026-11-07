@@ -21,6 +21,7 @@ import { usePublicEnv } from "@/contexts/public-env-context";
 import { trackWalletSendCompleted } from "@/lib/core/analytics";
 import {
   type SentTransaction,
+  sendRecoveringSignature,
   settleSentTransaction,
   transactionFailedMessage,
   type TransactionStatusUnknown,
@@ -109,7 +110,9 @@ export function useSend() {
 
           return {
             lastValidBlockHeight,
-            signature: await sendTransaction(transaction, connection),
+            signature: await sendRecoveringSignature(() =>
+              sendTransaction(transaction, connection)
+            ),
           };
         }
         const resolvedTokenMint = tokenMint || getTokenMint(currency);
@@ -193,7 +196,9 @@ export function useSend() {
 
         return {
           lastValidBlockHeight,
-          signature: await sendTransaction(transaction, connection),
+          signature: await sendRecoveringSignature(() =>
+            sendTransaction(transaction, connection)
+          ),
         };
       };
 

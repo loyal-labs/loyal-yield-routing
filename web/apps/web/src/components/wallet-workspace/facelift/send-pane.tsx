@@ -121,6 +121,7 @@ export function SendPane({
   onFormActiveChange,
   onOpenAssetSelect,
   onOpenRecipientSelect,
+  onProcessingChange,
   onSuccess,
   recipient,
   recordRecent,
@@ -131,6 +132,7 @@ export function SendPane({
   onFormActiveChange?: (isFormActive: boolean) => void;
   onOpenAssetSelect: () => void;
   onOpenRecipientSelect: () => void;
+  onProcessingChange?: (isProcessing: boolean) => void;
   onSuccess: () => void;
   recipient: string | null;
   recordRecent: (address: string) => void;
@@ -151,6 +153,11 @@ export function SendPane({
   useEffect(() => {
     onFormActiveChange?.(step === "form");
   }, [step, onFormActiveChange]);
+
+  useEffect(() => {
+    onProcessingChange?.(step === "processing");
+    return () => onProcessingChange?.(false);
+  }, [step, onProcessingChange]);
 
   const numericInput = Number.parseFloat(amountInput.replace(/,/g, "")) || 0;
   const tokenAmount = isUsdInput
@@ -264,7 +271,8 @@ export function SendPane({
         <div className="flex shrink-0 items-center pr-3">
           <button
             aria-label="Back"
-            className="t-hover flex size-11 items-center justify-center rounded-3xl hover:bg-accent"
+            className="t-hover flex size-11 items-center justify-center rounded-3xl hover:bg-accent disabled:opacity-40 disabled:hover:bg-transparent"
+            disabled={step === "processing"}
             onClick={onBack}
             type="button"
           >

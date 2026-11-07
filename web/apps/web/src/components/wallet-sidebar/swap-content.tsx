@@ -208,11 +208,13 @@ function SwapStatusHeader({
   toToken,
   onClose,
   onBack,
+  disabled,
 }: {
   fromToken: SwapToken;
   toToken: SwapToken;
   onClose: () => void;
   onBack?: () => void;
+  disabled?: boolean;
 }) {
   return (
     <div
@@ -227,6 +229,7 @@ function SwapStatusHeader({
       {onBack && (
         <button
           className="swap-status-close"
+          disabled={disabled}
           onClick={onBack}
           style={{
             width: "36px",
@@ -237,7 +240,8 @@ function SwapStatusHeader({
             background: "rgba(0, 0, 0, 0.04)",
             border: "none",
             borderRadius: "9999px",
-            cursor: "pointer",
+            cursor: disabled ? "default" : "pointer",
+          opacity: disabled ? 0.4 : 1,
             transition: "all 0.2s ease",
             color: "#3C3C43",
             flexShrink: 0,
@@ -270,6 +274,7 @@ function SwapStatusHeader({
       </div>
       <button
         className="swap-status-close"
+        disabled={disabled}
         onClick={onClose}
         style={{
           width: "36px",
@@ -280,7 +285,8 @@ function SwapStatusHeader({
           background: "rgba(0, 0, 0, 0.04)",
           border: "none",
           borderRadius: "9999px",
-          cursor: "pointer",
+          cursor: disabled ? "default" : "pointer",
+          opacity: disabled ? 0.4 : 1,
           transition: "all 0.2s ease",
           color: "#3C3C43",
           flexShrink: 0,
@@ -322,6 +328,7 @@ function SwapProcessing({
       `}</style>
 
       <SwapStatusHeader
+        disabled
         fromToken={fromToken}
         onBack={onBack}
         onClose={onClose}

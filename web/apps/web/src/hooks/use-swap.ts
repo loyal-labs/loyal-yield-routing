@@ -19,6 +19,7 @@ import {
 } from "@/features/observability/lifecycle-contract";
 import { trackWalletSwapCompleted } from "@/lib/core/analytics";
 import {
+  sendRecoveringSignature,
   settleSentTransaction,
   transactionFailedMessage,
   type TransactionStatusUnknown,
@@ -452,7 +453,9 @@ export function useSwap(visibleBalances: SwapBalanceSnapshot) {
             const executionResult = executionContext
               ? await executionContext.executeTransaction(transaction)
               : {
-                  signature: await sendTransaction(transaction, connection),
+                  signature: await sendRecoveringSignature(() =>
+                    sendTransaction(transaction, connection)
+                  ),
                   success: true as const,
                   status: "executed" as const,
                 };

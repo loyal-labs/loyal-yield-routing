@@ -8,11 +8,14 @@ const SLIPPAGE: TransactionError = { InstructionError: [3, { Custom: 6001 }] };
 
 type Status = { confirmationStatus: string; err: TransactionError | null };
 
+const historySearches: boolean[] = [];
+
 let stopStub = () => {};
 afterEach(() => stopStub());
 
 function stubRpc(statusAt: (elapsedMs: number) => Status | null | 429) {
   const startedAt = Date.now();
+  historySearches.length = 0;
   const elapsed = () => Date.now() - startedAt;
   const server = Bun.serve({
     port: 0,
@@ -20,7 +23,7 @@ function stubRpc(statusAt: (elapsedMs: number) => Status | null | 429) {
       if (bun.upgrade(request)) {
         return;
       }
-      return request.json().then(({ id, method }) => {
+      return request.json().then(({ id, method, params }) => {
         if (method === "getBlockHeight") {
           return Response.json({
             id,
@@ -28,6 +31,7 @@ function stubRpc(statusAt: (elapsedMs: number) => Status | null | 429) {
             result: 1000 + Math.floor(elapsed() / 400),
           });
         }
+        historySearches.push(params[1].searchTransactionHistory);
         const status = statusAt(elapsed());
         if (status === 429) {
           return new Response("rate limited", { status: 429 });
@@ -85,4 +89,44 @@ test("a failure first seen at processed waits for confirmed and reads as failed"
       signature: SIGNATURE,
     })
   ).toEqual({ err: SLIPPAGE, kind: "failed" });
+}, 20_000);
+
+test("a processed status with an err is not answered before confirmed", async () => {
+  const connection = stubRpc((elapsedMs) =>
+    elapsedMs < 1000
+      ? { confirmationStatus: "processed", err: SLIPPAGE }
+      : { confirmationStatus: "confirmed", err: null }
+  );
+  expect(
+    await settleSentTransaction(connection, {
+      lastValidBlockHeight: 1030,
+      signature: SIGNATURE,
+    })
+  ).toEqual({ kind: "landed" });
+}, 20_000);
+
+test("history is searched only on the read after expiry", async () => {
+  const connection = stubRpc(() => null);
+  expect(
+    await settleSentTransaction(connection, {
+      lastValidBlockHeight: 1004,
+      signature: SIGNATURE,
+    })
+  ).toEqual({ kind: "status-unknown" });
+  expect(historySearches.length).toBeGreaterThan(1);
+  expect(historySearches.slice(0, -1)).not.toContain(true);
+  expect(historySearches.at(-1)).toBe(true);
+}, 20_000);
+
+test("an empty-string err is a failure, not a landing", async () => {
+  const connection = stubRpc(() => ({
+    confirmationStatus: "confirmed",
+    err: "" as unknown as TransactionError,
+  }));
+  expect(
+    await settleSentTransaction(connection, {
+      lastValidBlockHeight: 1030,
+      signature: SIGNATURE,
+    })
+  ).toEqual({ err: "", kind: "failed" });
 }, 20_000);

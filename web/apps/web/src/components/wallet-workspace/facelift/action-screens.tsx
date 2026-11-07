@@ -192,6 +192,7 @@ export function ActionStatusUnknownBody({
       message={message}
       onBack={onDone}
       title="Status unknown"
+      wrapMessage
     />
   );
 }
@@ -202,12 +203,14 @@ export function ActionErrorBody({
   message,
   onBack,
   title = "Failed",
+  wrapMessage = false,
 }: {
   backLabel?: string;
   explorer?: ReactNode;
   message: string | null;
   onBack: () => void;
   title?: string;
+  wrapMessage?: boolean;
 }) {
   return (
     <div className="relative flex w-full flex-1 flex-col items-center pt-8 pb-[68px]">
@@ -229,7 +232,11 @@ export function ActionErrorBody({
           {title}
         </p>
         {message ? (
-          <p className="max-w-[400px] truncate text-center text-[16px] leading-5 tracking-[-0.16px] text-destructive">
+          <p
+            className={`max-w-[400px] text-center text-[16px] leading-5 tracking-[-0.16px] text-destructive ${
+              wrapMessage ? "text-balance" : "truncate"
+            }`}
+          >
             {message}
           </p>
         ) : null}

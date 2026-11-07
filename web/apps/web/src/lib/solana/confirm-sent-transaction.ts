@@ -3,6 +3,7 @@ import type { Connection, TransactionError } from "@solana/web3.js";
 const STATUS_POLL_MS = 2000;
 const READ_TIMEOUT_MS = 10_000;
 const SETTLE_DEADLINE_MS = 120_000;
+const STATUS_CACHE_AGE_MS = 30_000;
 
 export type SentTransaction = {
   lastValidBlockHeight: number;
@@ -16,8 +17,10 @@ export type SentOutcome =
 
 const STATUS_UNKNOWN: SentOutcome = { kind: "status-unknown" };
 
-function outcomeOf(err: TransactionError | null): SentOutcome {
-  return err ? { kind: "failed", err } : { kind: "landed" };
+function outcomeOf(err: TransactionError | null | undefined): SentOutcome {
+  return err !== null && err !== undefined
+    ? { kind: "failed", err }
+    : { kind: "landed" };
 }
 
 function waitFor(ms: number, stop: AbortSignal): Promise<void> {
@@ -52,12 +55,11 @@ async function readOrNull<T>(read: () => Promise<T>): Promise<T | null> {
 // the confirmed and finalized ones answer.
 async function readSettledStatus(
   connection: Connection,
-  signature: string
+  signature: string,
+  searchTransactionHistory: boolean
 ): Promise<SentOutcome | null> {
   const response = await readOrNull(() =>
-    connection.getSignatureStatuses([signature], {
-      searchTransactionHistory: true,
-    })
+    connection.getSignatureStatuses([signature], { searchTransactionHistory })
   );
   const status = response?.value[0];
   return status?.confirmationStatus === "confirmed" ||
@@ -72,8 +74,13 @@ async function pollUntilSettled(
   stop: AbortSignal
 ): Promise<SentOutcome> {
   const deadline = Date.now() + SETTLE_DEADLINE_MS;
+  let lastReadAt = Date.now();
   while (!stop.aborted && Date.now() < deadline) {
-    const settled = await readSettledStatus(connection, signature);
+    // A tab that slept past the node's recent-status window must look in
+    // history on waking; a live poll would only make the node search for it.
+    const asleep = Date.now() - lastReadAt > STATUS_CACHE_AGE_MS;
+    lastReadAt = Date.now();
+    const settled = await readSettledStatus(connection, signature, asleep);
     if (settled) {
       return settled;
     }
@@ -88,7 +95,9 @@ async function pollUntilSettled(
   if (stop.aborted) {
     return STATUS_UNKNOWN;
   }
-  return (await readSettledStatus(connection, signature)) ?? STATUS_UNKNOWN;
+  return (
+    (await readSettledStatus(connection, signature, true)) ?? STATUS_UNKNOWN
+  );
 }
 
 /**
@@ -129,6 +138,29 @@ export async function settleSentTransaction(
     if (subscription !== undefined) {
       connection.removeSignatureListener(subscription).catch(() => undefined);
     }
+  }
+}
+
+/**
+ * Sends through the wallet and returns the signature, including when the send
+ * threw after the transaction may have been broadcast (the error then carries
+ * the signature), so the caller settles it instead of treating it as unsent.
+ */
+export async function sendRecoveringSignature(
+  send: () => Promise<string>
+): Promise<string> {
+  try {
+    return await send();
+  } catch (err) {
+    const submitted = err as Partial<TransactionStatusUnknown> | null;
+    if (
+      submitted?.transactionWasSubmitted === true &&
+      typeof submitted.transactionSignature === "string" &&
+      submitted.transactionSignature.length > 0
+    ) {
+      return submitted.transactionSignature;
+    }
+    throw err;
   }
 }
 

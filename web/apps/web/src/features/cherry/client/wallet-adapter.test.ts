@@ -18,7 +18,9 @@ import {
   VersionedTransaction,
   type Connection,
   type SendOptions,
+  SendTransactionError,
 } from "@solana/web3.js";
+import bs58 from "bs58";
 import { Buffer } from "buffer";
 import nacl from "tweetnacl";
 
@@ -235,6 +237,36 @@ describe("Loyal Cherry wallet adapter", () => {
       adapter.sendTransaction(legacyTransaction(RECIPIENT_A), rpc.connection)
     ).rejects.toThrow("ambiguous RPC failure");
     expect(rpc.calls).toHaveLength(1);
+  });
+
+  test("hands the signature to the caller when a broadcast outcome is ambiguous, not when the node refused it", async () => {
+    activeHost = approvedHost();
+    const adapter = await connectedAdapter();
+    const lost = recordingConnection(new TypeError("Failed to fetch"));
+
+    const ambiguous = await adapter
+      .sendTransaction(legacyTransaction(RECIPIENT_A), lost.connection)
+      .catch((error: unknown) => error);
+
+    const sent = Transaction.from(lost.calls[0]!.raw);
+    expect(ambiguous).toMatchObject({
+      transactionSignature: bs58.encode(
+        signatureForLegacy(sent, WALLET.publicKey)
+      ),
+      transactionWasSubmitted: true,
+    });
+
+    const refused = recordingConnection(
+      new SendTransactionError({
+        action: "simulate",
+        signature: "",
+        transactionMessage: "Blockhash not found",
+      })
+    );
+    const refusal = await adapter
+      .sendTransaction(legacyTransaction(RECIPIENT_A), refused.connection)
+      .catch((error: unknown) => error);
+    expect(refusal).not.toHaveProperty("transactionWasSubmitted");
   });
 
   test.each(["disconnect", "suspend"] as const)(

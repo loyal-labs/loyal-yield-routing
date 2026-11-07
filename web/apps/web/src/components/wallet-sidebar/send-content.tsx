@@ -46,9 +46,11 @@ type SendPhase =
 function SendStatusHeader({
   title,
   onClose,
+  disabled,
 }: {
   title: string;
   onClose: () => void;
+  disabled?: boolean;
 }) {
   return (
     <div
@@ -86,6 +88,7 @@ function SendStatusHeader({
       </div>
       <button
         className="send-status-close"
+        disabled={disabled}
         onClick={onClose}
         style={{
           width: "36px",
@@ -96,7 +99,8 @@ function SendStatusHeader({
           background: "rgba(0, 0, 0, 0.04)",
           border: "none",
           borderRadius: "9999px",
-          cursor: "pointer",
+          cursor: disabled ? "default" : "pointer",
+          opacity: disabled ? 0.4 : 1,
           transition: "all 0.2s ease",
           color: "#3C3C43",
           flexShrink: 0,
@@ -132,7 +136,7 @@ function SendProcessing({
         }
       `}</style>
 
-      <SendStatusHeader onClose={onClose} title="Send" />
+      <SendStatusHeader disabled onClose={onClose} title="Send" />
 
       <div
         style={{
