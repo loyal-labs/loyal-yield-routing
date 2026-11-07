@@ -192,10 +192,16 @@ export function ActionStatusUnknownBody({
       message={message}
       onBack={onDone}
       title="Status unknown"
+      tone="unknown"
       wrapMessage
     />
   );
 }
+
+const RESULT_TONES = {
+  failure: { icon: "icon-swap-failed.svg", message: "text-destructive" },
+  unknown: { icon: "icon-clock-history.svg", message: "text-foreground" },
+} as const;
 
 export function ActionErrorBody({
   backLabel = "Back",
@@ -203,6 +209,7 @@ export function ActionErrorBody({
   message,
   onBack,
   title = "Failed",
+  tone = "failure",
   wrapMessage = false,
 }: {
   backLabel?: string;
@@ -210,6 +217,7 @@ export function ActionErrorBody({
   message: string | null;
   onBack: () => void;
   title?: string;
+  tone?: keyof typeof RESULT_TONES;
   wrapMessage?: boolean;
 }) {
   return (
@@ -226,14 +234,16 @@ export function ActionErrorBody({
           alt=""
           aria-hidden="true"
           className="size-16"
-          src={`${ASSET_BASE}/icon-swap-failed.svg`}
+          src={`${ASSET_BASE}/${RESULT_TONES[tone].icon}`}
         />
         <p className="text-center font-semibold text-[28px] text-foreground leading-8 tracking-[-0.28px]">
           {title}
         </p>
         {message ? (
           <p
-            className={`max-w-[400px] text-center text-[16px] leading-5 tracking-[-0.16px] text-destructive ${
+            className={`max-w-[400px] text-center text-[16px] leading-5 tracking-[-0.16px] ${
+              RESULT_TONES[tone].message
+            } ${
               wrapMessage ? "text-balance" : "truncate"
             }`}
           >

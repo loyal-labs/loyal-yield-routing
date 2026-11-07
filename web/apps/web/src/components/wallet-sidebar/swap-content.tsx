@@ -531,8 +531,20 @@ function SwapResult({
         >
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
-            alt={isSuccess ? "Success" : "Error"}
-            src={isSuccess ? "/hero-new/success.svg" : "/hero-new/error.svg"}
+            alt={
+              isSuccess
+                ? "Success"
+                : variant === "status-unknown"
+                  ? "Status unknown"
+                  : "Error"
+            }
+            src={
+              isSuccess
+                ? "/hero-new/success.svg"
+                : variant === "status-unknown"
+                  ? "/hero-new/dog-huh.svg"
+                  : "/hero-new/error.svg"
+            }
             style={{
               width: "100px",
               height: "80px",
