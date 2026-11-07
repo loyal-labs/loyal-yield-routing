@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"syscall"
@@ -313,11 +314,21 @@ func enableEarnPush(e *webapp.Earn, push *webapp.WalletPush) {
 }
 
 func run(ctx context.Context) error {
+	// The browser RPC arithmetic leaves 288 MiB of MemoryMax to Go (solana_rpc_socket.go).
+	// Without a limit the collector lets the heap reach twice what is live.
+	if os.Getenv("GOMEMLIMIT") == "" {
+		debug.SetMemoryLimit(288 << 20)
+	}
 	cfg, err := config()
 	if err != nil {
 		return err
 	}
 	cfg.CoinGeckoAPIKey, _ = optionalCredential("token detail routes", "COINGECKO_API_KEY")
+	if endpoint, ok := optionalCredential("browser Solana RPC", "WEB_SOLANA_RPC_URL"); ok && endpoint != "" {
+		if cfg.SolanaRPC, err = webapp.NewSolanaRPC(endpoint, cfg.Environment); err != nil {
+			degraded("browser Solana RPC", err)
+		}
+	}
 	appDB := openDB(ctx, "app database routes", "WEB_APP_DATABASE_URL")
 	if appDB != nil {
 		defer appDB.Close()
@@ -387,6 +398,9 @@ func run(ctx context.Context) error {
 	}
 	shutdown, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
+	if cfg.SolanaRPC != nil {
+		cfg.SolanaRPC.CloseSockets(shutdown)
+	}
 	if err := server.Shutdown(shutdown); err != nil {
 		return fmt.Errorf("shutdown: %w", err)
 	}

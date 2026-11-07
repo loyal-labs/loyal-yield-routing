@@ -7,6 +7,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
@@ -98,7 +99,7 @@ func limitMobileEarn(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		now := time.Now()
 		class := classOf(r.Method)
-		client := buckets.get(limiterKey{class.name, "client", clientIP(r)}, class.client, now)
+		client := buckets.get(limiterKey{class.name, "client", clientKey(r)}, class.client, now)
 		if !client.AllowN(now, 1) {
 			tooMany(w, client, class.client, now)
 			return
@@ -127,15 +128,29 @@ func tooMany(w http.ResponseWriter, limiter *rate.Limiter, b budget, now time.Ti
 	http.Error(w, http.StatusText(http.StatusTooManyRequests), http.StatusTooManyRequests)
 }
 
-func clientIP(r *http.Request) string {
-	peer, _, err := net.SplitHostPort(r.RemoteAddr)
+// clientKey is what a client's limits are held under. One IPv6 customer gets a
+// whole /64, so a full address would hand it 2^64 budgets.
+func clientKey(r *http.Request) string {
+	address, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
-		peer = r.RemoteAddr
+		address = r.RemoteAddr
 	}
-	if forwarded := r.Header.Get("CF-Connecting-IP"); forwarded != "" && net.ParseIP(peer).IsLoopback() {
-		return forwarded
+	if forwarded := r.Header.Get("CF-Connecting-IP"); forwarded != "" && net.ParseIP(address).IsLoopback() {
+		address = forwarded
 	}
-	return peer
+	parsed, err := netip.ParseAddr(address)
+	if err != nil {
+		return address
+	}
+	parsed = parsed.Unmap()
+	if !parsed.Is6() {
+		return parsed.String()
+	}
+	network, err := parsed.Prefix(64)
+	if err != nil {
+		return address
+	}
+	return network.String()
 }
 
 func solanaAddressOrEmpty(s string) string {

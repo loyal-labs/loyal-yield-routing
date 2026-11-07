@@ -234,6 +234,7 @@ function SendResult({
   amount,
   recipient,
   errorMessage,
+  unknownSignature,
   onClose,
   onDone,
   onDetails,
@@ -243,6 +244,7 @@ function SendResult({
   amount: string;
   recipient: string;
   errorMessage?: string;
+  unknownSignature?: string;
   onClose: () => void;
   onDone: () => void;
   onDetails: () => void;
@@ -326,7 +328,11 @@ function SendResult({
                 color: "#000",
               }}
             >
-              {isSuccess ? `${token.symbol} sent` : "Send failed"}
+              {isSuccess
+                ? `${token.symbol} sent`
+                : unknownSignature
+                  ? "Status unknown"
+                  : "Send failed"}
             </span>
             {isSuccess ? (
               <span
@@ -357,6 +363,21 @@ function SendResult({
                 }}
               >
                 {errorMessage || "Something went wrong. Please try again."}
+                {unknownSignature ? (
+                  <a
+                    href={getExplorerTxUrl(unknownSignature)}
+                    rel="noreferrer"
+                    style={{
+                      color: "#000",
+                      display: "block",
+                      marginTop: "8px",
+                      wordBreak: "break-all",
+                    }}
+                    target="_blank"
+                  >
+                    {unknownSignature}
+                  </a>
+                ) : null}
               </span>
             )}
           </div>
@@ -945,6 +966,7 @@ export function SendContent({
       signature?: string;
       error?: string;
       status?: SendContentVaultExecuteResult["status"];
+      statusUnknown?: boolean;
     };
 
     if (vaultContext?.mode === "ready") {
@@ -1004,6 +1026,9 @@ export function SendContent({
         });
       }
     } else {
+      if (result.statusUnknown) {
+        setResultSignature(result.signature);
+      }
       setErrorMessage(result.error);
       setPhase("error");
     }
@@ -1053,6 +1078,7 @@ export function SendContent({
         <SendResult
           amount={resultAmount}
           errorMessage={errorMessage}
+          unknownSignature={p === "error" ? resultSignature : undefined}
           onClose={onClose}
           onDetails={() => setPhase("details")}
           onDone={onDone}

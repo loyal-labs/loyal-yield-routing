@@ -5,6 +5,7 @@ go 1.25.1
 require (
 	github.com/danielgtaylor/huma/v2 v2.39.1
 	github.com/go-chi/chi/v5 v5.3.2
+	github.com/gorilla/websocket v1.5.3
 	github.com/jackc/pgx/v5 v5.7.6
 	github.com/solana-foundation/solana-go/v2 v2.1.0
 	golang.org/x/image v0.45.0

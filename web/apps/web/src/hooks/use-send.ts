@@ -19,6 +19,10 @@ import { useCallback, useState } from "react";
 
 import { usePublicEnv } from "@/contexts/public-env-context";
 import { trackWalletSendCompleted } from "@/lib/core/analytics";
+import {
+  confirmSentTransaction,
+  TransactionStatusUnknownError,
+} from "@/lib/solana/confirm-sent-transaction";
 
 function cleanSolanaErrorMessage(message: string): string {
   const logsIndex = message.indexOf("Logs:");
@@ -32,6 +36,7 @@ export type SendResult = {
   signature?: string;
   success: boolean;
   error?: string;
+  statusUnknown?: boolean;
 };
 
 const getTokenMint = (symbol: string): string | undefined => {
@@ -103,20 +108,11 @@ export function useSend() {
 
           const signature = await sendTransaction(transaction, connection);
 
-          const confirmation = await connection.confirmTransaction(
-            {
-              signature,
-              blockhash,
-              lastValidBlockHeight,
-            },
-            "confirmed"
-          );
-
-          if (confirmation.value.err) {
-            throw new Error(
-              `Transaction failed: ${JSON.stringify(confirmation.value.err)}`
-            );
-          }
+          await confirmSentTransaction(connection, {
+            blockhash,
+            lastValidBlockHeight,
+            signature,
+          });
 
           setLoading(false);
           if (successTrackingProperties) {
@@ -211,20 +207,11 @@ export function useSend() {
 
         const signature = await sendTransaction(transaction, connection);
 
-        const confirmation = await connection.confirmTransaction(
-          {
-            signature,
-            blockhash,
-            lastValidBlockHeight,
-          },
-          "confirmed"
-        );
-
-        if (confirmation.value.err) {
-          throw new Error(
-            `Transaction failed: ${JSON.stringify(confirmation.value.err)}`
-          );
-        }
+        await confirmSentTransaction(connection, {
+          blockhash,
+          lastValidBlockHeight,
+          signature,
+        });
 
         setLoading(false);
         if (successTrackingProperties) {
@@ -238,6 +225,16 @@ export function useSend() {
           success: true,
         };
       } catch (err) {
+        if (err instanceof TransactionStatusUnknownError) {
+          setError(err.message);
+          setLoading(false);
+          return {
+            error: err.message,
+            signature: err.signature,
+            statusUnknown: true,
+            success: false,
+          };
+        }
         let errorMessage = "Send execution failed";
 
         if (err instanceof Error) {

@@ -19,6 +19,10 @@ import {
 } from "@/features/observability/lifecycle-contract";
 import { trackWalletSwapCompleted } from "@/lib/core/analytics";
 import {
+  confirmSentTransaction,
+  TransactionStatusUnknownError,
+} from "@/lib/solana/confirm-sent-transaction";
+import {
   isSwapVisible,
   type SwapBalanceSnapshot,
 } from "@/features/observability/swap-visibility";
@@ -81,6 +85,7 @@ export type SwapResult = {
   success: boolean;
   error?: string;
   status?: "executed" | "proposed";
+  statusUnknown?: boolean;
 };
 
 export type SwapExecutionContext = {
@@ -469,22 +474,11 @@ export function useSwap(visibleBalances: SwapBalanceSnapshot) {
               const latestBlockhash = await connection.getLatestBlockhash(
                 "confirmed"
               );
-              const confirmation = await connection.confirmTransaction(
-                {
-                  signature,
-                  blockhash: latestBlockhash.blockhash,
-                  lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
-                },
-                "confirmed"
-              );
-
-              if (confirmation.value.err) {
-                throw new Error(
-                  `Transaction failed: ${JSON.stringify(
-                    confirmation.value.err
-                  )}`
-                );
-              }
+              await confirmSentTransaction(connection, {
+                blockhash: latestBlockhash.blockhash,
+                lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
+                signature,
+              });
             }
 
             logger.debug("Transaction confirmed!");
@@ -541,6 +535,21 @@ export function useSwap(visibleBalances: SwapBalanceSnapshot) {
           }
         }
       } catch (err) {
+        if (err instanceof TransactionStatusUnknownError) {
+          tracker.fail(lifecycleStage, {
+            errorCode: "realtime_unresolved",
+            errorMessage: lifecycleErrorMessage(err),
+            ...(walletProvider ? { walletProvider } : {}),
+          });
+          setError(err.message);
+          setLoading(false);
+          return {
+            error: err.message,
+            signature: err.signature,
+            statusUnknown: true,
+            success: false,
+          };
+        }
         let errorMessage = "Swap execution failed";
         const rawMessage = err instanceof Error ? err.message : "";
 

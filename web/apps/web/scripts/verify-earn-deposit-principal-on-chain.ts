@@ -1,7 +1,7 @@
 import { mock } from "bun:test";
 
 import { resolveLoyalClusterForSolanaEnv } from "@loyal-labs/actions";
-import type { SolanaEnv } from "@loyal-labs/solana-rpc";
+import { getSolanaEndpoints, type SolanaEnv } from "@loyal-labs/solana-rpc";
 import { sql } from "drizzle-orm";
 import {
   Connection,
@@ -154,9 +154,6 @@ function createAcceptedOwnerDeltas(
 const { resolveLoyalWebSolanaEnvFromEnv } = await import(
   "@/lib/core/config/solana-env-override"
 );
-const { getFrontendSolanaEndpoints } = await import(
-  "@/lib/solana/rpc-endpoints"
-);
 const { getFrontendSolanaRpcFetch } = await import(
   "@/lib/solana/rpc-rate-limit"
 );
@@ -169,13 +166,13 @@ const solanaEnv: SolanaEnv =
   parseSolanaEnvArg() ?? resolveLoyalWebSolanaEnvFromEnv(process.env);
 const cluster = resolveLoyalClusterForSolanaEnv(solanaEnv);
 const envPrefix = solanaEnv.toUpperCase();
-const frontendEndpoints = getFrontendSolanaEndpoints(solanaEnv);
+const sharedEndpoints = getSolanaEndpoints(solanaEnv);
 const rpcEndpoint =
   process.env[`SOLANA_${envPrefix}_RPC_URL`]?.trim() ||
-  frontendEndpoints.rpcEndpoint;
+  sharedEndpoints.rpcEndpoint;
 const websocketEndpoint =
   process.env[`SOLANA_${envPrefix}_WEBSOCKET_URL`]?.trim() ||
-  frontendEndpoints.websocketEndpoint;
+  sharedEndpoints.websocketEndpoint;
 const connection = new Connection(rpcEndpoint, {
   commitment: "confirmed",
   disableRetryOnRateLimit: true,
