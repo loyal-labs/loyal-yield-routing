@@ -10,6 +10,7 @@ import (
 	"math/big"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -23,13 +24,15 @@ const (
 	joyDay                = 24 * time.Hour
 	joyWalletConcurrency  = 5
 	joyTimeBudget         = 240 * time.Second
-	joyFirstCampaign      = "yield-first"
-	joyMinReportableUSD   = 0.01
+	joyRuleVersion        = 2
+	joyThresholdUSD       = 1.0
+	joyWeeklyCap          = 4
+	joyCapWindow          = 7 * 24 * time.Hour
 	joyAnniversaryMinUSD  = 1.0
 	joyDecisionSeed       = "seed"
+	joyDecisionRebaseline = "rebaseline"
 	joyDecisionPush       = "push"
 	joyDecisionNone       = "none"
-	joyKindFirst          = "first"
 	joyKindMilestone      = "milestone"
 	joyKindAnniversary    = "anniversary"
 	joyKindDigest         = "digest"
@@ -38,7 +41,7 @@ const (
 	joyAnniversaryOneYear = "yield-one-year"
 )
 
-var joyMilestonesUSD = [...]float64{10, 100, 1000}
+var joyMilestonesUSD = [...]float64{1, 100, 500, 1000, 5000}
 
 var joyAnniversaries = [...]struct {
 	campaign string
@@ -53,39 +56,35 @@ type joyState struct {
 	lastPushedAt        *time.Time
 	lastPushedEarnedUSD float64
 	sentCampaigns       []string
+	recentPushedAt      []time.Time
+	ruleVersion         int
 }
 
 type joyPush struct {
-	amountUSD float64
-	campaign  string
-	months    int
-	kind      string
+	amountUSD   float64
+	campaign    string
+	months      int
+	kind        string
+	lifetimeUSD float64
+	route       string
 }
 
 type joyDecision struct {
-	kind      string
-	campaigns []string
-	push      joyPush
+	kind           string
+	campaigns      []string
+	push           joyPush
+	recentPushedAt []time.Time
 }
 
-func joyDigestThresholdUSD(daysSinceLastPush float64) float64 {
-	switch {
-	case daysSinceLastPush >= 30:
-		return joyMinReportableUSD
-	case daysSinceLastPush >= 7:
-		return 0.1
-	}
-	return 1
+func joyMilestoneCampaign(milestone float64) string {
+	return "yield-total-" + jsNumberString(milestone)
 }
 
 func joyQualifiedCampaigns(accountAgeDays, lifetimeEarnedUSD float64) []string {
 	campaigns := []string{}
-	if lifetimeEarnedUSD >= joyMinReportableUSD {
-		campaigns = append(campaigns, joyFirstCampaign)
-	}
 	for i := len(joyMilestonesUSD) - 1; i >= 0; i-- {
 		if lifetimeEarnedUSD >= joyMilestonesUSD[i] {
-			campaigns = append(campaigns, "yield-total-"+jsNumberString(joyMilestonesUSD[i]))
+			campaigns = append(campaigns, joyMilestoneCampaign(joyMilestonesUSD[i]))
 			break
 		}
 	}
@@ -100,38 +99,72 @@ func joyQualifiedCampaigns(accountAgeDays, lifetimeEarnedUSD float64) []string {
 	return campaigns
 }
 
-// selectJoyPush ranks a first yield over a milestone, a milestone over an
-// anniversary and anything over the routine digest. A wallet the cron has
-// never seen is seeded silently with what it already qualifies for.
+// joyWithinWindow keeps the pushes that still count against the weekly cap.
+func joyWithinWindow(times []time.Time, now time.Time) []time.Time {
+	kept := []time.Time{}
+	for _, at := range times {
+		if now.Sub(at) < joyCapWindow {
+			kept = append(kept, at)
+		}
+	}
+	return kept
+}
+
+// selectJoyPush applies, in order: seed a new wallet, silently re-baseline a
+// row written by an older rule, stay quiet for no earnings or a spent cap,
+// then rank a milestone over an anniversary over the routine digest.
 func selectJoyPush(accountAgeDays, lifetimeEarnedUSD float64, now time.Time, state *joyState) joyDecision {
 	qualified := joyQualifiedCampaigns(accountAgeDays, lifetimeEarnedUSD)
 	if state == nil {
-		return joyDecision{kind: joyDecisionSeed, campaigns: qualified}
+		return joyDecision{kind: joyDecisionSeed, campaigns: qualified, recentPushedAt: []time.Time{}}
+	}
+	if state.ruleVersion < joyRuleVersion {
+		campaigns := slices.Clone(state.sentCampaigns)
+		for _, campaign := range qualified {
+			if !slices.Contains(campaigns, campaign) {
+				campaigns = append(campaigns, campaign)
+			}
+		}
+		recent := []time.Time{}
+		if state.lastPushedAt != nil {
+			recent = joyWithinWindow([]time.Time{*state.lastPushedAt}, now)
+		}
+		return joyDecision{kind: joyDecisionRebaseline, campaigns: campaigns, recentPushedAt: recent}
+	}
+	if lifetimeEarnedUSD <= 0 {
+		return joyDecision{kind: joyDecisionNone}
+	}
+	recent := joyWithinWindow(state.recentPushedAt, now)
+	y, m, d := now.UTC().Date()
+	for _, at := range state.recentPushedAt {
+		ay, am, ad := at.UTC().Date()
+		if ay == y && am == m && ad == d {
+			return joyDecision{kind: joyDecisionNone}
+		}
+	}
+	if len(recent) >= joyWeeklyCap {
+		return joyDecision{kind: joyDecisionNone}
+	}
+	push := func(p joyPush) joyDecision {
+		p.lifetimeUSD = lifetimeEarnedUSD
+		return joyDecision{kind: joyDecisionPush, push: p, recentPushedAt: append(slices.Clone(recent), now)}
 	}
 	pending := func(campaign string) bool {
 		return slices.Contains(qualified, campaign) && !slices.Contains(state.sentCampaigns, campaign)
 	}
-	if pending(joyFirstCampaign) {
-		return joyDecision{kind: joyDecisionPush, push: joyPush{amountUSD: lifetimeEarnedUSD, campaign: joyFirstCampaign, kind: joyKindFirst}}
-	}
 	for i := len(joyMilestonesUSD) - 1; i >= 0; i-- {
-		campaign := "yield-total-" + jsNumberString(joyMilestonesUSD[i])
+		campaign := joyMilestoneCampaign(joyMilestonesUSD[i])
 		if pending(campaign) {
-			return joyDecision{kind: joyDecisionPush, push: joyPush{amountUSD: joyMilestonesUSD[i], campaign: campaign, kind: joyKindMilestone}}
+			return push(joyPush{amountUSD: joyMilestonesUSD[i], campaign: campaign, kind: joyKindMilestone})
 		}
 	}
 	for _, entry := range joyAnniversaries {
 		if pending(entry.campaign) {
-			return joyDecision{kind: joyDecisionPush, push: joyPush{amountUSD: lifetimeEarnedUSD, campaign: entry.campaign, months: entry.months, kind: joyKindAnniversary}}
+			return push(joyPush{amountUSD: lifetimeEarnedUSD, campaign: entry.campaign, months: entry.months, kind: joyKindAnniversary})
 		}
 	}
-	earnedSinceLastPush := lifetimeEarnedUSD - state.lastPushedEarnedUSD
-	daysSinceLastPush := math.Inf(1)
-	if state.lastPushedAt != nil {
-		daysSinceLastPush = float64(now.Sub(*state.lastPushedAt).Milliseconds()) / float64(joyDay.Milliseconds())
-	}
-	if earnedSinceLastPush >= joyMinReportableUSD && earnedSinceLastPush >= joyDigestThresholdUSD(daysSinceLastPush) {
-		return joyDecision{kind: joyDecisionPush, push: joyPush{amountUSD: earnedSinceLastPush, campaign: joyDigestCampaign, kind: joyKindDigest}}
+	if earned := lifetimeEarnedUSD - state.lastPushedEarnedUSD; earned >= joyThresholdUSD {
+		return push(joyPush{amountUSD: earned, campaign: joyDigestCampaign, kind: joyKindDigest})
 	}
 	return joyDecision{kind: joyDecisionNone}
 }
@@ -158,29 +191,36 @@ func formatUSD2(amount float64) string {
 	return sign + "$" + whole + "." + fraction
 }
 
-func joyPushPayload(push joyPush) autodepositWalletPush {
+// formatUSDWhole is formatUSD2 without the cents, for whole milestone amounts.
+func formatUSDWhole(amount float64) string {
+	return strings.TrimSuffix(formatUSD2(amount), ".00")
+}
+
+func joyPushPayload(push joyPush, now time.Time, wallet string) autodepositWalletPush {
+	payload := autodepositWalletPush{
+		Category:        pushCategoryEarnings,
+		Delivery:        pushDeliveryIntelligent,
+		Route:           push.route,
+		IdempotencyName: "earnings:" + push.campaign + ":" + wallet + ":" + now.UTC().Format("2006-01-02"),
+	}
 	switch push.kind {
-	case joyKindFirst:
-		return autodepositWalletPush{
-			Body:  formatUSD2(push.amountUSD) + " so far, and it keeps going on its own.",
-			Title: "Your first yield just landed.",
-		}
 	case joyKindMilestone:
-		return autodepositWalletPush{
-			Body:  "All of it from your balance sitting in Earn.",
-			Title: formatUSD2(push.amountUSD) + " earned in total.",
+		payload.Title = formatUSDWhole(push.amountUSD) + " earned with Loyal"
+		payload.Body = "And it keeps going on its own."
+		if push.amountUSD <= 1 {
+			payload.Body = "Your first dollar, and it keeps going on its own."
 		}
 	case joyKindAnniversary:
-		title := "Six months with Loyal."
+		payload.Title = "Six months with Loyal"
 		if push.months >= 12 {
-			title = "A year with Loyal."
+			payload.Title = "A year with Loyal"
 		}
-		return autodepositWalletPush{Body: formatUSD2(push.amountUSD) + " earned since you joined.", Title: title}
+		payload.Body = formatUSD2(push.lifetimeUSD) + " earned since you joined."
+	default:
+		payload.Title = "+" + formatUSD2(push.amountUSD) + " earned"
+		payload.Body = formatUSD2(push.lifetimeUSD) + " earned with Loyal so far."
 	}
-	return autodepositWalletPush{
-		Body:  "Your Earn balance kept working while you were away.",
-		Title: "+" + formatUSD2(push.amountUSD) + " earned.",
-	}
+	return payload
 }
 
 // numeric6 is Number.prototype.toFixed(6): ties go to the larger value.
@@ -323,11 +363,12 @@ func (c Crons) processJoyCandidate(ctx context.Context, candidate joyCandidate, 
 	}
 	lifetime := earnings.lifetimeUSD()
 	decision := selectJoyPush(float64(now.Sub(candidate.createdAt).Milliseconds())/float64(joyDay.Milliseconds()), lifetime, now, state)
+	decision.push.route, decision.push.lifetimeUSD = earnings.route(), lifetime
 	switch decision.kind {
 	case joyDecisionNone:
 		outcome.Status = "quiet"
 		return outcome, nil
-	case joyDecisionSeed:
+	case joyDecisionSeed, joyDecisionRebaseline:
 		if !dryRun {
 			if _, err := c.claimJoyState(ctx, candidate.wallet, state, decision.campaigns, now, lifetime); err != nil {
 				return outcome, err
@@ -352,9 +393,7 @@ func (c Crons) processJoyCandidate(ctx context.Context, candidate joyCandidate, 
 			outcome.Status = "quiet"
 			return outcome, nil
 		}
-		payload := joyPushPayload(decision.push)
-		payload.Category, payload.Delivery = pushCategoryEarnings, pushDeliveryIntelligent
-		c.h.CampaignPush.send(ctx, candidate.wallet, payload)
+		c.h.CampaignPush.send(ctx, candidate.wallet, joyPushPayload(decision.push, now, candidate.wallet))
 	}
 	amount := decision.push.amountUSD
 	outcome.AmountUSD, outcome.Campaign, outcome.Status = &amount, decision.push.campaign, "pushed"
