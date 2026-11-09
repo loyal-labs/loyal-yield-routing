@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -38,6 +39,7 @@ func TestEarnMaxEarningsAvailability(t *testing.T) {
 		{"held with earnings", earnmax.Activity{Earnings: &earnmax.Earnings{PerformanceUsd: 4.2}, Performance: []earnmax.PerformancePoint{{EquityUsd: 0}, {EquityUsd: 310}}}, 4.2, 310, true},
 		{"never held", earnmax.Activity{Performance: []earnmax.PerformancePoint{{EquityUsd: 0}}}, 0, 0, true},
 		{"no history", earnmax.Activity{Performance: []earnmax.PerformancePoint{}}, 0, 0, true},
+		{"history but earnings unknown", earnmax.Activity{Operations: []earnmax.ActivityItem{{}}, Performance: []earnmax.PerformancePoint{{EquityUsd: 0}}}, 0, 0, false},
 		{"held but earnings unknown", earnmax.Activity{Performance: []earnmax.PerformancePoint{{EquityUsd: 310}}}, 0, 0, false},
 	}
 	for _, tc := range cases {
@@ -243,5 +245,39 @@ func TestSelectJoyPushNeverResendsLowerMilestone(t *testing.T) {
 	got = selectJoyPush(10, 1001, now, joyV2(640, []string{"yield-total-500"}))
 	if got.kind != joyDecisionPush || got.push.campaign != "yield-total-1000" {
 		t.Fatalf("1001: %+v", got)
+	}
+}
+
+func TestSelectJoyPushNegativeBaseline(t *testing.T) {
+	now := joyTestNow
+	seed := selectJoyPush(10, -50, now, nil)
+	if seed.kind != joyDecisionSeed || seed.baselineUSD != 0 {
+		t.Fatalf("seed = %+v", seed)
+	}
+	stored := joyV2(seed.baselineUSD, []string{})
+	if got := selectJoyPush(10, 0.5, now, stored); got.kind != joyDecisionNone {
+		t.Fatalf("0.50 after underwater seed: %+v", got)
+	}
+	got := selectJoyPush(10, 1, now, stored)
+	if got.kind != joyDecisionPush || got.push.amountUSD != 1 || got.push.lifetimeUSD != 1 {
+		t.Fatalf("1.00 after underwater seed: %+v", got)
+	}
+	old := &joyState{ruleVersion: 1, lastPushedEarnedUSD: 3, sentCampaigns: []string{}}
+	if got := selectJoyPush(10, -20, now, old); got.kind != joyDecisionRebaseline || got.baselineUSD != 0 {
+		t.Fatalf("rebaseline = %+v", got)
+	}
+	if got := selectJoyPush(10, 7, now, old); got.baselineUSD != 7 {
+		t.Fatalf("positive rebaseline = %+v", got)
+	}
+}
+
+func TestEarnYieldJoyRefusesWithoutEarningsChannel(t *testing.T) {
+	c := Crons{Earnings: func(context.Context, string, string, string) (joyEarnings, bool, error) {
+		return joyEarnings{}, false, nil
+	}}
+	c.h.CampaignPush = NewWalletPush(OneSignalConfig{AppID: "app", RESTAPIKey: "key", AlertsChannelID: "alerts"}, "secret")
+	_, err := c.EarnYieldJoy(context.Background(), false)
+	if err == nil || !strings.Contains(err.Error(), "ONESIGNAL_EARNINGS_CHANNEL_ID") {
+		t.Fatalf("err = %v", err)
 	}
 }

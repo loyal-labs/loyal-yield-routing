@@ -49,7 +49,9 @@ func earnMaxEarnings(activity earnmax.Activity) (performanceUSD, equityUSD float
 		equityUSD = activity.Performance[n-1].EquityUsd
 	}
 	if activity.Earnings == nil {
-		return 0, 0, equityUSD <= 0
+		// Only an empty history means "never held". earnmax also returns nil
+		// Earnings on transient errors, which must not read as a zero total.
+		return 0, 0, len(activity.Operations) == 0 && equityUSD <= 0
 	}
 	return activity.Earnings.PerformanceUsd, equityUSD, true
 }

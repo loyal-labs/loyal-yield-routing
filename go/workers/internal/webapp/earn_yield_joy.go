@@ -74,6 +74,9 @@ type joyDecision struct {
 	campaigns      []string
 	push           joyPush
 	recentPushedAt []time.Time
+	// baselineUSD is what a seed or rebaseline stores as the wallet's last
+	// pushed total: never negative, so recovering from a loss is not earnings.
+	baselineUSD float64
 }
 
 func joyMilestoneCampaign(milestone float64) string {
@@ -127,7 +130,7 @@ func joyWithinWindow(times []time.Time, now time.Time) []time.Time {
 func selectJoyPush(accountAgeDays, lifetimeEarnedUSD float64, now time.Time, state *joyState) joyDecision {
 	qualified := joyQualifiedCampaigns(accountAgeDays, lifetimeEarnedUSD)
 	if state == nil {
-		return joyDecision{kind: joyDecisionSeed, campaigns: qualified, recentPushedAt: []time.Time{}}
+		return joyDecision{kind: joyDecisionSeed, campaigns: qualified, recentPushedAt: []time.Time{}, baselineUSD: max(lifetimeEarnedUSD, 0)}
 	}
 	if state.ruleVersion < joyRuleVersion {
 		campaigns := slices.Clone(state.sentCampaigns)
@@ -140,7 +143,7 @@ func selectJoyPush(accountAgeDays, lifetimeEarnedUSD float64, now time.Time, sta
 		if state.lastPushedAt != nil {
 			recent = joyWithinWindow([]time.Time{*state.lastPushedAt}, now)
 		}
-		return joyDecision{kind: joyDecisionRebaseline, campaigns: campaigns, recentPushedAt: recent}
+		return joyDecision{kind: joyDecisionRebaseline, campaigns: campaigns, recentPushedAt: recent, baselineUSD: max(lifetimeEarnedUSD, 0)}
 	}
 	if lifetimeEarnedUSD <= 0 {
 		return joyDecision{kind: joyDecisionNone}
@@ -268,6 +271,7 @@ type EarnYieldJoySummary struct {
 	Rebaselined int                   `json:"rebaselined"`
 	Seeded      int                   `json:"seeded"`
 	Truncated   bool                  `json:"truncated"`
+	Undelivered int                   `json:"undelivered"`
 	Unavailable int                   `json:"unavailable"`
 }
 
@@ -358,11 +362,13 @@ func (c Crons) claimJoyState(ctx context.Context, wallet string, previous *joySt
 			`INSERT INTO earn_yield_push_state (wallet_public_key, last_pushed_at, last_pushed_earned_usd, sent_campaigns, recent_pushed_at, rule_version, updated_at)
 VALUES ($1, $2, $3::numeric, $4::jsonb, '{}'::timestamptz[], $5, now())
 ON CONFLICT (wallet_public_key) DO NOTHING`,
-			wallet, now, numeric6(lifetimeUSD), string(sent), joyRuleVersion)
+			wallet, now, numeric6(decision.baselineUSD), string(sent), joyRuleVersion)
 	case (decision.kind == joyDecisionRebaseline || decision.kind == joyDecisionPush) && previous != nil:
 		campaigns := decision.campaigns
 		lastPushedAt := previous.lastPushedAt
+		baselineUSD := decision.baselineUSD
 		if decision.kind == joyDecisionPush {
+			baselineUSD = lifetimeUSD
 			campaigns = slices.Clone(previous.sentCampaigns)
 			if decision.push.kind != joyKindDigest {
 				campaigns = append(campaigns, decision.push.campaign)
@@ -381,7 +387,7 @@ ON CONFLICT (wallet_public_key) DO NOTHING`,
 			`UPDATE earn_yield_push_state
 SET last_pushed_at = $2, last_pushed_earned_usd = $3::numeric, sent_campaigns = $4::jsonb, recent_pushed_at = $5::timestamptz[], rule_version = $6, updated_at = now()
 WHERE wallet_public_key = $1 AND sent_campaigns = $7::jsonb AND last_pushed_at IS NOT DISTINCT FROM $8 AND rule_version = $9`,
-			wallet, lastPushedAt, numeric6(lifetimeUSD), string(sent), recent, joyRuleVersion,
+			wallet, lastPushedAt, numeric6(baselineUSD), string(sent), recent, joyRuleVersion,
 			string(previousSent), previous.lastPushedAt, previous.ruleVersion)
 	default:
 		return false, fmt.Errorf("save earn joy state: %s decision does not fit the stored state", decision.kind)
@@ -432,6 +438,7 @@ func (c Crons) processJoyCandidate(ctx context.Context, candidate joyCandidate, 
 		}
 		return outcome, nil
 	}
+	delivered := true
 	if !dryRun {
 		claimed, err := c.claimJoyState(ctx, candidate.wallet, state, decision, now, lifetime)
 		if err != nil {
@@ -442,7 +449,8 @@ func (c Crons) processJoyCandidate(ctx context.Context, candidate joyCandidate, 
 			return outcome, nil
 		}
 		payload := joyPushPayload(decision.push, now, candidate.wallet)
-		if c.h.CampaignPush.send(ctx, candidate.wallet, payload) {
+		delivered = c.h.CampaignPush.send(ctx, candidate.wallet, payload)
+		if delivered {
 			outcome.event = &mixpanelEvent{
 				Name:       "Earnings Push Sent",
 				DistinctID: "mob:" + candidate.wallet,
@@ -460,6 +468,9 @@ func (c Crons) processJoyCandidate(ctx context.Context, candidate joyCandidate, 
 	}
 	amount := decision.push.amountUSD
 	outcome.AmountUSD, outcome.Campaign, outcome.Route, outcome.Status = &amount, decision.push.campaign, decision.push.route, "pushed"
+	if !delivered {
+		outcome.Status = "undelivered"
+	}
 	return outcome, nil
 }
 
@@ -480,6 +491,9 @@ func (c Crons) EarnYieldJoy(ctx context.Context, dryRun bool) (EarnYieldJoySumma
 	}
 	if c.h.CampaignPush == nil {
 		return summary, errors.New("the wallet push sender is off (ONESIGNAL_APP_ID and ONESIGNAL_REST_API_KEY are not both installed): a run would spend the one-time campaigns without sending")
+	}
+	if !c.h.CampaignPush.earningsChannelSet() {
+		return summary, errors.New("the earnings push channel is not configured (ONESIGNAL_EARNINGS_CHANNEL_ID): a run would spend the one-time campaigns on the wrong channel")
 	}
 	acquired, err := withRunLock(ctx, c.h.appDB, "earn-yield-joy", task)
 	if err == nil && !acquired {
@@ -537,6 +551,8 @@ func (c Crons) earnYieldJoy(ctx context.Context, dryRun bool) (EarnYieldJoySumma
 			switch outcome.Status {
 			case "pushed":
 				summary.Pushed = append(summary.Pushed, outcome)
+			case "undelivered":
+				summary.Undelivered++
 			case "seeded":
 				summary.Seeded++
 			case "rebaselined":

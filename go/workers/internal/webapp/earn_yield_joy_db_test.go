@@ -167,6 +167,23 @@ VALUES ('W3', $1, 5, '[]'::jsonb)`, old)
 	if row.ruleVersion != 2 || row.lastPushedAt == nil || !row.lastPushedAt.Equal(old) || len(row.recent) != 1 || !row.recent[0].Equal(old) || row.earned != "7.000000" || row.sent != `["yield-total-1"]` {
 		t.Fatalf("rebaselined row = %+v", row)
 	}
+
+	// An underwater wallet is re-baselined at zero, never at the loss.
+	if _, err := pool.Exec(ctx, `INSERT INTO earn_yield_push_state (wallet_public_key, last_pushed_earned_usd, sent_campaigns) VALUES ('W4', 5, '[]'::jsonb)`); err != nil {
+		t.Fatal(err)
+	}
+	states, err = c.joyStates(ctx, []string{"W4"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	v1 = states["W4"]
+	rebase = selectJoyPush(10, -20, now, &v1)
+	if ok, err := c.claimJoyState(ctx, "W4", &v1, rebase, now, -20); err != nil || !ok {
+		t.Fatalf("underwater rebaseline claim = %v, %v", ok, err)
+	}
+	if row, _ = readJoyRow(t, pool, "W4"); row.earned != "0.000000" {
+		t.Fatalf("underwater rebaselined row = %+v", row)
+	}
 }
 
 func TestEarnJoyRunSkipsUnavailableWallet(t *testing.T) {
@@ -267,8 +284,24 @@ func TestEarnJoyEmitsOnlyAcceptedPushes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(summary.Pushed) != 2 || len(sent()) != 2 {
+	if len(summary.Pushed) != 1 || summary.Pushed[0].Wallet != "W1" || summary.Undelivered != 1 || len(sent()) != 2 {
 		t.Fatalf("summary = %+v, sent = %d", summary, len(sent()))
+	}
+	// W2's claim is spent but OneSignal accepted nothing: report it undelivered.
+	if _, err := pool.Exec(ctx, `UPDATE earn_yield_push_state SET last_pushed_at = NULL, sent_campaigns = '[]'::jsonb, recent_pushed_at = '{}' WHERE wallet_public_key = 'W2'`); err != nil {
+		t.Fatal(err)
+	}
+	states, err := c.joyStates(ctx, []string{"W2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w2 := states["W2"]
+	outcome, err := c.processJoyCandidate(ctx, joyCandidate{wallet: "W2", settingsPda: "settings-W2", createdAt: time.Now().Add(-10 * 24 * time.Hour)}, "mainnet", false, time.Now(), &w2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.Status != "undelivered" || outcome.Campaign != "yield-total-1" || outcome.AmountUSD == nil || outcome.event != nil {
+		t.Fatalf("W2 outcome = %+v", outcome)
 	}
 	requests := tracked()
 	if len(requests) != 1 || len(requests[0]) != 1 {

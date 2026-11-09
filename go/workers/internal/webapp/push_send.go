@@ -58,6 +58,10 @@ func NewWalletPush(cfg OneSignalConfig, secret string) *WalletPush {
 	return &WalletPush{Secret: secret, HTTP: http.DefaultClient, cfg: cfg, url: oneSignalSendURL, retryDelay: oneSignalRetryGap}
 }
 
+func (p *WalletPush) earningsChannelSet() bool {
+	return p.cfg.EarningsChannelID != ""
+}
+
 func pushIdempotencyKey(name string) string {
 	if name == "" {
 		return uuid.NewString()
