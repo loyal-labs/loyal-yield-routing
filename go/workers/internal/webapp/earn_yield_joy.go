@@ -14,8 +14,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
-
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnprep"
 )
 
 // The daily Earn joy pushes <- web/apps/web/src/lib/yield-optimization/earn-yield-joy.server.ts
@@ -313,31 +311,9 @@ WHERE wallet_public_key = $1 AND sent_campaigns = $5::jsonb AND last_pushed_at I
 	return tag.RowsAffected() == 1, nil
 }
 
-func (c Crons) lifetimeEarned(ctx context.Context, cluster string, candidate joyCandidate) (float64, bool, error) {
-	if c.Earnings != nil {
-		return c.Earnings(ctx, cluster, candidate.settingsPda, candidate.wallet)
-	}
-	input := earningsReadInput{
-		cluster:       cluster,
-		settings:      candidate.settingsPda,
-		timezone:      normalizeEarningsTimezone(""),
-		vaultIndex:    int16(earnprep.EarnVaultIndex),
-		walletAddress: candidate.wallet,
-	}
-	payload, err := readEarningsRangeSetResuming(ctx, input, newEarningsReadDependencies(c.h.YieldDB, c.h.Timescale, false))
-	var unavailable *earningsUnavailableError
-	if errors.As(err, &unavailable) {
-		return 0, false, nil
-	}
-	if err != nil {
-		return 0, false, err
-	}
-	return payload.Ranges.All.LifetimeEarnedUsd, true, nil
-}
-
 func (c Crons) processJoyCandidate(ctx context.Context, candidate joyCandidate, cluster string, dryRun bool, now time.Time, state *joyState) (EarnYieldJoyOutcome, error) {
 	outcome := EarnYieldJoyOutcome{Wallet: candidate.wallet}
-	lifetime, available, err := c.lifetimeEarned(ctx, cluster, candidate)
+	earnings, available, err := c.walletEarnings(ctx, cluster, candidate)
 	if err != nil {
 		return outcome, err
 	}
@@ -345,6 +321,7 @@ func (c Crons) processJoyCandidate(ctx context.Context, candidate joyCandidate, 
 		outcome.Status = "unavailable"
 		return outcome, nil
 	}
+	lifetime := earnings.lifetimeUSD()
 	decision := selectJoyPush(float64(now.Sub(candidate.createdAt).Milliseconds())/float64(joyDay.Milliseconds()), lifetime, now, state)
 	switch decision.kind {
 	case joyDecisionNone:

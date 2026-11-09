@@ -11,6 +11,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnmax"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/webapp"
 )
@@ -64,6 +65,10 @@ func runCron(ctx context.Context, args []string) error {
 		if yieldDB == nil || timescaleDB == nil {
 			return errors.New("earn-yield-joy needs WEB_YIELD_DATABASE_URL and TIMESCALEDB_URL")
 		}
+		if rpcClient == nil {
+			return errors.New("earn-yield-joy needs WEB_SOLANA_RPC_URL for Earn MAX")
+		}
+		crons.EarnMax = earnmax.NewReader(rpcClient, yieldDB)
 		summary, err = crons.EarnYieldJoy(ctx, dryRun)
 	default:
 		return errors.New(cronUsage)
