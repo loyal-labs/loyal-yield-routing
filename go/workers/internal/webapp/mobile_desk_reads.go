@@ -203,8 +203,9 @@ func (h earnRoutes) deskHoldingsRead(ctx context.Context, wallet solana.PublicKe
 	}
 	read := func() (earnprep.WithdrawSnapshot, error) {
 		return earnprep.FetchWithdrawHoldingsSnapshot(ctx, h.Chain, earnprep.WithdrawHoldingsArgs{
-			Cluster:        string(account.Cluster),
-			MinContextSlot: floor,
+			Cluster:                     string(account.Cluster),
+			MinContextSlot:              floor,
+			RequireCompleteReserveReads: true,
 			Policy: &earnprep.WithdrawPolicyUniverse{
 				VaultIndex:           earnprep.EarnVaultIndex,
 				StableMints:          pair.Route.StableMints,
