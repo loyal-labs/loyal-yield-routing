@@ -19,9 +19,13 @@ import { WalletProvider } from "@/lib/wallet/wallet-provider";
 import {
   setupNotificationHandler,
 } from "@/services/notifications";
-import { initOneSignal } from "@/services/onesignal";
+import { notificationRoute } from "@/services/notification-route";
+import {
+  addOneSignalClickListener,
+  initOneSignal,
+} from "@/services/onesignal";
 import { useFonts } from "expo-font";
-import { Stack } from "expo-router";
+import { router, Stack } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import { StatusBar } from "expo-status-bar";
 import { useCallback, useEffect, useState } from "react";
@@ -50,6 +54,20 @@ export default function RootLayout() {
   useEffect(() => {
     void setupNotificationHandler();
     void initOneSignal();
+
+    let cancelled = false;
+    let removeClickListener: (() => void) | null = null;
+    void addOneSignalClickListener((route) => {
+      const target = notificationRoute({ route });
+      if (target) router.push(target);
+    }).then((remove) => {
+      if (cancelled) remove?.();
+      else removeClickListener = remove;
+    });
+    return () => {
+      cancelled = true;
+      removeClickListener?.();
+    };
   }, []);
 
   useEffect(() => {

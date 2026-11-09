@@ -2,10 +2,9 @@ import { useEffect, useRef } from "react";
 
 import { useWallet } from "@/lib/wallet/wallet-provider";
 import {
-  registerForPushNotifications,
-  registerPushToken,
-} from "@/services/notifications";
-import { loginOneSignal } from "@/services/onesignal";
+  loginOneSignal,
+  requestOneSignalPermission,
+} from "@/services/onesignal";
 
 export function PushTokenRegistrar(): null {
   const { publicKey } = useWallet();
@@ -16,20 +15,13 @@ export function PushTokenRegistrar(): null {
     if (lastRegisteredPublicKey.current === publicKey) return;
 
     lastRegisteredPublicKey.current = publicKey;
-    void loginOneSignal(publicKey);
     void (async () => {
-      const token = await registerForPushNotifications();
-      if (!token) {
-        console.warn(
-          "[push] Registrar skipped: no token produced for wallet",
-          publicKey.slice(0, 8),
-        );
-        return;
-      }
-      await registerPushToken(token, publicKey);
+      await loginOneSignal(publicKey);
+      const granted = await requestOneSignalPermission();
       console.log(
         "[push] Registrar completed for wallet",
         publicKey.slice(0, 8),
+        granted ? "(permission granted)" : "(permission not granted)",
       );
     })();
   }, [publicKey]);
