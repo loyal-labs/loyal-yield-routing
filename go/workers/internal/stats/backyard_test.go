@@ -75,6 +75,10 @@ func TestBackyardMoveInputKeepsAmountAndMintTogether(t *testing.T) {
 	if amount == nil || mint == nil || *amount != "1000000000" || *mint != "ONyc-mint" {
 		t.Fatalf("source transfer: %v %v", amount, mint)
 	}
+	amount, _ = backyardMoveInput([]byte(`{"accounts":[{"mint":"ONyc-mint","beforeRaw":18446744073709551615,"afterRaw":1}]}`))
+	if amount == nil || *amount != "18446744073709551614" {
+		t.Fatal("raw input must retain all uint64 digits")
+	}
 	// This live withdrawal's decision was 5054099 USDC micros, not ONyc raw.
 	for _, raw := range []string{
 		`{"kind":"atomic-step","accounts":[{"mint":"ONyc-mint","beforeRaw":0,"afterRaw":0,"minimumAfterRaw":0},{"mint":"USDC-mint","beforeRaw":0,"afterRaw":5017856,"minimumAfterRaw":5017856}]}`,
