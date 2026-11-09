@@ -182,12 +182,12 @@ func (h earnRoutes) legacyState(ctx context.Context, in *legacyWalletRequest) (*
 	if position == nil {
 		return out(MobileEarnStateResponse{SettingsPda: &settings, SmartAccountAddress: &smartAccount}), nil
 	}
-	total, err := h.legacyActiveTotal(ctx, *account)
+	total, err := h.stateCurrentTotalAmountRaw(ctx, settings, wallet.String(), position.VaultPubkey)
 	if err != nil {
-		slog.Warn("[mobile-earn-state] failed to sum active position rows", "error", err)
+		return nil, legacyFailed("state holdings", err, http.StatusBadGateway, code, message)
 	}
-	if total <= 0 {
-		total = position.CurrentAmountRaw
+	if total <= 0 && position.CurrentAmountRaw > 0 {
+		return nil, legacyFailed("state holdings", errors.New("liquidity valuation is unavailable"), http.StatusBadGateway, code, message)
 	}
 	return out(MobileEarnStateResponse{
 		Position: &MobileEarnStatePosition{
@@ -199,15 +199,6 @@ func (h earnRoutes) legacyState(ctx context.Context, in *legacyWalletRequest) (*
 		SettingsPda:         &settings,
 		SmartAccountAddress: &smartAccount,
 	}), nil
-}
-
-func (h earnRoutes) legacyActiveTotal(ctx context.Context, account EarnAccount) (int64, error) {
-	var total int64
-	err := h.YieldDB.QueryRow(ctx, `SELECT COALESCE(SUM(current_amount_raw), 0)::bigint
-FROM loyal_yield.user_yield_positions
-WHERE settings = $1 AND vault_index = $2 AND wallet_address = $3 AND status = 'active'`,
-		account.Settings.String(), int16(earnprep.EarnVaultIndex), account.Wallet.String()).Scan(&total)
-	return total, err
 }
 
 func (h earnRoutes) legacyAutodepositState(ctx context.Context, in *legacyWalletRequest) (*legacyAutodepositOutput, error) {

@@ -60,6 +60,7 @@ export function WalletCategoryGrid({
   earnUsd,
   earnMonthUsd,
   earnLoading,
+  earnError,
   earnApyBps,
   earnMaxUsd,
   earnMaxLoading,
@@ -71,9 +72,10 @@ export function WalletCategoryGrid({
   onPressStablecoins,
   onPressCrypto,
 }: {
-  earnUsd: number;
+  earnUsd: number | null;
   earnMonthUsd: number | null;
   earnLoading?: boolean;
+  earnError?: string | null;
   earnApyBps: number | null;
   earnMaxUsd: number | null;
   earnMaxLoading?: boolean;
@@ -146,6 +148,7 @@ export function WalletCategoryGrid({
             value: earnUsd,
             apy: earnApyBps,
             loading: earnLoading,
+            error: earnError,
             earned: earnMonthUsd,
             onPress: onPressEarn,
           },
@@ -157,7 +160,7 @@ export function WalletCategoryGrid({
             earned: null,
             onPress: onPressEarnMax,
           },
-        ].map(({ label, value, apy, loading, earned, onPress }) => (
+        ].map(({ label, value, apy, loading, error, earned, onPress }) => (
           <Pressable
             key={label}
             accessibilityRole="button"
@@ -184,7 +187,17 @@ export function WalletCategoryGrid({
                 {label}
               </Text>
             </View>
-            {!value && !loading ? (
+            {error ? (
+              <Text
+                style={{
+                  fontFamily: "Geist_400Regular",
+                  fontSize: 15,
+                  lineHeight: 20,
+                }}
+              >
+                {error}
+              </Text>
+            ) : !value && !loading ? (
               <View
                 style={{
                   flex: 1,
@@ -221,7 +234,17 @@ export function WalletCategoryGrid({
                 justifyContent: "flex-end",
               }}
             >
-              {value || loading ? (
+              {error ? (
+                <Text
+                  style={{
+                    fontFamily: "Geist_600SemiBold",
+                    fontSize: 20,
+                    lineHeight: 24,
+                  }}
+                >
+                  —
+                </Text>
+              ) : value || loading ? (
                 <>
                   <ApyBadge apy={apy} compact loading={loading} />
                   {loading ? (

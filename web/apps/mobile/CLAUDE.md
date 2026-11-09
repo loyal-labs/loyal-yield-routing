@@ -246,8 +246,13 @@ refreshes, then acknowledges a successful read with a last-checked time. Failed
 or superseded reads do not show a success timestamp.
 Earn MAX summary and activity are GET reads with the cached Earn bearer, as
 ordinary Earn reads are. Privy and local signers mint it without a prompt;
-opening the screen and foreground polling never prompt other signers, whose
-retry tap signs in once. Both screens
+opening the screen and foreground polling never prompt other signers.
+Earn balance errors show an explicit Sign in action instead of an empty position;
+Home also hides an incomplete portfolio total. Manual Home refresh and Earn retry
+can request the wallet signature, and a declined signature can be retried immediately.
+Background mint failures retain their cooldown. Position-load failures, including
+partial API responses, never establish a zero balance.
+The Earn MAX retry tap also signs in once. Both screens
 render `EarnScreenControls` and `EarnChartTabs`, with back navigation and
 full-width balance actions. MAX shows only APY without a funded position or
 nonzero lifetime earnings; funded positions always expose Earned/APY. Until

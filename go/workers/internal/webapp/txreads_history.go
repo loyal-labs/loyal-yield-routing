@@ -228,7 +228,7 @@ WHERE position_id = ANY($1)`
 const txreadsDepositsSQL = `SELECT id, principal_amount_raw
 FROM loyal_yield.user_yield_position_deposits WHERE id = ANY($1)`
 
-const txreadsRebalanceAmountsSQL = `SELECT id, amount_raw
+const txreadsRebalancesSQL = `SELECT id, amount_raw, source_reserve
 FROM loyal_yield.rebalance_decisions WHERE id = ANY($1)`
 
 const txreadswithdrawalsSQL = `SELECT id, mode, withdrawn_amount_raw
@@ -254,7 +254,7 @@ func (h earnRoutes) yieldPositionHistoryEvents(ctx context.Context, account Earn
 	if err != nil {
 		return nil, err
 	}
-	rebalanceAmount, err := h.rebalanceAmountByID(ctx, eventsByPosition)
+	rebalances, err := h.rebalancesByID(ctx, eventsByPosition)
 	if err != nil {
 		return nil, err
 	}
@@ -266,7 +266,7 @@ func (h earnRoutes) yieldPositionHistoryEvents(ctx context.Context, account Earn
 	var history []txreadsPositionEvent
 	for _, seed := range seeds {
 		events := eventsByPosition[seed.id]
-		history = append(history, replayPositionHistory(seed, events, depositPrincipal, rebalanceAmount, withdrawalByID)...)
+		history = append(history, replayPositionHistory(seed, events, depositPrincipal, rebalances, withdrawalByID)...)
 	}
 	sortPositionEventsDescending(history)
 	return history, nil
@@ -344,7 +344,12 @@ func (h earnRoutes) depositPrincipalByID(ctx context.Context, eventsByPosition m
 	return byID, rows.Err()
 }
 
-func (h earnRoutes) rebalanceAmountByID(ctx context.Context, eventsByPosition map[int64][]txreadsHoldingEvent) (map[int64]int64, error) {
+type txreadsRebalance struct {
+	amountRaw     int64
+	sourceReserve *string
+}
+
+func (h earnRoutes) rebalancesByID(ctx context.Context, eventsByPosition map[int64][]txreadsHoldingEvent) (map[int64]txreadsRebalance, error) {
 	var ids []int64
 	for _, events := range eventsByPosition {
 		for _, event := range events {
@@ -358,18 +363,19 @@ func (h earnRoutes) rebalanceAmountByID(ctx context.Context, eventsByPosition ma
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	rows, err := h.YieldDB.Query(ctx, txreadsRebalanceAmountsSQL, ids)
+	rows, err := h.YieldDB.Query(ctx, txreadsRebalancesSQL, ids)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	byID := map[int64]int64{}
+	byID := map[int64]txreadsRebalance{}
 	for rows.Next() {
-		var id, amount int64
-		if err := rows.Scan(&id, &amount); err != nil {
+		var id int64
+		var rebalance txreadsRebalance
+		if err := rows.Scan(&id, &rebalance.amountRaw, &rebalance.sourceReserve); err != nil {
 			return nil, err
 		}
-		byID[id] = amount
+		byID[id] = rebalance
 	}
 	return byID, rows.Err()
 }
@@ -411,11 +417,13 @@ func (h earnRoutes) withdrawalsByID(ctx context.Context, eventsByPosition map[in
 }
 
 func replayPositionHistory(seed txreadsPositionSeed, events []txreadsHoldingEvent,
-	depositPrincipal, rebalanceAmount map[int64]int64, withdrawalByID map[int64]txreadsWithdrawal) []txreadsPositionEvent {
+	depositPrincipal map[int64]int64, rebalances map[int64]txreadsRebalance, withdrawalByID map[int64]txreadsWithdrawal) []txreadsPositionEvent {
 	sortHoldingEventsChronologically(events)
 	previousReserve := seed.initialReserve
 	previousMarket := seed.initialMarket
 	previousLiquidityMint := seed.initialLiquidityMint
+	markets := map[string]*string{seed.initialReserve: seed.initialMarket}
+	mints := map[string]string{seed.initialReserve: seed.initialLiquidityMint}
 	principalAmount := int64(0)
 
 	history := make([]txreadsPositionEvent, 0, len(events))
@@ -499,8 +507,20 @@ func replayPositionHistory(seed txreadsPositionSeed, events []txreadsHoldingEven
 		// the TS literal is built after the same update.
 		record.principalAmountRaw = principalAmount
 		if event.sourceRebalanceDecision != nil {
-			if amount, ok := rebalanceAmount[*event.sourceRebalanceDecision]; ok {
-				record.rebalanceAmountRaw = &amount
+			if rebalance, ok := rebalances[*event.sourceRebalanceDecision]; ok {
+				record.rebalanceAmountRaw = &rebalance.amountRaw
+				// Snapshots may already reflect the destination before the confirmed event.
+				record.sourceReserve = rebalance.sourceReserve
+				record.sourceMarket = nil
+				record.sourceLiquidityMint = nil
+				if rebalance.sourceReserve != nil {
+					record.sourceMarket = markets[*rebalance.sourceReserve]
+					if mint, found := mints[*rebalance.sourceReserve]; found {
+						record.sourceLiquidityMint = &mint
+					}
+				} else {
+					record.sourceLiquidityMint = &event.liquidityMint
+				}
 			}
 		}
 		if event.sourceSignature != nil {
@@ -511,6 +531,8 @@ func replayPositionHistory(seed txreadsPositionSeed, events []txreadsHoldingEven
 		previousReserve = event.reserve
 		previousMarket = event.market
 		previousLiquidityMint = event.liquidityMint
+		markets[event.reserve] = event.market
+		mints[event.reserve] = event.liquidityMint
 		history = append(history, record)
 	}
 	return history
