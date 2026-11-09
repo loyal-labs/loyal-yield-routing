@@ -22,6 +22,8 @@ type Crons struct {
 	h        earnRoutes
 	Earnings func(ctx context.Context, cluster, settings, wallet string) (joyEarnings, bool, error)
 	EarnMax  *earnmax.Reader
+	// Mixpanel is nil when no project token is installed; a nil tracker drops events.
+	Mixpanel *MixpanelTracker
 	// EarnMaxActivity replaces EarnMax.Activity (a test seam).
 	EarnMaxActivity func(ctx context.Context, settings solana.PublicKey) (earnmax.Activity, error)
 }

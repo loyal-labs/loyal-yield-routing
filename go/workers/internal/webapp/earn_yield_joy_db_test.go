@@ -2,6 +2,9 @@ package webapp
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"sync"
@@ -202,5 +205,82 @@ func TestEarnJoyRunSkipsUnavailableWallet(t *testing.T) {
 	}
 	if row, ok := readJoyRow(t, pool, "W1"); !ok || row.ruleVersion != 2 {
 		t.Fatalf("W1 row = %+v, %v", row, ok)
+	}
+}
+
+func TestEarnJoyEmitsOnlyAcceptedPushes(t *testing.T) {
+	pool := joyTestPool(t)
+	ctx := context.Background()
+	for i, wallet := range []string{"W1", "W2"} {
+		id := "00000000-0000-0000-0000-00000000000" + string(rune('1'+i))
+		if _, err := pool.Exec(ctx, `INSERT INTO app_users (id, created_at, subject_address) VALUES ($1, now() - interval '10 days', $2)`, id, wallet); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.Exec(ctx, `INSERT INTO app_user_smart_accounts (user_id, state, solana_env, settings_pda) VALUES ($1, 'ready', $2, $3)`, id, smartAccountsSolanaEnv, "settings-"+wallet); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.Exec(ctx, `INSERT INTO earn_yield_push_state (wallet_public_key, last_pushed_earned_usd, sent_campaigns, rule_version) VALUES ($1, 0, '[]'::jsonb, 2)`, wallet); err != nil {
+			t.Fatal(err)
+		}
+	}
+	push, _ := oneSignalStub(t, reply{200, `{"id":"n"}`})
+	var sentMu sync.Mutex
+	sentTo := []string{}
+	oneSignal := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			IncludeAliases struct {
+				ExternalID []string `json:"external_id"`
+			} `json:"include_aliases"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		wallet := body.IncludeAliases.ExternalID[0]
+		sentMu.Lock()
+		sentTo = append(sentTo, wallet)
+		sentMu.Unlock()
+		if wallet == "W1" {
+			_, _ = w.Write([]byte(`{"id":"n"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":""}`))
+	}))
+	t.Cleanup(oneSignal.Close)
+	push.url = oneSignal.URL
+	sent := func() []string {
+		sentMu.Lock()
+		defer sentMu.Unlock()
+		return append([]string(nil), sentTo...)
+	}
+	tracker, tracked := mixpanelStub(t)
+	c := NewCrons(pool, Earn{})
+	c.h.CampaignPush = push
+	c.Mixpanel = tracker
+	c.Earnings = func(_ context.Context, _, _, wallet string) (joyEarnings, bool, error) {
+		return joyEarnings{earnLifetimeUSD: 5}, true, nil
+	}
+	if _, err := c.EarnYieldJoy(ctx, true); err != nil {
+		t.Fatal(err)
+	}
+	if len(sent()) != 0 || len(tracked()) != 0 {
+		t.Fatalf("dry run sent %d pushes and %d tracks", len(sent()), len(tracked()))
+	}
+	summary, err := c.EarnYieldJoy(ctx, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(summary.Pushed) != 2 || len(sent()) != 2 {
+		t.Fatalf("summary = %+v, sent = %d", summary, len(sent()))
+	}
+	requests := tracked()
+	if len(requests) != 1 || len(requests[0]) != 1 {
+		t.Fatalf("tracked = %v", requests)
+	}
+	event := requests[0][0]
+	props, _ := event["properties"].(map[string]any)
+	if event["event"] != "Earnings Push Sent" || props["distinct_id"] != "mob:W1" || props["type"] != "milestone" ||
+		props["campaign"] != "yield-total-1" || props["lifetime_usd"] != float64(5) {
+		t.Fatalf("event = %v", event)
+	}
+	if want := "earnings:yield-total-1:W1:" + time.Now().UTC().Format("2006-01-02"); props["$insert_id"] != want {
+		t.Fatalf("$insert_id = %v, want %v", props["$insert_id"], want)
 	}
 }

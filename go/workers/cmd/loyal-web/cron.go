@@ -56,6 +56,11 @@ func runCron(ctx context.Context, args []string) error {
 		enableEarnPush(webEarn, push)
 	}
 	crons := webapp.NewCrons(appDB, *webEarn)
+	if token, _ := optionalCredential("earnings analytics", "MIXPANEL_PROJECT_TOKEN"); token != "" {
+		crons.Mixpanel = webapp.NewMixpanelTracker(token)
+	} else {
+		degraded("earnings analytics", errors.New("MIXPANEL_PROJECT_TOKEN is not installed"))
+	}
 	var summary any
 	var err error
 	switch args[0] {

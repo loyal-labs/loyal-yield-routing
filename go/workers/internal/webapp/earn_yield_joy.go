@@ -253,6 +253,9 @@ type EarnYieldJoyOutcome struct {
 	Route     string   `json:"route,omitempty"`
 	Status    string   `json:"status"`
 	Wallet    string   `json:"wallet"`
+
+	// event is set only when OneSignal accepted the push.
+	event *mixpanelEvent
 }
 
 type EarnYieldJoySummary struct {
@@ -438,7 +441,22 @@ func (c Crons) processJoyCandidate(ctx context.Context, candidate joyCandidate, 
 			outcome.Status = "quiet"
 			return outcome, nil
 		}
-		c.h.CampaignPush.send(ctx, candidate.wallet, joyPushPayload(decision.push, now, candidate.wallet))
+		payload := joyPushPayload(decision.push, now, candidate.wallet)
+		if c.h.CampaignPush.send(ctx, candidate.wallet, payload) {
+			outcome.event = &mixpanelEvent{
+				Name:       "Earnings Push Sent",
+				DistinctID: "mob:" + candidate.wallet,
+				InsertID:   payload.IdempotencyName,
+				Time:       now,
+				Properties: map[string]any{
+					"type":         decision.push.kind,
+					"campaign":     decision.push.campaign,
+					"amount_usd":   decision.push.amountUSD,
+					"lifetime_usd": decision.push.lifetimeUSD,
+					"route":        decision.push.route,
+				},
+			}
+		}
 	}
 	amount := decision.push.amountUSD
 	outcome.AmountUSD, outcome.Campaign, outcome.Route, outcome.Status = &amount, decision.push.campaign, decision.push.route, "pushed"
@@ -487,6 +505,7 @@ func (c Crons) earnYieldJoy(ctx context.Context, dryRun bool) (EarnYieldJoySumma
 		return EarnYieldJoySummary{}, err
 	}
 	summary := EarnYieldJoySummary{Candidates: len(candidates), DryRun: dryRun, Pushed: []EarnYieldJoyOutcome{}}
+	var events []mixpanelEvent
 	for start := 0; start < len(candidates); start += joyWalletConcurrency {
 		if time.Now().After(deadline) {
 			summary.Truncated = true
@@ -511,6 +530,9 @@ func (c Crons) earnYieldJoy(ctx context.Context, dryRun bool) (EarnYieldJoySumma
 		}
 		wg.Wait()
 		for _, outcome := range outcomes {
+			if outcome.event != nil {
+				events = append(events, *outcome.event)
+			}
 			summary.Processed++
 			switch outcome.Status {
 			case "pushed":
@@ -526,6 +548,11 @@ func (c Crons) earnYieldJoy(ctx context.Context, dryRun bool) (EarnYieldJoySumma
 			default:
 				summary.Errors++
 			}
+		}
+	}
+	if !dryRun && len(events) > 0 {
+		if err := c.Mixpanel.track(ctx, events); err != nil {
+			slog.WarnContext(ctx, "[earn-yield-joy] mixpanel track failed", "errorMessage", err.Error(), "events", len(events))
 		}
 	}
 	return summary, nil

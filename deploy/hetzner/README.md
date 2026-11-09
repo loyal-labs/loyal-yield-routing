@@ -438,6 +438,7 @@ proxying the session routes to Next.
 | `PUSH_DEBUG_SECRET` | no | file `loyal-web-push-debug-secret`; the app's `PUSH_DEBUG_SECRET`; with it, and the OneSignal credentials below, Go serves `POST /api/push-tokens/debug-send`; without it the route keeps proxying to Next |
 | `ONESIGNAL_APP_ID`, `ONESIGNAL_REST_API_KEY` | no | files `loyal-web-onesignal-app-id` and `loyal-web-onesignal-rest-api-key`, on `loyal-web` and `loyal-web-cron@`; every wallet push goes through OneSignal. Without both, all wallet pushes are off (one `wallet push` degraded line) and the joy cron refuses to run |
 | `ONESIGNAL_EARNINGS_CHANNEL_ID`, `ONESIGNAL_ALERTS_CHANNEL_ID` | no | plain config; the Android notification channel ids for earnings and account-alert pushes |
+| `MIXPANEL_PROJECT_TOKEN` | no | file `loyal-web-mixpanel-project-token`, on `loyal-web-cron@` only; the earn-yield-joy cron reports each accepted earnings push to Mixpanel as `Earnings Push Sent`. Without it the cron still runs and reports nothing (one `earnings analytics` degraded line) |
 | `LOYAL_AUTODEPOSIT_PUSH` | no | plain config; `on` makes the autodeposit confirm ops send the wallet push in process; unset or any other value logs one line (`autodeposit wallet push off`) and sends no push |
 
 `AUTH_COOKIE_PARENT_DOMAIN` is plain config, not a credential:
