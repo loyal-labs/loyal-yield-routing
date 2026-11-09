@@ -79,6 +79,13 @@ var mixpanelCohortCampaigns = map[string]autodepositWalletPush{
 	},
 }
 
+// cohortPush returns a per-wallet copy: the campaign payload is shared by the
+// send goroutines, so the idempotency name must never be written onto it.
+func cohortPush(payload autodepositWalletPush, campaign, wallet string) autodepositWalletPush {
+	payload.IdempotencyName = "cohort:" + campaign + ":" + wallet
+	return payload
+}
+
 func autodepositSweepFailedPush(amountRaw uint64) autodepositWalletPush {
 	body := "We'll retry automatically within the hour."
 	if amountRaw > 0 {
@@ -301,8 +308,7 @@ func (h earnRoutes) mixpanelCohort(ctx context.Context, in *mixpanelCohortInput)
 				case !claimed:
 					deduped.Add(1)
 				default:
-					payload.IdempotencyName = "cohort:" + campaign + ":" + wallet
-					h.CampaignPush.send(ctx, wallet, payload)
+					h.CampaignPush.send(ctx, wallet, cohortPush(payload, campaign, wallet))
 					sent.Add(1)
 				}
 			})

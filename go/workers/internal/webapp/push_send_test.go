@@ -263,3 +263,32 @@ func TestCohortAndSweepPushesAreImmediateAlerts(t *testing.T) {
 		}
 	}
 }
+
+func TestCohortSendsCarryDistinctIdempotencyKeys(t *testing.T) {
+	p, requests := oneSignalStub(t, reply{200, `{"id":"n-1"}`})
+	shared := mixpanelCohortCampaigns["quest-1-nudge"]
+	wallets := []string{"W1", "W2", "W3", "W4", "W5"}
+	var wg sync.WaitGroup
+	for _, w := range wallets {
+		wg.Go(func() { p.send(context.Background(), w, cohortPush(shared, "quest-1-nudge", w)) })
+	}
+	wg.Wait()
+	if shared.IdempotencyName != "" {
+		t.Fatalf("shared payload mutated: %q", shared.IdempotencyName)
+	}
+	want := map[string]bool{}
+	for _, w := range wallets {
+		want[pushIdempotencyKey("cohort:quest-1-nudge:"+w)] = true
+	}
+	got := requests()
+	if len(got) != len(wallets) {
+		t.Fatalf("requests = %d", len(got))
+	}
+	for _, r := range got {
+		key, _ := r.body["idempotency_key"].(string)
+		if !want[key] {
+			t.Errorf("unexpected or duplicate key %q", key)
+		}
+		delete(want, key)
+	}
+}
