@@ -99,6 +99,17 @@ func joyQualifiedCampaigns(accountAgeDays, lifetimeEarnedUSD float64) []string {
 	return campaigns
 }
 
+// joyMilestoneDone reports whether the milestone at index i, or any higher
+// one, was already sent: a dip in earnings must not re-fire a lower milestone.
+func joyMilestoneDone(sent []string, i int) bool {
+	for j := i; j < len(joyMilestonesUSD); j++ {
+		if slices.Contains(sent, joyMilestoneCampaign(joyMilestonesUSD[j])) {
+			return true
+		}
+	}
+	return false
+}
+
 // joyWithinWindow keeps the pushes that still count against the weekly cap.
 func joyWithinWindow(times []time.Time, now time.Time) []time.Time {
 	kept := []time.Time{}
@@ -154,7 +165,7 @@ func selectJoyPush(accountAgeDays, lifetimeEarnedUSD float64, now time.Time, sta
 	}
 	for i := len(joyMilestonesUSD) - 1; i >= 0; i-- {
 		campaign := joyMilestoneCampaign(joyMilestonesUSD[i])
-		if pending(campaign) {
+		if pending(campaign) && !joyMilestoneDone(state.sentCampaigns, i) {
 			return push(joyPush{amountUSD: joyMilestonesUSD[i], campaign: campaign, kind: joyKindMilestone})
 		}
 	}

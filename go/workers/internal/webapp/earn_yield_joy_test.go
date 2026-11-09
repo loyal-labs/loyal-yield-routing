@@ -227,3 +227,21 @@ func TestJoyPushPayloadCopy(t *testing.T) {
 		t.Fatalf("formatUSDWhole: %q %q", formatUSDWhole(1000), formatUSDWhole(1))
 	}
 }
+
+func TestSelectJoyPushNeverResendsLowerMilestone(t *testing.T) {
+	now := joyTestNow
+	if got := selectJoyPush(10, 450, now, joyV2(640, []string{"yield-total-500"})); got.kind != joyDecisionNone {
+		t.Fatalf("450: %+v", got)
+	}
+	if got := selectJoyPush(10, 90, now, joyV2(120, []string{"yield-total-100"})); got.kind != joyDecisionNone {
+		t.Fatalf("90: %+v", got)
+	}
+	got := selectJoyPush(10, 650, now, joyV2(640, []string{"yield-total-500"}))
+	if got.kind != joyDecisionPush || got.push.kind != joyKindDigest || got.push.amountUSD != 10 {
+		t.Fatalf("650: %+v", got)
+	}
+	got = selectJoyPush(10, 1001, now, joyV2(640, []string{"yield-total-500"}))
+	if got.kind != joyDecisionPush || got.push.campaign != "yield-total-1000" {
+		t.Fatalf("1001: %+v", got)
+	}
+}
