@@ -9,6 +9,7 @@ import {
   numeric,
   pgTable,
   primaryKey,
+  smallint,
   text,
   timestamp,
   uniqueIndex,
@@ -615,6 +616,11 @@ export const earnYieldPushState = pgTable(
       .default("0"),
     lastPushedAt: timestamp("last_pushed_at", { withTimezone: true }),
     sentCampaigns: jsonb("sent_campaigns").$type<string[]>().notNull(),
+    recentPushedAt: timestamp("recent_pushed_at", { withTimezone: true })
+      .array()
+      .notNull()
+      .default(sql`'{}'::timestamptz[]`),
+    ruleVersion: smallint("rule_version").notNull().default(1),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
@@ -626,6 +632,14 @@ export const earnYieldPushState = pgTable(
     uniqueIndex("earn_yield_push_state_wallet_uidx").on(table.walletPublicKey),
   ]
 );
+
+export const analyticsExportWatermarks = pgTable("analytics_export_watermarks", {
+  stream: text("stream").primaryKey(),
+  confirmedAt: timestamp("confirmed_at", { withTimezone: true }).notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .defaultNow()
+    .notNull(),
+});
 
 export const pushNotificationSends = pgTable(
   "push_notification_sends",
