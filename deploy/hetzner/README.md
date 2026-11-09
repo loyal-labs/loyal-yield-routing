@@ -572,6 +572,7 @@ The jobs `web/apps/web/vercel.json` used to schedule run from `loyal-web`:
 |---|---|---|
 | `smart-account-reconcile` | `loyal-web-cron@smart-account-reconcile.service` | `loyal-web-cron-smart-account-reconcile.timer`, every 15 minutes |
 | `earn-yield-joy` | `loyal-web-cron@earn-yield-joy.service` | `loyal-web-cron-earn-yield-joy.timer`, 15:41 UTC daily |
+| `earn-events-mixpanel` | `loyal-web-cron@earn-events-mixpanel.service` | `loyal-web-cron-earn-events-mixpanel.timer`, every 15 minutes |
 | `telemetry-heartbeat` | goroutine in `loyal-web.service`, every 5 minutes from start | none |
 
 The heartbeat needs `OBSERVABILITY_OTLP_ENDPOINT` and `OBSERVABILITY_INGESTION_API_KEY`
@@ -598,6 +599,11 @@ A run needs `WEB_APP_DATABASE_URL` (both jobs) and `WEB_SOLANA_RPC_URL` and
 and no push API pair: joy sends through loyal-web's in-process wallet push sender and needs
 the two OneSignal credentials; without them it refuses to run. By hand,
 `loyal-web cron earn-yield-joy --dry-run` prints what a run would push and writes nothing.
+`earn-events-mixpanel` sends confirmed Earn deposits and withdrawals to Mixpanel; it needs
+`WEB_YIELD_DATABASE_URL` and `MIXPANEL_PROJECT_TOKEN`, seeds its watermark at the first run
+(no history backfill), and `--dry-run` writes and sends nothing. The loyal-web App role needs
+SELECT, INSERT and UPDATE on `analytics_export_watermarks`, and SELECT on
+`loyal_yield.user_yield_position_deposits` and `user_yield_position_withdrawals`.
 Enable with `systemctl enable --now loyal-web-cron-<job>.timer`. Every run takes a Postgres
 advisory lock on the App database, so a second run of one job exits non-zero while the
 first holds it.

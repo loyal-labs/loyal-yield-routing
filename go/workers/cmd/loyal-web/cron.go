@@ -16,14 +16,14 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/webapp"
 )
 
-const cronUsage = "usage: loyal-web cron smart-account-reconcile | earn-yield-joy [--dry-run]"
+const cronUsage = "usage: loyal-web cron smart-account-reconcile | earn-yield-joy [--dry-run] | earn-events-mixpanel [--dry-run]"
 
 // runCron runs one of the jobs vercel.json used to schedule and prints the
 // summary the Next route answered with. A job that cannot start, or that is
 // refused the lock, exits non-zero so the timer's unit shows failed.
 func runCron(ctx context.Context, args []string) error {
 	dryRun := len(args) == 2 && args[1] == "--dry-run"
-	if len(args) == 0 || (len(args) == 2 && !dryRun) || len(args) > 2 || (dryRun && args[0] != "earn-yield-joy") {
+	if len(args) == 0 || (len(args) == 2 && !dryRun) || len(args) > 2 || (dryRun && args[0] != "earn-yield-joy" && args[0] != "earn-events-mixpanel") {
 		return errors.New(cronUsage)
 	}
 	appDB := openDB(ctx, "cron", "WEB_APP_DATABASE_URL")
@@ -56,9 +56,9 @@ func runCron(ctx context.Context, args []string) error {
 		enableEarnPush(webEarn, push)
 	}
 	crons := webapp.NewCrons(appDB, *webEarn)
-	if token, _ := optionalCredential("earnings analytics", "MIXPANEL_PROJECT_TOKEN"); token != "" {
+	if token, ok := optionalCredential("earnings analytics", "MIXPANEL_PROJECT_TOKEN"); token != "" {
 		crons.Mixpanel = webapp.NewMixpanelTracker(token)
-	} else {
+	} else if ok {
 		degraded("earnings analytics", errors.New("MIXPANEL_PROJECT_TOKEN is not installed"))
 	}
 	var summary any
@@ -75,6 +75,11 @@ func runCron(ctx context.Context, args []string) error {
 		}
 		crons.EarnMax = earnmax.NewReader(rpcClient, yieldDB)
 		summary, err = crons.EarnYieldJoy(ctx, dryRun)
+	case "earn-events-mixpanel":
+		if yieldDB == nil || crons.Mixpanel == nil {
+			return errors.New("earn-events-mixpanel needs WEB_YIELD_DATABASE_URL and MIXPANEL_PROJECT_TOKEN")
+		}
+		summary, err = crons.EarnEventsMixpanel(ctx, dryRun)
 	default:
 		return errors.New(cronUsage)
 	}
