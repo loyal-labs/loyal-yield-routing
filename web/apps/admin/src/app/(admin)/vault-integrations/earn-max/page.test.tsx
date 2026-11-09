@@ -1,0 +1,60 @@
+import { expect, mock, test } from "bun:test";
+import { renderToStaticMarkup } from "react-dom/server";
+
+mock.module("next/navigation", () => ({ useRouter: () => ({ push() {}, refresh() {} }) }));
+const { default: EarnMaxPage, verdict } = await import("./page");
+import type { EarnMaxProps } from "./earn-max-data";
+
+const missing = { ok: false, value: null, error: "Not part of this fixture" };
+const route: NonNullable<EarnMaxProps["route"]["value"]> = {
+  aumUsd: 12, navUsd: 10, ltvRatio: 0.33, collateralUsd: 15, debtUsd: 5,
+  upApproved: false, currentApy: null, currentOperationId: null, goal: null,
+  lastHoldReason: null, leaseOwner: null, leverageTarget: null, leverageTargetAt: null,
+  leverageWatch: null, navFresh: false, reportAgeS: 56,
+  reportObservedAt: "2026-11-09T15:59:04Z", reportSlot: 123,
+  routeStatus: "active", selectorAction: null, selectorReason: null, updatedAgeS: 3,
+  version: "579af44", workerOwner: "worker:backyard:rwa:sha-579af446b0fdcb783e9befb366660342647ed5b4",
+  withdrawalStatus: null,
+};
+
+test("pending publication preserves known valuation, while missing or stale data still alarms", () => {
+  expect(verdict(route, [], 0.33)).toEqual({ bad: false, text: "Valuation available; NAV report update pending." });
+  expect(verdict({ ...route, navFresh: true }, [], 0.33).text).toBe("Reporting normally.");
+  expect(verdict({ ...route, navUsd: null }, [], 0.33).text).toBe("Current valuation is unavailable.");
+  expect(verdict({ ...route, updatedAgeS: 181 }, [], 0.33).text).toBe("Worker observations are stale.");
+  expect(verdict({ ...route, reportAgeS: 4501 }, [], 0.33).text).toBe("NAV reports have stalled.");
+  expect(verdict(route, [{ reason: "held" }], 0.33).bad).toBe(true);
+  expect(verdict(route, null, 0.33).bad).toBe(true);
+});
+
+test("the actual vault page renders worker identity and separates unsigned refusals", () => {
+  const props = {
+    selectedVault: { id: "loyal", name: "Loyal Earn MAX", address: "test-vault", worker: "loyal-earn-max.service", squads: "test-squads", cashAta: "test-cash", idleAta: "test-idle" },
+    loadedAt: "2026-11-09T16:00:00Z", route: { ok: true, value: route },
+    health: { ok: true, value: {
+      navAll: 100, navReconciled: 97, navFailed: 3, navRefusedBeforeSending: 2,
+      refusedBeforeSending: 0, failedSteps: [], navFailureReasons: [
+        { reason: "hold:stale", count: 1, beforeSending: true },
+        { reason: "hold:chain_refused", count: 1, beforeSending: true },
+        { reason: "signature_absent_after_blockhash_expiry", count: 1, beforeSending: false },
+      ],
+    } },
+    latches: { ok: true, value: { open: [], cleared: [] } },
+    apy: missing, balances: missing, borrowing: missing, history: missing,
+    moves: missing, navSeries: missing, vault: missing,
+    backyard: { available: false, error: "Not part of this fixture" },
+  } as EarnMaxProps;
+  const html = renderToStaticMarkup(<EarnMaxPage {...props} />);
+  expect(html).toContain("Loyal Earn MAX");
+  expect(html).toContain("Backyard");
+  expect(html).toContain("Valuation available; NAV report update pending.");
+  expect(html).toContain("579af44");
+  expect(html).toContain("Last reporting worker");
+  expect(html).toContain("2 refused before sending");
+  expect(html).toContain("1 signed attempts failed");
+  expect(html).toContain("Freshness check refused · not sent");
+  expect(html).not.toContain("No lease holder");
+  expect(html).not.toContain("marked stale");
+  props.route.value = { ...route, workerOwner: null, version: null };
+  expect(renderToStaticMarkup(<EarnMaxPage {...props} />)).toContain("Release not recorded by this worker");
+});

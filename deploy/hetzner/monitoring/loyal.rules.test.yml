@@ -386,6 +386,10 @@ tests:
     values: '0x5'
   - series: node_systemd_unit_state{name="postgresql.service",state="failed"}
     values: 1x5
+  - series: node_systemd_unit_state{name="loyal-web-cron@earn-yield-joy.service",state="activating"}
+    values: 1x5
+  - series: node_systemd_unit_state{name="loyal-web-cron@earn-achievements.service",state="failed"}
+    values: 1x5
   alert_rule_test:
   - eval_time: 3m
     alertname: LoyalUnitDown
@@ -409,6 +413,16 @@ tests:
         impact: The service is not operating normally; its dependent processing may be unavailable.
         recovery: Confirm the intended service is active on the expected release and its dependent work progresses. Disabled or removed services also stop this alert without proving recovery.
         summary: loyal-fleet-route-executor.service is activating
+        trigger: The named service has remained failed or stuck activating for 2 minutes.
+    - exp_labels:
+        severity: page
+        name: loyal-web-cron@earn-achievements.service
+        state: failed
+      exp_annotations:
+        action: Check the intended service state and the first startup error in its journal, including credentials, executable and resource failures. Restore only an intended active service using the runbook; never revive a retired worker.
+        impact: The service is not operating normally; its dependent processing may be unavailable.
+        recovery: Confirm the intended service is active on the expected release and its dependent work progresses. Disabled or removed services also stop this alert without proving recovery.
+        summary: loyal-web-cron@earn-achievements.service is failed
         trigger: The named service has remained failed or stuck activating for 2 minutes.
 - interval: 1m
   input_series:

@@ -270,7 +270,7 @@ function Pulse({
   );
 }
 
-function verdict(
+export function verdict(
   route: Route | null,
   latches: Array<{ reason: string }> | null,
   ltv: number | null
@@ -279,11 +279,13 @@ function verdict(
   if (latches?.length)
     return { bad: true, text: "The worker is stopped and needs a clear." };
   if (latches === null) return { bad: true, text: "Safety holds could not be checked." };
-  if (route.navUsd === null || route.aumUsd === null || ltv === null || route.navFresh === false)
+  if (route.navUsd === null || route.aumUsd === null || ltv === null)
     return { bad: true, text: "Current valuation is unavailable." };
   if (route.updatedAgeS > 3 * 60) return { bad: true, text: "Worker observations are stale." };
   if ((route.reportAgeS ?? Infinity) > STALE_REPORT_S)
     return { bad: true, text: "NAV reports have stalled." };
+  if (route.navFresh === false)
+    return { bad: false, text: "Valuation available; NAV report update pending." };
   return { bad: false, text: "Reporting normally." };
 }
 
@@ -880,13 +882,11 @@ function WorkerHealth({ data, now }: { data: EarnMaxData; now: number }) {
         <div className="grid grid-cols-2 gap-x-6 gap-y-4">
           <Fact
             hint={
-              route?.leaseOwner ? (
-                <span className="break-all font-mono">{route.leaseOwner}</span>
-              ) : (
-                "No lease holder"
-              )
+              route?.workerOwner
+                ? `Last observed ${ago(route.updatedAgeS)} ago`
+                : "Release not recorded by this worker"
             }
-            label="Worker version"
+            label="Last reporting worker"
             value={route?.version ?? "—"}
           />
           <Fact
@@ -902,7 +902,7 @@ function WorkerHealth({ data, now }: { data: EarnMaxData; now: number }) {
             hint={
               route?.reportSlot
                 ? `Slot ${route.reportSlot.toLocaleString("en-US")}${
-                    route.navFresh === false ? " · marked stale" : ""
+                    route.navFresh === false ? " · update pending" : ""
                   }`
                 : "—"
             }
@@ -916,7 +916,9 @@ function WorkerHealth({ data, now }: { data: EarnMaxData; now: number }) {
           <Fact
             hint={
               health
-                ? `${health.navFailed} failed · ${
+                ? `${health.navRefusedBeforeSending} refused before sending · ${
+                    health.navFailed - health.navRefusedBeforeSending
+                  } signed attempts failed · ${
                     health.navAll - health.navReconciled - health.navFailed
                   } other`
                 : "—"
@@ -928,11 +930,18 @@ function WorkerHealth({ data, now }: { data: EarnMaxData; now: number }) {
         {health ? (
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-1">
-              <Label>Why NAV reports failed</Label>
+              <Label>Why NAV attempts did not land</Label>
               {health.navFailureReasons.length ? (
                 health.navFailureReasons.map((row) => (
-                  <p className="flex justify-between gap-3" key={row.reason}>
-                    <span>{words(row.reason)}</span>
+                  <p className="flex justify-between gap-3" key={`${row.reason}:${row.beforeSending}`}>
+                    <span>
+                      {row.reason === "hold:stale"
+                        ? "Freshness check refused"
+                        : row.reason === "hold:chain_refused"
+                          ? "Transaction preparation refused"
+                          : words(row.reason)}
+                      {row.beforeSending ? " · not sent" : ""}
+                    </span>
                     <span className="font-mono tabular-nums">{row.count}</span>
                   </p>
                 ))

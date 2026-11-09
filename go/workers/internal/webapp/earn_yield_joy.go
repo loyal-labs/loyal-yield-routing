@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnprep"
@@ -223,13 +224,14 @@ type joyCandidate struct {
 	wallet      string
 }
 
-func (c Crons) joyCandidates(ctx context.Context) ([]joyCandidate, error) {
+func (c Crons) joyCandidates(ctx context.Context, after string) ([]joyCandidate, error) {
 	rows, err := c.h.appDB.Query(ctx,
-		`SELECT u.created_at, s.settings_pda, u.subject_address
+		`SELECT DISTINCT ON (u.subject_address COLLATE "C") u.created_at, s.settings_pda, u.subject_address
 FROM app_user_smart_accounts s
 JOIN app_users u ON s.user_id = u.id
 WHERE s.state = 'ready' AND s.solana_env = $1
-ORDER BY s.updated_at DESC`, smartAccountsSolanaEnv)
+  AND u.subject_address COLLATE "C" > $2 AND s.settings_pda <> ''
+ORDER BY u.subject_address COLLATE "C", s.updated_at DESC, s.settings_pda`, smartAccountsSolanaEnv, after)
 	if err != nil {
 		return nil, fmt.Errorf("list earn joy candidates: %w", err)
 	}
@@ -386,13 +388,26 @@ func (c Crons) processJoyCandidate(ctx context.Context, candidate joyCandidate, 
 // the lock does nothing and reports so.
 func (c Crons) EarnYieldJoy(ctx context.Context, dryRun bool) (EarnYieldJoySummary, error) {
 	var summary EarnYieldJoySummary
+	if c.h.YieldDB == nil {
+		return summary, errors.New("earn-yield-joy needs the Yield database for resumable progress")
+	}
+	grants := []Grant{TableGrant("loyal_yield.earn_yield_joy_progress", "SELECT")}
+	if !dryRun {
+		grants = append(grants, TableGrant("loyal_yield.earn_yield_joy_progress", "INSERT"), TableGrant("loyal_yield.earn_yield_joy_progress", "UPDATE"))
+	}
+	if missing, err := MissingGrants(ctx, c.h.YieldDB, grants); err != nil {
+		return summary, err
+	} else if len(missing) != 0 {
+		return summary, fmt.Errorf("earn-yield-joy progress grants missing: %v", missing)
+	}
 	task := func(ctx context.Context) error {
 		var err error
 		summary, err = c.earnYieldJoy(ctx, dryRun)
 		return err
 	}
 	if dryRun {
-		return summary, task(ctx)
+		err := task(ctx)
+		return summary, err
 	}
 	if c.h.CampaignPush == nil {
 		return summary, errors.New("the wallet push sender is off (the push send grants): a run would spend the one-time campaigns without sending")
@@ -405,10 +420,39 @@ func (c Crons) EarnYieldJoy(ctx context.Context, dryRun bool) (EarnYieldJoySumma
 }
 
 func (c Crons) earnYieldJoy(ctx context.Context, dryRun bool) (EarnYieldJoySummary, error) {
+	return c.earnYieldJoyBatch(ctx, dryRun, joyTimeBudget)
+}
+
+// Continue unfinished cycles across timer ticks, even when they cross midnight.
+// Completed cycles restart at the original daily notification time, 15:41 UTC.
+func (c Crons) joyProgress(ctx context.Context, now time.Time) (cycle time.Time, after string, completed bool, err error) {
+	day := now.UTC().Add(-15*time.Hour - 41*time.Minute).Truncate(joyDay).Add(15*time.Hour + 41*time.Minute)
+	err = c.h.YieldDB.QueryRow(ctx, `SELECT cycle_started_at, last_wallet, completed
+FROM loyal_yield.earn_yield_joy_progress WHERE cluster = $1`, string(c.h.Cluster.Loyal())).Scan(&cycle, &after, &completed)
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && completed && cycle.Before(day)) {
+		return day, "", false, nil
+	}
+	return
+}
+
+func (c Crons) saveJoyProgress(ctx context.Context, cycle time.Time, after string, completed bool) error {
+	_, err := c.h.YieldDB.Exec(ctx, `INSERT INTO loyal_yield.earn_yield_joy_progress (cluster, cycle_started_at, last_wallet, completed)
+VALUES ($1, $2, $3, $4) ON CONFLICT (cluster) DO UPDATE SET
+cycle_started_at = EXCLUDED.cycle_started_at, last_wallet = EXCLUDED.last_wallet,
+completed = EXCLUDED.completed, updated_at = now()`, string(c.h.Cluster.Loyal()), cycle, after, completed)
+	return err
+}
+
+func (c Crons) earnYieldJoyBatch(ctx context.Context, dryRun bool, budget time.Duration) (EarnYieldJoySummary, error) {
 	now := time.Now()
-	deadline := now.Add(joyTimeBudget)
+	deadline := now.Add(budget)
 	cluster := string(c.h.Cluster.Loyal())
-	candidates, err := c.joyCandidates(ctx)
+	summary := EarnYieldJoySummary{DryRun: dryRun, Pushed: []EarnYieldJoyOutcome{}}
+	cycle, after, completed, err := c.joyProgress(ctx, now)
+	if err != nil || completed {
+		return summary, err
+	}
+	candidates, err := c.joyCandidates(ctx, after)
 	if err != nil {
 		return EarnYieldJoySummary{}, err
 	}
@@ -420,7 +464,7 @@ func (c Crons) earnYieldJoy(ctx context.Context, dryRun bool) (EarnYieldJoySumma
 	if err != nil {
 		return EarnYieldJoySummary{}, err
 	}
-	summary := EarnYieldJoySummary{Candidates: len(candidates), DryRun: dryRun, Pushed: []EarnYieldJoyOutcome{}}
+	summary.Candidates = len(candidates)
 	for start := 0; start < len(candidates); start += joyWalletConcurrency {
 		if time.Now().After(deadline) {
 			summary.Truncated = true
@@ -458,6 +502,18 @@ func (c Crons) earnYieldJoy(ctx context.Context, dryRun bool) (EarnYieldJoySumma
 			default:
 				summary.Errors++
 			}
+		}
+		// A crash may replay this chunk; the existing per-wallet push claim prevents duplicates.
+		after = chunk[len(chunk)-1].wallet
+		if !dryRun {
+			if err := c.saveJoyProgress(ctx, cycle, after, false); err != nil {
+				return summary, fmt.Errorf("save earn joy progress: %w", err)
+			}
+		}
+	}
+	if !dryRun && !summary.Truncated {
+		if err := c.saveJoyProgress(ctx, cycle, after, true); err != nil {
+			return summary, fmt.Errorf("complete earn joy cycle: %w", err)
 		}
 	}
 	return summary, nil
