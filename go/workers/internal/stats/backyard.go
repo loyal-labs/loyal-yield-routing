@@ -96,6 +96,7 @@ type backyardPage struct {
 	Moves     backyardPart[[]backyardMove]      `json:"moves"`
 	NavSeries backyardPart[[]backyardNavPoint]  `json:"navSeries"`
 	Route     backyardPart[backyardRoute]       `json:"route"`
+	Risk      backyardPart[backyardRisk]        `json:"risk"`
 	Voltr     backyardPart[backyardVoltr]       `json:"voltr"`
 }
 
@@ -159,11 +160,21 @@ type backyardHealth struct {
 type backyardMove struct {
 	Action      string  `json:"action"`
 	AmountRaw   *string `json:"amountRaw"`
+	Token       *string `json:"token"`
+	Decimals    *int    `json:"decimals"`
 	At          string  `json:"at"`
 	Reason      *string `json:"reason"`
 	Signature   *string `json:"signature"`
 	Status      string  `json:"status"`
 	StrategyKey *string `json:"strategyKey"`
+}
+
+type backyardRisk struct {
+	Lane             string  `json:"lane"`
+	ObservedAt       string  `json:"observedAt"`
+	HardLtvRatio     float64 `json:"hardLtvRatio"`
+	MaxLtvRatio      float64 `json:"maxLtvRatio"`
+	LiquidationRatio float64 `json:"liquidationRatio"`
 }
 
 type backyardHistory struct {
@@ -533,17 +544,35 @@ func (s backyardSource) moves(ctx context.Context) ([]backyardMove, error) {
                  AND (a->>'afterRaw')::numeric > (a->>'beforeRaw')::numeric)
          ELSE expected_effects #>> '{decision,amountRaw}'
        END,
-       COALESCE(recovery_reason, expected_effects #>> '{decision,reason}')
+       COALESCE(recovery_reason, expected_effects #>> '{decision,reason}'),
+       expected_effects #>> '{expectedEffects,accounts,0,mint}'
      FROM loyal_yield.multiply_operations
      WHERE route_key = $1 AND transaction_signature IS NOT NULL AND `+backyardMoneyActions+`
      ORDER BY created_at DESC LIMIT 30`,
 		func(rows pgx.Rows) (backyardMove, error) {
 			var m backyardMove
 			var created time.Time
-			err := rows.Scan(&m.Action, &m.Status, &m.StrategyKey, &m.Signature, &created, &m.AmountRaw, &m.Reason)
+			var mint *string
+			err := rows.Scan(&m.Action, &m.Status, &m.StrategyKey, &m.Signature, &created, &m.AmountRaw, &m.Reason, &mint)
 			m.At = backyardISO(created)
+			if mint != nil {
+				m.Token, m.Decimals = backyardToken(*mint)
+			}
 			return m, err
 		}, backyardRouteKey, backyardSquads)
+}
+
+// Mint decimals are immutable. Unknown source mints must never assume six.
+func backyardToken(mint string) (*string, *int) {
+	decimals := map[string]int{"USDC": 6, "PYUSD": 6, "USDS": 6, "ONyc": 9, "USDe": 9, "PRIME": 6, "syrupUSDC": 6, "AUTO": 6, "wYLDS": 6}
+	for _, route := range backyardLooping.Routes {
+		for _, token := range []struct{ mint, symbol string }{{route.Kamino.CollateralMint, route.CollateralSymbol}, {route.Kamino.DebtMint, route.DebtSymbol}} {
+			if n, ok := decimals[token.symbol]; ok && mint == token.mint {
+				return &token.symbol, &n
+			}
+		}
+	}
+	return nil, nil
 }
 
 // moveDays are the UTC days the worker changed the position on chain, for the
@@ -684,17 +713,19 @@ func backyardBorrowing(ctx context.Context) ([]backyardBorrowRow, error) {
 type backyardReserveDay struct {
 	day                        string
 	assetYield, supply, borrow float64
+	at                         string
+	maxLtv, liquidation        *float64
 }
 
-func backyardReserveHistory(ctx context.Context, market, reserve string, start, end time.Time) ([]backyardReserveDay, error) {
+func backyardReserveHistory(ctx context.Context, market, reserve string, start, end time.Time, frequency string) ([]backyardReserveDay, error) {
 	var body struct {
 		History []struct {
 			Timestamp string         `json:"timestamp"`
 			Metrics   map[string]any `json:"metrics"`
 		} `json:"history"`
 	}
-	endpoint := fmt.Sprintf("https://api.kamino.finance/kamino-market/%s/reserves/%s/metrics/history?env=mainnet-beta&start=%s&end=%s&frequency=day",
-		url.PathEscape(market), url.PathEscape(reserve), url.QueryEscape(start.UTC().Format(time.RFC3339)), url.QueryEscape(end.UTC().Format(time.RFC3339)))
+	endpoint := fmt.Sprintf("https://api.kamino.finance/kamino-market/%s/reserves/%s/metrics/history?env=mainnet-beta&start=%s&end=%s&frequency=%s",
+		url.PathEscape(market), url.PathEscape(reserve), url.QueryEscape(start.UTC().Format(time.RFC3339)), url.QueryEscape(end.UTC().Format(time.RFC3339)), url.QueryEscape(frequency))
 	if err := backyardGet(ctx, endpoint, &body); err != nil {
 		return nil, err
 	}
@@ -710,13 +741,47 @@ func backyardReserveHistory(ctx context.Context, market, reserve string, start, 
 			continue
 		}
 		days = append(days, backyardReserveDay{
-			day:        point.Timestamp[:10],
-			assetYield: or0(backyardNum(point.Metrics["assetYieldApy"])),
-			supply:     or0(backyardNum(point.Metrics["supplyInterestAPY"])),
-			borrow:     or0(backyardNum(point.Metrics["borrowInterestAPY"])),
+			day:         point.Timestamp[:10],
+			at:          point.Timestamp,
+			maxLtv:      backyardNum(point.Metrics["loanToValue"]),
+			liquidation: backyardNum(point.Metrics["liquidationThreshold"]),
+			assetYield:  or0(backyardNum(point.Metrics["assetYieldApy"])),
+			supply:      or0(backyardNum(point.Metrics["supplyInterestAPY"])),
+			borrow:      or0(backyardNum(point.Metrics["borrowInterestAPY"])),
 		})
 	}
 	return days, nil
+}
+
+func backyardRiskLoad(ctx context.Context, lane string, now time.Time) (backyardRisk, error) {
+	reserves, ok := backyardLanes[lane]
+	if !ok {
+		return backyardRisk{}, errors.New("active lane unavailable")
+	}
+	points, err := backyardReserveHistory(ctx, reserves.market, reserves.collateral, now.Add(-2*time.Hour), now, "hour")
+	if err != nil {
+		return backyardRisk{}, err
+	}
+	var latest backyardReserveDay
+	for _, point := range points {
+		if point.at > latest.at {
+			latest = point
+		}
+	}
+	return backyardRiskFromPoint(lane, latest, now)
+}
+
+func backyardRiskFromPoint(lane string, point backyardReserveDay, now time.Time) (backyardRisk, error) {
+	at, err := time.Parse(time.RFC3339Nano, point.at)
+	if err != nil || at.After(now) || now.Sub(at) > 2*time.Hour || point.maxLtv == nil || point.liquidation == nil ||
+		*point.maxLtv <= 0 || *point.maxLtv >= *point.liquidation || *point.liquidation > 1 {
+		return backyardRisk{}, errors.New("current reserve risk limits unavailable")
+	}
+	position := backyard.KaminoPosition{CollateralLTVBPS: int64(math.Round(*point.maxLtv * 1e4)), LiquidationThresholdBPS: int64(math.Round(*point.liquidation * 1e4))}
+	if position.HardLTVBPS() <= 0 {
+		return backyardRisk{}, errors.New("invalid reserve risk limits")
+	}
+	return backyardRisk{Lane: lane, ObservedAt: point.at, HardLtvRatio: float64(position.HardLTVBPS()) / 1e4, MaxLtvRatio: *point.maxLtv, LiquidationRatio: *point.liquidation}, nil
 }
 
 // backyardBreakdownLoad compares, per day, what the lane's collateral earns
@@ -729,8 +794,8 @@ func backyardBreakdownLoad(ctx context.Context, lane string, start, end time.Tim
 	var debt []backyardReserveDay
 	var debtErr error
 	var wg sync.WaitGroup
-	wg.Go(func() { debt, debtErr = backyardReserveHistory(ctx, reserves.market, reserves.debt, start, end) })
-	collateral, err := backyardReserveHistory(ctx, reserves.market, reserves.collateral, start, end)
+	wg.Go(func() { debt, debtErr = backyardReserveHistory(ctx, reserves.market, reserves.debt, start, end, "day") })
+	collateral, err := backyardReserveHistory(ctx, reserves.market, reserves.collateral, start, end, "day")
 	wg.Wait()
 	if err != nil {
 		return backyardBreakdown{}, err
@@ -791,7 +856,13 @@ func (s backyardSource) page(ctx context.Context) (backyardPage, error) {
 			start = first
 		}
 	}
-	page.Breakdown = backyardLoad("breakdown", func() (backyardBreakdown, error) { return backyardBreakdownLoad(ctx, lane, start, now) })
+	wg.Go(func() {
+		page.Breakdown = backyardLoad("breakdown", func() (backyardBreakdown, error) { return backyardBreakdownLoad(ctx, lane, start, now) })
+	})
+	if page.Route.Ok && page.Route.Value.CurrentApy != nil && page.Route.Value.CurrentApy.Lane != nil {
+		page.Risk = backyardLoad("risk", func() (backyardRisk, error) { return backyardRiskLoad(ctx, *page.Route.Value.CurrentApy.Lane, now) })
+	}
+	wg.Wait()
 	return page, nil
 }
 

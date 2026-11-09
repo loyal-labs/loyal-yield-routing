@@ -81,6 +81,11 @@ func (p KaminoPosition) MaxLTVBPS() int64 {
 	return cmp.Or(p.BorrowLimitBPS, p.CollateralLTVBPS)
 }
 
+// HardLTVBPS exposes the worker's safety rule to read-only consumers.
+func (p KaminoPosition) HardLTVBPS() int64 {
+	return hardLTVBPS(p.LiquidationThresholdBPS, p.MaxLTVBPS())
+}
+
 func (p KaminoPosition) priced() bool {
 	return p.LiquidationThresholdBPS > 0 && littleInt(p.CollateralPriceSF[:]).Sign() > 0
 }
