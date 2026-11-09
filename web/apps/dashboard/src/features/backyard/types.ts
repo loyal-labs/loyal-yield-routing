@@ -44,11 +44,21 @@ export type Route = {
 export type MoneyMove = {
   action: string;
   amountRaw: string | null;
+  token: string | null;
+  decimals: number | null;
   at: string;
   reason: string | null;
   signature: string | null;
   status: string;
   strategyKey: string | null;
+};
+
+export type Risk = {
+  lane: string;
+  observedAt: string;
+  hardLtvRatio: number;
+  maxLtvRatio: number;
+  liquidationRatio: number;
 };
 
 export type BackyardApi = {
@@ -80,6 +90,7 @@ export type BackyardApi = {
   moves: Part<MoneyMove[]>;
   navSeries: Part<Array<{ at: string; navUsd: number }>>;
   route: Part<Route>;
+  risk: Part<Risk>;
   voltr: Part<{
     daily: Array<{ day: string; price: number }>;
     /** Voltr's share price: USDC per 1,000 LP units (per LP token). */

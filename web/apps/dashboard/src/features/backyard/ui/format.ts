@@ -1,5 +1,32 @@
 // Display helpers shared by the server page and the client charts.
 
+export function tokenAmount(
+  raw: string | null,
+  decimals: number | null,
+  token: string | null
+) {
+  if (
+    !raw ||
+    !/^\d+$/.test(raw) ||
+    !token ||
+    decimals === null ||
+    !Number.isInteger(decimals) ||
+    decimals < 0 ||
+    decimals > 18
+  )
+    return "—";
+  const amount = BigInt(raw);
+  if (amount === BigInt(0)) return "—";
+  const scale = BigInt(10) ** BigInt(decimals);
+  const fraction = (amount % scale)
+    .toString()
+    .padStart(decimals, "0")
+    .replace(/0+$/, "");
+  return `${(amount / scale).toLocaleString("en-US")}${
+    fraction ? `.${fraction}` : ""
+  } ${token}`;
+}
+
 export function usd(value: number | null | undefined) {
   if (value === null || value === undefined) return "—";
   return `${value < 0 ? "−" : ""}$${Math.abs(value).toLocaleString("en-US", {

@@ -2,9 +2,17 @@ import { ArrowUpRight } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { apyHistory, realizedApy } from "../domain/math";
-import type { BackyardApi, Route } from "../types";
+import type { BackyardApi, Risk, Route } from "../types";
 import { BACKYARD_VAULT, type BackyardVault } from "../vault";
-import { ago, compactUsd, dateTime, pct, usd, words } from "./format";
+import {
+  ago,
+  compactUsd,
+  dateTime,
+  pct,
+  tokenAmount,
+  usd,
+  words,
+} from "./format";
 import { HeroChart } from "./hero-chart";
 import { TimeChart } from "./time-chart";
 import {
@@ -20,10 +28,6 @@ import {
   Unavailable,
 } from "./ui";
 
-const ALERT_LTV = 0.45;
-const WITHDRAWAL_STEP_LTV = 0.55;
-const HARD_RULE_LTV = 0.6;
-const LIQUIDATION_LTV = 0.8;
 // Routine NAV reports are hourly; allow 15 minutes for reporting/reconciliation.
 const STALE_REPORT_S = 75 * 60;
 const DOCS_URL = "https://docs.askloyal.com/vaults/rwa-loop-strategy";
@@ -89,28 +93,43 @@ type BackyardData = ReturnType<typeof derive>;
 type Load =
   | { state: "loading" }
   | { state: "failed" }
-  | { state: "ready"; data: BackyardData };
+  | { state: "ready"; data: BackyardData; refreshFailed: boolean };
 
 /** Loads /api/backyard now and every minute; keeps the last page on a miss. */
 function useBackyard() {
   const [load, setLoad] = useState<Load>({ state: "loading" });
+  const [now, setNow] = useState(Date.now);
   useEffect(() => {
     let live = true;
-    const fetchPage = () =>
-      fetch("/api/backyard")
+    const fetchPage = () => {
+      setNow(Date.now());
+      return fetch("/api/backyard", {
+        cache: "no-store",
+        signal: AbortSignal.timeout(45_000),
+      })
         .then((response) => {
           if (!response.ok) throw new Error(`backyard ${response.status}`);
           return response.json() as Promise<BackyardApi>;
         })
         .then((api) => {
-          if (live) setLoad({ data: derive(api), state: "ready" });
+          if (live) {
+            setNow(Date.now());
+            setLoad({
+              data: derive(api),
+              state: "ready",
+              refreshFailed: false,
+            });
+          }
         })
         .catch(() => {
           if (live)
             setLoad((last) =>
-              last.state === "ready" ? last : { state: "failed" }
+              last.state === "ready"
+                ? { ...last, refreshFailed: true }
+                : { state: "failed" }
             );
         });
+    };
     void fetchPage();
     const timer = setInterval(fetchPage, 60_000);
     return () => {
@@ -118,11 +137,11 @@ function useBackyard() {
       clearInterval(timer);
     };
   }, []);
-  return load;
+  return { load, now };
 }
 
 export function BackyardPage() {
-  const load = useBackyard();
+  const { load, now } = useBackyard();
   if (load.state !== "ready") {
     return (
       <main className="flex min-h-screen items-center justify-center bg-background px-4 text-sm text-muted-foreground">
@@ -132,13 +151,38 @@ export function BackyardPage() {
       </main>
     );
   }
-  return <Dashboard data={load.data} />;
+  const stale =
+    load.refreshFailed || now - Date.parse(load.data.loadedAt) > 120_000;
+  return <Dashboard data={load.data} now={now} stale={stale} />;
 }
 
-function Dashboard({ data }: { data: BackyardData }) {
+function Dashboard({
+  data,
+  now,
+  stale,
+}: {
+  data: BackyardData;
+  now: number;
+  stale: boolean;
+}) {
   const vault = BACKYARD_VAULT;
-  const now = Date.parse(data.loadedAt);
-  const route = data.route.ok ? data.route.value : null;
+  const elapsed = Math.max(0, (now - Date.parse(data.loadedAt)) / 1000);
+  const route = data.route.ok
+    ? {
+        ...data.route.value,
+        reportAgeS:
+          data.route.value.reportAgeS === null
+            ? null
+            : data.route.value.reportAgeS + elapsed,
+        updatedAgeS: data.route.value.updatedAgeS + elapsed,
+      }
+    : null;
+  const risk =
+    data.risk?.ok &&
+    data.risk.value.lane === route?.currentApy?.lane &&
+    now - Date.parse(data.risk.value.observedAt) <= 2 * 60 * 60_000
+      ? data.risk.value
+      : null;
   const voltr = data.voltr.ok ? data.voltr.value : null;
   // LTV as the worker observed it; leverage = collateral / equity = 1 / (1 - LTV).
   const ltv = route?.ltvRatio ?? null;
@@ -215,13 +259,22 @@ function Dashboard({ data }: { data: BackyardData }) {
       </section>
 
       <div className="mx-auto w-full max-w-7xl space-y-6 px-4 py-8 sm:px-6 lg:px-10">
-        <Pulse data={data} route={route} />
+        <Pulse data={data} route={route} stale={stale} />
         <section className="grid gap-4 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)]">
-          <RightNow data={data} leverageNow={leverageNow} ltv={ltv} now={now} />
+          <RightNow
+            data={data}
+            route={route}
+            risk={risk}
+            stale={stale}
+            leverageNow={leverageNow}
+            ltv={ltv}
+            now={now}
+          />
           <LoanSafety
             leverageNow={leverageNow}
             ltv={ltv}
             route={route}
+            risk={risk}
             vault={vault}
           />
         </section>
@@ -232,8 +285,8 @@ function Dashboard({ data }: { data: BackyardData }) {
         <MoneyMoves data={data} />
         <p className="text-xs leading-5 text-muted-foreground">
           Loaded {dateTime(data.loadedAt)}; refreshes every minute. Sources: the
-          Loyal worker's own records, Voltr and Kamino public APIs. Every number
-          is computed on load and can be checked on chain; see{" "}
+          Loyal worker&apos;s own records, Voltr and Kamino public APIs. Every
+          number is computed on load and can be checked on chain; see{" "}
           <a
             className="underline underline-offset-2"
             href={DOCS_URL}
@@ -342,14 +395,34 @@ function Overview({
   );
 }
 
-function Pulse({ data, route }: { data: BackyardData; route: Route | null }) {
+function Pulse({
+  data,
+  route,
+  stale: dataStale,
+}: {
+  data: BackyardData;
+  route: Route | null;
+  stale: boolean;
+}) {
   const stops = data.health.ok ? data.health.value.openStops : null;
   const stopped = Boolean(stops?.length);
   const stale = (route?.reportAgeS ?? Infinity) > STALE_REPORT_S;
   return (
     <div className="flex flex-wrap items-center gap-2 text-sm">
-      <Pill tone={stopped || stale ? "bad" : "good"}>
-        {stopped
+      <Pill
+        tone={
+          dataStale || stops === null
+            ? "neutral"
+            : stopped || stale
+            ? "bad"
+            : "good"
+        }
+      >
+        {dataStale
+          ? "Updates unavailable · showing last known values"
+          : stops === null
+          ? "Worker health unavailable"
+          : stopped
           ? "Paused for an operator check"
           : route
           ? `Last NAV report ${ago(route.reportAgeS)} ago`
@@ -371,9 +444,18 @@ function Pulse({ data, route }: { data: BackyardData; route: Route | null }) {
 function verdict(
   route: Route | null,
   stops: string[] | null,
-  ltv: number | null
+  ltv: number | null,
+  risk: Risk | null,
+  stale: boolean
 ) {
+  if (stale)
+    return {
+      bad: false,
+      text: "Updates unavailable. Showing last known values.",
+    };
   if (!route) return { bad: true, text: "Worker state is unavailable." };
+  if (stops === null)
+    return { bad: false, text: "Worker health is unavailable." };
   if (stops?.length)
     return { bad: true, text: "Paused for an operator check." };
   if (
@@ -383,37 +465,47 @@ function verdict(
     route.navFresh === false
   )
     return { bad: true, text: "Current valuation is unavailable." };
-  if (ltv !== null && ltv >= ALERT_LTV)
-    return {
-      bad: true,
-      text: `The loan is above the ${Math.round(ALERT_LTV * 100)}% alert.`,
-    };
   if ((route.reportAgeS ?? Infinity) > STALE_REPORT_S)
     return { bad: true, text: "NAV reports have stalled." };
-  if (route.currentApy?.flat || (route.debtUsd ?? 0) === 0)
+  if (route.currentApy?.flat || route.debtUsd === 0)
     return { bad: false, text: "Healthy. No loop open yet." };
+  if (!risk)
+    return { bad: false, text: "Current risk limits are unavailable." };
+  if (ltv >= risk.hardLtvRatio)
+    return {
+      bad: true,
+      text: `The loan is at or above the ${pct(
+        risk.hardLtvRatio * 100,
+        1
+      )} hard limit.`,
+    };
   return { bad: false, text: "Healthy and earning." };
 }
 
 function RightNow({
   data,
+  route,
+  risk,
+  stale,
   leverageNow,
   ltv,
   now,
 }: {
   data: BackyardData;
+  route: Route | null;
+  risk: Risk | null;
+  stale: boolean;
   leverageNow: number | null;
   ltv: number | null;
   now: number;
 }) {
-  const route = data.route.ok ? data.route.value : null;
   const health = data.health.ok ? data.health.value : null;
   const voltr = data.voltr.ok ? data.voltr.value : null;
-  const state = verdict(route, health?.openStops ?? null, ltv);
+  const state = verdict(route, health?.openStops ?? null, ltv, risk, stale);
   const why = [
-    `LTV ${ltv === null ? "—" : pct(ltv * 100, 1)} (alert at ${Math.round(
-      ALERT_LTV * 100
-    )}%, hard rule ${Math.round(HARD_RULE_LTV * 100)}%).`,
+    `LTV ${ltv === null ? "—" : pct(ltv * 100, 1)}${
+      risk ? ` (hard limit ${pct(risk.hardLtvRatio * 100, 1)})` : ""
+    }.`,
     health
       ? `${health.navReconciled} of ${health.navAll} NAV reports landed in the last 24 hours.`
       : "",
@@ -513,20 +605,27 @@ function LoanSafety({
   leverageNow,
   ltv,
   route,
+  risk,
   vault,
 }: {
   leverageNow: number | null;
   ltv: number | null;
   route: Route | null;
+  risk: Risk | null;
   vault: BackyardVault;
 }) {
   const x = (value: number) =>
-    `${(Math.min(value, LIQUIDATION_LTV) / LIQUIDATION_LTV) * 100}%`;
-  const marks = [
-    { label: "alert", value: ALERT_LTV },
-    { label: "withdrawal step cap", value: WITHDRAWAL_STEP_LTV },
-    { label: "hard rule", value: HARD_RULE_LTV },
-  ];
+    `${
+      (Math.max(0, Math.min(value, risk!.liquidationRatio)) /
+        risk!.liquidationRatio) *
+      100
+    }%`;
+  const marks = risk
+    ? [
+        { label: "worker hard limit", value: risk.hardLtvRatio },
+        { label: "borrow limit", value: risk.maxLtvRatio },
+      ]
+    : [];
   const target = route?.leverageTarget ?? null;
   const targetHint =
     target === null
@@ -545,64 +644,76 @@ function LoanSafety({
     <Card>
       <CardHead
         eyebrow="Loan safety"
-        note={`The worker must stay left of the ${Math.round(
-          HARD_RULE_LTV * 100
-        )}% rule. Liquidation starts near ${Math.round(
-          LIQUIDATION_LTV * 100
-        )}%.`}
+        note={
+          risk
+            ? `${risk.lane}: hard limit ${pct(
+                risk.hardLtvRatio * 100,
+                1
+              )}, liquidation at ${pct(
+                risk.liquidationRatio * 100,
+                1
+              )}. Kamino reading ${dateTime(risk.observedAt)}.`
+            : "Market limits are unavailable; no safety threshold is assumed."
+        }
         title="Borrowed against collateral on Kamino"
       />
       <div className="space-y-6">
-        <div>
-          <div className="relative h-10">
-            <div
-              className="absolute top-3.5 h-3 rounded-l-full bg-muted"
-              style={{ left: 0, width: x(ALERT_LTV) }}
-            />
-            <div
-              className="absolute top-3.5 h-3 bg-foreground/15"
-              style={{
-                left: x(ALERT_LTV),
-                width: `calc(${x(HARD_RULE_LTV)} - ${x(ALERT_LTV)})`,
-              }}
-            />
-            <div
-              className="absolute top-3.5 h-3 rounded-r-full bg-primary/25"
-              style={{ left: x(HARD_RULE_LTV), right: 0 }}
-            />
-            {marks.map((mark) => (
+        {risk ? (
+          <div>
+            <div className="relative h-10">
               <div
-                className="absolute top-2 h-6 border-l border-dashed border-foreground/40"
-                key={mark.label}
-                style={{ left: x(mark.value) }}
+                className="absolute top-3.5 h-3 rounded-l-full bg-muted"
+                style={{ left: 0, width: x(risk.hardLtvRatio) }}
               />
-            ))}
-            {ltv !== null ? (
               <div
-                aria-label={`LTV ${(ltv * 100).toFixed(1)}%`}
-                className="absolute top-1 h-8 w-0.5 -translate-x-1/2 rounded bg-foreground"
-                role="img"
-                style={{ left: x(ltv) }}
+                className="absolute top-3.5 h-3 bg-foreground/15"
+                style={{
+                  left: x(risk.hardLtvRatio),
+                  width: `calc(${x(risk.maxLtvRatio)} - ${x(
+                    risk.hardLtvRatio
+                  )})`,
+                }}
               />
-            ) : null}
-          </div>
-          <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
-            {marks.map((mark) => (
-              <span key={mark.label}>
+              <div
+                className="absolute top-3.5 h-3 rounded-r-full bg-primary/25"
+                style={{ left: x(risk.maxLtvRatio), right: 0 }}
+              />
+              {marks.map((mark) => (
+                <div
+                  className="absolute top-2 h-6 border-l border-dashed border-foreground/40"
+                  key={mark.label}
+                  style={{ left: x(mark.value) }}
+                />
+              ))}
+              {ltv !== null ? (
+                <div
+                  aria-label={`LTV ${(ltv * 100).toFixed(1)}%`}
+                  className="absolute top-1 h-8 w-0.5 -translate-x-1/2 rounded bg-foreground"
+                  role="img"
+                  style={{ left: x(ltv) }}
+                />
+              ) : null}
+            </div>
+            <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+              {marks.map((mark) => (
+                <span key={mark.label}>
+                  <b className="font-mono text-foreground">
+                    {pct(mark.value * 100, 1)}
+                  </b>{" "}
+                  {mark.label}
+                </span>
+              ))}
+              <span>
                 <b className="font-mono text-foreground">
-                  {Math.round(mark.value * 100)}%
+                  {pct(risk.liquidationRatio * 100, 1)}
                 </b>{" "}
-                {mark.label}
+                liquidation (right edge)
               </span>
-            ))}
-            <span>
-              <b className="font-mono text-foreground">
-                {Math.round(LIQUIDATION_LTV * 100)}%
-              </b>{" "}
-              liquidation (right edge)
-            </span>
+            </div>
           </div>
-        </div>
+        ) : (
+          <Unavailable what="Market risk limits" />
+        )}
         <div className="grid grid-cols-2 gap-x-6 gap-y-4">
           <Fact
             hint="Debt / collateral in Kamino"
@@ -941,11 +1052,7 @@ function MoneyMoves({ data }: { data: BackyardData }) {
                     </p>
                   </Td>
                   <Td right>
-                    {move.amountRaw && Number(move.amountRaw) > 0
-                      ? (Number(move.amountRaw) / 1e6).toLocaleString("en-US", {
-                          maximumFractionDigits: 2,
-                        })
-                      : "—"}
+                    {tokenAmount(move.amountRaw, move.decimals, move.token)}
                   </Td>
                   <Td>
                     <Pill tone={move.status === "failed" ? "bad" : "neutral"}>
@@ -972,8 +1079,8 @@ function MoneyMoves({ data }: { data: BackyardData }) {
         </TableWrap>
       )}
       <p className="mt-3 text-xs text-muted-foreground">
-        Amounts are in the step's input token (6 decimals). Hold decisions and
-        NAV reports are left out.
+        Amounts are in each step&apos;s source token. Unknown tokens show a
+        dash. Hold decisions and NAV reports are left out.
         {data.health.ok
           ? ` ${data.health.value.refusedBeforeSending} steps refused by the worker's own checks before sending in the last 24 h.`
           : ""}

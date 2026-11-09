@@ -34,6 +34,8 @@ Source: active rows in `loyal_yield.user_yield_positions`, plus treasury vault `
 
 Public, read-only data for Backyard's page at https://backyard.askloyal.com: the custodial Loyal Looping vault (`GrHZD15bMiUwrVPsmBwz8GRoQeDZN6wNEQVdW8k8SxV1`). Served by `loyal-stats` (`go/workers/internal/stats/backyard.go`) from the Looping route's worker tables, the Voltr API and Kamino reserve history. Each source is `{ ok, value }` on its own, with no error text; one load per minute is shared by every viewer. On the backyard host only `/`, this API and static files are served; the page itself is `src/features/backyard`, also at `/backyard` on the stats host.
 
+Safety limits use the active lane's latest hourly Kamino reserve reading and the worker's shared hard-LTV rule. Missing readings or readings older than two hours show unavailable. Money moves carry the persisted source mint's token and decimals; unknown mints are not scaled. A failed refresh or a page snapshot older than two minutes displays stale data without a healthy verdict, while the last known balances remain visible.
+
 ## Deployment
 
-Use `dashboard` as the Vercel Root Directory. The local `vercel.json` installs from the monorepo root with Bun and builds this workspace.
+Deploy a merged commit with `bun run deploy stats <sha>`. This builds the Vite assets into `loyal-stats` and activates the service on `loyal-workers`. The host's Cloudflare tunnel must include the `backyard.askloyal.com` ingress from `deploy/hetzner/cloudflared/config.yml`.
