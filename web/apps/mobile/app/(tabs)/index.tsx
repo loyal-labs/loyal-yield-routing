@@ -100,18 +100,19 @@ export default function WalletScreen() {
 
   const { tokenHoldings, refreshTokenHoldings } =
     useTokenHoldings(walletAddress);
+  const { signer, state } = useWallet();
   const {
     position: earnPosition,
     policyMissing: earnPolicyMissing,
     isLoading: isEarnLoading,
     hasLoaded: earnLoaded,
+    error: earnError,
     refreshEarnPosition,
-  } = useEarnPosition(walletAddress);
+  } = useEarnPosition(walletAddress, signer);
   const earnLoading = walletAddress != null && (isEarnLoading || !earnLoaded);
   // Loyal APY forecast — the Earn card shows the same headline rate as the Earn
   // screen / APY chart / web, not the position's raw reserve supply APY.
   const forecastSummary = useEarnForecast();
-  const { signer, state } = useWallet();
   const {
     balances: shieldedBalances,
     executeUnshield,
@@ -128,7 +129,7 @@ export default function WalletScreen() {
       await Promise.allSettled([
         refreshBalance(forceOnChainState),
         refreshTokenHoldings(forceOnChainState),
-        refreshEarnPosition(),
+        refreshEarnPosition({ signIn: reason === "manual" }),
       ]);
     },
     [refreshBalance, refreshTokenHoldings, refreshEarnPosition]
@@ -177,6 +178,7 @@ export default function WalletScreen() {
 
   const totalSolLamports = solBalanceLamports ?? 0;
   const totalPortfolioUsd = useMemo(() => {
+    if (!earnLoaded || earnError) return null;
     let total = 0;
     let hasValuation = false;
 
@@ -205,7 +207,7 @@ export default function WalletScreen() {
       hasValuation = true;
     }
     return hasValuation ? total : null;
-  }, [tokenHoldings, earnPosition, earnMaxSummary]);
+  }, [tokenHoldings, earnPosition, earnMaxSummary, earnLoaded, earnError]);
 
   const stablecoinsUsd = useMemo(
     () =>
@@ -217,9 +219,10 @@ export default function WalletScreen() {
     [tokenHoldings]
   );
   const earnUsd = useMemo(() => {
+    if (!earnLoaded || earnError) return null;
     const raw = Number(earnPosition?.currentTotalAmountRaw);
     return Number.isFinite(raw) ? raw / 1e6 : 0;
-  }, [earnPosition]);
+  }, [earnPosition, earnLoaded, earnError]);
   const earnApyBps = useMemo(() => {
     if (!earnPosition) {
       return null;
@@ -230,12 +233,12 @@ export default function WalletScreen() {
   const firstDepositSolShortfall = useMemo(
     () =>
       firstDepositGateSolShortfall({
-        accountLoaded: earnLoaded,
-        hasFundedPosition: earnUsd > 0,
+        accountLoaded: earnLoaded && !earnError,
+        hasFundedPosition: earnUsd != null && earnUsd > 0,
         routePolicyMissing: earnPolicyMissing,
         solBalance: solBalanceLamports != null ? solBalanceLamports / 1e9 : null,
       }),
-    [earnLoaded, earnUsd, earnPolicyMissing, solBalanceLamports]
+    [earnLoaded, earnError, earnUsd, earnPolicyMissing, solBalanceLamports]
   );
 
   const stableBalancesByMint = useMemo(() => {
@@ -398,6 +401,7 @@ export default function WalletScreen() {
               earnUsd={earnUsd}
               earnMonthUsd={earnings?.rangeEarnedUsd ?? null}
               earnLoading={earnLoading}
+              earnError={earnError}
               earnApyBps={earnApyBps}
               earnMaxUsd={earnMaxSummary?.balanceUsd ?? null}
               earnMaxLoading={walletAddress != null && !earnMaxLoaded}
@@ -535,7 +539,9 @@ export default function WalletScreen() {
         onDeposit={handleDepositConfirmed}
         stableBalancesByMint={stableBalancesByMint}
         firstDepositSolShortfall={firstDepositSolShortfall}
-        isFirstDeposit={earnLoaded && (earnUsd <= 0 || earnPolicyMissing)}
+        isFirstDeposit={
+          earnLoaded && !earnError && ((earnUsd ?? 0) <= 0 || earnPolicyMissing)
+        }
       />
     </View>
   );

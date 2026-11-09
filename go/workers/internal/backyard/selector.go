@@ -172,13 +172,14 @@ type MoveQuote struct {
 	EquityRaw        int64           `json:"equityRaw"`
 	// CostRaw is Cost's total: what the entry and its unwind are expected to
 	// cost the vault's capital.
-	CostRaw          int64     `json:"costRaw"`
-	Cost             entryCost `json:"cost"`
-	ObservedAt       time.Time `json:"observedAt"`
-	EvidenceID       string    `json:"evidenceId"`
-	SampleSlot       int64     `json:"sampleSlot"`
-	ValidThroughSlot int64     `json:"validThroughSlot"`
-	DestinationExit  *ExitCost `json:"destinationExit,omitempty"`
+	CostRaw          int64           `json:"costRaw"`
+	Cost             entryCost       `json:"cost"`
+	ObservedAt       time.Time       `json:"observedAt"`
+	EvidenceID       string          `json:"evidenceId"`
+	SampleSlot       int64           `json:"sampleSlot"`
+	ValidThroughSlot int64           `json:"validThroughSlot"`
+	DestinationExit  *ExitCost       `json:"destinationExit,omitempty"`
+	InvestmentExit   *investmentExit `json:"investmentExit,omitempty"`
 }
 
 func (q MoveQuote) storedWindowValid() bool {
@@ -788,6 +789,9 @@ const (
 )
 
 var selectorAvailabilityReasons = map[string]bool{
+	investmentExitUnavailable:       true,
+	investmentExitSlotsChanged:      true,
+	investmentExitRouteChanged:      true,
 	economicEvidenceUnavailable:     true,
 	completeEntryQuoteUnavailable:   true,
 	boundedMoveCostUnavailable:      true,

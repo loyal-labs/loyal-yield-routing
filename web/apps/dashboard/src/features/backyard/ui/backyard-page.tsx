@@ -1,7 +1,7 @@
 import { ArrowUpRight } from "lucide-react";
 import { useEffect, useState } from "react";
 
-import { apyHistory, loanToValue, realizedApy } from "../domain/math";
+import { apyHistory, realizedApy } from "../domain/math";
 import type { BackyardApi, Route } from "../types";
 import { BACKYARD_VAULT, type BackyardVault } from "../vault";
 import { ago, compactUsd, dateTime, pct, usd, words } from "./format";
@@ -140,16 +140,10 @@ function Dashboard({ data }: { data: BackyardData }) {
   const now = Date.parse(data.loadedAt);
   const route = data.route.ok ? data.route.value : null;
   const voltr = data.voltr.ok ? data.voltr.value : null;
-  const ltv =
-    route?.navUsd != null && route.debtUsd != null && route.custodyUsd !== null
-      ? loanToValue(route.navUsd, route.debtUsd, route.custodyUsd)
-      : null;
-  // Actual leverage = collateral / equity = (NAV + debt) / NAV.
+  // LTV as the worker observed it; leverage = collateral / equity = 1 / (1 - LTV).
+  const ltv = route?.ltvRatio ?? null;
   const leverageNow =
-    route?.currentApy?.level ??
-    (route?.navUsd && route.debtUsd != null
-      ? (route.navUsd + route.debtUsd) / route.navUsd
-      : null);
+    ltv !== null && ltv >= 0 && ltv < 1 ? 1 / (1 - ltv) : null;
 
   return (
     <main className="min-h-screen bg-background text-foreground">
@@ -208,10 +202,7 @@ function Dashboard({ data }: { data: BackyardData }) {
               tvl={
                 voltr
                   ? {
-                      exposureUsd:
-                        route?.navUsd != null && route.debtUsd != null
-                          ? route.navUsd + route.debtUsd
-                          : null,
+                      exposureUsd: route?.collateralUsd ?? null,
                       points: voltr.tvl,
                       totalUsd: voltr.totalValueUsd,
                     }
@@ -385,6 +376,13 @@ function verdict(
   if (!route) return { bad: true, text: "Worker state is unavailable." };
   if (stops?.length)
     return { bad: true, text: "Paused for an operator check." };
+  if (
+    route.navUsd === null ||
+    route.aumUsd === null ||
+    ltv === null ||
+    route.navFresh === false
+  )
+    return { bad: true, text: "Current valuation is unavailable." };
   if (ltv !== null && ltv >= ALERT_LTV)
     return {
       bad: true,
@@ -446,7 +444,7 @@ function RightNow({
       <div className="space-y-5">
         <div>
           <p className="text-4xl font-semibold tabular-nums tracking-tight">
-            {usd(voltr?.totalValueUsd ?? route?.navUsd)}
+            {usd(route?.aumUsd ?? voltr?.totalValueUsd)}
           </p>
           <p className="font-mono text-xs text-muted-foreground">
             {route?.navUsd != null
@@ -537,6 +535,10 @@ function LoanSafety({
       ? "At target"
       : route?.lastHoldReason === "debt_reserve_utilization_blocks_borrow"
       ? "Waiting: Kamino blocks borrowing (pool above 90%)"
+      : route?.upApproved === false &&
+        leverageNow !== null &&
+        target > leverageNow
+      ? "More borrowing is not approved yet"
       : "Moving up";
 
   return (
@@ -608,7 +610,12 @@ function LoanSafety({
             value={ltv === null ? "—" : pct(ltv * 100, 1)}
           />
           <Fact
-            hint="Payoff amount, interest included"
+            hint="Value in US dollars"
+            label="Collateral"
+            value={usd(route?.collateralUsd)}
+          />
+          <Fact
+            hint="Debt value in US dollars"
             label="Borrowed"
             value={usd(route?.debtUsd)}
           />
@@ -618,7 +625,7 @@ function LoanSafety({
                 Squads account <Address address={vault.squads} />
               </>
             }
-            label="Cash in worker custody"
+            label="Worker USDC cash"
             value={usd(route?.custodyUsd)}
           />
           <Fact

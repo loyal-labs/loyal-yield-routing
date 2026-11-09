@@ -26,17 +26,28 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/backyard"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnmax"
 )
 
+// The custodial Looping vault, from the worker's own registry.
+var (
+	backyardLooping = func() backyard.VaultDescription {
+		vault, err := backyard.DescribeVault("looping")
+		if err != nil {
+			panic(err)
+		}
+		return vault
+	}()
+	backyardRouteKey   = backyardLooping.RouteKey
+	backyardSquads     = backyardLooping.Accounts.Manager.String()
+	backyardVoltrVault = backyardLooping.Accounts.Vault
+	backyardNAVAdaptor = backyardLooping.Accounts.AdaptorProgram.String()
+)
+
 const (
-	// go/workers/internal/backyard/vault.go, vault "looping".
-	backyardRouteKey   = "backyard:6HTfVjwk5FfW4GH67hmEen7VHeURdB5EJj6E429qTrUY"
-	backyardSquads     = "6HTfVjwk5FfW4GH67hmEen7VHeURdB5EJj6E429qTrUY"
-	backyardVoltrVault = "GrHZD15bMiUwrVPsmBwz8GRoQeDZN6wNEQVdW8k8SxV1"
-	backyardNAVAdaptor = "FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW"
-	backyardDefault    = "OnRe/ONyc/USDC"
+	backyardDefault = "OnRe/ONyc/USDC"
 
 	backyardQueryTimeout = 10 * time.Second
 	backyardHTTPTimeout  = 10 * time.Second
@@ -113,10 +124,14 @@ type backyardLeverageWatch struct {
 type backyardRoute struct {
 	CurrentApy         *backyardCurrentApy    `json:"currentApy"`
 	CurrentOperationID *string                `json:"currentOperationId"`
+	AumUsd             *float64               `json:"aumUsd"`
+	CollateralUsd      *float64               `json:"collateralUsd"`
 	CustodyUsd         *float64               `json:"custodyUsd"`
 	DebtUsd            *float64               `json:"debtUsd"`
 	LastHoldReason     *string                `json:"lastHoldReason"`
 	LeverageTarget     *float64               `json:"leverageTarget"`
+	LtvRatio           *float64               `json:"ltvRatio"`
+	UpApproved         *bool                  `json:"upApproved"`
 	LeverageWatch      *backyardLeverageWatch `json:"leverageWatch"`
 	NavFresh           *bool                  `json:"navFresh"`
 	NavUsd             *float64               `json:"navUsd"`
@@ -329,11 +344,15 @@ func (s backyardSource) route(ctx context.Context) (backyardRoute, error) {
 	var route backyardRoute
 	var raw []byte
 	err := s.read(ctx, func(tx pgx.Tx) error {
-		if err := tx.QueryRow(ctx, `SELECT state,
-       extract(epoch FROM now() - updated_at)::int AS updated_age_s,
-       extract(epoch FROM now() - (state->'observation'->>'reportObservedAt')::timestamptz)::int AS report_age_s
-     FROM loyal_yield.multiply_route_states WHERE route_key = $1`, backyardRouteKey).
-			Scan(&raw, &route.UpdatedAgeS, &route.ReportAgeS); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT s.state,
+       extract(epoch FROM now() - s.updated_at)::int AS updated_age_s,
+       extract(epoch FROM now() - (s.state->'observation'->>'reportObservedAt')::timestamptz)::int AS report_age_s,
+       levels.level, levels.up_approved
+     FROM loyal_yield.multiply_route_states s
+     LEFT JOIN loyal_yield.backyard_lane_levels levels
+       ON levels.route_key = s.route_key AND levels.lane = s.state #>> '{currentApy,lane}'
+     WHERE s.route_key = $1`, backyardRouteKey).
+			Scan(&raw, &route.UpdatedAgeS, &route.ReportAgeS, &route.LeverageTarget, &route.UpApproved); err != nil {
 			return err
 		}
 		err := tx.QueryRow(ctx, `SELECT expected_effects #>> '{decision,reason}'
@@ -369,8 +388,13 @@ func (s backyardSource) route(ctx context.Context) (backyardRoute, error) {
 		route.CurrentApy = &backyardCurrentApy{ApyPct: pct, Flat: flat, Lane: backyardStr(apy["lane"]), Level: backyardNum(apy["level"]), ObservedAt: backyardStr(apy["observedAt"])}
 	}
 	route.CurrentOperationID = backyardStr(state["currentOperationId"])
-	route.DebtUsd = backyardUsd(observation["payoffDebtRaw"])
-	route.LeverageTarget = backyardNum(backyardRec(state["leverageTarget"])["level"])
+	route.DebtUsd = backyardUsd(observation["positionDebtValueRaw"])
+	route.CollateralUsd = backyardUsd(observation["positionCollateralValueRaw"])
+	if ltv := backyardNum(observation["ltvBps"]); ltv != nil {
+		ratio := *ltv / 1e4
+		route.LtvRatio = &ratio
+	}
+	route.AumUsd = backyardUsd(observation["aumUsdMicros"])
 	if at := backyardStr(watch["observedAt"]); at != nil {
 		if t, err := time.Parse(time.RFC3339Nano, *at); err == nil {
 			route.LeverageWatch = &backyardLeverageWatch{Lanes: backyardLeverageLanes(watch, t), ObservedAt: *at}
@@ -379,26 +403,14 @@ func (s backyardSource) route(ctx context.Context) (backyardRoute, error) {
 	if fresh, ok := observation["navFresh"].(bool); ok {
 		route.NavFresh = &fresh
 	}
-	route.NavUsd = backyardUsd(observation["navRaw"])
+	route.NavUsd = backyardUsd(observation["computedStrategyNavRaw"])
 	if observation["navKnown"] == false {
 		route.NavUsd = nil
+		route.AumUsd = nil
 		fresh := false
 		route.NavFresh = &fresh
 	}
-	// Cash the worker holds outside Kamino: Squads idle USDC, borrowed tokens
-	// not yet swapped, and collateral not yet deposited.
-	custody := 0.0
-	for _, key := range []string{"squadsIdleRaw", "debtIdleRaw", "collateralIdleValueRaw"} {
-		part := backyardUsd(observation[key])
-		if part == nil {
-			custody = math.NaN()
-			break
-		}
-		custody += *part
-	}
-	if !math.IsNaN(custody) {
-		route.CustodyUsd = &custody
-	}
+	route.CustodyUsd = backyardUsd(observation["squadsIdleRaw"])
 	route.ReportObservedAt = backyardStr(observation["reportObservedAt"])
 	route.RouteStatus = backyardStr(observation["routeStatus"])
 	route.SelectorAction = backyardStr(backyardRec(selector)["action"])

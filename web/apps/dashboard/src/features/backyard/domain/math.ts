@@ -6,19 +6,6 @@ const YEAR_MS = 365 * DAY_MS;
 
 export type DailyPrice = { day: string; price: number };
 
-/**
- * Obligation LTV: collateral actually in Kamino = NAV + debt - cash held in
- * the worker's custody. USD at ~$1 is good enough for a gauge.
- */
-export function loanToValue(
-  navUsd: number,
-  debtUsd: number,
-  custodyUsd: number
-) {
-  const collateral = navUsd + debtUsd - custodyUsd;
-  return collateral > 0 ? debtUsd / collateral : null;
-}
-
 function finishedDays(daily: DailyPrice[], nowMs: number) {
   const today = new Date(nowMs).toISOString().slice(0, 10);
   return daily

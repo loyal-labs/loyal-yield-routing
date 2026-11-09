@@ -14,16 +14,11 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/jackc/pgx/v5"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
+	"github.com/solana-foundation/solana-go/v2"
+	"github.com/solana-foundation/solana-go/v2/rpc"
 )
-
-var backyardManifest = []BackyardSetting{
-	{Key: "Voltr vault", Value: "HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA"},
-	{Key: "Voltr program", Value: "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8"},
-	{Key: "Squads vault", Value: "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh"},
-	{Key: "Squads settings", Value: "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6"},
-	{Key: "Adaptor", Value: "FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW"},
-	{Key: "Strategy receipt", Value: "4sycXz9Xwevedo6eiXR8QEhY8yrQrkNS4G1deY9tAD2Y"},
-}
 
 const (
 	backyardVaultCapRaw          = "1000000000000"
@@ -33,6 +28,7 @@ const (
 )
 
 type BackyardPage struct {
+	TokenError            *string             `json:"tokenError"`
 	Available             bool                `json:"available"`
 	Error                 string              `json:"error"`
 	ObservedAt            string              `json:"observedAt"`
@@ -52,10 +48,14 @@ type BackyardPage struct {
 }
 
 type BackyardPosition struct {
-	CollateralRaw *string `json:"collateralRaw"`
-	DebtRaw       *string `json:"debtRaw"`
-	LtvBps        *string `json:"ltvBps"`
-	Strategy      *string `json:"strategy"`
+	CollateralSymbol   string  `json:"collateralSymbol"`
+	CollateralDecimals *uint8  `json:"collateralDecimals"`
+	DebtSymbol         string  `json:"debtSymbol"`
+	DebtDecimals       *uint8  `json:"debtDecimals"`
+	CollateralRaw      *string `json:"collateralRaw"`
+	DebtRaw            *string `json:"debtRaw"`
+	LtvBps             *string `json:"ltvBps"`
+	Strategy           *string `json:"strategy"`
 }
 
 type BackyardReport struct {
@@ -169,42 +169,7 @@ func backyardBool(state map[string]any, keys []string) *bool {
 	return nil
 }
 
-func backyardScalarSettings(state []byte) []BackyardSetting {
-	settings := []BackyardSetting{}
-	var holder struct {
-		VaultSettings json.RawMessage `json:"vaultSettings"`
-	}
-	if json.Unmarshal(state, &holder) != nil {
-		return settings
-	}
-	dec := json.NewDecoder(bytes.NewReader(holder.VaultSettings))
-	dec.UseNumber()
-	if token, err := dec.Token(); err != nil || token != json.Delim('{') {
-		return settings
-	}
-	for dec.More() && len(settings) < 12 {
-		keyToken, err := dec.Token()
-		if err != nil {
-			break
-		}
-		var nested any
-		if dec.Decode(&nested) != nil {
-			break
-		}
-		key, _ := keyToken.(string)
-		switch v := nested.(type) {
-		case string:
-			settings = append(settings, BackyardSetting{Key: key, Value: v})
-		case json.Number:
-			settings = append(settings, BackyardSetting{Key: key, Value: *backyardText(v)})
-		case bool:
-			settings = append(settings, BackyardSetting{Key: key, Value: strconv.FormatBool(v)})
-		}
-	}
-	return settings
-}
-
-func loadBackyard(ctx context.Context, d *Deps) (BackyardPage, error) {
+func loadBackyard(ctx context.Context, d *Deps, cfg earnMaxConfig) (BackyardPage, error) {
 	page := BackyardPage{
 		ObservedAt: readsISO(time.Now()), History: []BackyardOperation{}, Settings: []BackyardSetting{},
 		VaultCapRaw: backyardVaultCapRaw, WithdrawalWaitSeconds: backyardWithdrawalWaitSecond,
@@ -228,10 +193,8 @@ func loadBackyard(ctx context.Context, d *Deps) (BackyardPage, error) {
         ORDER BY observed_at DESC, id DESC
         LIMIT 1
       ) AS snapshot ON true
-      WHERE route.state ->> 'engineVersion' = 'backyard_rwa_v1'
-      ORDER BY snapshot.observed_at DESC NULLS LAST, route.updated_at DESC
-      LIMIT 1
-    `).Scan(&routeKey, &state, &strategy, &collateral, &debt, &equity, &collateralValue, &debtValue, &ltv, &forecast, &observed)
+      WHERE route.route_key = $1
+    `, cfg.RouteKey).Scan(&routeKey, &state, &strategy, &collateral, &debt, &equity, &collateralValue, &debtValue, &ltv, &forecast, &observed)
 		if errors.Is(err, pgx.ErrNoRows) {
 			page.Error = backyardNoRoute
 			return nil
@@ -276,7 +239,7 @@ func loadBackyard(ctx context.Context, d *Deps) (BackyardPage, error) {
 		page.AumUsdMicros = backyardBigInt(decoded, []string{"aumUsdMicros", "aum_usd_micros", "aumRaw"})
 		page.NavUsdMicros = backyardBigInt(decoded, []string{"navUsdMicros", "nav_usd_micros", "reportedNavRaw", "navRaw"})
 		page.CurrentPosition = BackyardPosition{CollateralRaw: collateral, DebtRaw: debt, LtvBps: ltv, Strategy: strategy}
-		page.ProjectedApyBps = forecast
+		page.ProjectedApyBps = backyardBigInt(backyardObject(decoded["currentApy"]), []string{"apyBps"})
 		page.Report = BackyardReport{
 			Fresh:      backyardBool(decoded, []string{"fresh", "navFresh"}),
 			ObservedAt: backyardText(backyardProjected(decoded, []string{"reportObservedAt", "navObservedAt"})),
@@ -287,7 +250,7 @@ func loadBackyard(ctx context.Context, d *Deps) (BackyardPage, error) {
 			page.Report.Fresh = &fresh
 		}
 		page.RouteStatus = backyardText(backyardProjected(decoded, []string{"routeStatus", "status"}))
-		page.Settings = append(append(page.Settings, backyardManifest...), backyardScalarSettings(state)...)
+		page.Settings = cfg.settings()
 		page.SquadsIdleRaw = backyardBigInt(decoded, []string{"squadsIdleRaw", "squads_idle_raw"})
 		page.StrategyIdleRaw = backyardBigInt(decoded, []string{"voltrStrategyIdleRaw", "voltr_strategy_idle_raw"})
 		page.VoltrIdleRaw = backyardBigInt(decoded, []string{"voltrIdleRaw", "voltr_idle_raw"})
@@ -304,5 +267,46 @@ func loadBackyard(ctx context.Context, d *Deps) (BackyardPage, error) {
 			VaultCapRaw: backyardVaultCapRaw, WithdrawalWaitSeconds: backyardWithdrawalWaitSecond,
 		}
 	}
+	if page.Available && page.CurrentPosition.Strategy != nil {
+		if err := backyardTokenMetadata(ctx, cfg, &page.CurrentPosition); err != nil {
+			message := earnMaxMessage(err)
+			page.TokenError = &message
+		}
+	}
 	return page, nil
+}
+
+func backyardTokenMetadata(ctx context.Context, cfg earnMaxConfig, position *BackyardPosition) error {
+	for _, route := range cfg.Routes {
+		if route.Lane != *position.Strategy {
+			continue
+		}
+		position.CollateralSymbol, position.DebtSymbol = route.CollateralSymbol, route.DebtSymbol
+		client, err := earnMaxChain()
+		if err != nil {
+			return err
+		}
+		keys := []solana.PublicKey{solana.MustPublicKeyFromBase58(route.Kamino.CollateralMint), solana.MustPublicKeyFromBase58(route.Kamino.DebtMint)}
+		accounts, err := earnMaxRetry(ctx, func() ([]*chain.Account, error) {
+			_, accounts, err := client.Accounts(ctx, keys, rpc.CommitmentConfirmed, 0)
+			return accounts, err
+		})
+		if err != nil {
+			return err
+		}
+		if len(accounts) != 2 {
+			return errors.New("Token metadata is unavailable.")
+		}
+		collateral, err := spl.DecodeMint(accounts[0])
+		if err != nil {
+			return err
+		}
+		debt, err := spl.DecodeMint(accounts[1])
+		if err != nil {
+			return err
+		}
+		position.CollateralDecimals, position.DebtDecimals = &collateral.Decimals, &debt.Decimals
+		return nil
+	}
+	return errors.New("The current position is not in the vault's route registry.")
 }

@@ -1,0 +1,183 @@
+{
+  "date": "2026-11-06",
+  "mode": "offline-pricing-calibration",
+  "networkSubmissions": 0,
+  "cpuQuota": "50% of one core",
+  "memoryMaxBytes": 805306368,
+  "swapMaxBytes": 0,
+  "tasksMax": 64,
+  "runtimeMaxSeconds": 180,
+  "privateNetwork": true,
+  "regression": {
+    "passedIncludingSubtests": 205,
+    "skipped": 13,
+    "failed": 0
+  },
+  "scope": "Quotes execute Jupiter directly in a frozen native bank; these are not new complete worker replays. Prior complete worker replay results retain Squads, Kamino, signing/persistence validation and per-portion price guards.",
+  "autoRemainderRoute": "PYUSD/USDC Manifest leg extracted from the captured collateral/USDC route, using the same original market accounts and liquidity.",
+  "cases": [
+    {
+      "lane": "AUTO/AUTO/PYUSD",
+      "hypotheticalEquityUSDC": 100000,
+      "leverage": 2.0,
+      "wouldAllow": true,
+      "reason": null,
+      "calculation": {
+        "collateralRaw": 193884041600,
+        "referenceUsdcRaw": 199999999948,
+        "quotedUsdcRaw": 199771943205,
+        "repaymentUsdcRaw": 99983343778,
+        "minimumEquityRaw": 99616656171,
+        "observedAt": "2026-11-06T18:22:04.934118899Z",
+        "slot": 466201607,
+        "cashAfterRepaymentRaw": 99788599427,
+        "lastPortionUsdcRaw": 998443025,
+        "lastPortionReferenceRaw": 999999999
+      },
+      "simulatedQuotes": [
+        {
+          "mode": "debt",
+          "input": 193884041600,
+          "output": 199794380673
+        },
+        {
+          "mode": "debt",
+          "input": 192914621392,
+          "output": 198795768245
+        },
+        {
+          "mode": "residue",
+          "input": 99794363454,
+          "output": 99788599427
+        },
+        {
+          "mode": "residue",
+          "input": 98795751026,
+          "output": 98790156402
+        }
+      ],
+      "priorProtectedReplayStatus": "COMPLETED",
+      "priorProtectedReplayCashRaw": 99788615637,
+      "memoryPeakBytes": 211812352,
+      "memoryEvents": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n",
+      "sourceSHA256": "35129ac246cc7f853f34ad352063aa6983e47a56861249f2e234a1c550792570"
+    },
+    {
+      "lane": "OnRe/ONyc/USDC",
+      "hypotheticalEquityUSDC": 100000,
+      "leverage": 1.5,
+      "wouldAllow": false,
+      "reason": "HOLD: stale cause=investment_exit_too_expensive",
+      "calculation": {
+        "collateralRaw": 128950363108793,
+        "referenceUsdcRaw": 150010031678,
+        "quotedUsdcRaw": 139473498885,
+        "repaymentUsdcRaw": 50000012501,
+        "minimumEquityRaw": 0,
+        "observedAt": "2026-11-06T18:22:22.260498218Z",
+        "slot": 466199763,
+        "cashAfterRepaymentRaw": 89473486384,
+        "lastPortionUsdcRaw": 905244459,
+        "lastPortionReferenceRaw": 999999999
+      },
+      "simulatedQuotes": [
+        {
+          "mode": "cash",
+          "input": 128950363108793,
+          "output": 139473498885
+        },
+        {
+          "mode": "cash",
+          "input": 128090751510381,
+          "output": 138568254426
+        }
+      ],
+      "priorProtectedReplayStatus": "PRICE_REFUSED",
+      "priorProtectedReplayCashRaw": 1999520,
+      "memoryPeakBytes": 175177728,
+      "memoryEvents": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n",
+      "sourceSHA256": "328b952e3a60686a66a755bad158f820ec352cd7dcbe5fd74d710a34f08e6767"
+    },
+    {
+      "lane": "Maple/syrupUSDC/USDC",
+      "hypotheticalEquityUSDC": 100000,
+      "leverage": 1.5,
+      "wouldAllow": true,
+      "reason": null,
+      "calculation": {
+        "collateralRaw": 125868984352,
+        "referenceUsdcRaw": 150004491746,
+        "quotedUsdcRaw": 149964668028,
+        "repaymentUsdcRaw": 50000424367,
+        "minimumEquityRaw": 99704058396,
+        "observedAt": "2026-11-06T18:22:23.433400208Z",
+        "slot": 466199805,
+        "cashAfterRepaymentRaw": 99964243661,
+        "lastPortionUsdcRaw": 999707890,
+        "lastPortionReferenceRaw": 999999999
+      },
+      "simulatedQuotes": [
+        {
+          "mode": "cash",
+          "input": 125868984352,
+          "output": 149964668028
+        },
+        {
+          "mode": "cash",
+          "input": 125029882917,
+          "output": 148964960138
+        }
+      ],
+      "priorProtectedReplayStatus": "COMPLETED",
+      "priorProtectedReplayCashRaw": 99964253660,
+      "memoryPeakBytes": 199983104,
+      "memoryEvents": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n",
+      "sourceSHA256": "20d28e1f81d72f738da1839cab8abd0b135e15157576f3161cb2d5dab808381c"
+    },
+    {
+      "lane": "Prime/PRIME/USDC",
+      "hypotheticalEquityUSDC": 100000,
+      "leverage": 1.5,
+      "wouldAllow": true,
+      "reason": null,
+      "calculation": {
+        "collateralRaw": 140367018600,
+        "referenceUsdcRaw": 149999999852,
+        "quotedUsdcRaw": 149917905547,
+        "repaymentUsdcRaw": 50000006802,
+        "minimumEquityRaw": 99699993051,
+        "observedAt": "2026-11-06T18:22:24.656587949Z",
+        "slot": 466199850,
+        "cashAfterRepaymentRaw": 99917898745,
+        "lastPortionUsdcRaw": 999217210,
+        "lastPortionReferenceRaw": 999999999
+      },
+      "simulatedQuotes": [
+        {
+          "mode": "cash",
+          "input": 140367018600,
+          "output": 149917905547
+        },
+        {
+          "mode": "cash",
+          "input": 139431238476,
+          "output": 148918688337
+        }
+      ],
+      "priorProtectedReplayStatus": "COMPLETED",
+      "priorProtectedReplayCashRaw": 99917905224,
+      "memoryPeakBytes": 215560192,
+      "memoryEvents": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n",
+      "sourceSHA256": "41e1383601fd077dfc1a8c48fbefdc64ad40b80348feeec5e5c1d632c96c9f61"
+    }
+  ],
+  "artifactSHA256": {
+    "/tmp/vault-native-replay-20261106/compare_quotes.py": "07e9835429ef661734115d58598a39dc93294d441ee38b93140df9a0a81b6995",
+    "/tmp/vault-native-replay-20261106/replay.py": "9e4195f64763acc08cf0fbf8145e40042e430504a9e22b4122b7d33a16ce0391",
+    "/tmp/vault-native-replay-20261106/run_price_checks.py": "7961729d9ac13aa5c25b6a58848f3acb15c1ed3ceb98c3f2630f2066c126c7ab",
+    "/tmp/vault-leveraged-replay-20261106/offline_test.go": "1d35975a1d953f7d7c6501593408937191ecc04df974908fc2ac7aebbed68ca2",
+    "go/workers/internal/backyard/investment_exit.go": "0cba9ef7f4bddaabc2f5686950427c079c5c86759294d3779332a67ab9723a20",
+    "/tmp/investment-exit-corrected-regression.jsonl": "d5a5175316719e67e946116427e04bc9283ab7500c0d1a918315a4dc26008230"
+  },
+  "staticChecks": "go vet passed"
+}

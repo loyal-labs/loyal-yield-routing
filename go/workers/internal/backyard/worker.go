@@ -29,6 +29,8 @@ type Worker struct {
 }
 
 type tickRuntime struct {
+	protectInvestment       func(context.Context, Decision, Observation, any) error
+	executionReady          func(context.Context, string, time.Time) error
 	protectWithdrawal       func(context.Context, RouteManifest, Decision, Observation, any, ExpectedEffects) (any, error)
 	withdrawalHealth        func(context.Context, withdrawalAssessment) error
 	observeWithdrawalHealth func(context.Context) (Observation, error)
@@ -191,6 +193,8 @@ func productionTickRuntime(database *Database, rpc *chain.Client, view *View, ju
 		navEvidenceErr: new(string),
 	}
 	return tickRuntime{
+		protectInvestment:  (lanePricer{rpc: rpc, view: view, client: jupiterClient, manifest: manifest}).protectInvestment,
+		executionReady:     database.executionReady,
 		withdrawalHealth:   database.RecordWithdrawalHealth,
 		persistedNAVReport: database.ObservedNAVReport,
 		observeWithdrawalHealth: func(ctx context.Context) (Observation, error) {
@@ -361,6 +365,20 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 	if narrowed {
 		healthDecision = decision
 	}
+	decision, err = boundedExecutionDecision(w.manifest.vault, observation, decision)
+	if err == nil && protectedExecution(w.manifest.vault, observation.Snapshot, decision) && executionTrade(decision) {
+		if w.runtime.executionReady == nil {
+			err = staleHold("execution_history_unavailable")
+		} else {
+			err = w.runtime.executionReady(ctx, w.routeKey, time.Now())
+		}
+	}
+	if err != nil {
+		w.noteHold(observation.Snapshot, decision.StrategyKey, err)
+		return err
+	}
+	healthDecision = decision
+	w.events.noteAction(decision.Action)
 	w.holds.acted(decision.StrategyKey)
 	logStage("observe_decide", tickStart)
 	request, effects, prepared, err := w.prepare(ctx, decision, observation)
@@ -368,6 +386,11 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 		healthObservation = prepared
 	}
 	logStage("prepare", tickStart)
+	if err != nil {
+		w.noteHold(observation.Snapshot, decision.StrategyKey, err)
+		return err
+	}
+	request, err = protectExecutionPrice(w.manifest.vault, prepared, decision, request)
 	if err != nil {
 		w.noteHold(observation.Snapshot, decision.StrategyKey, err)
 		return err
@@ -476,6 +499,13 @@ func (w *Worker) stopWhileLatched(ctx context.Context) (bool, error) {
 
 func (w *Worker) prepare(ctx context.Context, decision Decision, observation Observation) (request any, effects ExpectedEffects, prepared Observation, err error) {
 	defer func() {
+		if err == nil && investmentExitRequired(w.manifest.vault, decision) {
+			if w.runtime.protectInvestment == nil {
+				err = staleHold(investmentExitUnavailable)
+			} else {
+				err = w.runtime.protectInvestment(ctx, decision, observation, request)
+			}
+		}
 		if err == nil {
 			request, err = authorizeAddRequest(request, decision, observation.Snapshot)
 		}

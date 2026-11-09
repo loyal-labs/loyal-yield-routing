@@ -2,17 +2,23 @@ import { type ReactNode, useSyncExternalStore } from "react";
 import { PublicKey } from "@solana/web3.js";
 
 export const fixtureOwner = new PublicKey("11111111111111111111111111111111");
-const connection = {
-  getLatestBlockhash: async () => ({
-    blockhash: fixtureOwner.toBase58(),
-    lastValidBlockHeight: 10,
-  }),
-  confirmTransaction: async () => ({ value: { err: null } }),
-};
 const scenario =
   typeof location === "undefined"
     ? null
     : new URLSearchParams(location.search).get("scenario");
+const connection = {
+  getBlockHeight: async () => 1,
+  getLatestBlockhash: async () => {
+    if (scenario === "post_send_rate_limited")
+      throw new Error("Solana RPC getLatestBlockhash is rate limited. Please retry.");
+    return { blockhash: fixtureOwner.toBase58(), lastValidBlockHeight: 10 };
+  },
+  getSignatureStatuses: async () => ({
+    value: [{ confirmationStatus: "confirmed", err: null }],
+  }),
+  onSignature: () => 0,
+  removeSignatureListener: async () => {},
+};
 let finishConnection: (() => void) | undefined;
 export const completeFixtureConnection = () => {
   adapter.connected = true;

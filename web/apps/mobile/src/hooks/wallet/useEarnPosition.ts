@@ -9,6 +9,7 @@ import { PublicKey } from "@solana/web3.js";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
+  EarnApiError,
   fetchEarnState,
   type EarnStateResponse,
 } from "@/lib/solana/earn/earn-api";
@@ -23,12 +24,15 @@ type EarnPosition = Pick<
 
 const MUTATION_TRUST_MS = 20_000;
 
-type LiveHoldings = { currentTotalAmountRaw: string; holdings: EarnRpcHolding[] };
+type LiveHoldings = {
+  currentTotalAmountRaw: string;
+  holdings: EarnRpcHolding[];
+};
 
 function reconcileBalance(
   position: EarnPosition | null,
   liveTotalRaw: string | null,
-  preferReadModel: boolean,
+  preferReadModel: boolean
 ): EarnPosition | null {
   if (liveTotalRaw === null || preferReadModel) {
     return position;
@@ -71,7 +75,7 @@ function toRpcPolicy(policy: EarnStatePolicy): EarnRpcPolicyMetadata {
 }
 
 async function readLiveHoldings(
-  state: EarnStateResponse,
+  state: EarnStateResponse
 ): Promise<LiveHoldings | null> {
   if (!state.policy || !state.programId || !state.settingsPda) {
     return null;
@@ -87,15 +91,19 @@ async function readLiveHoldings(
 
 export function useEarnPosition(
   walletAddress: string | null,
-  signer?: Signer | null,
+  signer?: Signer | null
 ) {
   const [position, setPosition] = useState<EarnPosition | null>(null);
   const [holdings, setHoldings] = useState<EarnRpcHolding[]>([]);
   const [policyMissing, setPolicyMissing] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
-  const [hasLoaded, setHasLoaded] = useState(false);
+  const [loadedWallet, setLoadedWallet] = useState<string | null>(null);
+  const [error, setError] = useState<unknown>(null);
   const fetchIdRef = useRef(0);
+  const signingWalletRef = useRef<string | null>(null);
   const mutatedAtRef = useRef(0);
+  const walletRef = useRef(walletAddress);
+  walletRef.current = walletAddress;
   const signerRef = useRef(signer);
   signerRef.current = signer;
 
@@ -108,21 +116,39 @@ export function useEarnPosition(
       if (!walletAddress) {
         return;
       }
-      if (options?.signIn && signerRef.current) {
-        await deliberateSession(signerRef.current);
+      if (signingWalletRef.current === walletAddress) {
+        if (options?.throwOnError) {
+          throw new Error("Earn sign-in is still in progress.");
+        }
+        return;
       }
       const fetchId = ++fetchIdRef.current;
+      if (options?.signIn) signingWalletRef.current = walletAddress;
       setIsLoading(true);
       try {
-        let state: EarnStateResponse;
-        try {
-          state = await fetchEarnState(walletAddress);
-        } catch (error) {
-          console.error("Failed to fetch Earn position", error);
-          if (options?.throwOnError) {
-            throw error;
+        if (options?.signIn) {
+          const signer = signerRef.current;
+          if (
+            !signer ||
+            signer.publicKey.toBase58() !== walletAddress ||
+            !(await deliberateSession(signer))
+          ) {
+            throw new EarnApiError(
+              "Sign in to view your balance.",
+              undefined,
+              401
+            );
           }
+        }
+        if (
+          fetchId !== fetchIdRef.current ||
+          walletRef.current !== walletAddress
+        ) {
           return;
+        }
+        const state = await fetchEarnState(walletAddress);
+        if (state.loadErrors?.position) {
+          throw new Error("Earn position is unavailable.");
         }
         let live: LiveHoldings | null = null;
         try {
@@ -130,7 +156,10 @@ export function useEarnPosition(
         } catch (error) {
           console.error("Failed to read Earn holdings", error);
         }
-        if (fetchId !== fetchIdRef.current) {
+        if (
+          fetchId !== fetchIdRef.current ||
+          walletRef.current !== walletAddress
+        ) {
           if (options?.throwOnError) {
             throw new Error("Earn position refresh was superseded.");
           }
@@ -144,34 +173,67 @@ export function useEarnPosition(
           reconcileBalance(
             state.position,
             live?.currentTotalAmountRaw ?? null,
-            Date.now() - mutatedAtRef.current < MUTATION_TRUST_MS,
-          ),
+            Date.now() - mutatedAtRef.current < MUTATION_TRUST_MS
+          )
         );
+        setError(null);
+      } catch (error) {
+        if (
+          fetchId === fetchIdRef.current &&
+          walletRef.current === walletAddress
+        ) {
+          console.error("Failed to fetch Earn position", error);
+          setError(error);
+        }
+        if (options?.throwOnError) {
+          throw error;
+        }
       } finally {
-        if (fetchId === fetchIdRef.current) {
+        if (options?.signIn && signingWalletRef.current === walletAddress) {
+          signingWalletRef.current = null;
+        }
+        if (
+          fetchId === fetchIdRef.current &&
+          walletRef.current === walletAddress
+        ) {
           setIsLoading(false);
-          setHasLoaded(true);
+          setLoadedWallet(walletAddress);
         }
       }
     },
-    [walletAddress],
+    [walletAddress]
   );
 
   useEffect(() => {
+    setPosition(null);
+    setHoldings([]);
+    setPolicyMissing(false);
+    setLoadedWallet(null);
+    setError(null);
+    setIsLoading(false);
+    mutatedAtRef.current = 0;
     if (walletAddress) {
-      refreshEarnPosition();
-    } else {
-      setPosition(null);
-      setHoldings([]);
-      setPolicyMissing(false);
-      setHasLoaded(false);
+      void refreshEarnPosition();
     }
+    return () => {
+      fetchIdRef.current += 1;
+    };
   }, [walletAddress, refreshEarnPosition]);
 
+  const hasLoaded = walletAddress !== null && loadedWallet === walletAddress;
+  const needsSignIn =
+    hasLoaded && error instanceof EarnApiError && error.status === 401;
   return {
-    position,
-    holdings,
-    policyMissing,
+    position: hasLoaded ? position : null,
+    holdings: hasLoaded ? holdings : [],
+    policyMissing: hasLoaded && policyMissing,
+    error:
+      hasLoaded && error
+        ? needsSignIn
+          ? "Sign in to view your balance."
+          : "Couldn't load your Earn balance."
+        : null,
+    needsSignIn,
     isLoading,
     hasLoaded,
     refreshEarnPosition,

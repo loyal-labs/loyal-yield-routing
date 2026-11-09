@@ -614,10 +614,9 @@ the value is safe before the credentials above exist) with the secret unchanged.
 `activate.sh` reads the running release from the
 `40-verified-release.conf` drop-in, and the deploy refuses to run without
 one, so the first release is installed by hand. Build the linux binary from
-a checkout at `<sha>`: the bundle inlines `NEXT_PUBLIC_*` from the build
-environment (as Next does), so run it under
-`op run --env-file=.env.1password --`, which carries the `NEXT_PUBLIC_*` set
-Vercel production inlines (`NEXT_PUBLIC_PRIVY_APP_ID` is required;
+a checkout at `<sha>`: the bundle inlines the names listed in
+`web/apps/loyal/vite/public-env.ts` from the build environment, so run it under
+`op run --env-file=.env.1password --`, which carries them (`NEXT_PUBLIC_PRIVY_APP_ID` is required;
 `NEXT_PUBLIC_APP_ENVIRONMENT` stays unset, as on Vercel, and means prod).
 Values are never echoed. The deploy always sets `NEXT_PUBLIC_GIT_COMMIT_HASH=<sha>` and
 `NEXT_PUBLIC_GIT_BRANCH=main` itself.
@@ -976,6 +975,15 @@ Rollback is pointing the `admin` record back at its old target.
 the self-hosted ClickStack sits under `/api/api/v2` (the UI proxies `/api`).
 
 ### Admin environment (loyal-admin)
+
+The Earn MAX admin page has separate Loyal and Backyard tabs at
+`/vault-integrations/earn-max?vault=loyal` and
+`/vault-integrations/earn-max?vault=backyard`. An omitted selection opens Loyal;
+an unknown selection is rejected. Each tab scopes worker records, live account
+reads, Voltr statistics and caches to its vault. Accounts come from the worker's
+vault registry; token decimals come from the selected route's on-chain mints.
+Deploy this read-only dashboard change through `loyal-admin`; it does not require
+restarting either vault worker or changing its investment settings.
 
 The unit sets only `LOYAL_ADMIN_ADDRESS`. Everything below goes in the host
 drop-in `/etc/systemd/system/loyal-admin.service.d/60-env.conf` as

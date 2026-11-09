@@ -528,7 +528,7 @@ func decideSnapshot(s Snapshot, initializationReady func(Snapshot) bool) Decisio
 	d := func(action Action, reason string, amount int64) Decision {
 		decision := Decision{Action: action, Reason: reason, AmountRaw: amount, StrategyKey: s.RouteLane,
 			IdempotencyKey: fmt.Sprintf("%s:%s:%s:%d:%s", s.ObservationID, s.RouteLane, action, amount, reason)}
-		if !s.Trustful && reason != hardLTVDeleverReason && (s.Target.Rule == ruleWithdrawal ||
+		if reason != hardLTVDeleverReason && (s.Target.Rule == ruleWithdrawal ||
 			s.Target.Rule == ruleCustody && withdrawalShortfallRaw(s) > 0) {
 			switch reason {
 			case releaseReason, debtZeroReason, exitWithdrawReason, outboundCollateralReason, outboundDebtReason:
@@ -580,6 +580,16 @@ func decideSnapshot(s Snapshot, initializationReady func(Snapshot) bool) Decisio
 	}
 	if !s.Trustful && s.netKnown(time.Now()) && s.PostMutationNAVRequired && !withdrawalIdleUnderfunded(s) {
 		return report("post_mutation_nav_due")
+	}
+	// Return ready cash first; a price-blocked sale must not starve NAV reporting.
+	if t.Rule == ruleWithdrawal && s.SquadsIdleRaw == 0 && withdrawalShortfallRaw(s) > 0 &&
+		s.LastReportAgeSeconds >= capitalMutationReportAgeSeconds && s.netKnown(time.Now()) {
+		if !s.Trustful {
+			if hold, drifted := unexplainedNAVDriftHold(s); drifted {
+				return hold
+			}
+		}
+		return report("withdrawal_waiting_nav_due")
 	}
 	if t.Level == levelDebtZero && s.PositionDebtRaw > 0 {
 		return d(DeleverRouteStep, debtZeroReason, stepDownMarker)

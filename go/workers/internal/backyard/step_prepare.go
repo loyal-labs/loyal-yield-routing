@@ -120,6 +120,7 @@ type stepState struct {
 	slot, collateralBalance, debtBalance, cash uint64
 	topology                                   []string
 	maxSlippageBPS                             uint16
+	conversionCap                              uint64
 }
 
 func (st stepState) heldDebt() uint64 {
@@ -295,6 +296,20 @@ func prepareStepFromTickObservation(ctx context.Context, rpc *chain.Client, view
 		return Observation{}, StepExecutionEvidence{}, err
 	}
 	st.maxSlippageBPS = decision.MaxSlippageBPS
+	if protectedExecution(v, s, decision) {
+		prices, priceErr := batchLanePrices(accounts, route)
+		if priceErr != nil {
+			return Observation{}, StepExecutionEvidence{}, priceErr
+		}
+		mint := route.Kamino.CollateralMint
+		if kind == stepUp {
+			mint = route.Kamino.DebtMint
+		}
+		st.conversionCap, err = executionTokenLimit(prices, route, mint)
+		if err != nil || st.conversionCap == 0 {
+			return Observation{}, StepExecutionEvidence{}, staleHoldFrom(err, "execution_price_unavailable")
+		}
+	}
 	switch kind {
 	case stepMove:
 		evidence, entry, err := assembleMove(ctx, rpc, manifest, observation.policies, accounts, st, s, decision)
@@ -335,7 +350,7 @@ func prepareStepFromTickObservation(ctx context.Context, rpc *chain.Client, view
 	}
 	receipts, convert := plan.withdrawReceiptsRaw, plan.convertCollateralRaw
 	evidence, guaranteed, err := assembleStep(ctx, rpc, view, client, manifest, observation.policies, st, stepDown, receipts, convert, s.Slot)
-	if err == nil && full && st.heldDebt()+guaranteed < repay {
+	if err == nil && full && st.conversionCap == 0 && st.heldDebt()+guaranteed < repay {
 		scaled := new(big.Int).Mul(new(big.Int).SetUint64(convert), new(big.Int).SetUint64(repay-st.heldDebt()))
 		scaled.Mul(scaled, big.NewInt(10_001)).Quo(scaled, new(big.Int).Mul(new(big.Int).SetUint64(guaranteed), big.NewInt(10_000)))
 		if scaled.IsUint64() && scaled.Uint64() > st.collateralBalance {
@@ -393,6 +408,32 @@ func assembleStep(ctx context.Context, rpc *chain.Client, view *View, client *ju
 	route := st.route
 	lane := route.Lane
 	up, exit := kind == stepUp, kind == stepExit
+	if st.conversionCap > 0 && convertRaw > st.conversionCap {
+		convertRaw = st.conversionCap
+		if up {
+			if st.heldDebt() >= convertRaw {
+				return StepExecutionEvidence{}, 0, staleHold("execution_existing_debt_cash")
+			}
+			openRaw = min(openRaw, convertRaw-st.heldDebt())
+		} else {
+			// Keep the actual repay/withdraw/convert transaction atomic. Existing
+			// collateral cash can supply the portion without withdrawing it twice.
+			need := max(convertRaw-min(convertRaw, st.collateralBalance), 1)
+			receipts, err := payoffReceiptsForLiquidity(st.collateral.totalLiquiditySF, st.collateral.terms.CollateralMintTotalSupply, need)
+			if err != nil {
+				return StepExecutionEvidence{}, 0, err
+			}
+			openRaw = min(openRaw, max(receipts, 1))
+			liquidity, err := st.collateral.redeemLiquidityRaw(openRaw)
+			if err != nil {
+				return StepExecutionEvidence{}, 0, err
+			}
+			if st.collateralBalance > math.MaxUint64-liquidity {
+				return StepExecutionEvidence{}, 0, staleHold("step_amounts_invalid")
+			}
+			convertRaw = min(convertRaw, st.collateralBalance+liquidity)
+		}
+	}
 	conversion := map[StepKind]Action{stepUp: SwapDebtToCollateralStep, stepDown: SwapCollateralToDebtStep, stepExit: SwapCollateralToStableStep}[kind]
 	action, openLeg, closeLeg := DeleverRouteStep, kaminoLegWithdraw, kaminoLegRepay
 	sourceHeld, destinationHeld, openLiquidity := st.collateralBalance, st.heldDebt(), uint64(0)

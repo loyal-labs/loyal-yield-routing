@@ -38,8 +38,8 @@ func TestBackyardHostServesOnlyItsPage(t *testing.T) {
 	}
 }
 
-// A landed NAV report is read from the NAV adaptor's verified return bytes,
-// and otherwise from the built request (the Trustful route has no adaptor).
+// A landed NAV report is read from the vault adaptor's verified return bytes,
+// and otherwise from the built request; another program's bytes are ignored.
 func TestBackyardReportNAV(t *testing.T) {
 	bytes := make([]byte, 8)
 	binary.LittleEndian.PutUint64(bytes, 17_079_029)
@@ -48,7 +48,7 @@ func TestBackyardReportNAV(t *testing.T) {
 		t.Fatalf("adaptor return data: got %v %v", nav, ok)
 	}
 	request := base64.StdEncoding.EncodeToString([]byte(`{"Report":{"NAVAfterRaw":17066770}}`))
-	other := "3pnpK9nrs1R65eMV1wqCXkDkhSgN18xb1G5pgYPwoZjJ"
+	other := "FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW" // the RWA vault's NAV adaptor
 	if nav, ok := backyardReportNAV(&other, &data, &request); !ok || nav != 17_066_770 {
 		t.Fatalf("request fallback: got %v %v", nav, ok)
 	}

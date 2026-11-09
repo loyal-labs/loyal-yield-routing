@@ -1,8 +1,10 @@
 import type { ReactNode } from "react";
+import { useRouter } from "next/navigation";
 
 import { AddressLink } from "@/components/blockchain/address-link";
 import { PageContainer } from "@/components/layout/page-container";
 import { SectionHeader } from "@/components/layout/section-header";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import {
   Card,
@@ -21,25 +23,16 @@ import {
 } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
 
-import { BackyardVault } from "./backyard-vault";
+import { VaultDetails } from "./backyard-vault";
 import { EarnMaxRefresh, TimeChart } from "./earn-max-charts";
 import {
-  CUSTODY,
   type EarnMaxData,
   earnMaxData,
   type EarnMaxProps,
-  IDLE_ATA,
   type Part,
 } from "./earn-max-data";
-import { loanToValue } from "./earn-max-math";
 
-const ALERT_LTV = 0.45;
-const WITHDRAWAL_STEP_LTV = 0.55;
-const HARD_RULE_LTV = 0.6;
-const LIQUIDATION_LTV = 0.8;
-const HOURLY_REPORT_S = 60 * 60;
-const REPORT_GRACE_S = 15 * 60;
-const STALE_REPORT_S = HOURLY_REPORT_S + REPORT_GRACE_S;
+const STALE_REPORT_S = 75 * 60;
 
 const ACTION_WORDS: Record<string, string> = {
   DELEVER_PRIME_USDC_STEP: "Repaid or withdrew on Kamino",
@@ -118,74 +111,71 @@ function dateTime(iso: string | null | undefined) {
 const levelLabel = (level: number) => `${level}x`;
 
 export default function EarnMaxPage(props: EarnMaxProps) {
+  const router = useRouter();
   const data = earnMaxData(props);
   const now = Date.parse(data.loadedAt);
   const route = data.route.ok ? data.route.value : null;
   const openLatches = data.latches.ok ? data.latches.value.open : null;
-  const custodyUsd = data.balances.ok
-    ? data.balances.value.debt + data.balances.value.collateral
-    : null;
-  const ltv =
-    route?.navUsd != null && route.debtUsd != null && custodyUsd !== null
-      ? loanToValue(route.navUsd, route.debtUsd, custodyUsd)
-      : null;
-  const leverageNow =
-    route?.currentApy?.level ??
-    (route?.navUsd && route.debtUsd != null
-      ? (route.navUsd + route.debtUsd) / route.navUsd
-      : null);
+  const custodyUsd = data.balances.ok ? data.balances.value.cash : null;
+  const ltv = route?.ltvRatio ?? null;
+  const leverageNow = ltv !== null && ltv >= 0 && ltv < 1 ? 1 / (1 - ltv) : null;
 
   return (
     <PageContainer className="max-w-6xl space-y-6">
       <EarnMaxRefresh />
       <SectionHeader
-        breadcrumbs={[{ label: "Vault integrations" }, { label: "Earn MAX" }]}
-        subtitle={
-          <span>
-            Live, read-only view of the leveraged RWA vault and its worker.
-            Refreshes every minute. Plans and progress live in{" "}
-            <a
-              className="text-foreground underline underline-offset-2"
-              href="https://linear.app/askloyal/issue/ASK-2293"
-              rel="noreferrer"
-              target="_blank"
-            >
-              ASK-2293
-            </a>
-            .
-          </span>
-        }
-        title="Earn MAX"
+        breadcrumbs={[{ label: "Vault integrations" }, { label: "Earn MAX vaults" }]}
+        subtitle="Balances, positions and worker activity for the selected vault. Refreshes every minute."
+        title="Earn MAX vaults"
       />
+      <Tabs
+        value={data.selectedVault.id}
+        onValueChange={(vault) => router.push(`/vault-integrations/earn-max?vault=${vault}`)}
+        activationMode="manual"
+      >
+        <TabsList aria-label="Vault" className="h-11">
+          <TabsTrigger value="loyal">Loyal Earn MAX</TabsTrigger>
+          <TabsTrigger value="backyard">Backyard</TabsTrigger>
+        </TabsList>
+        <TabsContent value={data.selectedVault.id} className="space-y-6 pt-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="space-y-1">
+              <h2 className="text-xl font-semibold tracking-tight">{data.selectedVault.name}</h2>
+              <p className="text-sm text-muted-foreground">Voltr vault <AddressLink address={data.selectedVault.address} /></p>
+            </div>
+            <p className="text-xs text-muted-foreground">Worker: <span className="font-mono">{data.selectedVault.worker}</span></p>
+          </div>
 
-      <Pulse openLatches={openLatches} route={route} />
+          <Pulse openLatches={openLatches} route={route} />
 
-      <section className="grid gap-4 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)]">
-        <RightNow data={data} leverageNow={leverageNow} ltv={ltv} now={now} />
-        <LoanSafety
-          custodyUsd={custodyUsd}
-          data={data}
-          leverageNow={leverageNow}
-          ltv={ltv}
-        />
-      </section>
+          <section className="grid gap-4 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)]">
+            <RightNow data={data} leverageNow={leverageNow} ltv={ltv} now={now} />
+            <LoanSafety
+              custodyUsd={custodyUsd}
+              data={data}
+              leverageNow={leverageNow}
+              ltv={ltv}
+            />
+          </section>
 
-      <ApyHistory data={data} />
-      <LeverageLevels data={data} leverageNow={leverageNow} now={now} />
-      <BorrowingRoom data={data} />
-      <PositionHistory data={data} />
-      <MoneyMoves data={data} />
+          <ApyHistory data={data} />
+          <LeverageLevels data={data} leverageNow={leverageNow} now={now} />
+          <BorrowingRoom data={data} />
+          <PositionHistory data={data} />
+          <MoneyMoves data={data} />
 
-      <section className="grid gap-4 lg:grid-cols-2">
-        <WorkerHealth data={data} now={now} />
-        <Latches data={data} now={now} />
-      </section>
+          <section className="grid gap-4 lg:grid-cols-2">
+            <WorkerHealth data={data} now={now} />
+            <Latches data={data} now={now} />
+          </section>
 
-      <BackyardVault {...props.backyard} />
+          <VaultDetails {...props.backyard} />
+        </TabsContent>
+      </Tabs>
 
       <p className="text-xs text-muted-foreground">
         Loaded {dateTime(data.loadedAt)}. Sources: Yield database, Solana RPC,
-        Voltr and Kamino public APIs. Every number is computed on load.
+        Voltr and Kamino public APIs. Vault identity stays fixed when refreshing or sharing this URL.
       </p>
     </PageContainer>
   );
@@ -288,14 +278,13 @@ function verdict(
   if (!route) return { bad: true, text: "Worker state is unavailable." };
   if (latches?.length)
     return { bad: true, text: "The worker is stopped and needs a clear." };
-  if (ltv !== null && ltv >= ALERT_LTV)
-    return {
-      bad: true,
-      text: `The loan is above the ${Math.round(ALERT_LTV * 100)}% alert.`,
-    };
+  if (latches === null) return { bad: true, text: "Safety holds could not be checked." };
+  if (route.navUsd === null || route.aumUsd === null || ltv === null || route.navFresh === false)
+    return { bad: true, text: "Current valuation is unavailable." };
+  if (route.updatedAgeS > 3 * 60) return { bad: true, text: "Worker observations are stale." };
   if ((route.reportAgeS ?? Infinity) > STALE_REPORT_S)
     return { bad: true, text: "NAV reports have stalled." };
-  return { bad: false, text: "Healthy and earning." };
+  return { bad: false, text: "Reporting normally." };
 }
 
 function RightNow({
@@ -326,16 +315,14 @@ function RightNow({
     ? `Earned figure from ${ago(
         secondsSince(vault.computedAt, now)
       )} ago; refresh failed: ${earnedReason}`
-    : `Showing value in the loop. Earned figure unavailable: ${earnedReason}`;
+    : `Earned figure unavailable: ${earnedReason}`;
   const state = verdict(route, latches, ltv);
   const why = latches?.length
     ? `Open latch: ${latches
         .map((l) => words(l.reason))
         .join(", ")}. Nothing moves until it is cleared.`
     : [
-        `LTV ${ltv === null ? "—" : pct(ltv * 100, 1)} (alert at ${Math.round(
-          ALERT_LTV * 100
-        )}%, hard rule ${Math.round(HARD_RULE_LTV * 100)}%).`,
+        `Current route LTV ${ltv === null ? "—" : pct(ltv * 100, 1)}.`,
         health
           ? `${health.navReconciled} of ${health.navAll} NAV reports landed in the last 24 hours.`
           : "",
@@ -367,9 +354,10 @@ function RightNow({
       </CardHeader>
       <CardContent className="space-y-5">
         <div>
+          <Label>Total vault value</Label>
           <div className="flex flex-wrap items-baseline gap-3">
             <p className="text-4xl font-semibold tabular-nums tracking-tight">
-              {usd(vault?.valueUsd ?? route?.navUsd)}
+              {usd(route?.aumUsd)}
             </p>
             {vault ? (
               <p
@@ -454,10 +442,7 @@ function RightNow({
 }
 
 function LoanSafety({
-  custodyUsd,
-  data,
-  leverageNow,
-  ltv,
+  custodyUsd, data, leverageNow, ltv,
 }: {
   custodyUsd: number | null;
   data: EarnMaxData;
@@ -465,133 +450,36 @@ function LoanSafety({
   ltv: number | null;
 }) {
   const route = data.route.ok ? data.route.value : null;
-  const x = (value: number) =>
-    `${(Math.min(value, LIQUIDATION_LTV) / LIQUIDATION_LTV) * 100}%`;
-  const marks = [
-    { label: "alert", value: ALERT_LTV },
-    { label: "withdrawal step cap", value: WITHDRAWAL_STEP_LTV },
-    { label: "hard rule", value: HARD_RULE_LTV },
-  ];
   const target = route?.leverageTarget ?? null;
-  const targetHint =
-    target === null
-      ? "Not chosen yet"
-      : leverageNow !== null && target <= leverageNow + 0.05
+  const targetHint = target === null
+    ? "No recorded target for this route"
+    : leverageNow !== null && Math.abs(target - leverageNow) < 0.05
       ? "At target"
-      : route?.lastHoldReason === "debt_reserve_utilization_blocks_borrow"
-      ? "Waiting: Kamino blocks borrowing (pool above 90%)"
-      : "Moving up";
+      : route?.upApproved === false && leverageNow !== null && target > leverageNow
+        ? "Additional borrowing is not approved"
+        : "Recorded target; execution depends on worker checks";
 
   return (
     <Card>
       <CardHeader>
-        <CardDescription>Loan safety</CardDescription>
-        <CardTitle className="text-base">
-          Borrowed against collateral on Kamino
-        </CardTitle>
+        <CardDescription>Current route position</CardDescription>
+        <CardTitle className="text-base">{route?.currentApy?.lane ?? "Kamino borrowing"}</CardTitle>
         <p className="text-sm text-muted-foreground">
-          The worker must stay left of the {Math.round(HARD_RULE_LTV * 100)}%
-          rule. Liquidation starts near {Math.round(LIQUIDATION_LTV * 100)}%.
+          LTV is debt divided by collateral for this route. Borrowing limits vary by market;
+          these figures do not describe every position in the vault.
         </p>
       </CardHeader>
-      <CardContent className="space-y-6">
-        <div>
-          <div className="relative h-10">
-            <div
-              className="absolute top-3.5 h-3 rounded-l-full bg-muted"
-              style={{ left: 0, width: x(ALERT_LTV) }}
-            />
-            <div
-              className="absolute top-3.5 h-3 bg-foreground/15"
-              style={{
-                left: x(ALERT_LTV),
-                width: `calc(${x(HARD_RULE_LTV)} - ${x(ALERT_LTV)})`,
-              }}
-            />
-            <div
-              className="absolute top-3.5 h-3 rounded-r-full bg-destructive/25"
-              style={{ left: x(HARD_RULE_LTV), right: 0 }}
-            />
-            {marks.map((mark) => (
-              <div
-                className="absolute top-2 h-6 border-l border-dashed border-foreground/40"
-                key={mark.label}
-                style={{ left: x(mark.value) }}
-              />
-            ))}
-            {ltv !== null ? (
-              <div
-                aria-label={`LTV ${(ltv * 100).toFixed(1)}%`}
-                className="absolute top-1 h-8 w-0.5 -translate-x-1/2 rounded bg-foreground"
-                role="img"
-                style={{ left: x(ltv) }}
-              />
-            ) : null}
-          </div>
-          <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
-            {marks.map((mark) => (
-              <span key={mark.label}>
-                <b className="font-mono text-foreground">
-                  {Math.round(mark.value * 100)}%
-                </b>{" "}
-                {mark.label}
-              </span>
-            ))}
-            <span>
-              <b className="font-mono text-foreground">
-                {Math.round(LIQUIDATION_LTV * 100)}%
-              </b>{" "}
-              liquidation (right edge)
-            </span>
-          </div>
-        </div>
-
+      <CardContent className="space-y-5">
         <div className="grid grid-cols-2 gap-x-6 gap-y-4">
-          <Fact
-            hint={
-              custodyUsd === null
-                ? "Custody balance unavailable"
-                : "Debt / collateral in Kamino"
-            }
-            label="LTV"
-            value={ltv === null ? "—" : pct(ltv * 100, 1)}
-          />
-          <Fact
-            hint="Payoff amount, interest included"
-            label="Borrowed"
-            value={usd(route?.debtUsd)}
-          />
-          <Fact
-            hint={
-              <>
-                <AddressLink address={CUSTODY.debt} /> ·{" "}
-                <AddressLink address={CUSTODY.collateral} />
-              </>
-            }
-            label="Cash in worker custody"
-            value={usd(custodyUsd)}
-          />
-          <Fact
-            hint={
-              <>
-                Vault idle account <AddressLink address={IDLE_ATA} />
-              </>
-            }
-            label="Idle in the vault"
-            value={data.balances.ok ? usd(data.balances.value.idle) : "—"}
-          />
-          <Fact
-            hint="Collateral / equity"
-            label="Leverage now"
-            value={leverageNow === null ? "—" : `${leverageNow.toFixed(2)}x`}
-          />
-          <Fact
-            hint={targetHint}
-            label="Leverage target"
-            value={target === null ? "—" : levelLabel(target)}
-          />
+          <Fact hint="Observed by the worker" label="LTV" value={ltv === null ? "—" : pct(ltv * 100, 2)} />
+          <Fact hint="Value in US dollars" label="Collateral" value={usd(route?.collateralUsd)} />
+          <Fact hint="Debt value in US dollars" label="Borrowed" value={usd(route?.debtUsd)} />
+          <Fact hint="Collateral / equity in this route" label="Leverage now" value={leverageNow === null ? "—" : `${leverageNow.toFixed(2)}x`} />
+          <Fact hint={targetHint} label="Leverage target" value={target === null ? "—" : levelLabel(target)} />
+          <Fact hint={<AddressLink address={data.selectedVault.cashAta} />} label="Worker USDC cash" value={usd(custodyUsd)} />
+          <Fact hint={<AddressLink address={data.selectedVault.idleAta} />} label="Vault USDC cash" value={data.balances.ok ? usd(data.balances.value.idle) : "—"} />
         </div>
-        <Unavailable part={data.balances} what="Custody balances" />
+        <Unavailable part={data.balances} what="Cash balances" />
         <Unavailable part={data.route} what="Worker state" />
       </CardContent>
     </Card>
@@ -817,7 +705,7 @@ function ApyHistory({ data }: { data: EarnMaxData }) {
           </p>
         ) : (
           <div className="grid gap-6 md:grid-cols-2">
-            {chart("7-day APY (the app badge)", "sevenDayApy")}
+            {chart("7-day APY", "sevenDayApy")}
             {chart("Daily APY", "dayApy")}
           </div>
         )}
@@ -907,7 +795,7 @@ function MoneyMoves({ data }: { data: EarnMaxData }) {
               <TableRow>
                 <TableHead>Time</TableHead>
                 <TableHead>What it did</TableHead>
-                <TableHead className="text-right">Amount</TableHead>
+                <TableHead className="text-right">Amount (raw units)</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead>Transaction</TableHead>
               </TableRow>
@@ -929,10 +817,7 @@ function MoneyMoves({ data }: { data: EarnMaxData }) {
                     </TableCell>
                     <TableCell className="text-right font-mono tabular-nums">
                       {move.amountRaw && Number(move.amountRaw) > 0
-                        ? (Number(move.amountRaw) / 1e6).toLocaleString(
-                            "en-US",
-                            { maximumFractionDigits: 2 }
-                          )
+                        ? BigInt(move.amountRaw).toLocaleString("en-US")
                         : "—"}
                     </TableCell>
                     <TableCell>
@@ -967,8 +852,8 @@ function MoneyMoves({ data }: { data: EarnMaxData }) {
           </Table>
         )}
         <p className="mt-2 text-xs text-muted-foreground">
-          Amounts are in the step&apos;s input token (6 decimals). Hold
-          decisions and NAV reports are left out.
+          Amounts are raw token units; decimals vary by token. Open the transaction
+          for token amounts. Hold decisions and NAV reports are left out.
         </p>
         {data.health.ok ? (
           <p className="text-xs text-muted-foreground">
@@ -1109,7 +994,7 @@ function Latches({ data, now }: { data: EarnMaxData; now: number }) {
                 ))
               ) : (
                 <p className="text-muted-foreground">
-                  None. The worker is free to move money.
+                  No manual recovery holds are open.
                 </p>
               )}
             </div>

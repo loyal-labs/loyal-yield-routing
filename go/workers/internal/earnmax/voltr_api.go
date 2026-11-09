@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"time"
+
+	"github.com/solana-foundation/solana-go/v2"
 )
 
 const (
@@ -33,10 +35,10 @@ type SharePrice struct {
 	TotalValue *float64
 }
 
-func voltrGet(ctx context.Context, vault, path string, out any) error {
+func voltrGet(ctx context.Context, vault solana.PublicKey, path string, out any) error {
 	ctx, cancel := context.WithTimeout(ctx, voltrTimeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, voltrAPI+vault+path, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, voltrAPI+vault.String()+path, nil)
 	if err != nil {
 		return fmt.Errorf("%s request is invalid", voltrHost)
 	}
@@ -61,13 +63,11 @@ func voltrGet(ctx context.Context, vault, path string, out any) error {
 	return nil
 }
 
-// FetchSharePrice reads the Earn MAX vault's live share price from Voltr.
 func FetchSharePrice(ctx context.Context) (SharePrice, error) {
-	return FetchVaultSharePrice(ctx, Vault.String())
+	return FetchVaultSharePrice(ctx, Vault)
 }
 
-// FetchVaultSharePrice reads any Voltr vault's live share price.
-func FetchVaultSharePrice(ctx context.Context, vault string) (SharePrice, error) {
+func FetchVaultSharePrice(ctx context.Context, vault solana.PublicKey) (SharePrice, error) {
 	var body struct {
 		Data struct {
 			SharePrice *float64 `json:"sharePrice"`
@@ -83,13 +83,11 @@ func FetchVaultSharePrice(ctx context.Context, vault string) (SharePrice, error)
 	return SharePrice{PerLP: *body.Data.SharePrice, TotalValue: body.Data.TotalValue}, nil
 }
 
-// FetchDailyStats reads the Earn MAX vault's end-of-day TVL and LP supply.
 func FetchDailyStats(ctx context.Context) ([]DailyStat, error) {
-	return FetchVaultDailyStats(ctx, Vault.String())
+	return FetchVaultDailyStats(ctx, Vault)
 }
 
-// FetchVaultDailyStats reads any Voltr vault's end-of-day TVL and LP supply.
-func FetchVaultDailyStats(ctx context.Context, vault string) ([]DailyStat, error) {
+func FetchVaultDailyStats(ctx context.Context, vault solana.PublicKey) ([]DailyStat, error) {
 	var body struct {
 		Vault struct {
 			DailyStats struct {

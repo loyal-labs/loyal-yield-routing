@@ -18,7 +18,7 @@
  *   bun --env-file=.env.local scripts/verify-earn-withdraw-tx-size.ts --wallet <address>
  *   bun --env-file=.env.local scripts/verify-earn-withdraw-tx-size.ts --all
  *
- * Requires NEXT_PUBLIC_SOLANA_RPC_ENDPOINT and NEON_DATABASE_URL.
+ * Requires SOLANA_RPC_URL and NEON_DATABASE_URL.
  */
 import { LoyalCluster } from "@loyal-labs/actions";
 import { PROGRAM_ID } from "@loyal-labs/loyal-smart-accounts-core";
@@ -364,9 +364,9 @@ async function main() {
     process.exit(2);
   }
 
-  const rpcEndpoint = process.env.NEXT_PUBLIC_SOLANA_RPC_ENDPOINT;
+  const rpcEndpoint = process.env.SOLANA_RPC_URL;
   if (!rpcEndpoint) {
-    throw new Error("NEXT_PUBLIC_SOLANA_RPC_ENDPOINT is required");
+    throw new Error("SOLANA_RPC_URL is required");
   }
   // `loyal_yield` lives in the yield Neon project, which the app reads through
   // NEON_DATABASE_URL. DATABASE_URL

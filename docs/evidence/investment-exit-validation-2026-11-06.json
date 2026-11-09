@@ -1,0 +1,179 @@
+{
+  "schema": "investment-exit-validation/v1",
+  "sourceBase": "44d008f82ddc48772027dede9b04888884f0e72d",
+  "localTests": {
+    "focusedPassed": 204,
+    "separateDatabasePassed": 11,
+    "vet": "passed",
+    "retainedCompilerFixtureNotReplayed": true,
+    "replacement": "New native scenarios recompile real worker requests and validate local persist/sign wires.",
+    "additionalRoundedPercentageCase": "passed"
+  },
+  "resourceLimits": {
+    "cpuQuota": "50%",
+    "memoryMaxBytes": 805306368,
+    "memorySwapMaxBytes": 0,
+    "tasksMax": 64,
+    "runtimeMaxSeconds": 180
+  },
+  "fundedNetworkTransactions": 0,
+  "entries": [
+    {
+      "lane": "OnRe/ONyc/USDC",
+      "equityRequested": 10000,
+      "spentRaw": 10000000000,
+      "cashRecoveredRaw": 9996641010,
+      "costRaw": 3358990,
+      "eligible": false,
+      "reason": "HOLD: stale cause=investment_exit_too_expensive",
+      "exit": {
+        "collateralRaw": 8621940922797,
+        "referenceUsdcRaw": 10030689641,
+        "quotedUsdcRaw": 10006648201,
+        "repaymentUsdcRaw": 0,
+        "minimumEquityRaw": 0,
+        "observedAt": "2026-11-06T19:22:46.141886196Z",
+        "slot": 466225040,
+        "cashAfterRepaymentRaw": 10006648201,
+        "lastPortionUsdcRaw": 997505139,
+        "lastPortionReferenceRaw": 999999999
+      },
+      "snapshotSlots": [
+        466225040
+      ],
+      "reportSha256": "73c8ad8a045549371672eecd8d6878b0c3a380edc9af58350731feed165feb8a",
+      "captureSha256": "b99dd57262a446837424d0d6b54a81340ebcf186e79a6b2fa820c2ac137d3aa4",
+      "memoryPeakBytes": 214556672,
+      "memoryEvents": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n"
+    },
+    {
+      "lane": "AUTO/AUTO/PYUSD",
+      "equityRequested": 10000,
+      "spentRaw": 10000000000,
+      "cashRecoveredRaw": 9995600958,
+      "costRaw": 4399042,
+      "eligible": true,
+      "reason": null,
+      "exit": {
+        "collateralRaw": 9693968882,
+        "referenceUsdcRaw": 10000543074,
+        "quotedUsdcRaw": 9995600958,
+        "repaymentUsdcRaw": 0,
+        "minimumEquityRaw": 9980541988,
+        "observedAt": "2026-11-06T19:23:05.286352064Z",
+        "slot": 466225058,
+        "cashAfterRepaymentRaw": 9995600958,
+        "lastPortionUsdcRaw": 999451407,
+        "lastPortionReferenceRaw": 999999999
+      },
+      "snapshotSlots": [
+        466225058
+      ],
+      "reportSha256": "4004cd09d407e8bb993cf0bd8de8a23f4ff763588c4412c333bda9f664d1a1af",
+      "captureSha256": "b64bb3001c643f35969ac0c7720c65a53212b92b585fc84dd4f6a5e261489322",
+      "memoryPeakBytes": 203100160,
+      "memoryEvents": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n"
+    },
+    {
+      "lane": "Maple/syrupUSDC/USDC",
+      "equityRequested": 10000,
+      "spentRaw": 10000000000,
+      "cashRecoveredRaw": 9998000095,
+      "costRaw": 1999905,
+      "eligible": true,
+      "reason": null,
+      "exit": {
+        "collateralRaw": 8395103062,
+        "referenceUsdcRaw": 10004958015,
+        "quotedUsdcRaw": 10002490848,
+        "repaymentUsdcRaw": 414143,
+        "minimumEquityRaw": 9984533956,
+        "observedAt": "2026-11-06T19:23:02.706747637Z",
+        "slot": 466225047,
+        "cashAfterRepaymentRaw": 10002076705,
+        "lastPortionUsdcRaw": 999751794,
+        "lastPortionReferenceRaw": 999999998
+      },
+      "snapshotSlots": [
+        466225047
+      ],
+      "reportSha256": "e046c9e7abb2f4971e385b753e5791c2630f4d89636b1816bff14b316203b5d6",
+      "captureSha256": "79cfda696e90ab731b2b40b8b00883345f2793e3974e6b78eedad6360327fd1c",
+      "memoryPeakBytes": 192786432,
+      "memoryEvents": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n"
+    },
+    {
+      "lane": "Prime/PRIME/USDC",
+      "equityRequested": 10000,
+      "spentRaw": 10000000000,
+      "cashRecoveredRaw": 9997600309,
+      "costRaw": 2399691,
+      "eligible": true,
+      "reason": null,
+      "exit": {
+        "collateralRaw": 9357991106,
+        "referenceUsdcRaw": 10000288518,
+        "quotedUsdcRaw": 9997600309,
+        "repaymentUsdcRaw": 0,
+        "minimumEquityRaw": 9980287941,
+        "observedAt": "2026-11-06T19:23:03.963911776Z",
+        "slot": 466225052,
+        "cashAfterRepaymentRaw": 9997600309,
+        "lastPortionUsdcRaw": 999714192,
+        "lastPortionReferenceRaw": 999999999
+      },
+      "snapshotSlots": [
+        466225051
+      ],
+      "reportSha256": "725bb79ee8a79254a62f59b27437d30ffac4cc7535bfef38c911fd905cc4b2e5",
+      "captureSha256": "2811fad242c2a91ce2f6b6d41011ebc34f02a4a61acb3b7918273a54c7f05cc6",
+      "memoryPeakBytes": 202330112,
+      "memoryEvents": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n"
+    }
+  ],
+  "carryStress": {
+    "lane": "Maple/syrupUSDC/USDC",
+    "status": "COMPLETED",
+    "steps": 151,
+    "carry": {
+      "seconds": 21600,
+      "annualBPS": 10000,
+      "chargedUpfrontRaw": 34258307
+    },
+    "partialFunding": {
+      "step": 61,
+      "cashRaw": 10098228252,
+      "remainingCollateralRaw": 75398732841,
+      "remainingDebtRaw": 0
+    },
+    "endCashRaw": 99929818490,
+    "endDebtRaw": 0,
+    "endCollateralRaw": 0,
+    "reportSha256": "bcaf4c0ddddf9a23f2f6ead819d9c86e5986c8d8348b44e71c55d9d8bdc3fcd3",
+    "memoryPeakBytes": 193404928,
+    "memoryEvents": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n"
+  },
+  "sourceHashes": {
+    "go/workers/internal/backyard/investment_replay_test.go": "1d35975a1d953f7d7c6501593408937191ecc04df974908fc2ac7aebbed68ca2",
+    "scripts/vault-replay/compare_quotes.py": "f05934c0fa63e4355601bb149c7d0c721a6ff3f79d5b6c8a30d5a4ab28f3782d",
+    "scripts/vault-replay/entry_exit.py": "3f0fa5e72a314e9808ae43a9191554157b1ee7a98e68a2ec4542345d4a9107c0",
+    "scripts/vault-replay/withdrawal.py": "3a7bc15f969f3e002338ba18457d7e74763c58d9eb357d5c93fad68b126c6055"
+  },
+  "logHashes": {
+    "quote-tests.log": "f35165e55a09b8c169a5c5339f73b63cb6e984f2963087b158767190dc81fc28",
+    "db-tests.log": "48aa9058e6ee2e758804b0a2d1f1297922f0912da3645b60f9f5eeb2957e8e20",
+    "final-checks.log": "e3df8fc42961c572f3120e0aa3b08cbdc997092560c58b9b6fd7ababc215185e",
+    "quote-availability.jsonl": "724aed3235eb8df191e4b08331b3be994372caacceb8b2138356a3c5b129fe6f"
+  },
+  "liveProbe": {
+    "at": "2026-11-06T19:26:50Z",
+    "bothVaults": "investment_exit_too_expensive",
+    "sampledExit": "withdrawal_waiting_price",
+    "sha256": "b70a66361531993267d8ef19848516cd16b4f97d272385fb80fc999b9fd5a4cb"
+  },
+  "evidenceArchive": {
+    "host": "loyal-workers",
+    "path": "/opt/loyal/evidence/investment-exit-20261106/fixtures-and-results.tar.gz",
+    "sha256": "4a482bbaeb2ad3333b4a72f5e75f025acebb4cab5211a1d85a7ce1a0f4a357d6"
+  }
+}

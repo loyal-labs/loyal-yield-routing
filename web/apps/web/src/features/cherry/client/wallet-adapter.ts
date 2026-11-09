@@ -8,6 +8,7 @@ import {
 import {
   ComputeBudgetProgram,
   PublicKey,
+  SendTransactionError,
   Transaction,
   VersionedTransaction,
   type Connection,
@@ -16,6 +17,7 @@ import {
   type Signer,
   type VersionedMessage,
 } from "@solana/web3.js";
+import bs58 from "bs58";
 import nacl from "tweetnacl";
 
 import type { CherryWalletAdapter as CherryWalletAdapterType } from "@cherrydotfun/miniapp-sdk/solana";
@@ -160,6 +162,7 @@ export async function createLoyalCherryWalletAdapter(
       connection: Connection,
       options?: SendTransactionOptions
     ): Promise<string> {
+      let ambiguousSignature: string | undefined;
       try {
         const generation = operationLease.capture();
         const wallet = requireConnectedWallet(this.publicKey);
@@ -171,15 +174,33 @@ export async function createLoyalCherryWalletAdapter(
           wallet,
           this.publicKey
         );
-        return await connection.sendRawTransaction(
-          serializeForRpc(signed),
-          withoutSigners(options)
-        );
+        const raw = serializeForRpc(signed);
+        try {
+          return await connection.sendRawTransaction(
+            raw,
+            withoutSigners(options)
+          );
+        } catch (sendError) {
+          // Only an error the node itself returned means nothing was broadcast.
+          // A lost response or a failed fetch leaves the transaction possibly
+          // on its way, so the caller gets the signature to settle.
+          if (!(sendError instanceof SendTransactionError)) {
+            ambiguousSignature = payerSignatureOf(signed);
+          }
+          throw sendError;
+        }
       } catch (error) {
-        throw new WalletSendTransactionError(
+        const wrapped = new WalletSendTransactionError(
           error instanceof Error ? error.message : String(error),
           error instanceof Error ? error : undefined
         );
+        if (ambiguousSignature) {
+          Object.assign(wrapped, {
+            transactionSignature: ambiguousSignature,
+            transactionWasSubmitted: true,
+          });
+        }
+        throw wrapped;
       }
     }
   })();
@@ -632,6 +653,18 @@ function serializeForRpc(transaction: SupportedTransaction): Uint8Array {
         requireAllSignatures: false,
         verifySignatures: false,
       });
+}
+
+function payerSignatureOf(
+  transaction: SupportedTransaction
+): string | undefined {
+  const signature =
+    transaction instanceof VersionedTransaction
+      ? transaction.signatures[0]
+      : transaction.signature;
+  return signature && !signature.every((byte) => byte === 0)
+    ? bs58.encode(signature)
+    : undefined;
 }
 
 function cloneTransaction(

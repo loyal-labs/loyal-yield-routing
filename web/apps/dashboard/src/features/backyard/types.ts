@@ -13,6 +13,8 @@ export type LeverageLane = {
 };
 
 export type Route = {
+  aumUsd: number | null;
+  collateralUsd: number | null;
   currentApy: {
     apyPct: number;
     flat: boolean;
@@ -26,6 +28,7 @@ export type Route = {
   lastHoldReason: string | null;
   leverageTarget: number | null;
   leverageWatch: { lanes: LeverageLane[]; observedAt: string } | null;
+  ltvRatio: number | null;
   navFresh: boolean | null;
   navUsd: number | null;
   reportAgeS: number | null;
@@ -33,6 +36,7 @@ export type Route = {
   routeStatus: string | null;
   selectorAction: string | null;
   selectorReason: string | null;
+  upApproved: boolean | null;
   updatedAgeS: number;
   voltrIdleUsd: number | null;
 };

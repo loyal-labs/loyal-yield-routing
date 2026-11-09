@@ -245,6 +245,11 @@ export function CryptoPage({
     prevHadTokensRef.current = hasTokens;
   }, [derivedTokens]);
 
+  const actionInFlightRef = useRef(false);
+  const handleProcessingChange = useCallback((isProcessing: boolean) => {
+    actionInFlightRef.current = isProcessing;
+  }, []);
+
   const closeAction = useCallback(() => {
     setViewStack([]);
   }, []);
@@ -316,6 +321,7 @@ export function CryptoPage({
   }, [closeSwap, closeUnshield]);
 
   useAbandonActionsOnNavigate(navigationNonce, () => {
+    if (actionInFlightRef.current) return;
     setIsBridgeOpen(false);
     setViewStack([]);
     setSendSelect(null);
@@ -324,7 +330,7 @@ export function CryptoPage({
   });
 
   useEffect(() => {
-    if (!requestedAction) return;
+    if (!requestedAction || actionInFlightRef.current) return;
     setIsDetailSheetOpen(false);
     setIsBridgeOpen(requestedAction.type === "bridge");
     if (requestedAction.type === "bridge") {
@@ -343,6 +349,9 @@ export function CryptoPage({
   useEscapePage(
     viewStack.length > 0 || isSwapOpen || isUnshieldOpen,
     () => {
+      if (actionInFlightRef.current) {
+        return;
+      }
       if (sendSelect !== null) {
         setSendSelect(null);
         return;
@@ -496,6 +505,7 @@ export function CryptoPage({
                     current === "recipient" ? null : "recipient"
                   )
                 }
+                onProcessingChange={handleProcessingChange}
                 onSuccess={refreshWallet}
                 recipient={sendRecipient}
                 recordRecent={recordSendRecent}
@@ -512,6 +522,7 @@ export function CryptoPage({
                   setSwapFromToken(swapToToken);
                   setSwapToToken(swapFromToken);
                 }}
+                onProcessingChange={handleProcessingChange}
                 onRequestSelect={(side) =>
                   setSwapSelectSide((current) =>
                     current === side ? null : side

@@ -6,6 +6,7 @@ import react from "@vitejs/plugin-react";
 import { type Plugin, type UserConfig } from "vite";
 
 import { resolveVercelEnv } from "../web/src/lib/vercel-env";
+import { publicEnv } from "./vite/public-env";
 import { type ServerActionsOptions, serverActionsPlugin } from "./vite/server-actions";
 import { serverOnlyPlugin } from "./vite/server-only";
 
@@ -59,10 +60,6 @@ function sharedDepsPlugin(): Plugin {
 
 export function nextSpa(options: NextSpaOptions): UserConfig {
   const { nextApp } = options;
-  const publicEnv = Object.fromEntries(
-    Object.entries(process.env).filter(([key]) => key.startsWith("NEXT_PUBLIC_")),
-  );
-
   const vercelEnv = resolveVercelEnv(process.env);
 
   const apiOrigin = process.env.LOYAL_WEB_ORIGIN || "http://127.0.0.1:8080";
@@ -85,7 +82,7 @@ export function nextSpa(options: NextSpaOptions): UserConfig {
       postcss: { plugins: [tailwindcss({ base: nextApp })] },
     },
     define: {
-      "process.env": JSON.stringify({ ...publicEnv, VERCEL_ENV: vercelEnv, NODE_ENV: process.env.NODE_ENV ?? "production" }),
+      "process.env": JSON.stringify({ ...publicEnv(process.env), VERCEL_ENV: vercelEnv, NODE_ENV: process.env.NODE_ENV ?? "production" }),
     },
     publicDir: `${nextApp}public`,
     build: {

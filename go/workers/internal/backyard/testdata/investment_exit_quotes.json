@@ -1,0 +1,930 @@
+[
+  {
+    "lane": "onre",
+    "size": 10000,
+    "quotes": [
+      {
+        "inputMint": "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5",
+        "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "inAmount": "8612010132890",
+        "outAmount": "9996413415",
+        "contextSlot": 466223453,
+        "routePlan": [
+          {
+            "swapInfo": {
+              "ammKey": "7jhhyxPUKpu42hPGSYwgMXbR2dtVJHKhs8DW3sAAgAvX",
+              "inputMint": "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5",
+              "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+            },
+            "bps": 10000
+          }
+        ]
+      },
+      {
+        "inputMint": "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5",
+        "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "inAmount": "7750809119601",
+        "outAmount": "8996775214",
+        "contextSlot": 466223453,
+        "routePlan": [
+          {
+            "swapInfo": {
+              "ammKey": "7jhhyxPUKpu42hPGSYwgMXbR2dtVJHKhs8DW3sAAgAvX",
+              "inputMint": "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5",
+              "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+            },
+            "bps": 10000
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "lane": "onre",
+    "size": 10000,
+    "quotes": [
+      {
+        "inputMint": "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5",
+        "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "inAmount": "8612010132890",
+        "outAmount": "9996413415",
+        "contextSlot": 466223455,
+        "routePlan": [
+          {
+            "swapInfo": {
+              "ammKey": "7jhhyxPUKpu42hPGSYwgMXbR2dtVJHKhs8DW3sAAgAvX",
+              "inputMint": "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5",
+              "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+            },
+            "bps": 10000
+          }
+        ]
+      },
+      {
+        "inputMint": "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5",
+        "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "inAmount": "7750809119601",
+        "outAmount": "8996775188",
+        "contextSlot": 466223455,
+        "routePlan": [
+          {
+            "swapInfo": {
+              "ammKey": "7jhhyxPUKpu42hPGSYwgMXbR2dtVJHKhs8DW3sAAgAvX",
+              "inputMint": "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5",
+              "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+            },
+            "bps": 10000
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "lane": "onre",
+    "size": 100000,
+    "quotes": [
+      {
+        "inputMint": "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5",
+        "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "inAmount": "86120101328900",
+        "outAmount": "99961055945",
+        "contextSlot": 466223456,
+        "routePlan": [
+          {
+            "swapInfo": {
+              "ammKey": "A9RdNEf4T9x1eNPnEHFX1ABHS7J4e9kxBm43S3o5r9Kw",
+              "inputMint": "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5",
+              "outputMint": "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH"
+            },
+            "bps": 200
+          },
+          {
+            "swapInfo": {
+              "ammKey": "9RqDTfwCx2SgxsvKpspQHc38HUo3B6hRd3oR9JR966Ps",
+              "inputMint": "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH",
+              "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+            },
+            "bps": 10000
+          },
+          {
+            "swapInfo": {
+              "ammKey": "7jhhyxPUKpu42hPGSYwgMXbR2dtVJHKhs8DW3sAAgAvX",
+              "inputMint": "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5",
+              "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+            },
+            "bps": 9800
+          }
+        ]
+      },
+      {
+        "inputMint": "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5",
+        "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "inAmount": "85258900315611",
+        "outAmount": "98961478717",
+        "contextSlot": 466223456,
+        "routePlan": [
+          {
+            "swapInfo": {
+              "ammKey": "7jhhyxPUKpu42hPGSYwgMXbR2dtVJHKhs8DW3sAAgAvX",
+              "inputMint": "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5",
+              "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+            },
+            "bps": 9800
+          },
+          {
+            "swapInfo": {
+              "ammKey": "A9RdNEf4T9x1eNPnEHFX1ABHS7J4e9kxBm43S3o5r9Kw",
+              "inputMint": "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5",
+              "outputMint": "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH"
+            },
+            "bps": 200
+          },
+          {
+            "swapInfo": {
+              "ammKey": "9RqDTfwCx2SgxsvKpspQHc38HUo3B6hRd3oR9JR966Ps",
+              "inputMint": "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH",
+              "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+            },
+            "bps": 10000
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "lane": "onre",
+    "size": 100000,
+    "quotes": [
+      {
+        "inputMint": "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5",
+        "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "inAmount": "86120101328900",
+        "outAmount": "99961055945",
+        "contextSlot": 466223458,
+        "routePlan": [
+          {
+            "swapInfo": {
+              "ammKey": "A9RdNEf4T9x1eNPnEHFX1ABHS7J4e9kxBm43S3o5r9Kw",
+              "inputMint": "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5",
+              "outputMint": "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH"
+            },
+            "bps": 200
+          },
+          {
+            "swapInfo": {
+              "ammKey": "9RqDTfwCx2SgxsvKpspQHc38HUo3B6hRd3oR9JR966Ps",
+              "inputMint": "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH",
+              "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+            },
+            "bps": 10000
+          },
+          {
+            "swapInfo": {
+              "ammKey": "7jhhyxPUKpu42hPGSYwgMXbR2dtVJHKhs8DW3sAAgAvX",
+              "inputMint": "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5",
+              "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+            },
+            "bps": 9800
+          }
+        ]
+      },
+      {
+        "inputMint": "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5",
+        "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "inAmount": "85258900315611",
+        "outAmount": "98961478717",
+        "contextSlot": 466223458,
+        "routePlan": [
+          {
+            "swapInfo": {
+              "ammKey": "7jhhyxPUKpu42hPGSYwgMXbR2dtVJHKhs8DW3sAAgAvX",
+              "inputMint": "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5",
+              "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+            },
+            "bps": 9800
+          },
+          {
+            "swapInfo": {
+              "ammKey": "A9RdNEf4T9x1eNPnEHFX1ABHS7J4e9kxBm43S3o5r9Kw",
+              "inputMint": "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5",
+              "outputMint": "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH"
+            },
+            "bps": 200
+          },
+          {
+            "swapInfo": {
+              "ammKey": "9RqDTfwCx2SgxsvKpspQHc38HUo3B6hRd3oR9JR966Ps",
+              "inputMint": "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH",
+              "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+            },
+            "bps": 10000
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "lane": "auto",
+    "size": 10000,
+    "quotes": [
+      {
+        "inputMint": "GNE6oDS6jHrfaV3GQVVCCp37fDnT7PiPuewMKBj2bqNm",
+        "outputMint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+        "inAmount": "9694682210",
+        "outAmount": "9994223241",
+        "contextSlot": 466223460,
+        "routePlan": [
+          {
+            "swapInfo": {
+              "ammKey": "4D2MXM8H7sKpyeXMQ9T4eULc3qb2fWBBE8Un9P6eEx8W",
+              "inputMint": "GNE6oDS6jHrfaV3GQVVCCp37fDnT7PiPuewMKBj2bqNm",
+              "outputMint": "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7"
+            },
+            "bps": 10000
+          },
+          {
+            "swapInfo": {
+              "ammKey": "9R9nmGDRdLLwWjc9raRjaRoZZNXiXQBEPGFRj6SfSkPQ",
+              "inputMint": "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7",
+              "outputMint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo"
+            },
+            "bps": 10000
+          }
+        ]
+      },
+      {
+        "inputMint": "GNE6oDS6jHrfaV3GQVVCCp37fDnT7PiPuewMKBj2bqNm",
+        "outputMint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+        "inAmount": "8725213989",
+        "outAmount": "8994841786",
+        "contextSlot": 466223459,
+        "routePlan": [
+          {
+            "swapInfo": {
+              "ammKey": "4D2MXM8H7sKpyeXMQ9T4eULc3qb2fWBBE8Un9P6eEx8W",
+              "inputMint": "GNE6oDS6jHrfaV3GQVVCCp37fDnT7PiPuewMKBj2bqNm",
+              "outputMint": "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7"
+            },
+            "bps": 10000
+          },
+          {
+            "swapInfo": {
+              "ammKey": "9R9nmGDRdLLwWjc9raRjaRoZZNXiXQBEPGFRj6SfSkPQ",
+              "inputMint": "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7",
+              "outputMint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo"
+            },
+            "bps": 10000
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "lane": "auto",
+    "size": 10000,
+    "quotes": [
+      {
+        "inputMint": "GNE6oDS6jHrfaV3GQVVCCp37fDnT7PiPuewMKBj2bqNm",
+        "outputMint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+        "inAmount": "9694682210",
+        "outAmount": "9994223241",
+        "contextSlot": 466223461,
+        "routePlan": [
+          {
+            "swapInfo": {
+              "ammKey": "4D2MXM8H7sKpyeXMQ9T4eULc3qb2fWBBE8Un9P6eEx8W",
+              "inputMint": "GNE6oDS6jHrfaV3GQVVCCp37fDnT7PiPuewMKBj2bqNm",
+              "outputMint": "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7"
+            },
+            "bps": 10000
+          },
+          {
+            "swapInfo": {
+              "ammKey": "9R9nmGDRdLLwWjc9raRjaRoZZNXiXQBEPGFRj6SfSkPQ",
+              "inputMint": "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7",
+              "outputMint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo"
+            },
+            "bps": 10000
+          }
+        ]
+      },
+      {
+        "inputMint": "GNE6oDS6jHrfaV3GQVVCCp37fDnT7PiPuewMKBj2bqNm",
+        "outputMint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+        "inAmount": "8725213989",
+        "outAmount": "8994841786",
+        "contextSlot": 466223461,
+        "routePlan": [
+          {
+            "swapInfo": {
+              "ammKey": "4D2MXM8H7sKpyeXMQ9T4eULc3qb2fWBBE8Un9P6eEx8W",
+              "inputMint": "GNE6oDS6jHrfaV3GQVVCCp37fDnT7PiPuewMKBj2bqNm",
+              "outputMint": "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7"
+            },
+            "bps": 10000
+          },
+          {
+            "swapInfo": {
+              "ammKey": "9R9nmGDRdLLwWjc9raRjaRoZZNXiXQBEPGFRj6SfSkPQ",
+              "inputMint": "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7",
+              "outputMint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo"
+            },
+            "bps": 10000
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "lane": "auto",
+    "size": 100000,
+    "quotes": [
+      {
+        "inputMint": "GNE6oDS6jHrfaV3GQVVCCp37fDnT7PiPuewMKBj2bqNm",
+        "outputMint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+        "inAmount": "96946822100",
+        "outAmount": "99918190999",
+        "contextSlot": 466223462,
+        "routePlan": [
+          {
+            "swapInfo": {
+              "ammKey": "4D2MXM8H7sKpyeXMQ9T4eULc3qb2fWBBE8Un9P6eEx8W",
+              "inputMint": "GNE6oDS6jHrfaV3GQVVCCp37fDnT7PiPuewMKBj2bqNm",
+              "outputMint": "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7"
+            },
+            "bps": 10000
+          },
+          {
+            "swapInfo": {
+              "ammKey": "9R9nmGDRdLLwWjc9raRjaRoZZNXiXQBEPGFRj6SfSkPQ",
+              "inputMint": "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7",
+              "outputMint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo"
+            },
+            "bps": 10000
+          }
+        ]
+      },
+      {
+        "inputMint": "GNE6oDS6jHrfaV3GQVVCCp37fDnT7PiPuewMKBj2bqNm",
+        "outputMint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+        "inAmount": "95977353879",
+        "outAmount": "98919198080",
+        "contextSlot": 466223463,
+        "routePlan": [
+          {
+            "swapInfo": {
+              "ammKey": "4D2MXM8H7sKpyeXMQ9T4eULc3qb2fWBBE8Un9P6eEx8W",
+              "inputMint": "GNE6oDS6jHrfaV3GQVVCCp37fDnT7PiPuewMKBj2bqNm",
+              "outputMint": "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7"
+            },
+            "bps": 10000
+          },
+          {
+            "swapInfo": {
+              "ammKey": "9R9nmGDRdLLwWjc9raRjaRoZZNXiXQBEPGFRj6SfSkPQ",
+              "inputMint": "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7",
+              "outputMint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo"
+            },
+            "bps": 10000
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "lane": "auto",
+    "size": 100000,
+    "quotes": [
+      {
+        "inputMint": "GNE6oDS6jHrfaV3GQVVCCp37fDnT7PiPuewMKBj2bqNm",
+        "outputMint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+        "inAmount": "96946822100",
+        "outAmount": "99918190999",
+        "contextSlot": 466223464,
+        "routePlan": [
+          {
+            "swapInfo": {
+              "ammKey": "4D2MXM8H7sKpyeXMQ9T4eULc3qb2fWBBE8Un9P6eEx8W",
+              "inputMint": "GNE6oDS6jHrfaV3GQVVCCp37fDnT7PiPuewMKBj2bqNm",
+              "outputMint": "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7"
+            },
+            "bps": 10000
+          },
+          {
+            "swapInfo": {
+              "ammKey": "9R9nmGDRdLLwWjc9raRjaRoZZNXiXQBEPGFRj6SfSkPQ",
+              "inputMint": "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7",
+              "outputMint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo"
+            },
+            "bps": 10000
+          }
+        ]
+      },
+      {
+        "inputMint": "GNE6oDS6jHrfaV3GQVVCCp37fDnT7PiPuewMKBj2bqNm",
+        "outputMint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+        "inAmount": "95977353879",
+        "outAmount": "98919198080",
+        "contextSlot": 466223464,
+        "routePlan": [
+          {
+            "swapInfo": {
+              "ammKey": "4D2MXM8H7sKpyeXMQ9T4eULc3qb2fWBBE8Un9P6eEx8W",
+              "inputMint": "GNE6oDS6jHrfaV3GQVVCCp37fDnT7PiPuewMKBj2bqNm",
+              "outputMint": "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7"
+            },
+            "bps": 10000
+          },
+          {
+            "swapInfo": {
+              "ammKey": "9R9nmGDRdLLwWjc9raRjaRoZZNXiXQBEPGFRj6SfSkPQ",
+              "inputMint": "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7",
+              "outputMint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo"
+            },
+            "bps": 10000
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "lane": "maple",
+    "size": 10000,
+    "quotes": [
+      {
+        "inputMint": "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+        "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "inAmount": "8391313280",
+        "outAmount": "9997945251",
+        "contextSlot": 466223465,
+        "routePlan": [
+          {
+            "swapInfo": {
+              "ammKey": "9goWMLg5ZxayhTinjtfNQLCZg2VBzdwERqHqP5tYSP9Z",
+              "inputMint": "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+              "outputMint": "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH"
+            },
+            "bps": 300
+          },
+          {
+            "swapInfo": {
+              "ammKey": "EXMcKF76kmBUH8xZ5fi1jv3ezh3eVQCeL4rQbpjCRxvF",
+              "inputMint": "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH",
+              "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+            },
+            "bps": 10000
+          },
+          {
+            "swapInfo": {
+              "ammKey": "6fteKNvMdv7tYmBoJHhj1jx6rHcEwC6RdSEmVpyS613J",
+              "inputMint": "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+              "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+            },
+            "bps": 9700
+          }
+        ]
+      },
+      {
+        "inputMint": "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+        "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "inAmount": "7552181952",
+        "outAmount": "8998152954",
+        "contextSlot": 466223465,
+        "routePlan": [
+          {
+            "swapInfo": {
+              "ammKey": "6fteKNvMdv7tYmBoJHhj1jx6rHcEwC6RdSEmVpyS613J",
+              "inputMint": "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+              "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+            },
+            "bps": 9700
+          },
+          {
+            "swapInfo": {
+              "ammKey": "9goWMLg5ZxayhTinjtfNQLCZg2VBzdwERqHqP5tYSP9Z",
+              "inputMint": "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+              "outputMint": "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH"
+            },
+            "bps": 300
+          },
+          {
+            "swapInfo": {
+              "ammKey": "EXMcKF76kmBUH8xZ5fi1jv3ezh3eVQCeL4rQbpjCRxvF",
+              "inputMint": "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH",
+              "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+            },
+            "bps": 10000
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "lane": "maple",
+    "size": 10000,
+    "quotes": [
+      {
+        "inputMint": "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+        "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "inAmount": "8391313280",
+        "outAmount": "9997945251",
+        "contextSlot": 466223466,
+        "routePlan": [
+          {
+            "swapInfo": {
+              "ammKey": "6fteKNvMdv7tYmBoJHhj1jx6rHcEwC6RdSEmVpyS613J",
+              "inputMint": "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+              "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+            },
+            "bps": 9700
+          },
+          {
+            "swapInfo": {
+              "ammKey": "9goWMLg5ZxayhTinjtfNQLCZg2VBzdwERqHqP5tYSP9Z",
+              "inputMint": "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+              "outputMint": "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH"
+            },
+            "bps": 300
+          },
+          {
+            "swapInfo": {
+              "ammKey": "EXMcKF76kmBUH8xZ5fi1jv3ezh3eVQCeL4rQbpjCRxvF",
+              "inputMint": "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH",
+              "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+            },
+            "bps": 10000
+          }
+        ]
+      },
+      {
+        "inputMint": "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+        "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "inAmount": "7552181952",
+        "outAmount": "8998152954",
+        "contextSlot": 466223467,
+        "routePlan": [
+          {
+            "swapInfo": {
+              "ammKey": "9goWMLg5ZxayhTinjtfNQLCZg2VBzdwERqHqP5tYSP9Z",
+              "inputMint": "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+              "outputMint": "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH"
+            },
+            "bps": 300
+          },
+          {
+            "swapInfo": {
+              "ammKey": "EXMcKF76kmBUH8xZ5fi1jv3ezh3eVQCeL4rQbpjCRxvF",
+              "inputMint": "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH",
+              "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+            },
+            "bps": 10000
+          },
+          {
+            "swapInfo": {
+              "ammKey": "6fteKNvMdv7tYmBoJHhj1jx6rHcEwC6RdSEmVpyS613J",
+              "inputMint": "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+              "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+            },
+            "bps": 9700
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "lane": "maple",
+    "size": 100000,
+    "quotes": [
+      {
+        "inputMint": "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+        "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "inAmount": "83913132800",
+        "outAmount": "99977788733",
+        "contextSlot": 466223468,
+        "routePlan": [
+          {
+            "swapInfo": {
+              "ammKey": "6fteKNvMdv7tYmBoJHhj1jx6rHcEwC6RdSEmVpyS613J",
+              "inputMint": "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+              "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+            },
+            "bps": 10000
+          }
+        ]
+      },
+      {
+        "inputMint": "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+        "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "inAmount": "83074001472",
+        "outAmount": "98978028538",
+        "contextSlot": 466223468,
+        "routePlan": [
+          {
+            "swapInfo": {
+              "ammKey": "6fteKNvMdv7tYmBoJHhj1jx6rHcEwC6RdSEmVpyS613J",
+              "inputMint": "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+              "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+            },
+            "bps": 10000
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "lane": "maple",
+    "size": 100000,
+    "quotes": [
+      {
+        "inputMint": "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+        "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "inAmount": "83913132800",
+        "outAmount": "99977788733",
+        "contextSlot": 466223470,
+        "routePlan": [
+          {
+            "swapInfo": {
+              "ammKey": "6fteKNvMdv7tYmBoJHhj1jx6rHcEwC6RdSEmVpyS613J",
+              "inputMint": "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+              "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+            },
+            "bps": 10000
+          }
+        ]
+      },
+      {
+        "inputMint": "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+        "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "inAmount": "83074001472",
+        "outAmount": "98978028538",
+        "contextSlot": 466223470,
+        "routePlan": [
+          {
+            "swapInfo": {
+              "ammKey": "6fteKNvMdv7tYmBoJHhj1jx6rHcEwC6RdSEmVpyS613J",
+              "inputMint": "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+              "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+            },
+            "bps": 10000
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "lane": "prime",
+    "size": 10000,
+    "quotes": [
+      {
+        "inputMint": "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7",
+        "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "inAmount": "9358328230",
+        "outAmount": "9997919692",
+        "contextSlot": 466223471,
+        "routePlan": [
+          {
+            "swapInfo": {
+              "ammKey": "9R9nmGDRdLLwWjc9raRjaRoZZNXiXQBEPGFRj6SfSkPQ",
+              "inputMint": "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7",
+              "outputMint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo"
+            },
+            "bps": 10000
+          },
+          {
+            "swapInfo": {
+              "ammKey": "GVJfHJsvrsWZmVj2JVQ3KyY1n7azyi8Z2FdBPxucUe58",
+              "inputMint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+              "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+            },
+            "bps": 10000
+          }
+        ]
+      },
+      {
+        "inputMint": "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7",
+        "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "inAmount": "8422495407",
+        "outAmount": "8998160053",
+        "contextSlot": 466223471,
+        "routePlan": [
+          {
+            "swapInfo": {
+              "ammKey": "9R9nmGDRdLLwWjc9raRjaRoZZNXiXQBEPGFRj6SfSkPQ",
+              "inputMint": "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7",
+              "outputMint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo"
+            },
+            "bps": 10000
+          },
+          {
+            "swapInfo": {
+              "ammKey": "GVJfHJsvrsWZmVj2JVQ3KyY1n7azyi8Z2FdBPxucUe58",
+              "inputMint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+              "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+            },
+            "bps": 10000
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "lane": "prime",
+    "size": 10000,
+    "quotes": [
+      {
+        "inputMint": "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7",
+        "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "inAmount": "9358328230",
+        "outAmount": "9997919692",
+        "contextSlot": 466223472,
+        "routePlan": [
+          {
+            "swapInfo": {
+              "ammKey": "9R9nmGDRdLLwWjc9raRjaRoZZNXiXQBEPGFRj6SfSkPQ",
+              "inputMint": "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7",
+              "outputMint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo"
+            },
+            "bps": 10000
+          },
+          {
+            "swapInfo": {
+              "ammKey": "GVJfHJsvrsWZmVj2JVQ3KyY1n7azyi8Z2FdBPxucUe58",
+              "inputMint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+              "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+            },
+            "bps": 10000
+          }
+        ]
+      },
+      {
+        "inputMint": "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7",
+        "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "inAmount": "8422495407",
+        "outAmount": "8998160053",
+        "contextSlot": 466223472,
+        "routePlan": [
+          {
+            "swapInfo": {
+              "ammKey": "9R9nmGDRdLLwWjc9raRjaRoZZNXiXQBEPGFRj6SfSkPQ",
+              "inputMint": "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7",
+              "outputMint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo"
+            },
+            "bps": 10000
+          },
+          {
+            "swapInfo": {
+              "ammKey": "GVJfHJsvrsWZmVj2JVQ3KyY1n7azyi8Z2FdBPxucUe58",
+              "inputMint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+              "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+            },
+            "bps": 10000
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "lane": "prime",
+    "size": 100000,
+    "quotes": [
+      {
+        "inputMint": "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7",
+        "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "inAmount": "93583282300",
+        "outAmount": "99967842877",
+        "contextSlot": 466223474,
+        "routePlan": [
+          {
+            "swapInfo": {
+              "ammKey": "9R9nmGDRdLLwWjc9raRjaRoZZNXiXQBEPGFRj6SfSkPQ",
+              "inputMint": "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7",
+              "outputMint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo"
+            },
+            "bps": 10000
+          },
+          {
+            "swapInfo": {
+              "ammKey": "9tXiuRRw7kbejLhZXtxDxYs2REe43uH2e7k1kocgdM9B",
+              "inputMint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+              "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+            },
+            "bps": 5900
+          },
+          {
+            "swapInfo": {
+              "ammKey": "GVJfHJsvrsWZmVj2JVQ3KyY1n7azyi8Z2FdBPxucUe58",
+              "inputMint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+              "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+            },
+            "bps": 4100
+          }
+        ]
+      },
+      {
+        "inputMint": "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7",
+        "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "inAmount": "92647449477",
+        "outAmount": "98968223758",
+        "contextSlot": 466223474,
+        "routePlan": [
+          {
+            "swapInfo": {
+              "ammKey": "9R9nmGDRdLLwWjc9raRjaRoZZNXiXQBEPGFRj6SfSkPQ",
+              "inputMint": "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7",
+              "outputMint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo"
+            },
+            "bps": 10000
+          },
+          {
+            "swapInfo": {
+              "ammKey": "GVJfHJsvrsWZmVj2JVQ3KyY1n7azyi8Z2FdBPxucUe58",
+              "inputMint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+              "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+            },
+            "bps": 4100
+          },
+          {
+            "swapInfo": {
+              "ammKey": "9tXiuRRw7kbejLhZXtxDxYs2REe43uH2e7k1kocgdM9B",
+              "inputMint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+              "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+            },
+            "bps": 5900
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "lane": "prime",
+    "size": 100000,
+    "quotes": [
+      {
+        "inputMint": "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7",
+        "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "inAmount": "93583282300",
+        "outAmount": "99967842877",
+        "contextSlot": 466223476,
+        "routePlan": [
+          {
+            "swapInfo": {
+              "ammKey": "9R9nmGDRdLLwWjc9raRjaRoZZNXiXQBEPGFRj6SfSkPQ",
+              "inputMint": "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7",
+              "outputMint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo"
+            },
+            "bps": 10000
+          },
+          {
+            "swapInfo": {
+              "ammKey": "9tXiuRRw7kbejLhZXtxDxYs2REe43uH2e7k1kocgdM9B",
+              "inputMint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+              "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+            },
+            "bps": 5900
+          },
+          {
+            "swapInfo": {
+              "ammKey": "GVJfHJsvrsWZmVj2JVQ3KyY1n7azyi8Z2FdBPxucUe58",
+              "inputMint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+              "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+            },
+            "bps": 4100
+          }
+        ]
+      },
+      {
+        "inputMint": "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7",
+        "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "inAmount": "92647449477",
+        "outAmount": "98968223758",
+        "contextSlot": 466223476,
+        "routePlan": [
+          {
+            "swapInfo": {
+              "ammKey": "9R9nmGDRdLLwWjc9raRjaRoZZNXiXQBEPGFRj6SfSkPQ",
+              "inputMint": "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7",
+              "outputMint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo"
+            },
+            "bps": 10000
+          },
+          {
+            "swapInfo": {
+              "ammKey": "GVJfHJsvrsWZmVj2JVQ3KyY1n7azyi8Z2FdBPxucUe58",
+              "inputMint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+              "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+            },
+            "bps": 4100
+          },
+          {
+            "swapInfo": {
+              "ammKey": "9tXiuRRw7kbejLhZXtxDxYs2REe43uH2e7k1kocgdM9B",
+              "inputMint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+              "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+            },
+            "bps": 5900
+          }
+        ]
+      }
+    ]
+  }
+]

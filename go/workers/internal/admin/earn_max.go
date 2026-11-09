@@ -53,21 +53,26 @@ type EarnMaxPart[T any] struct {
 }
 
 type EarnMaxPage struct {
-	Apy       EarnMaxPart[EarnMaxApy]          `json:"apy"`
-	Backyard  BackyardPage                     `json:"backyard"`
-	Balances  EarnMaxPart[EarnMaxBalances]     `json:"balances"`
-	Borrowing EarnMaxPart[[]EarnMaxBorrowRow]  `json:"borrowing"`
-	Health    EarnMaxPart[EarnMaxHealth]       `json:"health"`
-	History   EarnMaxPart[[]EarnMaxHistoryRow] `json:"history"`
-	Latches   EarnMaxPart[EarnMaxLatches]      `json:"latches"`
-	LoadedAt  string                           `json:"loadedAt"`
-	Moves     EarnMaxPart[[]EarnMaxMove]       `json:"moves"`
-	NavSeries EarnMaxPart[[]EarnMaxNavPoint]   `json:"navSeries"`
-	Route     EarnMaxPart[EarnMaxRoute]        `json:"route"`
-	Vault     EarnMaxPart[EarnMaxVault]        `json:"vault"`
+	SelectedVault EarnMaxIdentity                  `json:"selectedVault"`
+	Apy           EarnMaxPart[EarnMaxApy]          `json:"apy"`
+	Backyard      BackyardPage                     `json:"backyard"`
+	Balances      EarnMaxPart[EarnMaxBalances]     `json:"balances"`
+	Borrowing     EarnMaxPart[[]EarnMaxBorrowRow]  `json:"borrowing"`
+	Health        EarnMaxPart[EarnMaxHealth]       `json:"health"`
+	History       EarnMaxPart[[]EarnMaxHistoryRow] `json:"history"`
+	Latches       EarnMaxPart[EarnMaxLatches]      `json:"latches"`
+	LoadedAt      string                           `json:"loadedAt"`
+	Moves         EarnMaxPart[[]EarnMaxMove]       `json:"moves"`
+	NavSeries     EarnMaxPart[[]EarnMaxNavPoint]   `json:"navSeries"`
+	Route         EarnMaxPart[EarnMaxRoute]        `json:"route"`
+	Vault         EarnMaxPart[EarnMaxVault]        `json:"vault"`
 }
 
 type EarnMaxRoute struct {
+	AumUsd             *float64              `json:"aumUsd"`
+	LtvRatio           *float64              `json:"ltvRatio"`
+	CollateralUsd      *float64              `json:"collateralUsd"`
+	UpApproved         *bool                 `json:"upApproved"`
 	CurrentApy         *EarnMaxCurrentApy    `json:"currentApy"`
 	CurrentOperationID *string               `json:"currentOperationId"`
 	DebtUsd            *float64              `json:"debtUsd"`
@@ -170,9 +175,8 @@ type EarnMaxHistoryRow struct {
 }
 
 type EarnMaxBalances struct {
-	Collateral float64 `json:"collateral"`
-	Debt       float64 `json:"debt"`
-	Idle       float64 `json:"idle"`
+	Cash float64 `json:"cash"`
+	Idle float64 `json:"idle"`
 }
 
 type EarnMaxApy struct {
@@ -411,16 +415,20 @@ func earnMaxLeverageLanes(watch map[string]any, watchAt *string) []EarnMaxLevera
 	return lanes
 }
 
-func earnMaxLoadRoute(ctx context.Context, d *Deps) (EarnMaxRoute, error) {
+func earnMaxLoadRoute(ctx context.Context, d *Deps, cfg earnMaxConfig) (EarnMaxRoute, error) {
 	var route EarnMaxRoute
 	var found bool
+	var targetAt *time.Time
 	var raw []byte
 	err := d.YieldRead(ctx, func(tx pgx.Tx) error {
-		err := tx.QueryRow(ctx, `SELECT state, lease_owner,
-       extract(epoch FROM now() - updated_at)::int AS updated_age_s,
-       extract(epoch FROM now() - (state->'observation'->>'reportObservedAt')::timestamptz)::int AS report_age_s
-     FROM loyal_yield.multiply_route_states WHERE route_key = $1`, earnmax.RouteKey).
-			Scan(&raw, &route.LeaseOwner, &route.UpdatedAgeS, &route.ReportAgeS)
+		err := tx.QueryRow(ctx, `SELECT s.state, s.lease_owner,
+       extract(epoch FROM now() - s.updated_at)::int AS updated_age_s,
+       extract(epoch FROM now() - (state->'observation'->>'reportObservedAt')::timestamptz)::int AS report_age_s, levels.level, levels.decided_at, levels.up_approved
+     FROM loyal_yield.multiply_route_states s
+     LEFT JOIN loyal_yield.backyard_lane_levels levels
+       ON levels.route_key = s.route_key AND levels.lane = s.state #>> '{currentApy,lane}'
+     WHERE s.route_key = $1`, cfg.RouteKey).
+			Scan(&raw, &route.LeaseOwner, &route.UpdatedAgeS, &route.ReportAgeS, &route.LeverageTarget, &targetAt, &route.UpApproved)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
@@ -432,7 +440,7 @@ func earnMaxLoadRoute(ctx context.Context, d *Deps) (EarnMaxRoute, error) {
 		err = tx.QueryRow(ctx, `SELECT expected_effects #>> '{decision,reason}' AS reason
      FROM loyal_yield.multiply_operations
      WHERE route_key = $1 AND action = 'HOLD' AND created_at > now() - interval '1 hour'
-     ORDER BY created_at DESC LIMIT 1`, earnmax.RouteKey).Scan(&reason)
+     ORDER BY created_at DESC LIMIT 1`, cfg.RouteKey).Scan(&reason)
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
@@ -443,14 +451,13 @@ func earnMaxLoadRoute(ctx context.Context, d *Deps) (EarnMaxRoute, error) {
 		return route, err
 	}
 	if !found {
-		return route, errors.New("The Earn MAX route has no state row yet.")
+		return route, errors.New("The selected vault has no worker state yet.")
 	}
 	var state map[string]any
 	if err := json.Unmarshal(raw, &state); err != nil {
 		return route, err
 	}
 	observation := earnMaxRec(state["observation"])
-	target := earnMaxRec(state["leverageTarget"])
 	apy := earnMaxRec(state["currentApy"])
 	selector := earnMaxRec(state["selector"])["result"]
 	if selector == nil {
@@ -468,19 +475,25 @@ func earnMaxLoadRoute(ctx context.Context, d *Deps) (EarnMaxRoute, error) {
 		}
 	}
 	route.CurrentOperationID = earnMaxStr(state["currentOperationId"])
-	route.DebtUsd = earnMaxDiv(earnMaxNum(observation["payoffDebtRaw"]), 1e6)
+	route.DebtUsd = earnMaxDiv(earnMaxNum(observation["positionDebtValueRaw"]), 1e6)
+	route.CollateralUsd = earnMaxDiv(earnMaxNum(observation["positionCollateralValueRaw"]), 1e6)
+	route.LtvRatio = earnMaxDiv(earnMaxNum(observation["ltvBps"]), 1e4)
+	route.AumUsd = earnMaxDiv(earnMaxNum(observation["aumUsdMicros"]), 1e6)
 	route.Goal = earnMaxStr(state["goal"])
-	route.LeverageTarget = earnMaxNum(target["level"])
-	route.LeverageTargetAt = earnMaxStr(target["decidedAt"])
+	if targetAt != nil {
+		at := readsISO(*targetAt)
+		route.LeverageTargetAt = &at
+	}
 	if watchAt != nil {
 		route.LeverageWatch = &EarnMaxLeverageWatch{Lanes: earnMaxLeverageLanes(watch, watchAt), ObservedAt: *watchAt}
 	}
 	if fresh, ok := observation["navFresh"].(bool); ok {
 		route.NavFresh = &fresh
 	}
-	route.NavUsd = earnMaxDiv(earnMaxNum(observation["navRaw"]), 1e6)
+	route.NavUsd = earnMaxDiv(earnMaxNum(observation["computedStrategyNavRaw"]), 1e6)
 	if observation["navKnown"] == false {
 		route.NavUsd = nil
+		route.AumUsd = nil
 		fresh := false
 		route.NavFresh = &fresh
 	}
@@ -501,10 +514,10 @@ func earnMaxLoadRoute(ctx context.Context, d *Deps) (EarnMaxRoute, error) {
 	return route, nil
 }
 
-func earnMaxDecodeReport(program, returnData, request *string) (float64, bool) {
+func earnMaxDecodeReport(program, returnData, request *string, expectedProgram string) (float64, bool) {
 	// Reconciliation verifies these exact adaptor return bytes before marking a report landed.
 	if returnData != nil {
-		if program == nil || *program != "FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW" {
+		if program == nil || *program != expectedProgram {
 			return 0, false
 		}
 		decoded, err := base64.StdEncoding.DecodeString(*returnData)
@@ -537,7 +550,7 @@ func earnMaxDecodeReport(program, returnData, request *string) (float64, bool) {
 	return *nav, true
 }
 
-func earnMaxLoadNavSeries(ctx context.Context, d *Deps) ([]EarnMaxNavPoint, error) {
+func earnMaxLoadNavSeries(ctx context.Context, d *Deps, cfg earnMaxConfig) ([]EarnMaxNavPoint, error) {
 	type report struct {
 		at                           time.Time
 		program, returnData, request *string
@@ -555,23 +568,23 @@ func earnMaxLoadNavSeries(ctx context.Context, d *Deps) ([]EarnMaxNavPoint, erro
 			var r report
 			err := rows.Scan(&r.at, &r.program, &r.returnData, &r.request)
 			return r, err
-		}, earnmax.RouteKey)
+		}, cfg.RouteKey)
 	series := []EarnMaxNavPoint{}
 	for _, r := range reports {
-		if nav, ok := earnMaxDecodeReport(r.program, r.returnData, r.request); ok {
+		if nav, ok := earnMaxDecodeReport(r.program, r.returnData, r.request, cfg.Accounts.AdaptorProgram.String()); ok {
 			series = append(series, EarnMaxNavPoint{At: readsISO(r.at), NavUsd: nav / 1e6})
 		}
 	}
 	return series, err
 }
 
-func earnMaxLoadHealth(ctx context.Context, d *Deps) (EarnMaxHealth, error) {
+func earnMaxLoadHealth(ctx context.Context, d *Deps, cfg earnMaxConfig) (EarnMaxHealth, error) {
 	health := EarnMaxHealth{FailedSteps: []EarnMaxFailedStep{}, NavFailureReasons: []EarnMaxFailureReason{}}
 	err := d.YieldRead(ctx, func(tx pgx.Tx) error {
 		nav, err := tx.Query(ctx, `SELECT status, recovery_reason AS reason, count(*)::int AS count
        FROM loyal_yield.multiply_operations
        WHERE route_key = $1 AND action = 'REPORT_NAV' AND created_at > now() - interval '24 hours'
-       GROUP BY 1, 2 ORDER BY 3 DESC`, earnmax.RouteKey)
+       GROUP BY 1, 2 ORDER BY 3 DESC`, cfg.RouteKey)
 		if err != nil {
 			return err
 		}
@@ -604,7 +617,7 @@ func earnMaxLoadHealth(ctx context.Context, d *Deps) (EarnMaxHealth, error) {
        FROM loyal_yield.multiply_operations
        WHERE route_key = $1 AND status = 'failed' AND created_at > now() - interval '24 hours'
          AND action NOT IN ('HOLD', 'REPORT_NAV')
-       GROUP BY 1 ORDER BY 2 DESC`, earnmax.RouteKey)
+       GROUP BY 1 ORDER BY 2 DESC`, cfg.RouteKey)
 		if err != nil {
 			return err
 		}
@@ -622,13 +635,13 @@ func earnMaxLoadHealth(ctx context.Context, d *Deps) (EarnMaxHealth, error) {
        FROM loyal_yield.multiply_operations
        WHERE route_key = $1 AND status = 'failed' AND transaction_signature IS NULL
          AND created_at > now() - interval '24 hours'
-         AND action NOT IN ('HOLD', 'REPORT_NAV')`, earnmax.RouteKey).Scan(&health.RefusedBeforeSending)
+         AND action NOT IN ('HOLD', 'REPORT_NAV')`, cfg.RouteKey).Scan(&health.RefusedBeforeSending)
 		return err
 	})
 	return health, err
 }
 
-func earnMaxLoadMoves(ctx context.Context, d *Deps) ([]EarnMaxMove, error) {
+func earnMaxLoadMoves(ctx context.Context, d *Deps, cfg earnMaxConfig) ([]EarnMaxMove, error) {
 	moves, err := earnMaxQuery(ctx, d, `SELECT action, status, strategy_key, transaction_signature, created_at,
        -- A borrow's decision amount is 0 (its size comes from the leverage
        -- target); the amount is what landed in the vault's own accounts.
@@ -650,18 +663,18 @@ func earnMaxLoadMoves(ctx context.Context, d *Deps) ([]EarnMaxMove, error) {
 			err := rows.Scan(&m.Action, &m.Status, &m.StrategyKey, &m.Signature, &created, &m.AmountRaw, &m.Reason)
 			m.At = readsISO(created)
 			return m, err
-		}, earnmax.RouteKey, earnmax.SquadsVault.String())
+		}, cfg.RouteKey, cfg.Accounts.Manager.String())
 	if moves == nil {
 		moves = []EarnMaxMove{}
 	}
 	return moves, err
 }
 
-func earnMaxLoadLatches(ctx context.Context, d *Deps) (EarnMaxLatches, error) {
+func earnMaxLoadLatches(ctx context.Context, d *Deps, cfg earnMaxConfig) (EarnMaxLatches, error) {
 	latches := EarnMaxLatches{Cleared: []EarnMaxClearedLatch{}, Open: []EarnMaxOpenLatch{}}
 	err := d.YieldRead(ctx, func(tx pgx.Tx) error {
 		open, err := tx.Query(ctx, `SELECT reason, latched_at FROM loyal_yield.backyard_manual_recovery_latches
-       WHERE route_key = $1 AND cleared_at IS NULL`, earnmax.RouteKey)
+       WHERE route_key = $1 AND cleared_at IS NULL`, cfg.RouteKey)
 		if err != nil {
 			return err
 		}
@@ -680,7 +693,7 @@ func earnMaxLoadLatches(ctx context.Context, d *Deps) (EarnMaxLatches, error) {
 		cleared, err := tx.Query(ctx, `SELECT expected_effects AS effects, created_at
        FROM loyal_yield.multiply_operations
        WHERE route_key = $1 AND action = 'HOLD_CLEARED'
-       ORDER BY created_at DESC LIMIT 10`, earnmax.RouteKey)
+       ORDER BY created_at DESC LIMIT 10`, cfg.RouteKey)
 		if err != nil {
 			return err
 		}
@@ -708,7 +721,7 @@ func earnMaxLoadLatches(ctx context.Context, d *Deps) (EarnMaxLatches, error) {
 	return latches, err
 }
 
-func earnMaxLoadHistory(ctx context.Context, d *Deps) ([]EarnMaxHistoryRow, error) {
+func earnMaxLoadHistory(ctx context.Context, d *Deps, cfg earnMaxConfig) ([]EarnMaxHistoryRow, error) {
 	points, err := earnMaxQuery(ctx, d, `SELECT date_trunc('hour', observed_at) AS hour,
        (avg(equity_usd_micros) / 1e6)::float8 AS equity,
        (avg(ltv_bps) / 100)::float8 AS ltv
@@ -721,19 +734,19 @@ func earnMaxLoadHistory(ctx context.Context, d *Deps) ([]EarnMaxHistoryRow, erro
 			err := rows.Scan(&hour, &p.EquityUsd, &p.LtvPct)
 			p.At = readsISO(hour)
 			return p, err
-		}, earnmax.RouteKey)
+		}, cfg.RouteKey)
 	if points == nil {
 		points = []EarnMaxHistoryRow{}
 	}
 	return points, err
 }
 
-func earnMaxLoadBalances(ctx context.Context) (EarnMaxBalances, error) {
+func earnMaxLoadBalances(ctx context.Context, cfg earnMaxConfig) (EarnMaxBalances, error) {
 	client, err := earnMaxChain()
 	if err != nil {
 		return EarnMaxBalances{}, err
 	}
-	keys := []solana.PublicKey{earnmax.CustodyDebt, earnmax.CustodyCollat, earnmax.IdleATA}
+	keys := []solana.PublicKey{solana.MustPublicKeyFromBase58(cfg.identity.CashATA), cfg.Accounts.VaultAssetIdleATA}
 	accounts, err := earnMaxRetry(ctx, func() ([]*chain.Account, error) {
 		_, accounts, err := client.Accounts(ctx, keys, rpc.CommitmentConfirmed, 0)
 		return accounts, err
@@ -741,26 +754,29 @@ func earnMaxLoadBalances(ctx context.Context) (EarnMaxBalances, error) {
 	if err != nil {
 		return EarnMaxBalances{}, err
 	}
-	var amounts [3]float64
+	var amounts [2]float64
+	if len(accounts) != len(keys) {
+		return EarnMaxBalances{}, errors.New("Vault token accounts are unavailable.")
+	}
 	for i, account := range accounts {
 		if account == nil {
 			return EarnMaxBalances{}, fmt.Errorf("Token account %s is unreadable.", keys[i])
 		}
 		token, err := spl.DecodeTokenAccount(account)
-		if err != nil {
+		if err != nil || token.Mint != cfg.Accounts.AssetMint {
 			return EarnMaxBalances{}, fmt.Errorf("Token account %s is unreadable.", keys[i])
 		}
 		amounts[i] = float64(token.Amount) / 1e6
 	}
-	return EarnMaxBalances{Debt: amounts[0], Collateral: amounts[1], Idle: amounts[2]}, nil
+	return EarnMaxBalances{Cash: amounts[0], Idle: amounts[1]}, nil
 }
 
-func earnMaxSharePrice(ctx context.Context) (float64, error) {
-	price, err := earnmax.FetchSharePrice(ctx)
+func earnMaxSharePrice(ctx context.Context, cfg earnMaxConfig) (float64, error) {
+	price, err := earnmax.FetchVaultSharePrice(ctx, cfg.Accounts.Vault)
 	return price.PerLP, err
 }
 
-func earnMaxLoadApy(ctx context.Context, sharePrice func() (float64, error)) (EarnMaxApy, error) {
+func earnMaxLoadApy(ctx context.Context, cfg earnMaxConfig, sharePrice func() (float64, error)) (EarnMaxApy, error) {
 	var price float64
 	var priceErr error
 	done := make(chan struct{})
@@ -768,7 +784,7 @@ func earnMaxLoadApy(ctx context.Context, sharePrice func() (float64, error)) (Ea
 		defer close(done)
 		price, priceErr = sharePrice()
 	}()
-	days, vaultErr := earnmax.FetchDailyStats(ctx)
+	days, vaultErr := earnmax.FetchVaultDailyStats(ctx, cfg.Accounts.Vault)
 	<-done
 	if vaultErr != nil {
 		return EarnMaxApy{}, vaultErr
@@ -791,14 +807,22 @@ type earnMaxScan struct {
 	valueUsd   float64
 }
 
-var (
-	earnMaxFlowMu    sync.Mutex
-	earnMaxFlowCache = map[string]EarnMaxLpFlow{}
-	earnMaxScans     = &earnmax.StaleWhileRevalidate[earnMaxScan]{Fresh: time.Minute, Stale: 10 * time.Minute, Wait: 3 * time.Second, Budget: earnMaxEarnedBudget}
-)
+type earnMaxVaultCache struct {
+	mu    sync.Mutex
+	flows map[string]EarnMaxLpFlow
+	scans earnmax.StaleWhileRevalidate[earnMaxScan]
+}
 
-func earnMaxLoadVault() (EarnMaxVault, error) {
-	scan, have, scanErr := earnMaxScans.Get(earnMaxScanVault)
+var earnMaxCaches = func() map[string]*earnMaxVaultCache {
+	caches := map[string]*earnMaxVaultCache{}
+	for _, id := range []string{"loyal", "backyard"} {
+		caches[id] = &earnMaxVaultCache{flows: map[string]EarnMaxLpFlow{}, scans: earnmax.StaleWhileRevalidate[earnMaxScan]{Fresh: time.Minute, Stale: 10 * time.Minute, Wait: 3 * time.Second, Budget: earnMaxEarnedBudget}}
+	}
+	return caches
+}()
+
+func earnMaxLoadVault(cfg earnMaxConfig) (EarnMaxVault, error) {
+	scan, have, scanErr := earnMaxCaches[cfg.identity.ID].scans.Get(func(ctx context.Context) (earnMaxScan, error) { return earnMaxScanVault(ctx, cfg) })
 	if !have {
 		return EarnMaxVault{}, scanErr
 	}
@@ -814,7 +838,7 @@ func earnMaxLoadVault() (EarnMaxVault, error) {
 	return value, nil
 }
 
-func earnMaxFetchFlow(ctx context.Context, client *chain.Client, signature solana.Signature) (EarnMaxLpFlow, error) {
+func earnMaxFetchFlow(ctx context.Context, client *chain.Client, signature solana.Signature, cfg earnMaxConfig) (EarnMaxLpFlow, error) {
 	execution, err := earnMaxRetry(ctx, func() (chain.Execution, error) {
 		return client.Execution(ctx, signature, rpc.CommitmentConfirmed)
 	})
@@ -830,10 +854,10 @@ func earnMaxFetchFlow(ctx context.Context, client *chain.Client, signature solan
 		sign     int64
 	}{{execution.Post, 1}, {execution.Pre, -1}} {
 		for key, balance := range side.balances {
-			if balance.Mint == earnmax.LPMint {
+			if balance.Mint == cfg.Accounts.LPMint {
 				lpNet += side.sign * int64(balance.Amount)
 			}
-			if key == earnmax.IdleATA {
+			if key == cfg.Accounts.VaultAssetIdleATA {
 				idleDelta += side.sign * int64(balance.Amount)
 			}
 		}
@@ -849,12 +873,13 @@ func earnMaxFetchFlow(ctx context.Context, client *chain.Client, signature solan
 	return flow, nil
 }
 
-func earnMaxScanVault(ctx context.Context) (earnMaxScan, error) {
+func earnMaxScanVault(ctx context.Context, cfg earnMaxConfig) (earnMaxScan, error) {
+	cache := earnMaxCaches[cfg.identity.ID]
 	client, err := earnMaxChain()
 	if err != nil {
 		return earnMaxScan{}, err
 	}
-	mintKey := earnmax.LPMint
+	mintKey := cfg.Accounts.LPMint
 	accounts, err := earnMaxRetry(ctx, func() ([]*chain.Account, error) {
 		_, accounts, err := client.Accounts(ctx, []solana.PublicKey{mintKey}, rpc.CommitmentConfirmed, 0)
 		return accounts, err
@@ -907,13 +932,13 @@ func earnMaxScanVault(ctx context.Context) (earnMaxScan, error) {
 		}
 	}
 	missing := []solana.Signature{}
-	earnMaxFlowMu.Lock()
+	cache.mu.Lock()
 	for signature := range signatures {
-		if _, ok := earnMaxFlowCache[signature.String()]; !ok {
+		if _, ok := cache.flows[signature.String()]; !ok {
 			missing = append(missing, signature)
 		}
 	}
-	earnMaxFlowMu.Unlock()
+	cache.mu.Unlock()
 
 	var (
 		wg       sync.WaitGroup
@@ -932,7 +957,7 @@ func earnMaxScanVault(ctx context.Context) (earnMaxScan, error) {
 		wg.Add(1)
 		go func() {
 			defer func() { <-slots; wg.Done() }()
-			flow, err := earnMaxFetchFlow(fetchCtx, client, signature)
+			flow, err := earnMaxFetchFlow(fetchCtx, client, signature, cfg)
 			if err != nil {
 				failMu.Lock()
 				if firstErr == nil {
@@ -942,9 +967,9 @@ func earnMaxScanVault(ctx context.Context) (earnMaxScan, error) {
 				stop()
 				return
 			}
-			earnMaxFlowMu.Lock()
-			earnMaxFlowCache[signature.String()] = flow
-			earnMaxFlowMu.Unlock()
+			cache.mu.Lock()
+			cache.flows[signature.String()] = flow
+			cache.mu.Unlock()
 		}()
 	}
 	wg.Wait()
@@ -955,22 +980,22 @@ func earnMaxScanVault(ctx context.Context) (earnMaxScan, error) {
 		return earnMaxScan{}, err
 	}
 
-	sharePrice, err := earnMaxSharePrice(ctx)
+	sharePrice, err := earnMaxSharePrice(ctx, cfg)
 	if err != nil {
 		return earnMaxScan{}, err
 	}
 	scan := earnMaxScan{computedAt: readsISO(time.Now()), flows: []EarnMaxLpFlow{}, valueUsd: float64(supply) * sharePrice / 1000 / 1e6}
-	earnMaxFlowMu.Lock()
+	cache.mu.Lock()
 	kept := make(map[string]EarnMaxLpFlow, len(signatures))
 	for signature := range signatures {
-		flow := earnMaxFlowCache[signature.String()]
+		flow := cache.flows[signature.String()]
 		kept[signature.String()] = flow
 		if flow.LpNet != 0 {
 			scan.flows = append(scan.flows, flow)
 		}
 	}
-	earnMaxFlowCache = kept
-	earnMaxFlowMu.Unlock()
+	cache.flows = kept
+	cache.mu.Unlock()
 	return scan, nil
 }
 
@@ -1019,10 +1044,14 @@ func earnMaxLoadBorrowing(ctx context.Context) ([]EarnMaxBorrowRow, error) {
 	return rows, nil
 }
 
-func loadEarnMax(ctx context.Context, d *Deps, _ PageRequest) (EarnMaxPage, error) {
-	page := EarnMaxPage{LoadedAt: readsISO(time.Now())}
+func loadEarnMax(ctx context.Context, d *Deps, req PageRequest) (EarnMaxPage, error) {
+	cfg, err := earnMaxConfigFor(req.Query.Get("vault"))
+	if err != nil {
+		return EarnMaxPage{}, err
+	}
+	page := EarnMaxPage{SelectedVault: cfg.identity, LoadedAt: readsISO(time.Now())}
 	var backyardErr error
-	sharePrice := sync.OnceValues(func() (float64, error) { return earnMaxSharePrice(ctx) })
+	sharePrice := sync.OnceValues(func() (float64, error) { return earnMaxSharePrice(ctx, cfg) })
 	var wg sync.WaitGroup
 	run := func(load func()) {
 		wg.Add(1)
@@ -1031,24 +1060,32 @@ func loadEarnMax(ctx context.Context, d *Deps, _ PageRequest) (EarnMaxPage, erro
 			load()
 		}()
 	}
-	run(func() { page.Backyard, backyardErr = loadBackyard(ctx, d) })
-	run(func() { page.Route = earnMaxPart(func() (EarnMaxRoute, error) { return earnMaxLoadRoute(ctx, d) }) })
+	run(func() { page.Backyard, backyardErr = loadBackyard(ctx, d, cfg) })
 	run(func() {
-		page.NavSeries = earnMaxPart(func() ([]EarnMaxNavPoint, error) { return earnMaxLoadNavSeries(ctx, d) })
-	})
-	run(func() { page.Health = earnMaxPart(func() (EarnMaxHealth, error) { return earnMaxLoadHealth(ctx, d) }) })
-	run(func() { page.Moves = earnMaxPart(func() ([]EarnMaxMove, error) { return earnMaxLoadMoves(ctx, d) }) })
-	run(func() {
-		page.Latches = earnMaxPart(func() (EarnMaxLatches, error) { return earnMaxLoadLatches(ctx, d) })
+		page.Route = earnMaxPart(func() (EarnMaxRoute, error) { return earnMaxLoadRoute(ctx, d, cfg) })
 	})
 	run(func() {
-		page.History = earnMaxPart(func() ([]EarnMaxHistoryRow, error) { return earnMaxLoadHistory(ctx, d) })
+		page.NavSeries = earnMaxPart(func() ([]EarnMaxNavPoint, error) { return earnMaxLoadNavSeries(ctx, d, cfg) })
 	})
 	run(func() {
-		page.Balances = earnMaxPart(func() (EarnMaxBalances, error) { return earnMaxLoadBalances(ctx) })
+		page.Health = earnMaxPart(func() (EarnMaxHealth, error) { return earnMaxLoadHealth(ctx, d, cfg) })
 	})
-	run(func() { page.Vault = earnMaxPart(func() (EarnMaxVault, error) { return earnMaxLoadVault() }) })
-	run(func() { page.Apy = earnMaxPart(func() (EarnMaxApy, error) { return earnMaxLoadApy(ctx, sharePrice) }) })
+	run(func() {
+		page.Moves = earnMaxPart(func() ([]EarnMaxMove, error) { return earnMaxLoadMoves(ctx, d, cfg) })
+	})
+	run(func() {
+		page.Latches = earnMaxPart(func() (EarnMaxLatches, error) { return earnMaxLoadLatches(ctx, d, cfg) })
+	})
+	run(func() {
+		page.History = earnMaxPart(func() ([]EarnMaxHistoryRow, error) { return earnMaxLoadHistory(ctx, d, cfg) })
+	})
+	run(func() {
+		page.Balances = earnMaxPart(func() (EarnMaxBalances, error) { return earnMaxLoadBalances(ctx, cfg) })
+	})
+	run(func() { page.Vault = earnMaxPart(func() (EarnMaxVault, error) { return earnMaxLoadVault(cfg) }) })
+	run(func() {
+		page.Apy = earnMaxPart(func() (EarnMaxApy, error) { return earnMaxLoadApy(ctx, cfg, sharePrice) })
+	})
 	run(func() {
 		page.Borrowing = earnMaxPart(func() ([]EarnMaxBorrowRow, error) { return earnMaxLoadBorrowing(ctx) })
 	})

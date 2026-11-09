@@ -40,7 +40,7 @@ const landingPath = "/earn"
 var redirects = map[string]string{
 	"/":                            landingPath,
 	"/overview":                    landingPath,
-	"/vault-integrations/backyard": "/vault-integrations/earn-max",
+	"/vault-integrations/backyard": "/vault-integrations/earn-max?vault=backyard",
 }
 
 var securityPolicy = strings.Join([]string{

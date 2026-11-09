@@ -91,6 +91,10 @@ func collectSelectorQuotes(ctx context.Context, rpc *chain.Client, view *View, c
 			out[i].EntryBlockedReason = cashBlocked
 		} else {
 			maximum := min(strategyTwoBridgeLegCapRaw, uint64(s.TotalVaultNAVRaw-buffer), idle-uint64(buffer))
+			if manifest.vault.ProtectExecution {
+				// Price the small entry we can actually execute, including leverage.
+				maximum = min(maximum, executionEntryLimit(manifest.vault, market.Lane))
+			}
 			if policy.DiversifyNewCash {
 				limits := newAllocationLimits(s, o.lanes, policy, market.Lane)
 				room := limits.ProviderRoomRaw
@@ -184,8 +188,13 @@ func (p lanePricer) ladder(ctx context.Context, o Observation, markets []LaneEco
 		}
 		_, _ = fmt.Fprintf(os.Stderr, "backyard-rwa-worker: selector entry quote unavailable from=%s lane=%s size=%d: %v\n", from, market.Lane, size, err)
 		var hold *PreSendHold
-		if errors.As(err, &hold) && holdCause(hold) == "selector_move_cost_exceeds_equity" {
-			return q, "selector_move_cost_exceeds_equity", true, err
+		if errors.As(err, &hold) {
+			switch cause := holdCause(hold); cause {
+			case "selector_move_cost_exceeds_equity", investmentExitExpensive:
+				return q, cause, true, err
+			case investmentExitUnavailable, investmentExitSlotsChanged, investmentExitRouteChanged:
+				return q, cause, false, err
+			}
 		}
 		var status *jupiter.StatusError
 		var outage *leverageCostOutage

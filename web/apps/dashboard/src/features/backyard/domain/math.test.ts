@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { loanToValue, windowApy } from "./math";
+import { windowApy } from "./math";
 
 const NOW = Date.parse("2026-11-06T12:00:00Z");
 const daily = [
@@ -27,13 +27,5 @@ describe("windowApy", () => {
 
   test("ignores today's unfinished point and needs 12 hours", () => {
     expect(windowApy([{ day: "2026-11-06", price: 1 }], 1, NOW, 30)).toBeNull();
-  });
-});
-
-describe("loanToValue", () => {
-  test("takes custody cash out of the collateral", () => {
-    // NAV 100 + debt 150 - 10 cash = 240 collateral in Kamino.
-    expect(loanToValue(100, 150, 10)).toBeCloseTo(150 / 240, 10);
-    expect(loanToValue(0, 0, 0)).toBeNull();
   });
 });

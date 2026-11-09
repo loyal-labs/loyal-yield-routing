@@ -146,10 +146,15 @@ export default function EarnScreen() {
     holdings,
     policyMissing: earnPolicyMissing,
     hasLoaded: earnPositionLoaded,
+    isLoading: earnPositionLoading,
+    error: earnPositionError,
+    needsSignIn,
     refreshEarnPosition,
     markEarnMutation,
   } = useEarnPosition(walletAddress, signer);
-  const balanceLoading = walletAddress != null && !earnPositionLoaded;
+  const balanceLoading =
+    walletAddress != null &&
+    (!earnPositionLoaded || (!!earnPositionError && earnPositionLoading));
   const forecastSummary = useEarnForecast();
   const withdrawSources = useMemo(
     () => earnWithdrawSources(holdings),
@@ -200,14 +205,20 @@ export default function EarnScreen() {
   const firstDepositSolShortfall = useMemo(
     () =>
       firstDepositGateSolShortfall({
-        accountLoaded: earnPositionLoaded,
+        accountLoaded: earnPositionLoaded && !earnPositionError,
         hasFundedPosition: hasDeposit,
         routePolicyMissing: earnPolicyMissing,
         solBalance:
           tokenHoldings.find((h) => h.mint === NATIVE_SOL_MINT)?.balance ??
           null,
       }),
-    [earnPositionLoaded, hasDeposit, earnPolicyMissing, tokenHoldings]
+    [
+      earnPositionLoaded,
+      earnPositionError,
+      hasDeposit,
+      earnPolicyMissing,
+      tokenHoldings,
+    ]
   );
   const autodepositSolShortfall = useMemo(() => {
     const sol = tokenHoldings.find((h) => h.mint === NATIVE_SOL_MINT);
@@ -256,7 +267,7 @@ export default function EarnScreen() {
   // routes through Deposit instead. Fails open while the position is still
   // loading — the backend prepare rejects the truly-empty case as a backstop.
   const openAutodepositCreate = useCallback(() => {
-    if (earnPositionLoaded && !hasDeposit) {
+    if (earnPositionLoaded && !earnPositionError && !hasDeposit) {
       Alert.alert(
         "Deposit first",
         "Autodeposit needs an active Earn account to deposit into. Make a deposit first — anything above your threshold then moves to Earn automatically.",
@@ -273,6 +284,7 @@ export default function EarnScreen() {
     setAutodepositInfoOpen(true);
   }, [
     earnPositionLoaded,
+    earnPositionError,
     hasDeposit,
     refreshTokenHoldings,
     refreshEarnPosition,
@@ -314,8 +326,8 @@ export default function EarnScreen() {
 
   const refreshEarnData = useCallback(
     async (reason: WalletRefreshReason) => {
+      await refreshEarnPosition({ signIn: reason === "manual" });
       await Promise.allSettled([
-        refreshEarnPosition({ signIn: reason === "manual" }),
         refreshAutodeposit(),
         ...(walletAddress ? [refreshEarnEarningsCache(walletAddress)] : []),
       ]);
@@ -349,7 +361,7 @@ export default function EarnScreen() {
   // chosen the right source (read-model right after a mutation, else live), so we
   // render its value directly — no per-read guessing here.
   useEffect(() => {
-    if (!earnPositionLoaded) {
+    if (!earnPositionLoaded || earnPositionError) {
       return;
     }
     const raw = position ? Number(position.currentTotalAmountRaw) : 0;
@@ -361,7 +373,7 @@ export default function EarnScreen() {
       setDepositedUsd(null);
       setHasDeposit(false);
     }
-  }, [position, earnPositionLoaded]);
+  }, [position, earnPositionLoaded, earnPositionError]);
 
   // Push fresh earnings into a mounted Earned chart only when the balance
   // actually moved (deposit/withdraw/sweep, local or another client). Quiet
@@ -825,7 +837,7 @@ export default function EarnScreen() {
           apyLabel={apyLabel}
           onBack={() => router.navigate("/(tabs)")}
         />
-        {hasDeposit ? (
+        {hasDeposit && !earnPositionError ? (
           <Animated.View style={[styles.fundedLayer, fundedLayerStyle]}>
             <EarnChartTabs
               principalUsd={depositedUsd}
@@ -973,6 +985,9 @@ export default function EarnScreen() {
         style={bottomCardRadiusStyle}
         hasDeposit={hasDeposit}
         balanceLoading={balanceLoading}
+        balanceError={earnPositionError}
+        retryLabel={needsSignIn ? "Sign in" : "Retry"}
+        onRetry={() => void refreshEarnData("manual")}
         whole={balanceParts.whole}
         cents={balanceParts.cents}
         onPositions={handleOpenPositions}
@@ -988,7 +1003,9 @@ export default function EarnScreen() {
         stableBalancesByMint={stableBalancesByMint}
         firstDepositSolShortfall={firstDepositSolShortfall}
         isFirstDeposit={
-          earnPositionLoaded && (!hasDeposit || earnPolicyMissing)
+          earnPositionLoaded &&
+          !earnPositionError &&
+          (!hasDeposit || earnPolicyMissing)
         }
       />
 
