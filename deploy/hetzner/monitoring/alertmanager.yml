@@ -20,6 +20,10 @@ route:
     # Telegram's 4096-character limit.
     - matchers: [alertname=~"LoyalBridgeIncoming(Unmoved|Stranded)"]
       group_by: [alertname, address, chain, asset]
+    # xstock-bot is the owner's own trading bot, not Loyal's: its alerts stay
+    # out of the Loyal alerts chat.
+    - matchers: [family="xstock"]
+      receiver: xstock
 
 inhibit_rules:
   # A unit that is down explains its own stale families and missing metrics.
@@ -56,3 +60,6 @@ receivers:
   #       send_resolved: false
   # and the heartbeat_url line in alertmanager.service.d/telegram.conf.
   - name: heartbeat
+  # Empty until the owner names a private chat for xstock alerts. They stay
+  # visible in Alertmanager meanwhile.
+  - name: xstock
