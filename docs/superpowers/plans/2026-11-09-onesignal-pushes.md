@@ -618,17 +618,20 @@ Do these in order. Each item says what proves it worked.
   - Vercel logs for `/api/push-tokens/debug-send`.
   - Any Expo sends from `web/apps/telegram`.
   - Write down each caller. "Expo removed" is claimed only when this check is clean.
-- [ ] **Credentials:** seal `ONESIGNAL_APP_ID` and `ONESIGNAL_REST_API_KEY` for `loyal-web` and `loyal-web-cron@`, and `MIXPANEL_PROJECT_TOKEN` for `loyal-web-cron@`. Use drop-ins `60-onesignal.conf` and `60-mixpanel.conf` holding `LoadCredentialEncrypted=` lines plus `Environment=ONESIGNAL_EARNINGS_CHANNEL_ID=…` and `Environment=ONESIGNAL_ALERTS_CHANNEL_ID=…`. Proof: `loyal-web` logs no `degraded("wallet push"…)` line.
+- [ ] **Credentials:** seal `ONESIGNAL_APP_ID` and `ONESIGNAL_REST_API_KEY` for `loyal-web` and `loyal-web-cron@`, and `MIXPANEL_PROJECT_TOKEN` for `loyal-web-cron@`. Use drop-ins `60-onesignal.conf` and `60-mixpanel.conf` holding `LoadCredentialEncrypted=` lines plus `Environment=ONESIGNAL_EARNINGS_CHANNEL_ID=…` and `Environment=ONESIGNAL_ALERTS_CHANNEL_ID=…`. Channel IDs are required for the joy cron: it refuses to run without the earnings one. Proof: `loyal-web` logs no `degraded("wallet push"…)` line.
 - [ ] **Deploy PR 1:** `bun run deploy` (web family). Proof: `debug-send` to your own wallet arrives under "Account alerts".
 - [ ] **Test phone:** a push naming the Earnings channel creates that channel on an existing install, with no new build.
 - [ ] **Migration** (before PR 2 goes live):
   - Check that `drizzle.__drizzle_migrations` has 32 rows, then run `bun run db:migrate` in `web/apps/telegram` against loyal-db-primary `loyal_app` as its owner.
-  - Grant SELECT, INSERT and UPDATE on `analytics_export_watermarks` to the loyal-web App role, mirroring `\dp earn_yield_push_state`.
+  - The branch may ship as one PR. If it does, apply the migration before that single deploy. Skipping this fails loudly at the 15:41 run without sending anything.
+  - Grant SELECT, INSERT and UPDATE on `analytics_export_watermarks` to the loyal-web App role, mirroring `\dp earn_yield_push_state`. Only needed when the loyal-web credentials are not table owners.
 - [ ] **Deploy PR 2, then dry run:** `loyal-web cron earn-yield-joy --dry-run`. Proof:
   - `rebaselined` ≈ the number of state rows, `pushed` is empty, and `truncated` is **false**. If it is true, raise `joyTimeBudget` before the 15:41 run, because the same tail of wallets would be skipped every day.
   - Then enable `loyal-web-cron-earn-events-mixpanel.timer`. Its first run reports `seeded: true`.
-- [ ] **Next day:** the joy summary's `pushed` amounts are all ≥ $1, and Mixpanel shows `Earnings Push Sent` and `Earn Deposit Confirmed`.
+- [ ] **Rollback warning:** before rolling loyal-web back past this release, run `systemctl disable --now loyal-web-cron-earn-yield-joy.timer`. The old joy code would push `yield-first` and `yield-total-10` to wallets the new code seeded, and would send its sub-$1 digests.
+- [ ] **Next day:** the joy summary's `pushed` amounts are all ≥ $1, and Mixpanel shows `Earnings Push Sent` and `Earn Deposit Confirmed`. If `Earn Deposit Confirmed` shows almost no `source=autodeposit`, the observer-before-finalization labelling race needs a fix.
 - [ ] **Ship PR 3:** `eas update` on the `production` and `dapp-store` channels. Proof: tapping an earnings push opens Earn (or Earn MAX).
 - [ ] **Follow-ups** (not in this plan):
+  - Delete the unscheduled legacy Next route `web/apps/web/src/app/api/cron/earn-yield-joy`, because a manual call would push under the old rules.
   - Remove `/api/push-tokens` and the `push_tokens` table after a release with no readers.
   - Ask whoever owns the Mixpanel cohorts to stop syncing `push: earning-while-away` and `push: still-earning`. Until then, those syncs get a 400 "known campaign key" refusal from Go, and Mixpanel pauses them.

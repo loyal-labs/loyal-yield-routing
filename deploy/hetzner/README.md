@@ -597,23 +597,28 @@ is untouched.
 A run needs `WEB_APP_DATABASE_URL` (both jobs) and `WEB_SOLANA_RPC_URL` and
 `SMART_ACCOUNT_SPONSOR_PK` (reconcile), `WEB_YIELD_DATABASE_URL`, `TIMESCALEDB_URL`,
 and no push API pair: joy sends through loyal-web's in-process wallet push sender and needs
-the two OneSignal credentials; without them it refuses to run. By hand,
+the two OneSignal credentials and `ONESIGNAL_EARNINGS_CHANNEL_ID`; without any of them it
+refuses to run. Set both `ONESIGNAL_EARNINGS_CHANNEL_ID` and `ONESIGNAL_ALERTS_CHANNEL_ID`
+on both `loyal-web` and `loyal-web-cron@`. Without the alerts one, account alerts land in
+OneSignal's default channel. By hand,
 `loyal-web cron earn-yield-joy --dry-run` prints what a run would push and writes nothing.
 `earn-events-mixpanel` sends confirmed Earn deposits and withdrawals to Mixpanel; it needs
 `WEB_YIELD_DATABASE_URL` and `MIXPANEL_PROJECT_TOKEN`, seeds its watermark at the first run
-(no history backfill), and `--dry-run` writes and sends nothing. The loyal-web App role needs
-SELECT, INSERT and UPDATE on `analytics_export_watermarks`, and SELECT on
-`loyal_yield.user_yield_position_deposits` and `user_yield_position_withdrawals`.
+(no history backfill), and `--dry-run` writes and sends nothing. The deposit and withdrawal
+SELECTs on `loyal_yield.user_yield_position_deposits` and `user_yield_position_withdrawals`
+go through `WEB_YIELD_DATABASE_URL`, and `analytics_export_watermarks` (SELECT, INSERT and
+UPDATE) through `WEB_APP_DATABASE_URL`. Grants are needed only if those credentials are not
+the table owners.
 Enable with `systemctl enable --now loyal-web-cron-<job>.timer`. Every run takes a Postgres
 advisory lock on the App database, so a second run of one job exits non-zero while the
 first holds it.
 
 `POST /api/push/mixpanel-cohort` and `POST /api/solana-week/sweep-notify` are served by Go
-only when `MOBILE_PUSH_API_BASE_URL`, `MOBILE_PUSH_API_SECRET`, `WEB_YIELD_DATABASE_URL`
-with INSERT on `loyal_yield.push_campaign_sends` (and USAGE on its id sequence) and the
-route's own secret are installed: `MIXPANEL_COHORT_WEBHOOK_SECRET` for the first,
-`SOLANA_WEEK_NOTIFY_SECRET` for the second (the Next deployment's values). Until then each
-keeps proxying to Next. The retail engine's sweep notice moves to Go by setting
+only when all three are installed: `WEB_YIELD_DATABASE_URL` (with INSERT on
+`loyal_yield.push_campaign_sends` and USAGE on its id sequence), the OneSignal credentials
+(through the wallet push sender), and the route's own secret, `MIXPANEL_COHORT_WEBHOOK_SECRET`
+for the first and `SOLANA_WEEK_NOTIFY_SECRET` for the second (the Next deployment's values).
+Without them each keeps proxying to Next. The retail engine's sweep notice moves to Go by setting
 `RETAIL_SWEEP_NOTIFY_ENDPOINT=https://next.askloyal.com/api/solana-week/sweep-notify`
 (the host whose tunnel reaches `loyal-web`; a path Go does not serve is proxied to Next, so
 the value is safe before the credentials above exist) with the secret unchanged.
@@ -683,6 +688,11 @@ The differences:
   200 naming `X-Loyal-Release: <sha>` (30 s grace) — an old release also
   stays up, so the release header is the real gate. Otherwise the previous
   drop-in comes back and the previous release restarts.
+
+Before rolling loyal-web back past the OneSignal pushes release, run
+`systemctl disable --now loyal-web-cron-earn-yield-joy.timer`. The old joy code would push
+`yield-first` and `yield-total-10` to wallets the new code seeded, and would send its
+sub-$1 digests.
 
 Roll back with `bun run deploy web <prev-sha>`. The host log is
 `/var/log/loyal-deploy/web-<sha>.log`.
