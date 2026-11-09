@@ -70,6 +70,24 @@ func TestBackyardSourceMintDecimals(t *testing.T) {
 	}
 }
 
+func TestBackyardMoveInputKeepsAmountAndMintTogether(t *testing.T) {
+	amount, mint := backyardMoveInput([]byte(`{"kind":"cross-mint-swap","accounts":[{"mint":"ONyc-mint","beforeRaw":2000000000,"afterRaw":1000000000},{"mint":"USDC-mint","beforeRaw":0,"afterRaw":1100000,"minimumAfterRaw":1100000}]}`))
+	if amount == nil || mint == nil || *amount != "1000000000" || *mint != "ONyc-mint" {
+		t.Fatalf("source transfer: %v %v", amount, mint)
+	}
+	// This live withdrawal's decision was 5054099 USDC micros, not ONyc raw.
+	for _, raw := range []string{
+		`{"kind":"atomic-step","accounts":[{"mint":"ONyc-mint","beforeRaw":0,"afterRaw":0,"minimumAfterRaw":0},{"mint":"USDC-mint","beforeRaw":0,"afterRaw":5017856,"minimumAfterRaw":5017856}]}`,
+		`{"kind":"atomic-step","accounts":[{"mint":"ONyc-mint","beforeRaw":1000000000,"afterRaw":0}]}`,
+		`{"accounts":[{"mint":"USDC-mint","beforeRaw":0,"afterRaw":5017856,"minimumAfterRaw":5017856}]}`,
+		`null`, `invalid`,
+	} {
+		if amount, mint := backyardMoveInput([]byte(raw)); amount != nil || mint != nil {
+			t.Fatal("unknown or multi-leg inputs must not become a single-token amount")
+		}
+	}
+}
+
 // A landed NAV report is read from the vault adaptor's verified return bytes,
 // and otherwise from the built request; another program's bytes are ignored.
 func TestBackyardReportNAV(t *testing.T) {

@@ -1033,7 +1033,7 @@ function MoneyMoves({ data }: { data: BackyardData }) {
             <tr>
               <Th>Time</Th>
               <Th>What it did</Th>
-              <Th right>Amount</Th>
+              <Th right>Planned input</Th>
               <Th>Status</Th>
               <Th>Transaction</Th>
             </tr>
@@ -1079,8 +1079,9 @@ function MoneyMoves({ data }: { data: BackyardData }) {
         </TableWrap>
       )}
       <p className="mt-3 text-xs text-muted-foreground">
-        Amounts are in each step&apos;s source token. Unknown tokens show a
-        dash. Hold decisions and NAV reports are left out.
+        Amounts are planned inputs from transfer records. Multi-leg moves and
+        unknown amounts show a dash. Hold decisions and NAV reports are left
+        out.
         {data.health.ok
           ? ` ${data.health.value.refusedBeforeSending} steps refused by the worker's own checks before sending in the last 24 h.`
           : ""}
