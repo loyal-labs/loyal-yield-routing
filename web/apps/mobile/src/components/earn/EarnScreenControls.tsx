@@ -59,6 +59,9 @@ export function EarnBalanceCard({
   cents,
   hasDeposit,
   balanceLoading,
+  balanceError,
+  onRetry,
+  retryLabel = "Retry",
   onPositions,
   onDeposit,
   onWithdraw,
@@ -73,6 +76,9 @@ export function EarnBalanceCard({
   cents: string;
   hasDeposit: boolean;
   balanceLoading: boolean;
+  balanceError?: string | null;
+  onRetry?: () => void;
+  retryLabel?: string;
   onPositions: () => void;
   onDeposit: () => void;
   onWithdraw: () => void;
@@ -86,11 +92,11 @@ export function EarnBalanceCard({
   const footerSwipeGesture = useMemo(
     () =>
       Gesture.Pan()
-        .enabled(hasDeposit)
+        .enabled(hasDeposit && !balanceError)
         .activeOffsetY(-12)
         .runOnJS(true)
         .onStart(onPositions),
-    [hasDeposit, onPositions]
+    [hasDeposit, balanceError, onPositions]
   );
   return (
     <Animated.View
@@ -103,7 +109,7 @@ export function EarnBalanceCard({
     >
       <GestureDetector gesture={footerSwipeGesture}>
         <Animated.View style={styles.footerInner}>
-          {hasDeposit ? (
+          {hasDeposit && !balanceError ? (
             <Pressable
               onPress={onPositions}
               accessibilityRole="button"
@@ -117,7 +123,9 @@ export function EarnBalanceCard({
 
           <View style={styles.balanceRow}>
             <Text style={styles.balanceLabel}>{label}</Text>
-            {balanceLoading ? (
+            {balanceError ? (
+              <Text style={styles.balanceValue}>—</Text>
+            ) : balanceLoading ? (
               <Skeleton style={styles.balanceSkeleton} />
             ) : (
               <Text style={styles.balanceValue}>
@@ -127,61 +135,90 @@ export function EarnBalanceCard({
             )}
           </View>
 
+          {balanceError ? (
+            <Text accessibilityRole="alert" style={styles.withdrawLabel}>
+              {balanceError}
+            </Text>
+          ) : null}
           <View style={styles.actionRow}>
-            <Pressable
-              onPress={onDeposit}
-              accessibilityRole="button"
-              accessibilityLabel="Deposit"
-              disabled={depositDisabled}
-              style={({ pressed }) => [
-                styles.depositButton,
-                !hasDeposit || fullWidthActions
-                  ? styles.depositButtonFull
-                  : null,
-                { opacity: depositDisabled ? 0.4 : pressed ? 0.8 : 1 },
-              ]}
-            >
-              <View style={styles.iconWrap}>
-                <Plus size={20} color="#FFF" strokeWidth={2.2} />
-              </View>
-              <Text style={styles.depositLabel}>Deposit</Text>
-            </Pressable>
-            {!hasDeposit && !!onRefund ? (
+            {balanceError ? (
               <Pressable
-                onPress={onRefund}
+                onPress={onRetry}
                 accessibilityRole="button"
-                accessibilityLabel="View refundable accounts"
-                style={({ pressed }) => [
-                  styles.refundActionButton,
-                  { opacity: pressed ? 0.8 : 1 },
+                accessibilityLabel={retryLabel}
+                accessibilityState={{
+                  disabled: balanceLoading,
+                  busy: balanceLoading,
+                }}
+                disabled={balanceLoading}
+                style={[
+                  styles.depositButton,
+                  styles.depositButtonFull,
+                  { opacity: balanceLoading ? 0.4 : 1 },
                 ]}
               >
-                <Text style={styles.withdrawLabel}>Refund SOL</Text>
+                <Text style={styles.depositLabel}>
+                  {balanceLoading ? "Loading…" : retryLabel}
+                </Text>
               </Pressable>
-            ) : null}
-            {hasDeposit ? (
-              <Pressable
-                onPress={onWithdraw}
-                accessibilityRole="button"
-                accessibilityLabel="Withdraw"
-                disabled={withdrawDisabled}
-                style={({ pressed }) => [
-                  styles.withdrawButton,
-                  fullWidthActions && styles.depositButtonFull,
-                  { opacity: withdrawDisabled ? 0.4 : pressed ? 0.8 : 1 },
-                ]}
-              >
-                <View style={styles.iconWrap}>
-                  <ArrowUp
-                    size={20}
-                    color="#000"
-                    strokeWidth={2.2}
-                    opacity={0.6}
-                  />
-                </View>
-                <Text style={styles.withdrawLabel}>Withdraw</Text>
-              </Pressable>
-            ) : null}
+            ) : (
+              <>
+                <Pressable
+                  onPress={onDeposit}
+                  accessibilityRole="button"
+                  accessibilityLabel="Deposit"
+                  disabled={depositDisabled}
+                  style={({ pressed }) => [
+                    styles.depositButton,
+                    !hasDeposit || fullWidthActions
+                      ? styles.depositButtonFull
+                      : null,
+                    { opacity: depositDisabled ? 0.4 : pressed ? 0.8 : 1 },
+                  ]}
+                >
+                  <View style={styles.iconWrap}>
+                    <Plus size={20} color="#FFF" strokeWidth={2.2} />
+                  </View>
+                  <Text style={styles.depositLabel}>Deposit</Text>
+                </Pressable>
+                {!hasDeposit && !!onRefund ? (
+                  <Pressable
+                    onPress={onRefund}
+                    accessibilityRole="button"
+                    accessibilityLabel="View refundable accounts"
+                    style={({ pressed }) => [
+                      styles.refundActionButton,
+                      { opacity: pressed ? 0.8 : 1 },
+                    ]}
+                  >
+                    <Text style={styles.withdrawLabel}>Refund SOL</Text>
+                  </Pressable>
+                ) : null}
+                {hasDeposit ? (
+                  <Pressable
+                    onPress={onWithdraw}
+                    accessibilityRole="button"
+                    accessibilityLabel="Withdraw"
+                    disabled={withdrawDisabled}
+                    style={({ pressed }) => [
+                      styles.withdrawButton,
+                      fullWidthActions && styles.depositButtonFull,
+                      { opacity: withdrawDisabled ? 0.4 : pressed ? 0.8 : 1 },
+                    ]}
+                  >
+                    <View style={styles.iconWrap}>
+                      <ArrowUp
+                        size={20}
+                        color="#000"
+                        strokeWidth={2.2}
+                        opacity={0.6}
+                      />
+                    </View>
+                    <Text style={styles.withdrawLabel}>Withdraw</Text>
+                  </Pressable>
+                ) : null}
+              </>
+            )}
           </View>
         </Animated.View>
       </GestureDetector>
