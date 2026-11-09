@@ -38,8 +38,10 @@ var legacyReadPaths = []string{
 var earnLegacyStateFamily = earnFamily{
 	name:        "earn legacy state",
 	yieldGrants: earnStateYieldGrants,
-	ready:       func(h earnRoutes) bool { return h.signedIn() && h.YieldDB != nil && h.Timescale != nil },
-	register:    earnRoutes.registerLegacyState,
+	ready: func(h earnRoutes) bool {
+		return h.signedIn() && h.YieldDB != nil && h.Timescale != nil && h.Chain != nil
+	},
+	register: earnRoutes.registerLegacyState,
 }
 
 var earnLegacyTransactionsFamily = earnFamily{
@@ -182,16 +184,16 @@ func (h earnRoutes) legacyState(ctx context.Context, in *legacyWalletRequest) (*
 	if position == nil {
 		return out(MobileEarnStateResponse{SettingsPda: &settings, SmartAccountAddress: &smartAccount}), nil
 	}
-	total, err := h.stateCurrentTotalAmountRaw(ctx, settings, wallet.String(), position.VaultPubkey)
+	holdings, err := h.deskHoldingsRead(ctx, wallet)
 	if err != nil {
 		return nil, legacyFailed("state holdings", err, http.StatusBadGateway, code, message)
 	}
-	if total <= 0 && position.CurrentAmountRaw > 0 {
+	if holdings.ObservedAt == nil {
 		return nil, legacyFailed("state holdings", errors.New("liquidity valuation is unavailable"), http.StatusBadGateway, code, message)
 	}
 	return out(MobileEarnStateResponse{
 		Position: &MobileEarnStatePosition{
-			CurrentAmountRaw:    strconvFormatInt(total),
+			CurrentAmountRaw:    holdings.CurrentTotalAmountRaw,
 			CurrentSupplyApyBps: h.stateCurrentSupplyApyBps(ctx, *position),
 			PrincipalAmountRaw:  strconvFormatInt(position.PrincipalAmountRaw),
 			Status:              position.Status,
