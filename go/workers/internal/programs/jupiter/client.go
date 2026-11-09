@@ -12,6 +12,8 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/solana-foundation/solana-go/v2"
 )
@@ -26,6 +28,8 @@ const maxResponseBytes = 2 << 20
 type Client struct {
 	base, apiKey string
 	http         *http.Client
+	mu           sync.Mutex
+	retryAfter   time.Time
 }
 
 func NewClient(base, apiKey string, client *http.Client) (*Client, error) {
@@ -167,6 +171,12 @@ func (c *Client) SwapInstructions(ctx context.Context, quote Quote, user solana.
 }
 
 func (c *Client) do(request *http.Request) (json.RawMessage, error) {
+	c.mu.Lock()
+	limited := time.Now().Before(c.retryAfter)
+	c.mu.Unlock()
+	if limited {
+		return nil, &StatusError{Code: http.StatusTooManyRequests}
+	}
 	if c.apiKey != "" {
 		request.Header.Set("x-api-key", c.apiKey)
 	}
@@ -175,6 +185,16 @@ func (c *Client) do(request *http.Request) (json.RawMessage, error) {
 		return nil, err
 	}
 	defer response.Body.Close()
+	if response.StatusCode == http.StatusTooManyRequests {
+		// All lanes using this client share the upstream quota. Refuse promptly
+		// during its cooldown instead of spending the tick waiting or retrying.
+		until := retryTime(response.Header, time.Now())
+		c.mu.Lock()
+		if until.After(c.retryAfter) {
+			c.retryAfter = until
+		}
+		c.mu.Unlock()
+	}
 	data, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
 	if err != nil || len(data) > maxResponseBytes {
 		return nil, errors.New("Jupiter response exceeds bounded body")
@@ -183,6 +203,24 @@ func (c *Client) do(request *http.Request) (json.RawMessage, error) {
 		return nil, &StatusError{Code: response.StatusCode}
 	}
 	return data, nil
+}
+
+func retryTime(header http.Header, now time.Time) time.Time {
+	until := now
+	if seconds, err := strconv.ParseInt(header.Get("Retry-After"), 10, 32); err == nil && seconds > 0 {
+		until = now.Add(time.Duration(seconds) * time.Second)
+	} else if date, err := http.ParseTime(header.Get("Retry-After")); err == nil && date.After(until) {
+		until = date
+	}
+	if epoch, err := strconv.ParseInt(header.Get("X-Ratelimit-Reset"), 10, 64); err == nil {
+		if reset := time.Unix(epoch, 0); reset.After(until) {
+			until = reset
+		}
+	}
+	if !until.After(now) {
+		until = now.Add(5 * time.Second)
+	}
+	return until
 }
 
 type StatusError struct{ Code int }

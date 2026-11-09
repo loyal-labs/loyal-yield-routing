@@ -66,6 +66,7 @@ type Database struct {
 	writer bool
 	vault  *Vault
 	events map[string]*events
+	owner  string
 }
 
 var errWriterSessionLost = errors.New("writer session lost")
@@ -575,6 +576,7 @@ func (d *Database) readReconciledBridgeJournal(ctx context.Context, routeKey str
 }
 
 type routeObservationProjection struct {
+	WorkerOwner                 string `json:"workerOwner,omitempty"`
 	NAVKnown                    bool   `json:"navKnown"`
 	NAVUnavailable              string `json:"navUnavailable,omitempty"`
 	PositionCollateralRaw       string `json:"positionCollateralRaw"`
@@ -706,6 +708,7 @@ func (d *Database) RecordPositionSnapshot(ctx context.Context, routeKey string, 
 	if err != nil {
 		return err
 	}
+	projection.WorkerOwner = d.owner
 	projectionJSON, err := json.Marshal(projection)
 	if err != nil {
 		return fmt.Errorf("encode route observation projection: %w", err)

@@ -2,8 +2,26 @@ package admin
 
 import (
 	"encoding/base64"
+	"strings"
 	"testing"
 )
+
+func TestEarnMaxWorkerVersion(t *testing.T) {
+	for _, tc := range []struct{ owner, want string }{
+		{"worker:backyard:rwa:sha-579af446b0fdcb783e9befb366660342647ed5b4", "579af44"},
+		{"worker:backyard:rwa", ""},
+		{"worker:backyard:rwa:sha-abcd", ""},
+		{"worker:backyard:rwa:sha-" + strings.Repeat("z", 40), ""},
+	} {
+		got := earnMaxWorkerVersion(&tc.owner)
+		if (got == nil && tc.want != "") || (got != nil && *got != tc.want) {
+			t.Fatalf("owner %q: version %v, want %q", tc.owner, got, tc.want)
+		}
+	}
+	if earnMaxWorkerVersion(nil) != nil {
+		t.Fatal("unrecorded release reported as known")
+	}
+}
 
 func TestEarnMaxReportNAVFormats(t *testing.T) {
 	program := "FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW"

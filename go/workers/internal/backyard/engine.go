@@ -80,6 +80,7 @@ func NewEngine(config EngineConfig) (*Engine, error) {
 		return nil, fmt.Errorf("Backyard engine requires a Jupiter client")
 	}
 	config.Database.events = map[string]*events{v.RouteKey: state.events}
+	config.Database.owner = config.Owner
 	return e, nil
 }
 

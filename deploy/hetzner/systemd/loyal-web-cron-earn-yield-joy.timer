@@ -1,11 +1,11 @@
-# vercel.json: 41 15 * * * (UTC, 08:41 in San Francisco while PDT, 07:41 PST).
+# The job begins a daily cycle at 15:41 UTC and resumes unfinished batches.
 # Persistent: a run missed while the host was down starts at boot.
 [Unit]
-Description=Loyal web cron earn-yield-joy, daily 15:41 UTC
+Description=Loyal web cron earn-yield-joy, resume every 15 minutes
 
 [Timer]
 Unit=loyal-web-cron@earn-yield-joy.service
-OnCalendar=*-*-* 15:41:00 UTC
+OnCalendar=*-*-* *:11,26,41,56:00 UTC
 Persistent=true
 AccuracySec=1s
 
