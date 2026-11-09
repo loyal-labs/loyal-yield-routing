@@ -140,7 +140,7 @@ func buildAuth(appDB *pgxpool.Pool, sessionGranted bool) (*webapp.Auth, *chain.C
 	return auth, rpcClient, err
 }
 
-type grantVerdicts struct{ Content, Stats, Session, EarnMax, Push, PushSend, Yield, WithdrawalConsent, WithdrawalAttempt, WithdrawalStatus, ReleaseControl bool }
+type grantVerdicts struct{ Content, Stats, Session, EarnMax, Push, Yield, WithdrawalConsent, WithdrawalAttempt, WithdrawalStatus, ReleaseControl bool }
 
 func checkGrants(ctx context.Context, appDB, yieldDB *pgxpool.Pool) grantVerdicts {
 	ctx, cancel := context.WithTimeout(ctx, grantBound)
@@ -158,7 +158,6 @@ func checkGrants(ctx context.Context, appDB, yieldDB *pgxpool.Pool) grantVerdict
 		{&v.Session, appDB, "session routes", webapp.AuthGrants},
 		{&v.EarnMax, appDB, "Earn MAX routes", webapp.EarnMaxGrants},
 		{&v.Push, appDB, "push tokens", webapp.PushGrants},
-		{&v.PushSend, appDB, "wallet push sends", webapp.PushSendGrants},
 		{&v.Yield, yieldDB, "Earn MAX route state", webapp.YieldGrants},
 		{&v.WithdrawalConsent, yieldDB, "Earn MAX withdrawal consent", webapp.WithdrawalConsentGrants},
 		{&v.WithdrawalAttempt, yieldDB, "Earn MAX withdrawal claim accounting", webapp.WithdrawalAttemptGrants},
@@ -296,12 +295,23 @@ func earn(ctx context.Context, registry *prometheus.Registry, rpcClient *chain.C
 	return e
 }
 
-func newWalletPush(appDB *pgxpool.Pool) *webapp.WalletPush {
+func newWalletPush() *webapp.WalletPush {
+	appID, _ := optionalCredential("wallet push", "ONESIGNAL_APP_ID")
+	apiKey, _ := optionalCredential("wallet push", "ONESIGNAL_REST_API_KEY")
+	if appID == "" || apiKey == "" {
+		degraded("wallet push", errors.New("ONESIGNAL_APP_ID and ONESIGNAL_REST_API_KEY are not both installed"))
+		return nil
+	}
 	secret, _ := optionalCredential("wallet push route", "PUSH_DEBUG_SECRET")
 	if secret == "" {
 		degraded("wallet push route", errors.New("PUSH_DEBUG_SECRET is not installed"))
 	}
-	return webapp.NewWalletPush(appDB, secret)
+	return webapp.NewWalletPush(webapp.OneSignalConfig{
+		AppID:             appID,
+		RESTAPIKey:        apiKey,
+		EarningsChannelID: os.Getenv("ONESIGNAL_EARNINGS_CHANNEL_ID"),
+		AlertsChannelID:   os.Getenv("ONESIGNAL_ALERTS_CHANNEL_ID"),
+	}, secret)
 }
 
 func enableEarnPush(e *webapp.Earn, push *webapp.WalletPush) {
@@ -343,9 +353,7 @@ func run(ctx context.Context) error {
 		cfg.PushDB = grants.Push
 	}
 	registry := prometheus.NewRegistry()
-	if appDB != nil && grants.PushSend {
-		cfg.WalletPush = newWalletPush(appDB)
-	}
+	cfg.WalletPush = newWalletPush()
 	cfg.Earn = earn(ctx, registry, rpcClient, appDB, yieldDB, timescaleDB)
 	if cfg.Earn != nil {
 		cfg.Earn.CampaignPush = cfg.WalletPush

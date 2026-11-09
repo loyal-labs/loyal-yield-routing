@@ -375,7 +375,9 @@ func (c Crons) processJoyCandidate(ctx context.Context, candidate joyCandidate, 
 			outcome.Status = "quiet"
 			return outcome, nil
 		}
-		c.h.CampaignPush.send(ctx, candidate.wallet, joyPushPayload(decision.push))
+		payload := joyPushPayload(decision.push)
+		payload.Category, payload.Delivery = pushCategoryEarnings, pushDeliveryIntelligent
+		c.h.CampaignPush.send(ctx, candidate.wallet, payload)
 	}
 	amount := decision.push.amountUSD
 	outcome.AmountUSD, outcome.Campaign, outcome.Status = &amount, decision.push.campaign, "pushed"

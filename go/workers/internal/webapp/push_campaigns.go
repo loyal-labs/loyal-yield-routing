@@ -77,14 +77,6 @@ var mixpanelCohortCampaigns = map[string]autodepositWalletPush{
 		Body:  "Less than 48 hours left on your quests. Don't leave the rewards on the table.",
 		Title: "Seeker's Summer is almost over.",
 	},
-	"earning-while-away": {
-		Body:  "It's been adding up. Come take a look.",
-		Title: "Your USDC kept earning while you were out.",
-	},
-	"still-earning": {
-		Body:  "Your USDC has been earning since you last checked in. Pick up where you left off.",
-		Title: "Still working for you.",
-	},
 }
 
 func autodepositSweepFailedPush(amountRaw uint64) autodepositWalletPush {
@@ -309,6 +301,7 @@ func (h earnRoutes) mixpanelCohort(ctx context.Context, in *mixpanelCohortInput)
 				case !claimed:
 					deduped.Add(1)
 				default:
+					payload.IdempotencyName = "cohort:" + campaign + ":" + wallet
 					h.CampaignPush.send(ctx, wallet, payload)
 					sent.Add(1)
 				}
@@ -355,25 +348,28 @@ func (h earnRoutes) sweepNotify(ctx context.Context, in *sweepNotifyInput) (*swe
 		return nil, &sweepRejected{Message: "invalid_request", Detail: `kind must be "failed".`, status: http.StatusBadRequest}
 	}
 	amountRaw := sweepAmountRaw(record["amountRaw"])
-	if !h.claimFailurePush(ctx, wallet, record["dedupeKey"]) {
+	claimed, key := h.claimFailurePush(ctx, wallet, record["dedupeKey"])
+	if !claimed {
 		return &sweepNotifyOutput{Body: sweepAck{Status: "deduped"}}, nil
 	}
-	h.CampaignPush.send(ctx, wallet, autodepositSweepFailedPush(amountRaw))
+	failed := autodepositSweepFailedPush(amountRaw)
+	failed.IdempotencyName = "autodeposit-failed:" + key + ":" + wallet
+	h.CampaignPush.send(ctx, wallet, failed)
 	return &sweepNotifyOutput{Body: sweepAck{Status: "accepted"}}, nil
 }
 
 // A failed sweep is retried every cycle, so the slot id is the dedupe key; an
 // older worker without one can still wake the user once a day. A claim that
 // cannot be written lets the push through, as Next does.
-func (h earnRoutes) claimFailurePush(ctx context.Context, wallet string, rawKey any) bool {
-	key := time.Now().UTC().Format("2006-01-02")
+func (h earnRoutes) claimFailurePush(ctx context.Context, wallet string, rawKey any) (claimed bool, key string) {
+	key = time.Now().UTC().Format("2006-01-02")
 	if text, ok := rawKey.(string); ok && strings.TrimSpace(text) != "" {
 		key = truncateUTF16(strings.TrimSpace(text), sweepDedupeKeyMax)
 	}
 	claimed, err := claimPushCampaignSend(ctx, h.YieldDB, wallet, "autodeposit-failed:"+key, nil)
 	if err != nil {
 		slog.WarnContext(ctx, "[sweep-notify] failure sent-log write failed", "errorMessage", err.Error(), "walletAddress", wallet)
-		return true
+		return true, key
 	}
-	return claimed
+	return claimed, key
 }

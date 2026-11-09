@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/danielgtaylor/huma/v2/adapters/humachi"
+	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 )
 
@@ -189,5 +191,75 @@ func TestPushIdempotencyKeyIsStableUUID(t *testing.T) {
 	}
 	if _, err := uuid.Parse(pushIdempotencyKey("a")); err != nil {
 		t.Error(err)
+	}
+}
+
+func debugSend(t *testing.T, router http.Handler) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, walletPushPath,
+		strings.NewReader(`{"walletPublicKey":"W1","title":"t","body":"b","data":{"k":"v"}}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer s3cret")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	return rec
+}
+
+func TestDebugSendGoesThroughOneSignalAsAlert(t *testing.T) {
+	p, requests := oneSignalStub(t, reply{200, `{"id":"n-1"}`}, reply{200, `{"id":""}`})
+	p.Secret = "s3cret"
+	router := chi.NewRouter()
+	registerWalletPush(humachi.New(router, apiConfig()), p)
+
+	rec := debugSend(t, router)
+	if rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != `{"success":true,"sentTo":1}` {
+		t.Fatalf("sent: %d %s", rec.Code, rec.Body.String())
+	}
+	b := requests()[0].body
+	if b["android_channel_id"] != "chan-alerts" {
+		t.Errorf("android_channel_id = %v", b["android_channel_id"])
+	}
+	if _, present := b["delayed_option"]; present {
+		t.Error("delayed_option present, want absent")
+	}
+	if d, _ := b["data"].(map[string]any); d["k"] != "v" {
+		t.Errorf("data = %v", b["data"])
+	}
+
+	rec = debugSend(t, router)
+	var got map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &got)
+	if rec.Code != http.StatusNotFound || got["error"] != "No push tokens registered for this wallet" || got["sentTo"] != float64(0) {
+		t.Fatalf("no subscription: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestRetiredCohortCampaignsAreUnknown(t *testing.T) {
+	for _, name := range []string{"earning-while-away", "still-earning"} {
+		if _, ok := mixpanelCohortCampaigns[name]; ok {
+			t.Errorf("%s is still registered", name)
+		}
+	}
+	for _, name := range []string{"quest-1-nudge", "quest-2-nudge", "seeker-summer-ending"} {
+		if _, ok := mixpanelCohortCampaigns[name]; !ok {
+			t.Errorf("%s is missing", name)
+		}
+	}
+}
+
+func TestCohortAndSweepPushesAreImmediateAlerts(t *testing.T) {
+	all := map[string]autodepositWalletPush{
+		"sweep-failed-0":    autodepositSweepFailedPush(0),
+		"sweep-failed-5m":   autodepositSweepFailedPush(5_000_000),
+		"enabled":           autodepositEnabledPush(),
+		"sweep-scheduled-1": autodepositSweepScheduledPush(1),
+	}
+	for name, p := range mixpanelCohortCampaigns {
+		all["cohort:"+name] = p
+	}
+	for name, p := range all {
+		if p.Category != pushCategoryAlerts || p.Delivery != pushDeliveryNow {
+			t.Errorf("%s: category=%v delivery=%v", name, p.Category, p.Delivery)
+		}
 	}
 }

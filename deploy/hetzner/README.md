@@ -435,7 +435,9 @@ proxying the session routes to Next.
 | `REALTIME_AUTH_SECRET` | no | the realtime deployment's value (one `realtime-envelope` input); with it Go serves `POST /api/smart-accounts/yield-optimization/realtime/token`, without it the route answers 503 `realtime_unavailable` |
 | `REALTIME_EVENTS_URL` | no | the events URL returned in the token response (`realtime.askloyal.com/events` by default) |
 | `TIMESCALEDB_URL` | no | file `loyal-web-timescale-db`; the Next deployment's value (the reserve APY feed); without it earn earnings, earn state and earn deposit prepare log one line and keep proxying to Next |
-| `PUSH_DEBUG_SECRET` | no | file `loyal-web-push-debug-secret`; the app's `PUSH_DEBUG_SECRET`; with it, and an App role that holds the push-send grants, Go serves `POST /api/push-tokens/debug-send`; without it the route keeps proxying to Next |
+| `PUSH_DEBUG_SECRET` | no | file `loyal-web-push-debug-secret`; the app's `PUSH_DEBUG_SECRET`; with it, and the OneSignal credentials below, Go serves `POST /api/push-tokens/debug-send`; without it the route keeps proxying to Next |
+| `ONESIGNAL_APP_ID`, `ONESIGNAL_REST_API_KEY` | no | files `loyal-web-onesignal-app-id` and `loyal-web-onesignal-rest-api-key`, on `loyal-web` and `loyal-web-cron@`; every wallet push goes through OneSignal. Without both, all wallet pushes are off (one `wallet push` degraded line) and the joy cron refuses to run |
+| `ONESIGNAL_EARNINGS_CHANNEL_ID`, `ONESIGNAL_ALERTS_CHANNEL_ID` | no | plain config; the Android notification channel ids for earnings and account-alert pushes |
 | `LOYAL_AUTODEPOSIT_PUSH` | no | plain config; `on` makes the autodeposit confirm ops send the wallet push in process; unset or any other value logs one line (`autodeposit wallet push off`) and sends no push |
 
 `AUTH_COOKIE_PARENT_DOMAIN` is plain config, not a credential:
@@ -593,7 +595,7 @@ is untouched.
 A run needs `WEB_APP_DATABASE_URL` (both jobs) and `WEB_SOLANA_RPC_URL` and
 `SMART_ACCOUNT_SPONSOR_PK` (reconcile), `WEB_YIELD_DATABASE_URL`, `TIMESCALEDB_URL`,
 and no push API pair: joy sends through loyal-web's in-process wallet push sender and needs
-the push-send grants (checkCrons PushSend). By hand,
+the two OneSignal credentials; without them it refuses to run. By hand,
 `loyal-web cron earn-yield-joy --dry-run` prints what a run would push and writes nothing.
 Enable with `systemctl enable --now loyal-web-cron-<job>.timer`. Every run takes a Postgres
 advisory lock on the App database, so a second run of one job exits non-zero while the
