@@ -88,8 +88,9 @@ export async function setOneSignalTags(
 }
 
 /**
- * Show the OS push prompt via OneSignal (falling back to app settings when
- * previously denied). Resolves to whether permission is granted; false when
+ * Show the OS push prompt via OneSignal. Users who previously denied are
+ * NOT redirected to app settings (no fallback), so this is safe to call on
+ * every cold start. Resolves to whether permission is granted; false when
  * the module is missing or the request fails.
  */
 export async function requestOneSignalPermission(): Promise<boolean> {
@@ -97,7 +98,7 @@ export async function requestOneSignalPermission(): Promise<boolean> {
   const mod = await getOneSignal();
   if (!mod) return false;
   try {
-    return await mod.OneSignal.Notifications.requestPermission(true);
+    return await mod.OneSignal.Notifications.requestPermission(false);
   } catch (error) {
     console.error("[onesignal] requestPermission failed:", error);
     return false;
