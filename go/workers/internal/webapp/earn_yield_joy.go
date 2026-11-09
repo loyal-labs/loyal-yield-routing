@@ -250,6 +250,7 @@ func numeric6(value float64) string {
 type EarnYieldJoyOutcome struct {
 	AmountUSD *float64 `json:"amountUsd,omitempty"`
 	Campaign  string   `json:"campaign,omitempty"`
+	Route     string   `json:"route,omitempty"`
 	Status    string   `json:"status"`
 	Wallet    string   `json:"wallet"`
 }
@@ -261,6 +262,7 @@ type EarnYieldJoySummary struct {
 	Processed   int                   `json:"processed"`
 	Pushed      []EarnYieldJoyOutcome `json:"pushed"`
 	Quiet       int                   `json:"quiet"`
+	Rebaselined int                   `json:"rebaselined"`
 	Seeded      int                   `json:"seeded"`
 	Truncated   bool                  `json:"truncated"`
 	Unavailable int                   `json:"unavailable"`
@@ -305,7 +307,7 @@ func (c Crons) joyStates(ctx context.Context, wallets []string) (map[string]joyS
 		return states, nil
 	}
 	rows, err := c.h.appDB.Query(ctx,
-		`SELECT wallet_public_key, last_pushed_at, last_pushed_earned_usd::text, sent_campaigns
+		`SELECT wallet_public_key, last_pushed_at, last_pushed_earned_usd::text, sent_campaigns, recent_pushed_at, rule_version
 FROM earn_yield_push_state
 WHERE wallet_public_key = ANY($1)`, wallets)
 	if err != nil {
@@ -316,7 +318,8 @@ WHERE wallet_public_key = ANY($1)`, wallets)
 		var wallet, earned string
 		var state joyState
 		var sent []byte
-		if err := rows.Scan(&wallet, &state.lastPushedAt, &earned, &sent); err != nil {
+		var ruleVersion int16
+		if err := rows.Scan(&wallet, &state.lastPushedAt, &earned, &sent, &state.recentPushedAt, &ruleVersion); err != nil {
 			return nil, fmt.Errorf("load earn joy states: %w", err)
 		}
 		if state.lastPushedEarnedUSD, err = strconv.ParseFloat(earned, 64); err != nil {
@@ -325,41 +328,72 @@ WHERE wallet_public_key = ANY($1)`, wallets)
 		if err := json.Unmarshal(sent, &state.sentCampaigns); err != nil {
 			return nil, fmt.Errorf("load earn joy states: sent_campaigns: %w", err)
 		}
+		state.ruleVersion = int(ruleVersion)
 		states[wallet] = state
 	}
 	return states, rows.Err()
 }
 
 // claimJoyState writes the wallet's new state only if the row still holds the
-// state this run read, so the push that follows is sent at most once even if
-// another run raced this one. Next sends first and upserts after.
-func (c Crons) claimJoyState(ctx context.Context, wallet string, previous *joyState, campaigns []string, now time.Time, lifetimeEarnedUSD float64) (bool, error) {
-	sent, err := json.Marshal(campaigns)
-	if err != nil {
-		return false, err
+// state this run read (sent campaigns, last push and rule version), so the
+// push that follows is sent at most once even if another run raced this one.
+// Next sends first and upserts after.
+func (c Crons) claimJoyState(ctx context.Context, wallet string, previous *joyState, decision joyDecision, now time.Time, lifetimeUSD float64) (bool, error) {
+	recent := decision.recentPushedAt
+	if recent == nil {
+		recent = []time.Time{}
 	}
 	var tag pgconn.CommandTag
-	if previous == nil {
+	var err error
+	switch {
+	case decision.kind == joyDecisionSeed && previous == nil:
+		sent, marshalErr := json.Marshal(nonNilStrings(decision.campaigns))
+		if marshalErr != nil {
+			return false, marshalErr
+		}
 		tag, err = c.h.appDB.Exec(ctx,
-			`INSERT INTO earn_yield_push_state (wallet_public_key, last_pushed_at, last_pushed_earned_usd, sent_campaigns, updated_at)
-VALUES ($1, $2, $3::numeric, $4::jsonb, now())
+			`INSERT INTO earn_yield_push_state (wallet_public_key, last_pushed_at, last_pushed_earned_usd, sent_campaigns, recent_pushed_at, rule_version, updated_at)
+VALUES ($1, $2, $3::numeric, $4::jsonb, '{}'::timestamptz[], $5, now())
 ON CONFLICT (wallet_public_key) DO NOTHING`,
-			wallet, now, numeric6(lifetimeEarnedUSD), string(sent))
-	} else {
-		previousSent, marshalErr := json.Marshal(previous.sentCampaigns)
+			wallet, now, numeric6(lifetimeUSD), string(sent), joyRuleVersion)
+	case (decision.kind == joyDecisionRebaseline || decision.kind == joyDecisionPush) && previous != nil:
+		campaigns := decision.campaigns
+		lastPushedAt := previous.lastPushedAt
+		if decision.kind == joyDecisionPush {
+			campaigns = slices.Clone(previous.sentCampaigns)
+			if decision.push.kind != joyKindDigest {
+				campaigns = append(campaigns, decision.push.campaign)
+			}
+			lastPushedAt = &now
+		}
+		sent, marshalErr := json.Marshal(nonNilStrings(campaigns))
+		if marshalErr != nil {
+			return false, marshalErr
+		}
+		previousSent, marshalErr := json.Marshal(nonNilStrings(previous.sentCampaigns))
 		if marshalErr != nil {
 			return false, marshalErr
 		}
 		tag, err = c.h.appDB.Exec(ctx,
 			`UPDATE earn_yield_push_state
-SET last_pushed_at = $2, last_pushed_earned_usd = $3::numeric, sent_campaigns = $4::jsonb, updated_at = now()
-WHERE wallet_public_key = $1 AND sent_campaigns = $5::jsonb AND last_pushed_at IS NOT DISTINCT FROM $6`,
-			wallet, now, numeric6(lifetimeEarnedUSD), string(sent), string(previousSent), previous.lastPushedAt)
+SET last_pushed_at = $2, last_pushed_earned_usd = $3::numeric, sent_campaigns = $4::jsonb, recent_pushed_at = $5::timestamptz[], rule_version = $6, updated_at = now()
+WHERE wallet_public_key = $1 AND sent_campaigns = $7::jsonb AND last_pushed_at IS NOT DISTINCT FROM $8 AND rule_version = $9`,
+			wallet, lastPushedAt, numeric6(lifetimeUSD), string(sent), recent, joyRuleVersion,
+			string(previousSent), previous.lastPushedAt, previous.ruleVersion)
+	default:
+		return false, fmt.Errorf("save earn joy state: %s decision does not fit the stored state", decision.kind)
 	}
 	if err != nil {
 		return false, fmt.Errorf("save earn joy state: %w", err)
 	}
 	return tag.RowsAffected() == 1, nil
+}
+
+func nonNilStrings(values []string) []string {
+	if values == nil {
+		return []string{}
+	}
+	return values
 }
 
 func (c Crons) processJoyCandidate(ctx context.Context, candidate joyCandidate, cluster string, dryRun bool, now time.Time, state *joyState) (EarnYieldJoyOutcome, error) {
@@ -380,23 +414,23 @@ func (c Crons) processJoyCandidate(ctx context.Context, candidate joyCandidate, 
 		outcome.Status = "quiet"
 		return outcome, nil
 	case joyDecisionSeed, joyDecisionRebaseline:
+		outcome.Status = "seeded"
+		if decision.kind == joyDecisionRebaseline {
+			outcome.Status = "rebaselined"
+		}
 		if !dryRun {
-			if _, err := c.claimJoyState(ctx, candidate.wallet, state, decision.campaigns, now, lifetime); err != nil {
+			claimed, err := c.claimJoyState(ctx, candidate.wallet, state, decision, now, lifetime)
+			if err != nil {
 				return outcome, err
 			}
+			if !claimed {
+				outcome.Status = "quiet"
+			}
 		}
-		outcome.Status = "seeded"
 		return outcome, nil
 	}
 	if !dryRun {
-		campaigns := []string{}
-		if state != nil {
-			campaigns = slices.Clone(state.sentCampaigns)
-		}
-		if decision.push.kind != joyKindDigest {
-			campaigns = append(campaigns, decision.push.campaign)
-		}
-		claimed, err := c.claimJoyState(ctx, candidate.wallet, state, campaigns, now, lifetime)
+		claimed, err := c.claimJoyState(ctx, candidate.wallet, state, decision, now, lifetime)
 		if err != nil {
 			return outcome, err
 		}
@@ -407,7 +441,7 @@ func (c Crons) processJoyCandidate(ctx context.Context, candidate joyCandidate, 
 		c.h.CampaignPush.send(ctx, candidate.wallet, joyPushPayload(decision.push, now, candidate.wallet))
 	}
 	amount := decision.push.amountUSD
-	outcome.AmountUSD, outcome.Campaign, outcome.Status = &amount, decision.push.campaign, "pushed"
+	outcome.AmountUSD, outcome.Campaign, outcome.Route, outcome.Status = &amount, decision.push.campaign, decision.push.route, "pushed"
 	return outcome, nil
 }
 
@@ -415,6 +449,9 @@ func (c Crons) processJoyCandidate(ctx context.Context, candidate joyCandidate, 
 // the lock does nothing and reports so.
 func (c Crons) EarnYieldJoy(ctx context.Context, dryRun bool) (EarnYieldJoySummary, error) {
 	var summary EarnYieldJoySummary
+	if c.Earnings == nil && c.EarnMax == nil && c.EarnMaxActivity == nil {
+		return summary, errEarnMaxReader
+	}
 	task := func(ctx context.Context) error {
 		var err error
 		summary, err = c.earnYieldJoy(ctx, dryRun)
@@ -480,6 +517,8 @@ func (c Crons) earnYieldJoy(ctx context.Context, dryRun bool) (EarnYieldJoySumma
 				summary.Pushed = append(summary.Pushed, outcome)
 			case "seeded":
 				summary.Seeded++
+			case "rebaselined":
+				summary.Rebaselined++
 			case "quiet":
 				summary.Quiet++
 			case "unavailable":

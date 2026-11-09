@@ -97,6 +97,7 @@ jobs:
     env:
       BRIDGE_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/bridge_test?sslmode=disable
       EARNMAX_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/earnmax_test?sslmode=disable
+      EARN_JOY_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/earn_joy_test?sslmode=disable
       BACKYARD_FOREIGN_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/backyard_foreign_test?sslmode=disable
       EVM_DEPOSIT_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/evm_deposit_ci_test?sslmode=disable
       BACKYARD_WITHDRAWAL_TEST_DSN: postgres://postgres:postgres@127.0.0.1:5432/vault_cost_test_ci?sslmode=disable
@@ -122,7 +123,7 @@ jobs:
         env:
           PGPASSWORD: postgres
         run: |
-          for db in bridge_test earnmax_test backyard_foreign_test evm_deposit_ci_test; do
+          for db in bridge_test earnmax_test earn_joy_test backyard_foreign_test evm_deposit_ci_test; do
             psql -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE $db"
           done
       - name: Prepare withdrawal regressions with production lifecycle constraints
@@ -188,7 +189,7 @@ jobs:
         run: |
           export GOTOOLCHAIN=local GOENV=off
           export GOMODCACHE="$WORKERS_V2_CACHE_DIR/gomod" GOCACHE="$WORKERS_V2_CACHE_DIR/gobuild"
-          tests="TestBridgeOutQuoteIsNotServedWithoutItsRow TestTrackerStoresEachHashFromTheStatusThatCarriedIt TestForeignInflowStoreCommitsEvidenceAndCursorTogether TestExitLiabilityUsesConfirmedReportAtEachMark TestEvmDepositRelaySignedRefusesEmbeddedWalletWhenPrivyLookupIsEmpty TestEvmDepositConcurrentPostsMakeOnePrivyCreate TestWithdrawalCostDatabaseCrossWorkerReservationAndConsentWidening TestWithdrawalCostDatabaseCoveredSaleAndObservationOrdering TestWithdrawalCostDatabaseLoaderUsesActualGenerationAndEscrow TestWithdrawalCostDatabaseSimulationDisclosureCrashRetainsExactWire TestWithdrawalCostDatabaseDisclosedFailureAndManualLandingSatisfyProductionConstraint TestWithdrawalCostDatabaseEngineSweepsWithoutDemandOrNewSigning TestWithdrawalCostDatabaseSweepTimeoutDoesNotStarveLaterWireAndJoins TestWithdrawalAttemptDatabaseFeeReservationSurvivesWideningAndRetries TestWithdrawalConsentStoreConcurrentImmutableVersions TestWithdrawalCostStatusGenerationVersionsAndUnknown TestWithdrawalCostDatabaseIdleRequesterDoesNotStallAdmittedFunding TestWithdrawalCostDatabaseSigningRefusesConsentReplacedAfterReservation TestReleaseControlDefaultDenyCASAndAdmissionFence"
+          tests="TestBridgeOutQuoteIsNotServedWithoutItsRow TestTrackerStoresEachHashFromTheStatusThatCarriedIt TestForeignInflowStoreCommitsEvidenceAndCursorTogether TestExitLiabilityUsesConfirmedReportAtEachMark TestEvmDepositRelaySignedRefusesEmbeddedWalletWhenPrivyLookupIsEmpty TestEvmDepositConcurrentPostsMakeOnePrivyCreate TestWithdrawalCostDatabaseCrossWorkerReservationAndConsentWidening TestWithdrawalCostDatabaseCoveredSaleAndObservationOrdering TestWithdrawalCostDatabaseLoaderUsesActualGenerationAndEscrow TestWithdrawalCostDatabaseSimulationDisclosureCrashRetainsExactWire TestWithdrawalCostDatabaseDisclosedFailureAndManualLandingSatisfyProductionConstraint TestWithdrawalCostDatabaseEngineSweepsWithoutDemandOrNewSigning TestWithdrawalCostDatabaseSweepTimeoutDoesNotStarveLaterWireAndJoins TestWithdrawalAttemptDatabaseFeeReservationSurvivesWideningAndRetries TestWithdrawalConsentStoreConcurrentImmutableVersions TestWithdrawalCostStatusGenerationVersionsAndUnknown TestWithdrawalCostDatabaseIdleRequesterDoesNotStallAdmittedFunding TestWithdrawalCostDatabaseSigningRefusesConsentReplacedAfterReservation TestReleaseControlDefaultDenyCASAndAdmissionFence TestEarnJoyClaimIsCompareAndSwap TestEarnJoyRunSkipsUnavailableWallet"
           log="$RUNNER_TEMP/dbtests.log"
           go test -p 1 -count=1 -v -run "^($(echo $tests | tr ' ' '|'))\$" ./internal/bridge ./internal/backyard ./internal/earnmax ./internal/webapp ./internal/releasecontrol | tee "$log"
           ! grep -- '--- SKIP' "$log"
