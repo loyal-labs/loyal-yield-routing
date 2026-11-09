@@ -127,3 +127,67 @@ func TestEarnEventsExportKeepsWatermarkWhenTrackFails(t *testing.T) {
 		t.Fatalf("watermark moved %v -> %v, requests %d", before, after, len(requests()))
 	}
 }
+
+func TestEarnEventsExportPagesThroughABusyHour(t *testing.T) {
+	ctx := context.Background()
+	earnEventsPageSize = 2
+	t.Cleanup(func() { earnEventsPageSize = 2000 })
+	tracker, requests := mixpanelStub(t)
+	crons, pool := earnEventsTestCrons(t, tracker)
+	if _, err := crons.EarnEventsMixpanel(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+	// Watermark is at the seed; five rows share one confirmed_at inside the overlap hour.
+	vault := int16(earnprep.EarnVaultIndex)
+	if _, err := pool.Exec(ctx, `INSERT INTO loyal_yield.user_yield_position_deposits
+SELECT g, 'W1', $1, 1000000, now() - interval '20 minutes', NULL FROM generate_series(1, 5) g`, vault); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO loyal_yield.user_yield_position_deposits VALUES (6, 'W1', $1, 2000000, now() - interval '1 minute', NULL)`, vault); err != nil {
+		t.Fatal(err)
+	}
+	watermark := func() time.Time {
+		var at time.Time
+		if err := pool.QueryRow(ctx, `SELECT confirmed_at FROM analytics_export_watermarks WHERE stream = 'earn-deposits'`).Scan(&at); err != nil {
+			t.Fatal(err)
+		}
+		return at
+	}
+	var newest time.Time
+	if err := pool.QueryRow(ctx, `SELECT max(confirmed_at) FROM loyal_yield.user_yield_position_deposits`).Scan(&newest); err != nil {
+		t.Fatal(err)
+	}
+	// Put the watermark after the shared rows so the next run re-reads them as overlap.
+	if _, err := pool.Exec(ctx, `UPDATE analytics_export_watermarks SET confirmed_at = now() - interval '10 minutes' WHERE stream = 'earn-deposits'`); err != nil {
+		t.Fatal(err)
+	}
+	summary, err := crons.EarnEventsMixpanel(ctx, false)
+	if err != nil || summary.Deposits != 6 {
+		t.Fatalf("run 1: %+v %v", summary, err)
+	}
+	ids := map[any]bool{}
+	var sixthTime any
+	for _, request := range requests() {
+		for _, event := range request {
+			props, _ := event["properties"].(map[string]any)
+			ids[props["$insert_id"]] = true
+			if props["$insert_id"] == "earn-deposit:6" {
+				sixthTime = props["time"]
+			}
+		}
+	}
+	if len(ids) != 6 || sixthTime != float64(newest.UnixMilli()) {
+		t.Fatalf("ids = %v, time = %v, want %v", ids, sixthTime, newest.UnixMilli())
+	}
+	if got := watermark(); got.UnixMilli() != newest.UnixMilli() {
+		t.Fatalf("watermark = %v, want %v", got, newest)
+	}
+	// The overlap rows go out again (deduped by $insert_id); the watermark holds.
+	summary, err = crons.EarnEventsMixpanel(ctx, false)
+	if err != nil || summary.Deposits != 6 {
+		t.Fatalf("run 2: %+v %v", summary, err)
+	}
+	if got := watermark(); got.UnixMilli() != newest.UnixMilli() {
+		t.Fatalf("watermark moved to %v", got)
+	}
+}

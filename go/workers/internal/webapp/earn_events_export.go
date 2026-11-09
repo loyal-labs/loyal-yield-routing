@@ -3,6 +3,8 @@ package webapp
 import (
 	"context"
 	"errors"
+	"log/slog"
+	"math"
 	"strconv"
 	"time"
 
@@ -14,11 +16,14 @@ import (
 const (
 	earnDepositsStream    = "earn-deposits"
 	earnWithdrawalsStream = "earn-withdrawals"
-	earnEventsLimit       = 2000
+	earnEventsMaxPages    = 25
 	exportOverlap         = time.Hour
 	// Mixpanel's /track refuses events older than five days; stay inside that.
 	exportMaxAge = 4 * 24 * time.Hour
 )
+
+// earnEventsPageSize is a var so tests can shrink it.
+var earnEventsPageSize = 2000
 
 // EarnEventsSummary reports one export run. In a dry run Seeded means a
 // watermark would be seeded, and nothing is written or sent.
@@ -69,17 +74,17 @@ func (c Crons) earnEventsMixpanel(ctx context.Context, dryRun bool) (EarnEventsS
 		name  string
 		query string
 		count *int
-		build func(rows pgx.Rows) (mixpanelEvent, error)
+		build earnEventScanner
 	}
 	streams := []stream{
 		{earnDepositsStream, `SELECT id, wallet_address, principal_amount_raw, balance_sweep_execution_id IS NOT NULL, confirmed_at
 FROM loyal_yield.user_yield_position_deposits
-WHERE vault_index = $1 AND confirmed_at > $2 AND confirmed_at <= now()
-ORDER BY confirmed_at, id LIMIT $3`, &summary.Deposits, scanDepositEvent},
+WHERE vault_index = $1 AND (confirmed_at, id) > ($2, $3) AND confirmed_at <= now()
+ORDER BY confirmed_at, id LIMIT $4`, &summary.Deposits, scanDepositEvent},
 		{earnWithdrawalsStream, `SELECT id, wallet_address, withdrawn_amount_raw, source_type, confirmed_at
 FROM loyal_yield.user_yield_position_withdrawals
-WHERE vault_index = $1 AND confirmed_at > $2 AND confirmed_at <= now()
-ORDER BY confirmed_at, id LIMIT $3`, &summary.Withdrawals, scanWithdrawalEvent},
+WHERE vault_index = $1 AND (confirmed_at, id) > ($2, $3) AND confirmed_at <= now()
+ORDER BY confirmed_at, id LIMIT $4`, &summary.Withdrawals, scanWithdrawalEvent},
 	}
 	var errs []error
 	for _, s := range streams {
@@ -106,54 +111,76 @@ ORDER BY confirmed_at, id LIMIT $3`, &summary.Withdrawals, scanWithdrawalEvent},
 		if summary.From.IsZero() || start.Before(summary.From) {
 			summary.From = start
 		}
-		events, newest, err := c.readEarnEvents(ctx, s.query, start, s.build)
+		sent, err := c.exportStream(ctx, s.name, s.query, start, s.build, dryRun)
+		*s.count = sent
 		if err != nil {
-			errs = append(errs, err)
-			continue
-		}
-		*s.count = len(events)
-		if dryRun || len(events) == 0 {
-			continue
-		}
-		if err := c.Mixpanel.track(ctx, events); err != nil {
-			errs = append(errs, err)
-			continue
-		}
-		if _, err := c.h.appDB.Exec(ctx, `UPDATE analytics_export_watermarks SET confirmed_at = GREATEST(confirmed_at, $2), updated_at = now() WHERE stream = $1`, s.name, newest); err != nil {
 			errs = append(errs, err)
 		}
 	}
 	return summary, errors.Join(errs...)
 }
 
-func (c Crons) readEarnEvents(ctx context.Context, query string, start time.Time, build func(pgx.Rows) (mixpanelEvent, error)) ([]mixpanelEvent, time.Time, error) {
-	rows, err := c.h.YieldDB.Query(ctx, query, int16(earnprep.EarnVaultIndex), start, earnEventsLimit)
+type earnEventScanner func(rows pgx.Rows) (event mixpanelEvent, id int64, at time.Time, err error)
+
+// exportStream pages through the window by (confirmed_at, id), advancing the
+// watermark after each page Mixpanel accepts, so a busy hour cannot pin it.
+func (c Crons) exportStream(ctx context.Context, stream, query string, start time.Time, build earnEventScanner, dryRun bool) (int, error) {
+	// The first page is strictly after start: no id exceeds MaxInt64.
+	lastAt, lastID := start, int64(math.MaxInt64)
+	sent := 0
+	for page := 0; page < earnEventsMaxPages; page++ {
+		events, newest, newestID, err := c.readEarnEventsPage(ctx, query, lastAt, lastID, build)
+		if err != nil {
+			return sent, err
+		}
+		if len(events) == 0 {
+			return sent, nil
+		}
+		sent += len(events)
+		if !dryRun {
+			if err := c.Mixpanel.track(ctx, events); err != nil {
+				return sent - len(events), err
+			}
+			if _, err := c.h.appDB.Exec(ctx, `UPDATE analytics_export_watermarks SET confirmed_at = GREATEST(confirmed_at, $2), updated_at = now() WHERE stream = $1`, stream, newest); err != nil {
+				return sent, err
+			}
+		}
+		if len(events) < earnEventsPageSize {
+			return sent, nil
+		}
+		lastAt, lastID = newest, newestID
+	}
+	slog.Warn("[earn-events-mixpanel] page cap reached", "stream", stream)
+	return sent, nil
+}
+
+func (c Crons) readEarnEventsPage(ctx context.Context, query string, lastAt time.Time, lastID int64, build earnEventScanner) ([]mixpanelEvent, time.Time, int64, error) {
+	rows, err := c.h.YieldDB.Query(ctx, query, int16(earnprep.EarnVaultIndex), lastAt, lastID, earnEventsPageSize)
 	if err != nil {
-		return nil, time.Time{}, err
+		return nil, time.Time{}, 0, err
 	}
 	defer rows.Close()
 	var events []mixpanelEvent
 	var newest time.Time
+	var newestID int64
 	for rows.Next() {
-		event, err := build(rows)
+		event, id, at, err := build(rows)
 		if err != nil {
-			return nil, time.Time{}, err
+			return nil, time.Time{}, 0, err
 		}
-		if event.Time.After(newest) {
-			newest = event.Time
-		}
+		newest, newestID = at, id // rows arrive ordered, so the last is the newest
 		events = append(events, event)
 	}
-	return events, newest, rows.Err()
+	return events, newest, newestID, rows.Err()
 }
 
-func scanDepositEvent(rows pgx.Rows) (mixpanelEvent, error) {
+func scanDepositEvent(rows pgx.Rows) (mixpanelEvent, int64, time.Time, error) {
 	var id, raw int64
 	var wallet string
 	var sweep bool
 	var at time.Time
 	if err := rows.Scan(&id, &wallet, &raw, &sweep, &at); err != nil {
-		return mixpanelEvent{}, err
+		return mixpanelEvent{}, 0, time.Time{}, err
 	}
 	source := "manual"
 	if sweep {
@@ -162,16 +189,16 @@ func scanDepositEvent(rows pgx.Rows) (mixpanelEvent, error) {
 	return mixpanelEvent{
 		Name: "Earn Deposit Confirmed", DistinctID: "mob:" + wallet, InsertID: "earn-deposit:" + strconv.FormatInt(id, 10), Time: msTime(at),
 		Properties: map[string]any{"amount_usd": float64(raw) / 1e6, "source": source, "deposit_id": id},
-	}, nil
+	}, id, at, nil
 }
 
-func scanWithdrawalEvent(rows pgx.Rows) (mixpanelEvent, error) {
+func scanWithdrawalEvent(rows pgx.Rows) (mixpanelEvent, int64, time.Time, error) {
 	var id, raw int64
 	var wallet string
 	var sourceType *string
 	var at time.Time
 	if err := rows.Scan(&id, &wallet, &raw, &sourceType, &at); err != nil {
-		return mixpanelEvent{}, err
+		return mixpanelEvent{}, 0, time.Time{}, err
 	}
 	properties := map[string]any{"amount_usd": float64(raw) / 1e6, "source": "manual", "withdrawal_id": id}
 	if sourceType != nil {
@@ -180,5 +207,5 @@ func scanWithdrawalEvent(rows pgx.Rows) (mixpanelEvent, error) {
 	return mixpanelEvent{
 		Name: "Earn Withdrawal Confirmed", DistinctID: "mob:" + wallet, InsertID: "earn-withdrawal:" + strconv.FormatInt(id, 10), Time: msTime(at),
 		Properties: properties,
-	}, nil
+	}, id, at, nil
 }
