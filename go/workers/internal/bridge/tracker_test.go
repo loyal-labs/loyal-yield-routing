@@ -114,11 +114,12 @@ VALUES ($1, 'other', gen_random_uuid(), 'tron', 'usdt', '0xquote', now() + inter
 VALUES ($1, $2, gen_random_uuid(), 'tron', 'usdt', '0xquote', now() + interval '90 days')`, owned, depositOrderWallet); err != nil {
 		t.Fatal(err)
 	}
+	createdAt := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
 	tronRequest := func(id, hash, status, route, output, amountOut string) string {
-		return fmt.Sprintf(`{"id":%q,"status":%q,"recipient":%q,"depositAddress":{"address":%q},"createdAt":"2026-11-03T01:00:00Z",
+		return fmt.Sprintf(`{"id":%q,"status":%q,"recipient":%q,"depositAddress":{"address":%q},"createdAt":%[12]q,
 "data":{"inTxs":[{"chainId":%[5]d,"txHash":%[6]q}],"route":{%[11]q:{"origin":{"inputCurrency":{"currency":{"chainId":%[5]d,"address":%[7]q},"amount":"100000000"}},
 "destination":{"outputCurrency":{"currency":{"chainId":%[8]d,"address":%[9]q},"amount":%[10]q}}}}}}`,
-			id, status, depositOrderWallet, owned, Tron.RelayChainID, strings.Repeat(hash, 64), Tron.Token, SolanaRelayChainID, output, amountOut, route)
+			id, status, depositOrderWallet, owned, Tron.RelayChainID, strings.Repeat(hash, 64), Tron.Token, SolanaRelayChainID, output, amountOut, route, createdAt)
 	}
 	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/requests/v3" {
