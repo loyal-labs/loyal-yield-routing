@@ -45,7 +45,7 @@ var looping = newVault(Vault{Name: "looping", VoltrVault: "GrHZD15bMiUwrVPsmBwz8
 	Strategy: "GUCvzfn1hqThWp5uQNF7CqoxC1XckCPTjsRGKVXHPxu1", Adaptor: voltr.TrustfulProgramID.String(), SquadsIndex: 2,
 	RouteKey: "backyard:6HTfVjwk5FfW4GH67hmEen7VHeURdB5EJj6E429qTrUY", AdminPerformanceFeeBPS: 0, IssuanceFeeBPS: 0,
 	IdleBufferBPS: 1000, IdleBufferCapRaw: 25_000_000_000, EconomicHorizon: 90 * 24 * time.Hour,
-	DiversifyNewCash: true, UnleveredNewCash: true, ProtectExecution: true, CheckInvestmentExits: true})
+	ProtectExecution: true, CheckInvestmentExits: true})
 
 var vaults = []*Vault{rwa, looping}
 

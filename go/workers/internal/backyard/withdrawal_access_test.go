@@ -72,9 +72,10 @@ func TestBackyardReserveScalesWithoutReservingTheWholeTestVault(t *testing.T) {
 	}
 	s := Snapshot{Slot: 77, RouteLane: MapleSyrupUSDCLaneID, TotalVaultNAVRaw: 1_000_000_000}
 	s.net = fixtureSnapshotCertificate(s)
-	for lane, want := range map[string]int64{MapleSyrupUSDCLaneID: 45_000_000, primePRIMEUSDCTemplate.Lane: 45_000_000, onreONycUSDC: 810_000_000} {
-		if got := newAllocationLimits(s, nil, p, lane).EquityRoomRaw; got != want {
-			t.Fatalf("allocation %s: got %d want %d", lane, got, want)
+	for _, lane := range []string{MapleSyrupUSDCLaneID, primePRIMEUSDCTemplate.Lane, onreONycUSDC} {
+		limits := newAllocationLimits(s, nil, p, lane)
+		if !limits.accepts(MoveQuote{EquityRaw: 900_000_000, Unlevered: true}) || limits.CashReserveRaw != 100_000_000 {
+			t.Fatalf("%s forced a percentage allocation or lost its cash reserve: %+v", lane, limits)
 		}
 	}
 }

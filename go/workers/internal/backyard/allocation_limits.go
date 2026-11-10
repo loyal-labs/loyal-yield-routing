@@ -1,6 +1,9 @@
 package backyard
 
-import "time"
+import (
+	"math"
+	"time"
+)
 
 // Admission limits never request a sale of existing collateral.
 type allocationLimits struct {
@@ -43,6 +46,10 @@ func allocationGroup(lane string) string {
 
 func newAllocationLimits(s Snapshot, lanes []Snapshot, p SelectorPolicy, destination string) allocationLimits {
 	limits := allocationLimits{CashReserveRaw: p.idleBufferRaw(s.TotalVaultNAVRaw), UnleveredEntry: p.unleveredEntry(destination)}
+	if !p.DiversifyNewCash {
+		limits.ProviderRoomRaw, limits.EquityRoomRaw = math.MaxInt64, math.MaxInt64
+		return limits
+	}
 	provider, group := providerGroup(destination), allocationGroup(destination)
 	if !s.netKnown(time.Now()) || provider == "" || group == "" || s.TotalVaultNAVRaw <= 0 || s.TotalVaultNAVRaw > 1<<53 || s.WithdrawalDemandRaw < 0 || s.WithdrawalDemandRaw > 1<<53 {
 		return limits
@@ -95,7 +102,7 @@ func newAllocationLimits(s Snapshot, lanes []Snapshot, p SelectorPolicy, destina
 }
 
 func applyAllocationLimits(lanes []Snapshot, p SelectorPolicy) {
-	if !p.DiversifyNewCash {
+	if !p.DiversifyNewCash && p.IdleBufferRaw == 0 && p.IdleBufferBPS == 0 {
 		return
 	}
 	for i, s := range lanes {
