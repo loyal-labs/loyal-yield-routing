@@ -148,7 +148,7 @@ export default function EarnMaxPage(props: EarnMaxProps) {
 
           <Pulse openLatches={openLatches} route={route} />
 
-          <section className="grid gap-4 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)]">
+          <section className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)]">
             <RightNow data={data} ltv={ltv} now={now} />
             <LoanSafety
               custodyUsd={custodyUsd}
@@ -164,7 +164,7 @@ export default function EarnMaxPage(props: EarnMaxProps) {
           <PositionHistory data={data} />
           <MoneyMoves data={data} />
 
-          <section className="grid gap-4 lg:grid-cols-2">
+          <section className="grid grid-cols-1 gap-4 lg:grid-cols-2">
             <WorkerHealth data={data} now={now} />
             <Latches data={data} now={now} />
           </section>
