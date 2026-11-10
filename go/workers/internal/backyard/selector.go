@@ -132,6 +132,7 @@ type SelectorPolicy struct {
 	IdleBufferBPS     int64         `json:"idleBufferBps,omitempty"`
 	IdleBufferCapRaw  int64         `json:"idleBufferCapRaw,omitempty"`
 	DiversifyNewCash  bool          `json:"diversifyNewCash,omitempty"`
+	UnleveredNewCash  bool          `json:"unleveredNewCash,omitempty"`
 }
 
 const selectorHorizon = 30 * 24 * time.Hour

@@ -11,7 +11,7 @@ type allocationLimits struct {
 }
 
 func (p SelectorPolicy) unleveredEntry(lane string) bool {
-	return p.DiversifyNewCash && (lane == MapleSyrupUSDCLaneID || lane == primePRIMEUSDCTemplate.Lane ||
+	return p.UnleveredNewCash || p.DiversifyNewCash && (lane == MapleSyrupUSDCLaneID || lane == primePRIMEUSDCTemplate.Lane ||
 		lane == primePRIMEPYUSDTemplate.Lane || lane == primePRIMEUSDSTemplate.Lane)
 }
 

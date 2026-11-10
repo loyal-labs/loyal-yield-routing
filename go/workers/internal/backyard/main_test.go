@@ -24,6 +24,7 @@ func TestMain(m *testing.M) {
 	// Historical lifecycle fixtures predate admission limits; new policy tests opt in.
 	rwa.DiversifyNewCash = false
 	looping.DiversifyNewCash, looping.IdleBufferBPS, looping.EconomicHorizon = false, 0, selectorHorizon
+	looping.UnleveredNewCash = false
 	// Historical replay fixtures retain their original trade sizes and timing.
 	rwa.ProtectExecution, looping.ProtectExecution = false, false
 	rwa.CheckInvestmentExits, looping.CheckInvestmentExits = false, false
