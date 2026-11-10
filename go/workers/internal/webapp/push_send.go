@@ -14,6 +14,8 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 const (
@@ -22,6 +24,8 @@ const (
 	oneSignalSendURL  = "https://api.onesignal.com/notifications?c=push"
 	oneSignalMaxBody  = 1 << 20
 	oneSignalRetryGap = time.Second
+	// oneSignalMaxSubscriptions caps the devices one wallet push targets (OneSignal allows 20,000).
+	oneSignalMaxSubscriptions = 100
 )
 
 // pushIdempotencyNamespace is the fixed namespace for deterministic idempotency keys.
@@ -49,13 +53,30 @@ type WalletPush struct {
 	Secret string
 	HTTP   *http.Client
 
-	cfg        OneSignalConfig
-	url        string
-	retryDelay time.Duration
+	cfg           OneSignalConfig
+	url           string
+	retryDelay    time.Duration
+	subscriptions func(ctx context.Context, wallet string) ([]string, error)
 }
 
-func NewWalletPush(cfg OneSignalConfig, secret string) *WalletPush {
-	return &WalletPush{Secret: secret, HTTP: http.DefaultClient, cfg: cfg, url: oneSignalSendURL, retryDelay: oneSignalRetryGap}
+// NewWalletPush sends to the OneSignal subscription IDs that the signed-in app registered for a
+// wallet in push_tokens. It never targets the OneSignal external_id: the app sets that alias
+// itself with OneSignal.login, without proving it owns the wallet.
+func NewWalletPush(appDB *pgxpool.Pool, cfg OneSignalConfig, secret string) *WalletPush {
+	p := &WalletPush{Secret: secret, HTTP: http.DefaultClient, cfg: cfg, url: oneSignalSendURL, retryDelay: oneSignalRetryGap}
+	p.subscriptions = func(ctx context.Context, wallet string) ([]string, error) {
+		rows, err := appDB.Query(ctx, `SELECT token FROM push_tokens WHERE wallet_public_key = $1 AND provider = 'onesignal' ORDER BY updated_at DESC LIMIT $2`,
+			wallet, oneSignalMaxSubscriptions)
+		if err != nil {
+			return nil, fmt.Errorf("read push subscriptions: %w", err)
+		}
+		ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			return nil, fmt.Errorf("read push subscriptions: %w", err)
+		}
+		return ids, nil
+	}
+	return p
 }
 
 func (p *WalletPush) earningsChannelSet() bool {
@@ -69,39 +90,48 @@ func pushIdempotencyKey(name string) string {
 	return uuid.NewSHA1(pushIdempotencyNamespace, []byte(name)).String()
 }
 
-type oneSignalAliases struct {
-	ExternalID []string `json:"external_id"`
-}
-
 type oneSignalText struct {
 	EN string `json:"en"`
 }
 
 type oneSignalRequest struct {
-	AppID            string           `json:"app_id"`
-	TargetChannel    string           `json:"target_channel"`
-	IncludeAliases   oneSignalAliases `json:"include_aliases"`
-	Headings         oneSignalText    `json:"headings"`
-	Contents         oneSignalText    `json:"contents"`
-	Data             json.RawMessage  `json:"data,omitempty"`
-	AndroidChannelID string           `json:"android_channel_id,omitempty"`
-	DelayedOption    string           `json:"delayed_option,omitempty"`
-	IdempotencyKey   string           `json:"idempotency_key"`
+	AppID            string          `json:"app_id"`
+	TargetChannel    string          `json:"target_channel"`
+	SubscriptionIDs  []string        `json:"include_subscription_ids"`
+	Headings         oneSignalText   `json:"headings"`
+	Contents         oneSignalText   `json:"contents"`
+	Data             json.RawMessage `json:"data,omitempty"`
+	AndroidChannelID string          `json:"android_channel_id,omitempty"`
+	DelayedOption    string          `json:"delayed_option,omitempty"`
+	IdempotencyKey   string          `json:"idempotency_key"`
+}
+
+// registered reports whether the app registered at least one OneSignal subscription for the wallet.
+func (p *WalletPush) registered(ctx context.Context, wallet string) (bool, error) {
+	ids, err := p.subscriptions(ctx, wallet)
+	return len(ids) > 0, err
 }
 
 // sendToWallet reports whether OneSignal accepted the notification for at least one subscribed device.
 func (p *WalletPush) sendToWallet(ctx context.Context, wallet string, msg autodepositWalletPush, data json.RawMessage) (bool, error) {
+	ids, err := p.subscriptions(ctx, wallet)
+	if err != nil {
+		return false, err
+	}
+	if len(ids) == 0 {
+		return false, nil
+	}
 	if data == nil && msg.Route != "" {
 		data, _ = json.Marshal(map[string]string{"route": msg.Route})
 	}
 	req := oneSignalRequest{
-		AppID:          p.cfg.AppID,
-		TargetChannel:  "push",
-		IncludeAliases: oneSignalAliases{ExternalID: []string{wallet}},
-		Headings:       oneSignalText{EN: msg.Title},
-		Contents:       oneSignalText{EN: msg.Body},
-		Data:           data,
-		IdempotencyKey: pushIdempotencyKey(msg.IdempotencyName),
+		AppID:           p.cfg.AppID,
+		TargetChannel:   "push",
+		SubscriptionIDs: ids,
+		Headings:        oneSignalText{EN: msg.Title},
+		Contents:        oneSignalText{EN: msg.Body},
+		Data:            data,
+		IdempotencyKey:  pushIdempotencyKey(msg.IdempotencyName),
 	}
 	req.AndroidChannelID = p.cfg.AlertsChannelID
 	if msg.Category == pushCategoryEarnings {

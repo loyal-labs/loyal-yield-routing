@@ -273,6 +273,8 @@ type EarnYieldJoySummary struct {
 	Truncated   bool                  `json:"truncated"`
 	Undelivered int                   `json:"undelivered"`
 	Unavailable int                   `json:"unavailable"`
+	// Unregistered counts wallets due a push that have no device registered through the app.
+	Unregistered int `json:"unregistered"`
 }
 
 type joyCandidate struct {
@@ -438,6 +440,17 @@ func (c Crons) processJoyCandidate(ctx context.Context, candidate joyCandidate, 
 		}
 		return outcome, nil
 	}
+	// A wallet with no registered device keeps its claim, so it gets this push once it registers.
+	if c.h.CampaignPush != nil {
+		registered, err := c.h.CampaignPush.registered(ctx, candidate.wallet)
+		if err != nil {
+			return outcome, err
+		}
+		if !registered {
+			outcome.Status = "unregistered"
+			return outcome, nil
+		}
+	}
 	delivered := true
 	if !dryRun {
 		claimed, err := c.claimJoyState(ctx, candidate.wallet, state, decision, now, lifetime)
@@ -561,6 +574,8 @@ func (c Crons) earnYieldJoy(ctx context.Context, dryRun bool) (EarnYieldJoySumma
 				summary.Quiet++
 			case "unavailable":
 				summary.Unavailable++
+			case "unregistered":
+				summary.Unregistered++
 			default:
 				summary.Errors++
 			}

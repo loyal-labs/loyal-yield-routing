@@ -20,7 +20,7 @@
   - Digest title `+$1.37 earned`, body `$48.20 earned with Loyal so far.`
   - $1 milestone title `$1 earned with Loyal`, body `Your first dollar, and it keeps going on its own.`
 - All other copy in this plan is **proposed**. Rodion approves it verbatim in PR review before merge. Copy rules: no rate, no "more", no "risk-free", no "highest yield", no day names.
-- OneSignal targeting: `include_aliases.external_id = [wallet]`, `target_channel: "push"`. Earnings pushes use `delayed_option: "last-active"`. Alerts are sent immediately (decisions 7, 8).
+- OneSignal targeting: `include_subscription_ids` = the wallet's `push_tokens` rows with `provider = 'onesignal'`, which the app registers through the signed-in `POST /api/push-tokens`; `target_channel: "push"`. Never `include_aliases.external_id`: the app sets that alias itself with `OneSignal.login`, so anyone could claim a wallet's pushes (changed after the security review, ASK-2357). Earnings pushes use `delayed_option: "last-active"`. Alerts are sent immediately (decisions 7, 8).
 - Two Android categories. Their OneSignal channel IDs come from plain env `ONESIGNAL_EARNINGS_CHANNEL_ID` and `ONESIGNAL_ALERTS_CHANNEL_ID`. When an ID is unset, omit `android_channel_id` (decision 9).
 - Secrets `ONESIGNAL_APP_ID`, `ONESIGNAL_REST_API_KEY` and `MIXPANEL_PROJECT_TOKEN` are `systemd-creds` read with `engine.OptionalCredential`. Never log them, and never put them in code, tests or commands.
 - Mobile changes are JS-only and ship with `eas update`. No native config, plugin or dependency changes (decision 11).
@@ -612,7 +612,7 @@ Do these in order. Each item says what proves it worked.
 - [ ] **OneSignal dashboard:**
   - Create the Android categories "Earnings" and "Account alerts", and note their channel IDs.
   - Confirm the plan includes intelligent delivery.
-- [ ] **Reach before cutover:** count wallets with Expo tokens (`SELECT count(DISTINCT wallet_public_key) FROM push_tokens`) and compare with wallets that have an enabled OneSignal push subscription (dashboard → Audience → Subscriptions, export). The gap is the old-binary count the spec asks to report.
+- [ ] **Reach:** pushes reach only phones that registered a OneSignal subscription through the app, which starts with the `eas update` below. Count them with `SELECT count(DISTINCT wallet_public_key) FROM push_tokens WHERE provider = 'onesignal'` and compare with `provider = 'expo'`; the gap is the old-binary count the spec asks to report. The joy summary's `unregistered` count shows the same gap per run. Those wallets keep their claims and get the push once they register.
 - [ ] **Live-sender inventory:**
   - `journalctl -u loyal-web --since -14d | grep debug-send` on the host.
   - Vercel logs for `/api/push-tokens/debug-send`.
@@ -633,5 +633,5 @@ Do these in order. Each item says what proves it worked.
 - [ ] **Ship PR 3:** `eas update` on the `production` and `dapp-store` channels. Proof: tapping an earnings push opens Earn (or Earn MAX).
 - [ ] **Follow-ups** (not in this plan):
   - Delete the unscheduled legacy Next route `web/apps/web/src/app/api/cron/earn-yield-joy`, because a manual call would push under the old rules.
-  - Remove `/api/push-tokens` and the `push_tokens` table after a release with no readers.
+  - Delete the `provider = 'expo'` rows from `push_tokens` once no store build still sends Expo tokens. Keep the table and `/api/push-tokens`: OneSignal subscriptions are registered through them.
   - Ask whoever owns the Mixpanel cohorts to stop syncing `push: earning-while-away` and `push: still-earning`. Until then, those syncs get a 400 "known campaign key" refusal from Go, and Mixpanel pauses them.

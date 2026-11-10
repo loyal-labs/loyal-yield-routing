@@ -6,9 +6,11 @@ import (
 	"log/slog"
 	"maps"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -16,6 +18,8 @@ type PushTokenRequest struct {
 	_        struct{} `additionalProperties:"true"`
 	Token    string   `json:"token,omitempty"`
 	Platform string   `json:"platform,omitempty"`
+	// Provider is "onesignal" for a OneSignal push subscription ID; omitted means a legacy Expo token.
+	Provider string `json:"provider,omitempty"`
 }
 
 type PushTokenSaved struct {
@@ -37,8 +41,14 @@ type pushRequest struct {
 
 const pushPath = "/api/push-tokens"
 
+const (
+	pushProviderExpo      = "expo"
+	pushProviderOneSignal = "onesignal"
+)
+
 var (
 	errPushFields = &PushError{Message: "Missing required fields: token, platform", status: http.StatusBadRequest}
+	errPushToken  = &PushError{Message: "Invalid push token for provider", status: http.StatusBadRequest}
 	errPushFailed = &PushError{Message: "Failed to register push token", status: http.StatusInternalServerError}
 )
 
@@ -49,6 +59,19 @@ func pushFields(raw []byte) (PushTokenRequest, *PushError) {
 	}
 	if json.Unmarshal(raw, &body) != nil || body.Token == "" || (body.Platform != "ios" && body.Platform != "android") {
 		return body, errPushFields
+	}
+	switch body.Provider {
+	case "", pushProviderExpo:
+		body.Provider = pushProviderExpo
+	case pushProviderOneSignal:
+		// The server sends to these IDs, so only a canonical subscription UUID is stored.
+		id, err := uuid.Parse(body.Token)
+		if err != nil || id.String() != strings.ToLower(body.Token) {
+			return body, errPushToken
+		}
+		body.Token = id.String()
+	default:
+		return body, errPushToken
 	}
 	return body, nil
 }
@@ -79,9 +102,9 @@ func registerPush(api huma.API, auth *Auth, appDB *pgxpool.Pool) {
 		}
 		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
-		if _, err := appDB.Exec(ctx, `INSERT INTO push_tokens (token, telegram_user_id, wallet_public_key, platform) VALUES ($1, NULL, $2, $3)
-ON CONFLICT (token) DO UPDATE SET telegram_user_id = CASE WHEN push_tokens.wallet_public_key = EXCLUDED.wallet_public_key THEN push_tokens.telegram_user_id END, wallet_public_key = EXCLUDED.wallet_public_key, platform = EXCLUDED.platform, updated_at = now()`,
-			body.Token, session.Wallet.String(), body.Platform); err != nil {
+		if _, err := appDB.Exec(ctx, `INSERT INTO push_tokens (token, telegram_user_id, wallet_public_key, platform, provider) VALUES ($1, NULL, $2, $3, $4)
+ON CONFLICT (token) DO UPDATE SET telegram_user_id = CASE WHEN push_tokens.wallet_public_key = EXCLUDED.wallet_public_key THEN push_tokens.telegram_user_id END, wallet_public_key = EXCLUDED.wallet_public_key, platform = EXCLUDED.platform, provider = EXCLUDED.provider, updated_at = now()`,
+			body.Token, session.Wallet.String(), body.Platform, body.Provider); err != nil {
 			slog.Warn("push token not saved", "step", "upsert", "error", err)
 			return nil, errPushFailed
 		}

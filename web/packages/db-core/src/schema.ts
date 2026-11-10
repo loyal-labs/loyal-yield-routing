@@ -584,6 +584,9 @@ export const pushTokens = pgTable(
     telegramUserId: bigint("telegram_user_id", { mode: "bigint" }),
     walletPublicKey: text("wallet_public_key"),
     platform: text("platform").notNull(), // "ios" | "android"
+    // "expo" rows hold Expo push tokens (legacy); "onesignal" rows hold the
+    // device's OneSignal push subscription ID, which the server targets.
+    provider: text("provider").notNull().default("expo"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
       .notNull(),

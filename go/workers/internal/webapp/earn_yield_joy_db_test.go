@@ -35,7 +35,7 @@ func joyTestPool(t *testing.T) *pgxpool.Pool {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	_, err = pool.Exec(ctx, `DROP TABLE IF EXISTS earn_yield_push_state, app_user_smart_accounts, app_users;
+	_, err = pool.Exec(ctx, `DROP TABLE IF EXISTS earn_yield_push_state, app_user_smart_accounts, app_users, push_tokens;
 CREATE TABLE earn_yield_push_state (
 	id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
 	wallet_public_key text NOT NULL UNIQUE,
@@ -48,7 +48,17 @@ CREATE TABLE earn_yield_push_state (
 	updated_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE TABLE app_users (id uuid PRIMARY KEY, created_at timestamptz NOT NULL, subject_address text);
-CREATE TABLE app_user_smart_accounts (user_id uuid NOT NULL, state text NOT NULL, solana_env text NOT NULL, settings_pda text, updated_at timestamptz NOT NULL DEFAULT now())`)
+CREATE TABLE app_user_smart_accounts (user_id uuid NOT NULL, state text NOT NULL, solana_env text NOT NULL, settings_pda text, updated_at timestamptz NOT NULL DEFAULT now());
+CREATE TABLE push_tokens (
+	id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+	token text NOT NULL UNIQUE,
+	telegram_user_id bigint,
+	wallet_public_key text,
+	platform text NOT NULL,
+	provider text NOT NULL DEFAULT 'expo',
+	created_at timestamptz NOT NULL DEFAULT now(),
+	updated_at timestamptz NOT NULL DEFAULT now()
+)`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -245,12 +255,10 @@ func TestEarnJoyEmitsOnlyAcceptedPushes(t *testing.T) {
 	sentTo := []string{}
 	oneSignal := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			IncludeAliases struct {
-				ExternalID []string `json:"external_id"`
-			} `json:"include_aliases"`
+			SubscriptionIDs []string `json:"include_subscription_ids"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
-		wallet := body.IncludeAliases.ExternalID[0]
+		wallet := strings.TrimPrefix(body.SubscriptionIDs[0], "sub-")
 		sentMu.Lock()
 		sentTo = append(sentTo, wallet)
 		sentMu.Unlock()
@@ -315,5 +323,91 @@ func TestEarnJoyEmitsOnlyAcceptedPushes(t *testing.T) {
 	}
 	if want := "earnings:yield-total-1:W1:" + time.Now().UTC().Format("2006-01-02"); props["$insert_id"] != want {
 		t.Fatalf("$insert_id = %v, want %v", props["$insert_id"], want)
+	}
+}
+
+func TestWalletPushTargetsOnlyRegisteredOneSignalSubscriptions(t *testing.T) {
+	pool := joyTestPool(t)
+	ctx := context.Background()
+	const sub = "3f2b8c1e-9d4a-4e7b-8c6f-1a2b3c4d5e6f"
+	if _, err := pool.Exec(ctx, `INSERT INTO push_tokens (token, wallet_public_key, platform, provider) VALUES
+	($1, 'W1', 'android', 'onesignal'), ('ExponentPushToken[w1]', 'W1', 'android', 'expo'), ('ExponentPushToken[w2]', 'W2', 'ios', 'expo')`, sub); err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var targeted [][]string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			SubscriptionIDs []string `json:"include_subscription_ids"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		mu.Lock()
+		targeted = append(targeted, body.SubscriptionIDs)
+		mu.Unlock()
+		_, _ = w.Write([]byte(`{"id":"n"}`))
+	}))
+	t.Cleanup(server.Close)
+	push := NewWalletPush(pool, OneSignalConfig{AppID: "app", RESTAPIKey: "key", AlertsChannelID: "alerts"}, "secret")
+	push.url = server.URL
+	if sent, err := push.sendToWallet(ctx, "W1", autodepositWalletPush{Title: "t", Body: "b"}, nil); !sent || err != nil {
+		t.Fatalf("W1 sendToWallet = (%v, %v)", sent, err)
+	}
+	// W2 only has a legacy Expo token, so OneSignal is never called for it.
+	if sent, err := push.sendToWallet(ctx, "W2", autodepositWalletPush{Title: "t", Body: "b"}, nil); sent || err != nil {
+		t.Fatalf("W2 sendToWallet = (%v, %v), want (false, nil)", sent, err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(targeted) != 1 || len(targeted[0]) != 1 || targeted[0][0] != sub {
+		t.Fatalf("targeted = %v, want [[%s]]", targeted, sub)
+	}
+}
+
+func TestEarnJoyUnregisteredWalletKeepsItsClaim(t *testing.T) {
+	pool := joyTestPool(t)
+	ctx := context.Background()
+	const id = "00000000-0000-0000-0000-000000000009"
+	if _, err := pool.Exec(ctx, `INSERT INTO app_users (id, created_at, subject_address) VALUES ($1, now() - interval '10 days', 'W9')`, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO app_user_smart_accounts (user_id, state, solana_env, settings_pda) VALUES ($1, 'ready', $2, 'settings-W9')`, id, smartAccountsSolanaEnv); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO earn_yield_push_state (wallet_public_key, last_pushed_earned_usd, sent_campaigns, rule_version) VALUES ('W9', 0, '[]'::jsonb, 2)`); err != nil {
+		t.Fatal(err)
+	}
+	push, requests := oneSignalStub(t, reply{200, `{"id":"n"}`})
+	var registered bool
+	push.subscriptions = func(_ context.Context, wallet string) ([]string, error) {
+		if !registered {
+			return nil, nil
+		}
+		return []string{"sub-" + wallet}, nil
+	}
+	c := NewCrons(pool, Earn{})
+	c.h.CampaignPush = push
+	c.Earnings = func(context.Context, string, string, string) (joyEarnings, bool, error) {
+		return joyEarnings{earnLifetimeUSD: 5}, true, nil
+	}
+
+	summary, err := c.EarnYieldJoy(ctx, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Unregistered != 1 || len(summary.Pushed) != 0 || len(requests()) != 0 {
+		t.Fatalf("unregistered run: summary = %+v, requests = %d", summary, len(requests()))
+	}
+	row, _ := readJoyRow(t, pool, "W9")
+	if row.lastPushedAt != nil || row.sent != "[]" || len(row.recent) != 0 {
+		t.Fatalf("claim spent without a registered device: %+v", row)
+	}
+
+	registered = true
+	summary, err = c.EarnYieldJoy(ctx, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(summary.Pushed) != 1 || summary.Pushed[0].Campaign != "yield-total-1" || len(requests()) != 1 {
+		t.Fatalf("registered run: summary = %+v, requests = %d", summary, len(requests()))
 	}
 }

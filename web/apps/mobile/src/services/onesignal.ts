@@ -106,6 +106,43 @@ export async function requestOneSignalPermission(): Promise<boolean> {
 }
 
 /**
+ * The device's OneSignal push subscription ID, or null when OneSignal is
+ * unavailable or has not assigned one yet (the first launch gets it
+ * asynchronously; addOneSignalSubscriptionIdListener reports it then).
+ */
+export async function getOneSignalSubscriptionId(): Promise<string | null> {
+  await initSettled;
+  const mod = await getOneSignal();
+  if (!mod) return null;
+  try {
+    return await mod.OneSignal.User.pushSubscription.getIdAsync();
+  } catch (error) {
+    console.error("[onesignal] getIdAsync failed:", error);
+    return null;
+  }
+}
+
+/**
+ * Call `onId` whenever the push subscription changes and has an ID. Returns
+ * an unsubscribe function, or null when OneSignal is unavailable.
+ */
+export async function addOneSignalSubscriptionIdListener(
+  onId: (subscriptionId: string) => void,
+): Promise<(() => void) | null> {
+  await initSettled;
+  const mod = await getOneSignal();
+  if (!mod) return null;
+
+  const handler = (event: { current: { id?: string } }) => {
+    if (event.current.id) onId(event.current.id);
+  };
+  mod.OneSignal.User.pushSubscription.addEventListener("change", handler);
+  return () => {
+    mod.OneSignal.User.pushSubscription.removeEventListener("change", handler);
+  };
+}
+
+/**
  * Listen for notification taps. Hands the payload's additionalData to
  * `onRoute`; returns an unsubscribe function, or null when OneSignal is
  * unavailable.

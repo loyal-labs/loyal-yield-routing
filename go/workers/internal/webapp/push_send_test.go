@@ -3,6 +3,7 @@ package webapp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -44,7 +45,7 @@ func oneSignalStub(t *testing.T, replies ...struct {
 		_, _ = w.Write([]byte(reply.body))
 	}))
 	t.Cleanup(server.Close)
-	p := NewWalletPush(OneSignalConfig{
+	p := NewWalletPush(nil, OneSignalConfig{
 		AppID:             "test-app",
 		RESTAPIKey:        "test-key",
 		EarningsChannelID: "chan-earnings",
@@ -52,6 +53,10 @@ func oneSignalStub(t *testing.T, replies ...struct {
 	}, "secret")
 	p.url = server.URL + "/notifications?c=push"
 	p.retryDelay = 0
+	// Every wallet has one registered subscription, "sub-<wallet>".
+	p.subscriptions = func(_ context.Context, wallet string) ([]string, error) {
+		return []string{"sub-" + wallet}, nil
+	}
 	return p, func() []capturedPush {
 		mu.Lock()
 		defer mu.Unlock()
@@ -92,9 +97,11 @@ func TestOneSignalEarningsRequestShape(t *testing.T) {
 	if b["app_id"] != "test-app" || b["target_channel"] != "push" {
 		t.Errorf("app_id/target_channel = %v/%v", b["app_id"], b["target_channel"])
 	}
-	aliases, _ := b["include_aliases"].(map[string]any)
-	if ids, _ := aliases["external_id"].([]any); len(ids) != 1 || ids[0] != "W1" {
-		t.Errorf("include_aliases = %v", b["include_aliases"])
+	if ids, _ := b["include_subscription_ids"].([]any); len(ids) != 1 || ids[0] != "sub-W1" {
+		t.Errorf("include_subscription_ids = %v", b["include_subscription_ids"])
+	}
+	if _, present := b["include_aliases"]; present {
+		t.Error("include_aliases present: the client-chosen external_id must never be a target")
 	}
 	if h, _ := b["headings"].(map[string]any); h["en"] != "+$1.37 earned" {
 		t.Errorf("headings = %v", b["headings"])
@@ -153,6 +160,46 @@ func TestOneSignalNotSubscribedIsNotSent(t *testing.T) {
 	sent, err := p.sendToWallet(context.Background(), "W1", autodepositWalletPush{Title: "t", Body: "b"}, nil)
 	if sent || err != nil {
 		t.Errorf("sendToWallet = (%v, %v), want (false, nil)", sent, err)
+	}
+}
+
+func TestOneSignalSkipsWalletWithoutRegisteredSubscription(t *testing.T) {
+	p, requests := oneSignalStub(t, reply{200, `{"id":"n-1"}`})
+	p.subscriptions = func(context.Context, string) ([]string, error) { return nil, nil }
+	sent, err := p.sendToWallet(context.Background(), "W1", autodepositWalletPush{Title: "t", Body: "b"}, nil)
+	if sent || err != nil {
+		t.Errorf("sendToWallet = (%v, %v), want (false, nil)", sent, err)
+	}
+	p.subscriptions = func(context.Context, string) ([]string, error) { return nil, errors.New("db down") }
+	if _, err := p.sendToWallet(context.Background(), "W1", autodepositWalletPush{Title: "t", Body: "b"}, nil); err == nil {
+		t.Error("lookup failure: want error")
+	}
+	if n := len(requests()); n != 0 {
+		t.Errorf("requests = %d, want 0", n)
+	}
+}
+
+func TestPushTokenProviderValidation(t *testing.T) {
+	const sub = "3f2b8c1e-9d4a-4e7b-8c6f-1a2b3c4d5e6f"
+	for _, tc := range []struct {
+		raw, provider, token string
+		refused              *PushError
+	}{
+		{`{"token":"ExponentPushToken[x]","platform":"ios"}`, "expo", "ExponentPushToken[x]", nil},
+		{`{"token":"` + sub + `","platform":"android","provider":"onesignal"}`, "onesignal", sub, nil},
+		{`{"token":"` + strings.ToUpper(sub) + `","platform":"android","provider":"onesignal"}`, "onesignal", sub, nil},
+		{`{"token":"W1","platform":"android","provider":"onesignal"}`, "", "", errPushToken},
+		{`{"token":"{` + sub + `}","platform":"android","provider":"onesignal"}`, "", "", errPushToken},
+		{`{"token":"` + sub + `","platform":"android","provider":"fcm"}`, "", "", errPushToken},
+	} {
+		body, refused := pushFields([]byte(tc.raw))
+		if refused != tc.refused {
+			t.Errorf("%s: refused = %v, want %v", tc.raw, refused, tc.refused)
+			continue
+		}
+		if refused == nil && (body.Provider != tc.provider || body.Token != tc.token) {
+			t.Errorf("%s: got (%s, %s), want (%s, %s)", tc.raw, body.Provider, body.Token, tc.provider, tc.token)
+		}
 	}
 }
 

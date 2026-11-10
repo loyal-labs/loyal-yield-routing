@@ -295,7 +295,11 @@ func earn(ctx context.Context, registry *prometheus.Registry, rpcClient *chain.C
 	return e
 }
 
-func newWalletPush() *webapp.WalletPush {
+func newWalletPush(appDB *pgxpool.Pool) *webapp.WalletPush {
+	if appDB == nil {
+		degraded("wallet push", errors.New("WEB_APP_DATABASE_URL is not installed, so push subscriptions cannot be read"))
+		return nil
+	}
 	appID, _ := optionalCredential("wallet push", "ONESIGNAL_APP_ID")
 	apiKey, _ := optionalCredential("wallet push", "ONESIGNAL_REST_API_KEY")
 	if appID == "" || apiKey == "" {
@@ -306,7 +310,7 @@ func newWalletPush() *webapp.WalletPush {
 	if secret == "" {
 		degraded("wallet push route", errors.New("PUSH_DEBUG_SECRET is not installed"))
 	}
-	return webapp.NewWalletPush(webapp.OneSignalConfig{
+	return webapp.NewWalletPush(appDB, webapp.OneSignalConfig{
 		AppID:             appID,
 		RESTAPIKey:        apiKey,
 		EarningsChannelID: os.Getenv("ONESIGNAL_EARNINGS_CHANNEL_ID"),
@@ -353,7 +357,7 @@ func run(ctx context.Context) error {
 		cfg.PushDB = grants.Push
 	}
 	registry := prometheus.NewRegistry()
-	cfg.WalletPush = newWalletPush()
+	cfg.WalletPush = newWalletPush(appDB)
 	cfg.Earn = earn(ctx, registry, rpcClient, appDB, yieldDB, timescaleDB)
 	if cfg.Earn != nil {
 		cfg.Earn.CampaignPush = cfg.WalletPush

@@ -275,7 +275,7 @@ func TestEarnYieldJoyRefusesWithoutEarningsChannel(t *testing.T) {
 	c := Crons{Earnings: func(context.Context, string, string, string) (joyEarnings, bool, error) {
 		return joyEarnings{}, false, nil
 	}}
-	c.h.CampaignPush = NewWalletPush(OneSignalConfig{AppID: "app", RESTAPIKey: "key", AlertsChannelID: "alerts"}, "secret")
+	c.h.CampaignPush = NewWalletPush(nil, OneSignalConfig{AppID: "app", RESTAPIKey: "key", AlertsChannelID: "alerts"}, "secret")
 	_, err := c.EarnYieldJoy(context.Background(), false)
 	if err == nil || !strings.Contains(err.Error(), "ONESIGNAL_EARNINGS_CHANNEL_ID") {
 		t.Fatalf("err = %v", err)
