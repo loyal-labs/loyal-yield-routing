@@ -83,7 +83,8 @@ test("both vault tabs show the whole portfolio estimate and never substitute the
     expect(html).toContain("10.69%");
     expect(html).toContain("$916.00");
     expect(html).toContain("$10.00 borrowed");
-    expect(html).toContain("Realized APY, 7 days");
+    expect(html).toContain("Realized APY");
+    expect(html).not.toContain("Realized APY, 7 days");
     const apy = props.route.value!.currentApy!;
     apy.observedAt = "2026-11-10T09:40:00Z";
     html = renderToStaticMarkup(<EarnMaxPage {...props} />);

@@ -412,7 +412,7 @@ function RightNow({
                 ? "Needs 12 hours of history"
                 : `Voltr unavailable: ${data.apy.error}`
             }
-            label="Realized APY, 7 days"
+            label="Realized APY"
             value={realized ? pct(realized.apy * 100) : "—"}
           />
         </div>
@@ -733,15 +733,15 @@ function ApyHistory({ data }: { data: EarnMaxData }) {
           </p>
         ) : (
           <div className="grid gap-6 md:grid-cols-2">
-            {chart("7-day APY", "sevenDayApy")}
+            {chart("Realized APY", "sevenDayApy")}
             {chart("Daily APY", "dayApy")}
           </div>
         )}
         <p className="text-xs text-muted-foreground">
-          From the Voltr share price at the end of each UTC day. The 7-day line
-          ends at now; the daily line shows finished days only. This is what
-          depositors actually earned, unlike the APY now figure, which is the
-          forecast for the live position.
+          Annualized from the Voltr share price. The realized line aims for a
+          week and uses the available history when dates are missing; the current
+          figure shows its actual start date above. The daily line uses successive
+          reported days. The estimated vault APY is a forecast at current rates.
         </p>
       </CardContent>
     </Card>
