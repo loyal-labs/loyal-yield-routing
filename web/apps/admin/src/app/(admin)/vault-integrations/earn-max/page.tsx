@@ -149,7 +149,7 @@ export default function EarnMaxPage(props: EarnMaxProps) {
           <Pulse openLatches={openLatches} route={route} />
 
           <section className="grid gap-4 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)]">
-            <RightNow data={data} leverageNow={leverageNow} ltv={ltv} now={now} />
+            <RightNow data={data} ltv={ltv} now={now} />
             <LoanSafety
               custodyUsd={custodyUsd}
               data={data}
@@ -291,12 +291,10 @@ export function verdict(
 
 function RightNow({
   data,
-  leverageNow,
   ltv,
   now,
 }: {
   data: EarnMaxData;
-  leverageNow: number | null;
   ltv: number | null;
   now: number;
 }) {
@@ -337,6 +335,9 @@ function RightNow({
           : "",
       ].join(" ");
   const apyNow = route?.currentApy;
+  const apyAge = secondsSince(apyNow?.observedAt, now);
+  const portfolio = apyNow?.portfolio && apyAge !== null && apyAge >= 0 && apyAge <= 15 * 60 && (route?.updatedAgeS ?? Infinity) <= 180
+    ? apyNow.portfolio : null;
   const realized = data.apy.ok ? data.apy.value : null;
   const series = data.navSeries.ok ? data.navSeries.value : [];
 
@@ -396,16 +397,12 @@ function RightNow({
         <div className="grid grid-cols-2 gap-4">
           <Fact
             hint={
-              apyNow
-                ? `${apyNow.lane ?? "position"} at ${
-                    leverageNow === null ? "—" : `${leverageNow.toFixed(2)}x`
-                  }${apyNow.flat ? " · no position" : ""} · ${ago(
-                    secondsSince(apyNow.observedAt, now)
-                  )} ago`
-                : "Not published by the worker yet"
+              portfolio
+                ? `All holdings and idle cash, after borrowing costs and performance fees · ${ago(apyAge)} ago`
+                : "A fresh estimate covering every holding is unavailable"
             }
-            label="APY now"
-            value={apyNow ? pct(apyNow.apyPct) : "—"}
+            label="Estimated vault APY"
+            value={portfolio ? pct(portfolio.apyBps / 100) : "—"}
           />
           <Fact
             hint={
@@ -419,6 +416,35 @@ function RightNow({
             value={realized ? pct(realized.apy * 100) : "—"}
           />
         </div>
+
+        {portfolio ? (
+          <div className="space-y-2">
+            <Table aria-label="Vault APY breakdown">
+              <TableHeader><TableRow>
+                <TableHead>Holding</TableHead>
+                <TableHead className="text-right">Net value</TableHead>
+                <TableHead className="text-right">Position APY</TableHead>
+              </TableRow></TableHeader>
+              <TableBody>
+                {portfolio.positions.map((position) => (
+                  <TableRow key={position.lane}>
+                    <TableCell>{position.lane}
+                      {position.debtValueRaw > 0 ? <p className="text-xs text-muted-foreground">{usd(position.debtValueRaw / 1e6)} borrowed, deducted from value</p> : null}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">{usd(position.equityRaw / 1e6)}</TableCell>
+                    <TableCell className="text-right tabular-nums">{position.apyBps === null ? "—" : pct(position.apyBps / 100)}</TableCell>
+                  </TableRow>
+                ))}
+                <TableRow>
+                  <TableCell>Idle USDC</TableCell>
+                  <TableCell className="text-right tabular-nums">{usd(portfolio.idleUsdcRaw / 1e6)}</TableCell>
+                  <TableCell className="text-right tabular-nums">0.00%</TableCell>
+                </TableRow>
+              </TableBody>
+            </Table>
+            <p className="text-xs text-muted-foreground">Forward estimate at current rates on {usd(portfolio.totalValueRaw / 1e6)} of vault value. Future trading costs and rate changes are excluded; realized return comes from the share price.</p>
+          </div>
+        ) : null}
 
         <div className="space-y-1">
           <Label>Value in the loop, last 24 hours</Label>

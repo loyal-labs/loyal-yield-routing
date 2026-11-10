@@ -58,3 +58,42 @@ test("the actual vault page renders worker identity and separates unsigned refus
   props.route.value = { ...route, workerOwner: null, version: null };
   expect(renderToStaticMarkup(<EarnMaxPage {...props} />)).toContain("Release not recorded by this worker");
 });
+
+test("both vault tabs show the whole portfolio estimate and never substitute the working lane rate", () => {
+  for (const id of ["loyal", "backyard"]) {
+    const props = {
+      selectedVault: { id, name: id === "loyal" ? "Loyal Earn MAX" : "Backyard", address: "vault", worker: "worker", squads: "squads", cashAta: "cash", idleAta: "idle" },
+      loadedAt: "2026-11-10T10:00:00Z",
+      route: { ok: true, value: { ...route, currentApy: {
+        apyPct: 4.93, lane: "Maple/syrupUSDC/USDC", flat: false, level: 1.1,
+        observedAt: "2026-11-10T09:59:00Z",
+        portfolio: { apyBps: 555, totalValueRaw: 2_016e6, idleUsdcRaw: 916e6, positions: [
+          { lane: "AUTO/AUTO/PYUSD", equityRaw: 1_000e6, collateralValueRaw: 1_000e6, debtValueRaw: 0, apyBps: 1069 },
+          { lane: "Maple/syrupUSDC/USDC", equityRaw: 100e6, collateralValueRaw: 110e6, debtValueRaw: 10e6, apyBps: 493 },
+        ] },
+      } } },
+      health: missing, latches: missing, apy: missing, balances: missing,
+      borrowing: missing, history: missing, moves: missing, navSeries: missing, vault: missing,
+      backyard: { available: false, error: "Not part of this fixture" },
+    } as EarnMaxProps;
+    let html = renderToStaticMarkup(<EarnMaxPage {...props} />);
+    expect(html).toContain("Estimated vault APY");
+    expect(html).toContain("5.55%");
+    expect(html).toContain("AUTO/AUTO/PYUSD");
+    expect(html).toContain("10.69%");
+    expect(html).toContain("$916.00");
+    expect(html).toContain("$10.00 borrowed");
+    expect(html).toContain("Realized APY, 7 days");
+    const apy = props.route.value!.currentApy!;
+    apy.observedAt = "2026-11-10T09:40:00Z";
+    html = renderToStaticMarkup(<EarnMaxPage {...props} />);
+    expect(html).toContain("A fresh estimate covering every holding is unavailable");
+    expect(html).not.toContain("5.55%");
+    expect(html).not.toContain("Vault APY breakdown");
+    apy.observedAt = "2026-11-10T09:59:00Z";
+    apy.portfolio = null;
+    html = renderToStaticMarkup(<EarnMaxPage {...props} />);
+    expect(html).not.toContain("4.93%");
+    expect(html).toContain("A fresh estimate covering every holding is unavailable");
+  }
+});

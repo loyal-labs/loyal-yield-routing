@@ -112,3 +112,109 @@ func TestLeverageWatchMergeKeepsMissingLanes(t *testing.T) {
 }
 
 func watchSpreadFixture(n int64) *int64 { return &n }
+
+func portfolioFixture() (Observation, []LaneEconomics) {
+	lanes := []Snapshot{
+		{RouteLane: autoAUTOPYUSD.Lane, PositionCollateralValueRaw: 1_500e6, PositionDebtValueRaw: 500e6},
+		{RouteLane: MapleSyrupUSDCLaneID, PositionCollateralValueRaw: 100e6},
+	}
+	for i := range lanes {
+		lanes[i].Slot, lanes[i].TotalVaultNAVRaw, lanes[i].VoltrIdleRaw = 77, 2_000e6, 900e6
+		lanes[i].HeldLanes = autoAUTOPYUSD.Lane + "," + MapleSyrupUSDCLaneID
+		lanes[i].net = fixtureSnapshotCertificate(lanes[i])
+	}
+	return Observation{Snapshot: lanes[1], lanes: lanes}, []LaneEconomics{
+		{Lane: autoAUTOPYUSD.Lane, NativeAPY: .1, SupplyAPY: .01, CurrentBorrowAPY: .06},
+		{Lane: MapleSyrupUSDCLaneID, NativeAPY: .05},
+	}
+}
+
+func TestPortfolioAPYIncludesEveryPositionDebtAndIdleCash(t *testing.T) {
+	o, markets := portfolioFixture()
+	got := currentPortfolioAPY(o, markets, time.Now())
+	// AUTO earns $135 after interest, Maple $5, idle $0: $140 / $2,000.
+	if got == nil || got.APYBPS != 700 || got.IdleUSDCRaw != 900e6 || len(got.Positions) != 2 || *got.Positions[0].APYBPS != 1350 || *got.Positions[1].APYBPS != 500 {
+		t.Fatalf("portfolio: %+v", got)
+	}
+	// A different working lane must not change the portfolio return.
+	o.Snapshot = o.lanes[0]
+	if p := currentPortfolioAPY(o, markets, time.Now()); p == nil || p.APYBPS != got.APYBPS {
+		t.Fatal(p)
+	}
+	o.Snapshot.AdminPerformanceFeeBPS, o.Snapshot.ApprovedAdminPerformanceFeeBPS = 2000, 2000
+	o.Snapshot.net = fixtureSnapshotCertificate(o.Snapshot)
+	want := int64(math.Round(performanceFeeForecast(.07, 2000) * 10_000))
+	if p := currentPortfolioAPY(o, markets, time.Now()); p == nil || p.APYBPS != want {
+		t.Fatalf("fee: %+v want %d", p, want)
+	}
+}
+
+func TestPortfolioAPYCountsSharedCollateralCustodyOnce(t *testing.T) {
+	o, markets := portfolioFixture()
+	o.lanes[1].RouteLane = autoAUTOWYLDSTemplate.Lane
+	markets[1] = markets[0]
+	markets[1].Lane = o.lanes[1].RouteLane
+	for i := range o.lanes {
+		o.lanes[i].HeldLanes = o.lanes[0].RouteLane + "," + o.lanes[1].RouteLane
+		o.lanes[i].CollateralIdleValueRaw = 50e6
+		o.lanes[i].net = fixtureSnapshotCertificate(o.lanes[i])
+	}
+	o.Snapshot = o.lanes[0]
+	p := currentPortfolioAPY(o, markets, time.Now())
+	// $135 + $11 from deposits, plus $5 native yield on the single $50 custody.
+	if p == nil || p.APYBPS != 755 || p.Positions[0].CollateralValueRaw+p.Positions[1].CollateralValueRaw != 1_650e6 {
+		t.Fatalf("shared custody: %+v", p)
+	}
+}
+
+func TestPortfolioAPYRejectsIncompleteOrUnpricedHoldings(t *testing.T) {
+	for name, mutate := range map[string]func(*Observation, *[]LaneEconomics){
+		"missing lane":    func(o *Observation, _ *[]LaneEconomics) { o.lanes = o.lanes[1:] },
+		"duplicate lane":  func(o *Observation, _ *[]LaneEconomics) { o.lanes = append(o.lanes, o.lanes[0]) },
+		"missing rate":    func(_ *Observation, m *[]LaneEconomics) { *m = (*m)[1:] },
+		"invalid rate":    func(_ *Observation, m *[]LaneEconomics) { (*m)[0].CurrentBorrowAPY = math.NaN() },
+		"invalid value":   func(o *Observation, _ *[]LaneEconomics) { o.lanes[0].PositionDebtValueRaw = -1 },
+		"different bank":  func(o *Observation, _ *[]LaneEconomics) { o.lanes[0].Slot++ },
+		"stale valuation": func(o *Observation, _ *[]LaneEconomics) { o.lanes[0].net.validUntil = time.Now().Add(-time.Second) },
+		"unsupported fees": func(o *Observation, _ *[]LaneEconomics) {
+			o.Snapshot.ManagerManagementFeeBPS = 100
+			o.Snapshot.net = fixtureSnapshotCertificate(o.Snapshot)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			o, markets := portfolioFixture()
+			mutate(&o, &markets)
+			if got := currentPortfolioAPY(o, markets, time.Now()); got != nil {
+				t.Fatalf("misleading portfolio: %+v", got)
+			}
+		})
+	}
+	// An entirely idle, observed vault has a known 0% return without market rates.
+	s := Snapshot{RouteLane: autoAUTOPYUSD.Lane, Slot: 77, TotalVaultNAVRaw: 2_000e6, VoltrIdleRaw: 2_000e6}
+	s.net = fixtureSnapshotCertificate(s)
+	if p := currentPortfolioAPY(Observation{Snapshot: s, lanes: []Snapshot{s}}, nil, time.Now()); p == nil || p.APYBPS != 0 || len(p.Positions) != 0 {
+		t.Fatal(p)
+	}
+}
+
+func TestPortfolioAPYThrottlePublishesAllocationsAndInvalidation(t *testing.T) {
+	o, markets := portfolioFixture()
+	now := time.Now()
+	v := CurrentAPY{Portfolio: currentPortfolioAPY(o, markets, now)}
+	var th currentAPYThrottle
+	th.wrote(now, v)
+	if th.due(now.Add(time.Minute), v) {
+		t.Fatal("unchanged portfolio rewritten")
+	}
+	next := v
+	p := *v.Portfolio
+	p.IdleUSDCRaw -= 1_000e6
+	next.Portfolio = &p
+	if !th.due(now.Add(time.Minute), next) {
+		t.Fatal("allocation not published")
+	}
+	next.Portfolio = nil
+	if !th.due(now.Add(time.Minute), next) {
+		t.Fatal("unavailable portfolio retained")
+	}
+}
