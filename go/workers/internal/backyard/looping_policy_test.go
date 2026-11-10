@@ -74,18 +74,24 @@ func TestBackyardPolicyQuotesWithoutBorrowingWhenDebtIsAvailable(t *testing.T) {
 	}
 }
 
-func TestBackyardUnleveredSizingUsesActualExposureAndKeepsCashReserve(t *testing.T) {
+func TestBackyardLeveragedSizingKeepsGrossExecutionCapAndCashReserve(t *testing.T) {
 	for _, original := range []*Vault{rwa, looping} {
 		v := *original
-		v.ProtectExecution, v.DiversifyNewCash = true, true
-		v.UnleveredNewCash = original == looping && productionLoopingPolicy.UnleveredNewCash
+		v.ProtectExecution = true
+		v.DiversifyNewCash = original == rwa && productionRWAPolicy.DiversifyNewCash
+		v.UnleveredNewCash = false
 		o, d := executionFixture(t, &v)
 		o.Snapshot.Target = LaneTarget{Rule: ruleEntry}
 		d.Action, d.StrategyKey, d.AmountRaw = VoltrAllocateToSquads, autoAUTOPYUSD.Lane, executionTradeValueRaw
 		_, err := boundedExecutionDecision(&v, o, d)
-		if original == looping && err != nil || original == rwa && err == nil {
+		if err == nil {
 			t.Fatalf("%s entry did not respect its actual borrowing policy: %v", original.Name, err)
 		}
+		d.AmountRaw = 333_333_333
+		if _, err := boundedExecutionDecision(&v, o, d); err != nil {
+			t.Fatal("small leveraged entry was refused", err)
+		}
+		d.AmountRaw = executionTradeValueRaw
 		d.AmountRaw++
 		if _, err := boundedExecutionDecision(&v, o, d); err == nil {
 			t.Fatal("oversized entry escaped the $1,000 execution cap")
@@ -107,27 +113,40 @@ func TestBackyardUnleveredSizingUsesActualExposureAndKeepsCashReserve(t *testing
 	}
 }
 
-func TestBackyardUnleveredPolicyBlocksStoredBorrowApprovalButKeepsRiskExits(t *testing.T) {
+func TestBackyardAllowsEconomicBorrowingButKeepsCashAndRiskExits(t *testing.T) {
 	s := leverageSnapshot(1)
-	s.LeverageTargetLevel, s.LeverageUpApproved = 1.5, true
-	s.VoltrIdleRaw = 20_000_000_000
+	s.TotalVaultNAVRaw, s.VoltrIdleRaw = 2_017_000_000, 293_000_000
+	s.StrategyNAVRaw = s.TotalVaultNAVRaw - s.VoltrIdleRaw
+	s.PositionCollateralValueRaw, s.PositionCollateralRaw = 1_624_000_000, 1_624_000_000
+	armFeeAuthorityFixture(t, &s)
+	s.AdminPerformanceFeeBPS, s.ApprovedAdminPerformanceFeeBPS = 0, 0
 	armLeverageCapacityFixture(&s)
 	s.net = fixtureSnapshotCertificate(s)
 	lanes := []Snapshot{s}
 	applyAllocationLimits(lanes, productionLoopingPolicy)
 	s = lanes[0]
-	market := leverageMarket(s.RouteLane, .20, math.Log1p(.01))
+	market := leverageMarket(s.RouteLane, .1067, math.Log1p(.0666))
 	d, ok := decideLeverageTarget(s, SelectorResult{Action: SelectorKeep}, []LaneEconomics{market}, productionLoopingPolicy, twentyBPSStepCost, nil)
-	if !ok || d.BorrowRaw != 0 || d.Reason != "new_allocation_limit" {
-		t.Fatal("Backyard approved a new borrow despite the unleveraged policy", d)
+	if !ok || d.BorrowRaw == 0 || d.Next != 1.5 || d.Reason != leverageReasonApproved {
+		t.Fatal("Backyard's live-sized position could not take an economic leverage step", d)
 	}
-	if got := Decide(targeted(s)); got.Action != Hold {
-		t.Fatal("stored up approval bypassed the unleveraged policy", got)
+	s.LeverageTargetLevel, s.LeverageUpApproved = d.Next, true
+	if !allocationBorrowAllowed(s, d.BorrowRaw) {
+		t.Fatal("provider allocation limit still prevents borrowing")
 	}
+	s.VoltrIdleRaw = 201_699_999
+	if allocationBorrowAllowed(s, d.BorrowRaw) {
+		t.Fatal("borrowing continued with the cash reserve below 10%")
+	}
+	s = leverageSnapshot(1)
+	s.TotalVaultNAVRaw, s.VoltrIdleRaw = 2_017_000_000, 0
+	lanes = []Snapshot{s}
+	applyAllocationLimits(lanes, productionLoopingPolicy)
+	s = lanes[0]
 	s.PositionDebtRaw, s.PositionDebtValueRaw = 1_000_000, 1_000_000
 	s.LTVBPS = hardLTVBPS(s.LiquidationThresholdBPS, s.MaxLTVBPS)
 	if got := Decide(targeted(s)); got.Action != DeleverRouteStep || got.Reason != hardLTVDeleverReason {
-		t.Fatal("unleveraged admission prevented emergency debt reduction", got)
+		t.Fatal("cash protection prevented emergency debt reduction", got)
 	}
 	s = livePartialSnapshot()
 	lanes = []Snapshot{s}
@@ -138,5 +157,25 @@ func TestBackyardUnleveredPolicyBlocksStoredBorrowApprovalButKeepsRiskExits(t *t
 	s.Nonterminal = Signed
 	if got := Decide(targeted(s)); got.Action != RecoverTransaction {
 		t.Fatal("Backyard policy bypassed signed-transaction recovery", got)
+	}
+}
+
+func TestBackyardChoosesNetBenefitWithoutForcedAllocations(t *testing.T) {
+	in := smallAllocationFixture()
+	in.Policy = productionLoopingPolicy
+	in.Quotes[0].EquityRaw, in.Quotes[0].BorrowReceiveRaw = 90_000_000_000, 45_000_000_000
+	in.Quotes[0] = parBorrow(in.Quotes[0])
+	in.Markets[0].EntryCapacity.Raw = in.Quotes[0].EquityRaw
+	in.Snapshot.net = fixtureSnapshotCertificate(in.Snapshot)
+	result := SelectOpportunity(in, SelectorState{})
+	for elapsed := time.Duration(0); elapsed < in.Policy.Persistence; elapsed += 5 * time.Minute {
+		advanceSelectorFixture(&in, 5*time.Minute)
+		result = SelectOpportunity(in, result.State)
+	}
+	if result.Action != SelectorEnter || result.DestinationLane != onreONycUSDC || result.SelectedQuote == nil || result.SelectedQuote.Unlevered || result.SelectedQuote.EquityRaw != 90_000_000_000 {
+		t.Fatal("forced small allocations or the provider cap displaced the better executable return", result)
+	}
+	if !productionRWAPolicy.DiversifyNewCash || productionRWAPolicy.Horizon != 7*24*time.Hour {
+		t.Fatal("Backyard policy changed Loyal Earn MAX")
 	}
 }
