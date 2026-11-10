@@ -11,12 +11,21 @@ import (
 )
 
 type CurrentAPY struct {
-	Lane       string        `json:"lane"`
-	APYBPS     int64         `json:"apyBps"`
-	Level      float64       `json:"level"`
-	ObservedAt time.Time     `json:"observedAt"`
-	Flat       bool          `json:"flat"`
-	Portfolio  *PortfolioAPY `json:"portfolio"`
+	Lane             string                   `json:"lane"`
+	APYBPS           int64                    `json:"apyBps"`
+	Level            float64                  `json:"level"`
+	ObservedAt       time.Time                `json:"observedAt"`
+	Flat             bool                     `json:"flat"`
+	Portfolio        *PortfolioAPY            `json:"portfolio"`
+	LeverageDecision *LeverageDecisionSummary `json:"leverageDecision"`
+}
+
+type LeverageDecisionSummary struct {
+	TargetLevel   float64 `json:"targetLevel"`
+	Reason        string  `json:"reason"`
+	NetBenefitRaw float64 `json:"netBenefitRaw"`
+	CostRaw       int64   `json:"costRaw"`
+	HorizonDays   float64 `json:"horizonDays"`
 }
 
 type PortfolioAPY struct {
@@ -135,6 +144,13 @@ func (t *currentAPYThrottle) due(now time.Time, next CurrentAPY) bool {
 	if (next.Portfolio == nil) != (t.last.Portfolio == nil) {
 		return true
 	}
+	if (next.LeverageDecision == nil) != (t.last.LeverageDecision == nil) {
+		return true
+	}
+	if d, old := next.LeverageDecision, t.last.LeverageDecision; d != nil && old != nil &&
+		(d.Reason != old.Reason || d.TargetLevel != old.TargetLevel || d.HorizonDays != old.HorizonDays) {
+		return true
+	}
 	if p, old := next.Portfolio, t.last.Portfolio; p != nil && old != nil {
 		if math.Abs(float64(p.APYBPS-old.APYBPS)) >= currentAPYMinChangeBPS || len(p.Positions) != len(old.Positions) || math.Abs(float64(p.IdleUSDCRaw-old.IdleUSDCRaw)) >= 1e6 {
 			return true
@@ -163,7 +179,7 @@ func (d *Database) RecordCurrentAPY(ctx context.Context, routeKey string, value 
 		return err
 	}
 	if value.Flat {
-		_, err = d.pool.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state=jsonb_set(state,'{currentApy}',COALESCE(state->'currentApy','{}'::jsonb) || jsonb_build_object('flat',true,'observedAt',$2::jsonb->'observedAt','portfolio',$2::jsonb->'portfolio'),true),updated_at=clock_timestamp() WHERE route_key=$1`, routeKey, string(raw))
+		_, err = d.pool.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state=jsonb_set(state,'{currentApy}',COALESCE(state->'currentApy','{}'::jsonb) || jsonb_build_object('flat',true,'observedAt',$2::jsonb->'observedAt','portfolio',$2::jsonb->'portfolio','leverageDecision',null),true),updated_at=clock_timestamp() WHERE route_key=$1`, routeKey, string(raw))
 		return err
 	}
 	_, err = d.pool.Exec(ctx, `WITH route AS (
@@ -175,7 +191,7 @@ WHERE multiply_route_current_apy_days.observed_at <= EXCLUDED.observed_at`, rout
 	return err
 }
 
-func publishCurrentAPY(ctx context.Context, now time.Time, throttle *currentAPYThrottle, observed Observation, markets []LaneEconomics, write func(context.Context, CurrentAPY) error, logf func(string, ...any)) {
+func publishCurrentAPY(ctx context.Context, now time.Time, throttle *currentAPYThrottle, observed Observation, markets []LaneEconomics, decision *LeverageDecisionSummary, write func(context.Context, CurrentAPY) error, logf func(string, ...any)) {
 	if observed.planning == nil || !earnHeldLane(observed.Snapshot.RouteLane) {
 		return
 	}
@@ -185,6 +201,9 @@ func publishCurrentAPY(ctx context.Context, now time.Time, throttle *currentAPYT
 	}
 	value.ObservedAt = now.UTC()
 	value.Portfolio = currentPortfolioAPY(observed, markets, now)
+	if !value.Flat {
+		value.LeverageDecision = decision
+	}
 	if !throttle.due(now, value) {
 		return
 	}

@@ -1,12 +1,52 @@
 package backyard
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestCurrentAPYReportsLeverageDecisionChangesWithoutARateChange(t *testing.T) {
+	now := time.Now()
+	s := base()
+	s.RouteLane, s.HasPosition, s.PositionCollateralValueRaw = autoAUTOPYUSD.Lane, true, 1_624e6
+	o := Observation{Snapshot: s, planning: &routePlanningState{}}
+	markets := []LaneEconomics{{Lane: s.RouteLane, NativeAPY: .1069}}
+	var throttle currentAPYThrottle
+	var writes []CurrentAPY
+	write := func(_ context.Context, value CurrentAPY) error {
+		writes = append(writes, value)
+		return nil
+	}
+	logf := func(format string, args ...any) { t.Fatalf(format, args...) }
+	decision := &LeverageDecisionSummary{TargetLevel: 1, Reason: leverageReasonNotWorthCost, NetBenefitRaw: -1_065_583, CostRaw: 8_425_697, HorizonDays: 90}
+	publishCurrentAPY(t.Context(), now, &throttle, o, markets, decision, write, logf)
+	if len(writes) != 1 || writes[0].LeverageDecision == nil || writes[0].LeverageDecision.Reason != leverageReasonNotWorthCost {
+		t.Fatal("cost refusal missing from the published route", writes)
+	}
+	publishCurrentAPY(t.Context(), now.Add(time.Minute), &throttle, o, markets, decision, write, logf)
+	if len(writes) != 1 {
+		t.Fatal("unchanged decision bypassed the reporting throttle")
+	}
+	approved := *decision
+	approved.TargetLevel, approved.Reason = 1.5, leverageReasonApproved
+	publishCurrentAPY(t.Context(), now.Add(2*time.Minute), &throttle, o, markets, &approved, write, logf)
+	if len(writes) != 2 || writes[1].LeverageDecision.Reason != leverageReasonApproved || writes[0].APYBPS != writes[1].APYBPS {
+		t.Fatal("unchanged APY hid the new leverage approval", writes)
+	}
+	publishCurrentAPY(t.Context(), now.Add(3*time.Minute), &throttle, o, markets, nil, write, logf)
+	if len(writes) != 3 || writes[2].LeverageDecision != nil {
+		t.Fatal("unavailable evaluation retained the old decision", writes)
+	}
+	o.Snapshot.HasPosition = false
+	publishCurrentAPY(t.Context(), now.Add(4*time.Minute), &throttle, o, markets, decision, write, logf)
+	if len(writes) != 4 || !writes[3].Flat || writes[3].LeverageDecision != nil {
+		t.Fatal("closed position retained a leverage decision", writes)
+	}
+}
 
 // Live shape (09-29): AUTO collateral value $2,111.06, debt $904.01, equity
 // $1,207.05 (1.749x). The published APY matches the leverage watch's

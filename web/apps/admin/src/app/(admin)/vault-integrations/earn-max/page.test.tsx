@@ -66,6 +66,7 @@ test("both vault tabs show the whole portfolio estimate and never substitute the
       loadedAt: "2026-11-10T10:00:00Z",
       route: { ok: true, value: { ...route, currentApy: {
         apyPct: 4.93, lane: "Maple/syrupUSDC/USDC", flat: false, level: 1.1,
+        leverageDecision: null,
         observedAt: "2026-11-10T09:59:00Z",
         portfolio: { apyBps: 555, totalValueRaw: 2_016e6, idleUsdcRaw: 916e6, positions: [
           { lane: "AUTO/AUTO/PYUSD", equityRaw: 1_000e6, collateralValueRaw: 1_000e6, debtValueRaw: 0, apyBps: 1069 },
@@ -96,5 +97,44 @@ test("both vault tabs show the whole portfolio estimate and never substitute the
     html = renderToStaticMarkup(<EarnMaxPage {...props} />);
     expect(html).not.toContain("4.93%");
     expect(html).toContain("A fresh estimate covering every holding is unavailable");
+  }
+});
+
+test("both vaults explain a cost-held target and suppress stale or mismatched decisions", () => {
+  for (const id of ["loyal", "backyard"]) {
+    const props = {
+      selectedVault: { id, name: id === "loyal" ? "Loyal Earn MAX" : "Backyard", address: "vault", worker: "worker", squads: "squads", cashAta: "cash", idleAta: "idle" },
+      loadedAt: "2026-11-10T11:00:00Z",
+      route: { ok: true, value: { ...route, collateralUsd: 1624, debtUsd: 0, leverageTarget: 1,
+        currentApy: { apyPct: 10.69, lane: "AUTO/AUTO/PYUSD", flat: false, level: 1, portfolio: null,
+          observedAt: "2026-11-10T10:59:00Z", leverageDecision: {
+            targetLevel: 1, reason: "up_move_not_worth_cost", netBenefitRaw: -1_065_583,
+            costRaw: 8_425_697, horizonDays: 90,
+          },
+        },
+      } },
+      health: missing, latches: missing, apy: missing, balances: missing,
+      borrowing: missing, history: missing, moves: missing, navSeries: missing, vault: missing,
+      backyard: { available: false, error: "Not part of this fixture" },
+    } as EarnMaxProps;
+    let html = renderToStaticMarkup(<EarnMaxPage {...props} />);
+    expect(html).toContain("Approved leverage target");
+    expect(html).toContain("Extra borrowing is not worthwhile after costs.");
+    expect(html).toContain("90-day net benefit −$1.07 after $8.43 in entry/exit costs.");
+    expect(html).not.toContain("At target");
+    const apy = props.route.value!.currentApy!;
+    apy.observedAt = "2026-11-10T10:40:00Z";
+    expect(renderToStaticMarkup(<EarnMaxPage {...props} />)).not.toContain("$8.43");
+    apy.observedAt = "2026-11-10T10:59:00Z";
+    props.route.value!.updatedAgeS = 181;
+    expect(renderToStaticMarkup(<EarnMaxPage {...props} />)).not.toContain("$8.43");
+    props.route.value!.updatedAgeS = 3;
+    props.route.value!.leverageTarget = 1.5;
+    expect(renderToStaticMarkup(<EarnMaxPage {...props} />)).not.toContain("$8.43");
+    apy.leverageDecision!.targetLevel = 1.5;
+    apy.leverageDecision!.reason = "up_move_approved";
+    html = renderToStaticMarkup(<EarnMaxPage {...props} />);
+    expect(html).toContain("Higher leverage approved; execution checks still apply.");
+    expect(html).not.toContain("$8.43");
   }
 });
