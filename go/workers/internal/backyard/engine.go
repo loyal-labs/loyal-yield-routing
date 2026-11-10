@@ -80,6 +80,7 @@ func NewEngine(config EngineConfig) (*Engine, error) {
 		return nil, fmt.Errorf("Backyard engine requires a Jupiter client")
 	}
 	config.Database.events = map[string]*events{v.RouteKey: state.events}
+	config.Database.owner = config.Owner
 	return e, nil
 }
 
@@ -188,6 +189,7 @@ func (p *selectorSampler) sample(ctx, feedCtx context.Context, markets []LaneEco
 			return database.RecordLeverageWatch(ctx, routeKey, summary)
 		}, logf)
 	}
+	var leverageSummary *LeverageDecisionSummary
 	for _, lane := range observed.lanes {
 		policy := worker.manifest.vault.selectorPolicy()
 		decision, ok := decideLeverageTarget(lane, result, markets, policy, productionLeverageStepPricer(feedCtx, rpc, view, e.runtime.Jupiter, worker.manifest, observed, lane),
@@ -200,6 +202,10 @@ func (p *selectorSampler) sample(ctx, feedCtx context.Context, markets []LaneEco
 			decision.Down.MaxCostBPS = min(decision.Down.MaxCostBPS, lane.LeverageDown.MaxCostBPS)
 		} else {
 			decision = p.persistDown(decision, policy, time.Now().UTC())
+		}
+		if decision.Lane == observed.Snapshot.RouteLane {
+			leverageSummary = &LeverageDecisionSummary{TargetLevel: decision.Next, Reason: decision.Reason,
+				NetBenefitRaw: decision.GainRaw, CostRaw: int64(decision.Cost.TotalMicros), HorizonDays: policy.Horizon.Hours() / 24}
 		}
 		if p.levDecisionLog.due(time.Now(), decision) {
 			_, _ = fmt.Fprintln(e.out, decision.logLine())
@@ -220,7 +226,7 @@ func (p *selectorSampler) sample(ctx, feedCtx context.Context, markets []LaneEco
 			}
 		}
 	}
-	publishCurrentAPY(ctx, time.Now(), p.apyThrottle, observed, markets, func(ctx context.Context, value CurrentAPY) error {
+	publishCurrentAPY(ctx, time.Now(), p.apyThrottle, observed, markets, leverageSummary, func(ctx context.Context, value CurrentAPY) error {
 		return database.RecordCurrentAPY(ctx, routeKey, value)
 	}, logf)
 	if result.Action.entersOrRotates() {

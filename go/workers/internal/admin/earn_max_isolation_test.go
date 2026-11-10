@@ -73,6 +73,11 @@ func TestEarnMaxReadIsolation(t *testing.T) {
 		configs = append(configs, cfg)
 		nav := int64(100_000_000 + i*7_000_000)
 		state := map[string]any{"engineVersion": "backyard_rwa_v1", "currentApy": map[string]any{"lane": lane, "apyBps": 1200 + i}, "observation": map[string]any{"navKnown": true, "navRaw": fmt.Sprint(nav), "computedStrategyNavRaw": fmt.Sprint(nav), "aumUsdMicros": fmt.Sprint(nav + 3_000_000), "positionDebtValueRaw": fmt.Sprint(i * 1_000_000), "positionCollateralValueRaw": "120000000", "ltvBps": i * 100, "reportObservedAt": time.Now().UTC().Format(time.RFC3339), "voltrIdleRaw": "3000000"}}
+		if id == "backyard" {
+			state["currentApy"].(map[string]any)["leverageDecision"] = map[string]any{
+				"reason": "up_move_not_worth_cost", "targetLevel": 1.75, "netBenefitRaw": -1_065_583, "costRaw": 8_425_697, "horizonDays": 90,
+			}
+		}
 		raw, _ := json.Marshal(state)
 		_, err = pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states VALUES ($1,$2,'worker:test',now())`, cfg.RouteKey, raw)
 		if err != nil {
@@ -112,6 +117,14 @@ func TestEarnMaxReadIsolation(t *testing.T) {
 			}
 			if route.NavUsd == nil || *route.NavUsd != want || route.LeverageTarget == nil || *route.LeverageTarget != 1+float64(i)*0.75 {
 				t.Fatalf("%s route selected other vault: %+v", cfg.identity.ID, route)
+			}
+			decision := route.CurrentApy.LeverageDecision
+			if cfg.identity.ID == "backyard" {
+				if decision == nil || decision.Reason != "up_move_not_worth_cost" || decision.CostRaw != 8_425_697 || decision.NetBenefitRaw != -1_065_583 || decision.TargetLevel != *route.LeverageTarget {
+					t.Fatalf("Backyard borrowing decision lost its reason or cost units: %+v", decision)
+				}
+			} else if decision != nil {
+				t.Fatalf("Backyard borrowing decision leaked into Loyal Earn MAX: %+v", decision)
 			}
 			if route.AumUsd == nil || *route.AumUsd != want+3 || route.DebtUsd == nil || *route.DebtUsd != float64(i) || route.CollateralUsd == nil || *route.CollateralUsd != 120 || route.LtvRatio == nil || *route.LtvRatio != float64(i)/100 {
 				t.Fatalf("%s valuation units are incorrect: %+v", cfg.identity.ID, route)

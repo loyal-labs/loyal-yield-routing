@@ -11,11 +11,95 @@ import (
 )
 
 type CurrentAPY struct {
-	Lane       string    `json:"lane"`
-	APYBPS     int64     `json:"apyBps"`
-	Level      float64   `json:"level"`
-	ObservedAt time.Time `json:"observedAt"`
-	Flat       bool      `json:"flat"`
+	Lane             string                   `json:"lane"`
+	APYBPS           int64                    `json:"apyBps"`
+	Level            float64                  `json:"level"`
+	ObservedAt       time.Time                `json:"observedAt"`
+	Flat             bool                     `json:"flat"`
+	Portfolio        *PortfolioAPY            `json:"portfolio"`
+	LeverageDecision *LeverageDecisionSummary `json:"leverageDecision"`
+}
+
+type LeverageDecisionSummary struct {
+	TargetLevel   float64 `json:"targetLevel"`
+	Reason        string  `json:"reason"`
+	NetBenefitRaw float64 `json:"netBenefitRaw"`
+	CostRaw       int64   `json:"costRaw"`
+	HorizonDays   float64 `json:"horizonDays"`
+}
+
+type PortfolioAPY struct {
+	APYBPS        int64                  `json:"apyBps"`
+	TotalValueRaw int64                  `json:"totalValueRaw"`
+	IdleUSDCRaw   int64                  `json:"idleUsdcRaw"`
+	Positions     []PortfolioAPYPosition `json:"positions" nullable:"false"`
+}
+
+type PortfolioAPYPosition struct {
+	Lane               string `json:"lane"`
+	CollateralValueRaw int64  `json:"collateralValueRaw"`
+	DebtValueRaw       int64  `json:"debtValueRaw"`
+	EquityRaw          int64  `json:"equityRaw"`
+	APYBPS             *int64 `json:"apyBps"`
+}
+
+func currentPortfolioAPY(observed Observation, markets []LaneEconomics, now time.Time) *PortfolioAPY {
+	s := observed.Snapshot
+	if !s.netKnown(now) || !approvedVoltrFeeTerms(s) || s.TotalVaultNAVRaw <= 0 || s.TotalVaultNAVRaw > 1<<53 || len(observed.lanes) == 0 {
+		return nil
+	}
+	out := &PortfolioAPY{TotalValueRaw: s.TotalVaultNAVRaw, IdleUSDCRaw: s.VoltrIdleRaw + s.VoltrStrategyIdleRaw + s.SquadsIdleRaw, Positions: []PortfolioAPYPosition{}}
+	seen, custody := map[string]bool{}, map[string]bool{}
+	var annualIncome float64
+	for _, lane := range observed.lanes {
+		l, ok := findEarnLane(lane.RouteLane)
+		if !ok || seen[lane.RouteLane] || lane.Slot != s.Slot || !lane.netKnown(now) {
+			return nil
+		}
+		seen[lane.RouteLane] = true
+		for _, value := range []int64{lane.PositionCollateralValueRaw, lane.CollateralIdleValueRaw, lane.PositionDebtValueRaw} {
+			if value < 0 || value > 1<<53 {
+				return nil
+			}
+		}
+		idle := lane.CollateralIdleValueRaw
+		if custody[l.route.Kamino.CollateralMint] {
+			idle = 0
+		}
+		custody[l.route.Kamino.CollateralMint] = true
+		collateral := lane.PositionCollateralValueRaw + idle
+		if collateral == 0 && lane.PositionDebtValueRaw == 0 {
+			continue
+		}
+		m := economicsOf(markets, lane.RouteLane)
+		if m == nil || !finite(m.NativeAPY) || !finite(m.SupplyAPY) ||
+			lane.PositionDebtValueRaw > 0 && (!finite(m.CurrentBorrowAPY) || m.CurrentBorrowAPY < 0) {
+			return nil
+		}
+		income := float64(collateral)*m.NativeAPY + float64(lane.PositionCollateralValueRaw)*m.SupplyAPY
+		if lane.PositionDebtValueRaw > 0 {
+			income -= float64(lane.PositionDebtValueRaw) * m.CurrentBorrowAPY
+		}
+		annualIncome += income
+		position := PortfolioAPYPosition{Lane: lane.RouteLane, CollateralValueRaw: collateral, DebtValueRaw: lane.PositionDebtValueRaw, EquityRaw: collateral - lane.PositionDebtValueRaw}
+		if position.EquityRaw > 0 {
+			bps := int64(math.Round(performanceFeeForecast(income/float64(position.EquityRaw), s.ApprovedAdminPerformanceFeeBPS) * 10_000))
+			position.APYBPS = &bps
+		}
+		out.Positions = append(out.Positions, position)
+	}
+	for _, lane := range s.heldLanes() {
+		if !seen[lane] {
+			return nil
+		}
+	}
+	apy := performanceFeeForecast(annualIncome/float64(s.TotalVaultNAVRaw), s.ApprovedAdminPerformanceFeeBPS)
+	if !finite(apy) {
+		return nil
+	}
+	out.APYBPS = int64(math.Round(apy * 10_000))
+	sort.Slice(out.Positions, func(i, j int) bool { return out.Positions[i].Lane < out.Positions[j].Lane })
+	return out
 }
 
 func currentPositionAPY(s Snapshot, markets []LaneEconomics) (CurrentAPY, bool) {
@@ -57,6 +141,27 @@ func (t *currentAPYThrottle) due(now time.Time, next CurrentAPY) bool {
 	if t.written.IsZero() || next.Flat != t.last.Flat || next.Lane != t.last.Lane || now.Sub(t.written) >= currentAPYMaxAge {
 		return true
 	}
+	if (next.Portfolio == nil) != (t.last.Portfolio == nil) {
+		return true
+	}
+	if (next.LeverageDecision == nil) != (t.last.LeverageDecision == nil) {
+		return true
+	}
+	if d, old := next.LeverageDecision, t.last.LeverageDecision; d != nil && old != nil &&
+		(d.Reason != old.Reason || d.TargetLevel != old.TargetLevel || d.HorizonDays != old.HorizonDays) {
+		return true
+	}
+	if p, old := next.Portfolio, t.last.Portfolio; p != nil && old != nil {
+		if math.Abs(float64(p.APYBPS-old.APYBPS)) >= currentAPYMinChangeBPS || len(p.Positions) != len(old.Positions) || math.Abs(float64(p.IdleUSDCRaw-old.IdleUSDCRaw)) >= 1e6 {
+			return true
+		}
+		for i, position := range p.Positions {
+			prior := old.Positions[i]
+			if position.Lane != prior.Lane || math.Abs(float64(position.EquityRaw-prior.EquityRaw)) >= 1e6 || math.Abs(float64(position.DebtValueRaw-prior.DebtValueRaw)) >= 1e6 {
+				return true
+			}
+		}
+	}
 	if next.Flat {
 		return false
 	}
@@ -74,7 +179,7 @@ func (d *Database) RecordCurrentAPY(ctx context.Context, routeKey string, value 
 		return err
 	}
 	if value.Flat {
-		_, err = d.pool.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state=jsonb_set(state,'{currentApy}',COALESCE(state->'currentApy','{}'::jsonb) || jsonb_build_object('flat',true,'observedAt',$2::jsonb->'observedAt'),true),updated_at=clock_timestamp() WHERE route_key=$1`, routeKey, string(raw))
+		_, err = d.pool.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state=jsonb_set(state,'{currentApy}',COALESCE(state->'currentApy','{}'::jsonb) || jsonb_build_object('flat',true,'observedAt',$2::jsonb->'observedAt','portfolio',$2::jsonb->'portfolio','leverageDecision',null),true),updated_at=clock_timestamp() WHERE route_key=$1`, routeKey, string(raw))
 		return err
 	}
 	_, err = d.pool.Exec(ctx, `WITH route AS (
@@ -86,7 +191,7 @@ WHERE multiply_route_current_apy_days.observed_at <= EXCLUDED.observed_at`, rout
 	return err
 }
 
-func publishCurrentAPY(ctx context.Context, now time.Time, throttle *currentAPYThrottle, observed Observation, markets []LaneEconomics, write func(context.Context, CurrentAPY) error, logf func(string, ...any)) {
+func publishCurrentAPY(ctx context.Context, now time.Time, throttle *currentAPYThrottle, observed Observation, markets []LaneEconomics, decision *LeverageDecisionSummary, write func(context.Context, CurrentAPY) error, logf func(string, ...any)) {
 	if observed.planning == nil || !earnHeldLane(observed.Snapshot.RouteLane) {
 		return
 	}
@@ -95,6 +200,10 @@ func publishCurrentAPY(ctx context.Context, now time.Time, throttle *currentAPYT
 		return
 	}
 	value.ObservedAt = now.UTC()
+	value.Portfolio = currentPortfolioAPY(observed, markets, now)
+	if !value.Flat {
+		value.LeverageDecision = decision
+	}
 	if !throttle.due(now, value) {
 		return
 	}

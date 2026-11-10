@@ -23,6 +23,7 @@ type Vault struct {
 	IdleBufferCapRaw              int64
 	EconomicHorizon               time.Duration
 	DiversifyNewCash              bool
+	UnleveredNewCash              bool
 	ProtectExecution              bool
 	CheckInvestmentExits          bool
 
@@ -43,7 +44,8 @@ var rwa = newVault(Vault{Name: "rwa", VoltrVault: "HXtk15EA5pBg3rSKxBm8sWPExScPk
 var looping = newVault(Vault{Name: "looping", VoltrVault: "GrHZD15bMiUwrVPsmBwz8GRoQeDZN6wNEQVdW8k8SxV1",
 	Strategy: "GUCvzfn1hqThWp5uQNF7CqoxC1XckCPTjsRGKVXHPxu1", Adaptor: voltr.TrustfulProgramID.String(), SquadsIndex: 2,
 	RouteKey: "backyard:6HTfVjwk5FfW4GH67hmEen7VHeURdB5EJj6E429qTrUY", AdminPerformanceFeeBPS: 0, IssuanceFeeBPS: 0,
-	IdleBufferBPS: 1000, IdleBufferCapRaw: 25_000_000_000, EconomicHorizon: 7 * 24 * time.Hour, DiversifyNewCash: true, ProtectExecution: true, CheckInvestmentExits: true})
+	IdleBufferBPS: 1000, IdleBufferCapRaw: 25_000_000_000, EconomicHorizon: 90 * 24 * time.Hour,
+	ProtectExecution: true, CheckInvestmentExits: true})
 
 var vaults = []*Vault{rwa, looping}
 
@@ -52,6 +54,7 @@ func (v *Vault) selectorPolicy() SelectorPolicy {
 	p.IdleBufferRaw = v.IdleBufferRaw
 	p.IdleBufferBPS, p.IdleBufferCapRaw = v.IdleBufferBPS, v.IdleBufferCapRaw
 	p.DiversifyNewCash = v.DiversifyNewCash
+	p.UnleveredNewCash = v.UnleveredNewCash
 	if v.EconomicHorizon > 0 {
 		p.Horizon = v.EconomicHorizon
 	}

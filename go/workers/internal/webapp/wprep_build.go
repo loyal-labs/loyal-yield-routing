@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"math"
 	"net/http"
 	"slices"
 	"strconv"
@@ -48,6 +49,7 @@ func (p wprepPolicy) hasSetup() bool { return !p.SetupAccount.IsZero() && p.Setu
 type wprepInput struct {
 	Account      EarnAccount
 	AmountRaw    uint64
+	WithdrawAll  bool
 	PolicySigner solana.PublicKey
 	Policy       wprepPolicy
 	Source       wprepSource
@@ -250,6 +252,10 @@ func (in wprepInput) prepareReserve(ctx context.Context, deps wprepDeps) (EarnWi
 	top.VaultUsdcRemainderRaw = last.Persistence.VaultUsdcRemainderRaw
 	top.WalletTransferAmountRaw = last.Persistence.WalletTransferAmountRaw
 	wire := in.envelope(in.AmountRaw, top, first.Prepared, steps)
+	if in.WithdrawAll {
+		wire.AmountRaw = first.AmountRaw
+		wire.Persistence.RequestedWithdrawAmountRaw = first.AmountRaw
+	}
 	wire.TargetReserve = &EarnPolicyTargetReserve{
 		LiquidityMint:         source.Mint.String(),
 		LiquidityTokenProgram: source.TokenProgram.String(),
@@ -272,7 +278,11 @@ func (in wprepInput) collectLegs(ctx context.Context, deps wprepDeps, vaultAta, 
 	if err != nil {
 		return nil, err
 	}
-	if validated.ExecutionReserve != source.Reserve {
+	if in.WithdrawAll {
+		// A liquidity quote ages with interest; Kamino's max sentinel closes the collateral position.
+		kaminoAmount = math.MaxUint64
+	}
+	if in.WithdrawAll || validated.ExecutionReserve != source.Reserve {
 		bundle, err = in.rebuildForReserve(ctx, deps, bundle, obligation, vaultAta, kaminoAmount)
 		if err != nil {
 			return nil, err
@@ -517,6 +527,13 @@ func (in wprepInput) buildBatch(ctx context.Context, deps wprepDeps, batch []wpr
 	redeemed, err := simulateRedeemed()
 	if err != nil {
 		return EarnWithdrawStepWire{}, err
+	}
+	if in.WithdrawAll {
+		if len(batch) != 1 || redeemed == 0 {
+			return EarnWithdrawStepWire{}, errWprepUnderfilled
+		}
+		batchAmount = redeemed
+		batch[0].ExpectedRedeemedRaw = redeemed
 	}
 	for attempt := 0; redeemed < batchAmount && attempt < wprepMaxAdjustments; attempt++ {
 		if len(batch) != 1 {

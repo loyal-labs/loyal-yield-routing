@@ -571,7 +571,7 @@ The jobs `web/apps/web/vercel.json` used to schedule run from `loyal-web`:
 | Job | Where | Schedule |
 |---|---|---|
 | `smart-account-reconcile` | `loyal-web-cron@smart-account-reconcile.service` | `loyal-web-cron-smart-account-reconcile.timer`, every 15 minutes |
-| `earn-yield-joy` | `loyal-web-cron@earn-yield-joy.service` | `loyal-web-cron-earn-yield-joy.timer`, 15:41 UTC daily |
+| `earn-yield-joy` | `loyal-web-cron@earn-yield-joy.service` | `loyal-web-cron-earn-yield-joy.timer`, every 15 minutes; daily cycle starts at 15:41 UTC |
 | `earn-events-mixpanel` | `loyal-web-cron@earn-events-mixpanel.service` | `loyal-web-cron-earn-events-mixpanel.timer`, every 15 minutes |
 | `telemetry-heartbeat` | goroutine in `loyal-web.service`, every 5 minutes from start | none |
 
@@ -603,7 +603,7 @@ on both `loyal-web` and `loyal-web-cron@`. Without the alerts one, account alert
 OneSignal's default channel. By hand,
 `loyal-web cron earn-yield-joy --dry-run` prints what a run would push and writes nothing.
 A wallet due a push with no device registered through the app is counted as `unregistered`
-and keeps its claim, so it gets that push on the first run after it registers.
+and keeps its claim, so it gets that push in the first daily cycle after it registers.
 `earn-events-mixpanel` sends confirmed Earn deposits and withdrawals to Mixpanel; it needs
 `WEB_YIELD_DATABASE_URL` and `MIXPANEL_PROJECT_TOKEN`, seeds its watermark at the first run
 (no history backfill), and `--dry-run` writes and sends nothing. The deposit and withdrawal
@@ -614,6 +614,22 @@ the table owners.
 Enable with `systemctl enable --now loyal-web-cron-<job>.timer`. Every run takes a Postgres
 advisory lock on the App database, so a second run of one job exits non-zero while the
 first holds it.
+
+Before activating resumable joy scans, apply yield migration
+`0144_earn_yield_joy_progress.sql` with `loyal-migrate` and grant the
+`WEB_YIELD_DATABASE_URL` role SELECT, INSERT and UPDATE on
+`loyal_yield.earn_yield_joy_progress`. Activate the new web binary before installing
+the new timer: the old binary would start from the beginning on every tick.
+Then run `systemctl daemon-reload` and
+`systemctl restart loyal-web-cron-earn-yield-joy.timer`. Each run retains the
+four-minute work budget and checkpoints each completed group of five wallets;
+an unfinished cycle resumes on the next tick. A completed cycle stays idle until
+15:41 UTC. Failed/unavailable wallets are retried in the next cycle. Dry runs read
+the same cursor but neither advance it nor send pushes. Verify successive cron
+summaries and the table's `last_wallet`, `completed` and `updated_at`; a successful
+process exit with `truncated: true` means a batch ended, not that all wallets ran.
+On rollback restore the daily timer before restoring the old binary. The progress
+table may remain; it is independent of push claims and vault transaction state.
 
 `POST /api/push/mixpanel-cohort` and `POST /api/solana-week/sweep-notify` are served by Go
 only when all three are installed: `WEB_YIELD_DATABASE_URL` (with INSERT on

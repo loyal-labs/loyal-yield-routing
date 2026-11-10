@@ -134,6 +134,41 @@ func TestNewCashAdmissionRechecksCashAndProviderAfterRestart(t *testing.T) {
 	}
 }
 
+func TestUnleveredEntryReturnsCashDustBeforeDepositingCollateral(t *testing.T) {
+	s := base()
+	s.Slot, s.HasPosition, s.LTVBPS = 42, true, 922
+	s.TotalVaultNAVRaw, s.VoltrIdleRaw = 2_016_657_117, 916_319_315
+	s.StrategyNAVRaw, s.PriorReportedNAVRaw = 1_100_334_805, 1_100_334_805
+	s.PositionCollateralRaw, s.PositionCollateralValueRaw = 3_769_102, 4_494_109
+	s.PositionDebtRaw, s.PositionDebtValueRaw = 414_332, 414_332
+	s.CollateralIdleRaw, s.CollateralIdleValueRaw = 72_000_000, 86_661_803
+	s.MinimumCollateralDepositRaw = 3
+	s.NewAllocation = &allocationLimits{CashReserveRaw: 201_665_712, ProviderRoomRaw: 1_000_000_000, EquityRoomRaw: 8_000, UnleveredEntry: true}
+	for _, amount := range []int64{15, partialWithdrawalDustRaw} {
+		s.SquadsIdleRaw = amount
+		got := Decide(targeted(s))
+		if got.Action != StageSquadsToVoltr || got.Reason != returnCashReason || got.AmountRaw != amount {
+			t.Fatalf("cash dust blocked acquired collateral: %+v", got)
+		}
+	}
+	s.SquadsIdleRaw = 0
+	if got := Decide(targeted(s)); got.Action != OpenRouteStep || got.Reason != topupDepositReason || got.AmountRaw != s.CollateralIdleRaw {
+		t.Fatalf("returned dust did not release the collateral deposit: %+v", got)
+	}
+	s.SquadsIdleRaw = partialWithdrawalDustRaw + 1
+	if got := Decide(targeted(s)); got.Action != SwapDebtToCollateralStep || got.AmountRaw != s.SquadsIdleRaw {
+		t.Fatalf("non-dust cash was diverted from investment: %+v", got)
+	}
+	s.SquadsIdleRaw, s.NewAllocation.UnleveredEntry = 15, false
+	if got := Decide(targeted(s)); got.Action != SwapDebtToCollateralStep {
+		t.Fatalf("leveraged allocation behavior changed: %+v", got)
+	}
+	s.NewAllocation = nil
+	if got := Decide(targeted(s)); got.Action != SwapDebtToCollateralStep {
+		t.Fatalf("vault without the allocation policy changed: %+v", got)
+	}
+}
+
 func TestNewCashCapBlocksBorrowingWithoutResettingHeldTarget(t *testing.T) {
 	s := leverageSnapshot(1.5)
 	s.LeverageTargetLevel, s.LeverageUpApproved = 1.75, true

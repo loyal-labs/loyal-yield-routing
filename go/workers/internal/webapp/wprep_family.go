@@ -380,7 +380,7 @@ func wprepResolve(ctx context.Context, policies wprepPolicies, chain earnprep.Wi
 		}
 		policy.SetupSeed = pair.Setup.PolicySeed
 	}
-	return wprepInput{Account: account, AmountRaw: amount, PolicySigner: policySigner, Policy: policy, Source: selected.wprepSource}, nil
+	return wprepInput{Account: account, AmountRaw: amount, WithdrawAll: request.max, PolicySigner: policySigner, Policy: policy, Source: selected.wprepSource}, nil
 }
 
 type wprepCandidate struct {

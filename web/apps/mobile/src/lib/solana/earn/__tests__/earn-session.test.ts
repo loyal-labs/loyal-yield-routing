@@ -74,6 +74,39 @@ describe("earn session", () => {
     expect(mints).toBe(1);
   });
 
+  it.each(["seed-vault", "mwa", "deeplink"] as const)(
+    "authenticates %s only on an explicit sign-in, including a retry after cancellation",
+    async (kind) => {
+      const signer = {
+        ...privySigner(),
+        kind,
+        signMessage: jest.fn()
+          .mockRejectedValueOnce(new Error("User declined"))
+          .mockResolvedValue(new Uint8Array(64)),
+      };
+      mockGetWalletSigner.mockResolvedValue(signer);
+      global.fetch = jest.fn(async (_url: string, init?: RequestInit) => {
+        if (init?.method === "POST") {
+          return new Response(JSON.stringify(session("signed-in")));
+        }
+        const authorized = (init?.headers as Record<string, string>)?.Authorization === "Bearer signed-in";
+        return new Response(
+          JSON.stringify(authorized ? { balance: 25.28 } : { error: { code: "unauthenticated" } }),
+          { status: authorized ? 200 : 401 },
+        );
+      }) as unknown as typeof fetch;
+
+      expect((await earn.earnWalletRead(WALLET, "https://example.test/earn-state")).status).toBe(401);
+      expect(signer.signMessage).not.toHaveBeenCalled();
+      expect(await earn.deliberateSession(signer)).toBeNull();
+      await earn.earnWalletRead(WALLET, "https://example.test/earn-state");
+      expect(signer.signMessage).toHaveBeenCalledTimes(1);
+      expect(await earn.deliberateSession(signer)).toBe("signed-in");
+      expect((await earn.earnWalletRead(WALLET, "https://example.test/earn-state")).status).toBe(200);
+      expect(signer.signMessage).toHaveBeenCalledTimes(2);
+    },
+  );
+
   it("keeps storage empty when a logout lands while a rejected token is dropped", async () => {
     store.set(
       SESSIONS_KEY,

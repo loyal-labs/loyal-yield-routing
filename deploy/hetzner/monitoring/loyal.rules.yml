@@ -271,7 +271,12 @@ groups:
       # Go units restart forever, so for them a crash loop shows as
       # LoyalUnitRestartLoop rather than here.
       - alert: LoyalUnitDown
-        expr: node_systemd_unit_state{name=~"loyal-.+\\.service", state=~"failed|activating"} == 1
+        # A oneshot cron stays activating while it works; its start timeout
+        # turns a genuinely stuck run into failed, which still pages here.
+        expr: |
+          node_systemd_unit_state{name=~"loyal-.+\\.service", state="failed"} == 1
+          or
+          node_systemd_unit_state{name=~"loyal-.+\\.service", name!~"loyal-web-cron@.+\\.service", state="activating"} == 1
         for: 2m
         labels: {severity: page}
         annotations:

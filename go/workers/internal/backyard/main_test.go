@@ -22,8 +22,9 @@ func TestMain(m *testing.M) {
 	// Retained October 12 fixtures also predate the shorter payback horizon.
 	rwa.EconomicHorizon = selectorHorizon
 	// Historical lifecycle fixtures predate admission limits; new policy tests opt in.
-	rwa.DiversifyNewCash = false
+	rwa.DiversifyNewCash, rwa.IdleBufferRaw, rwa.IdleBufferBPS = false, 0, 0
 	looping.DiversifyNewCash, looping.IdleBufferBPS, looping.EconomicHorizon = false, 0, selectorHorizon
+	looping.UnleveredNewCash = false
 	// Historical replay fixtures retain their original trade sizes and timing.
 	rwa.ProtectExecution, looping.ProtectExecution = false, false
 	rwa.CheckInvestmentExits, looping.CheckInvestmentExits = false, false

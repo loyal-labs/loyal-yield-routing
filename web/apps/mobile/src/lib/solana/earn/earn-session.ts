@@ -222,13 +222,13 @@ function coolingDown(walletAddress: string): boolean {
 export async function deliberateSession(
   signer: Signer,
 ): Promise<string | null> {
-  return coolingDown(signer.publicKey.toBase58())
-    ? null
-    : ensureEarnSession(signer);
+  return ensureEarnSession(signer);
 }
 
 export async function silentSession(signer: Signer): Promise<string | null> {
-  return SILENT_SIGNERS.has(signer.kind) ? deliberateSession(signer) : null;
+  return SILENT_SIGNERS.has(signer.kind) && !coolingDown(signer.publicKey.toBase58())
+    ? ensureEarnSession(signer)
+    : null;
 }
 
 export async function silentEarnToken(

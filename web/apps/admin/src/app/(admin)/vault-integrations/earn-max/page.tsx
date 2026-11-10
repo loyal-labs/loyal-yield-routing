@@ -148,8 +148,8 @@ export default function EarnMaxPage(props: EarnMaxProps) {
 
           <Pulse openLatches={openLatches} route={route} />
 
-          <section className="grid gap-4 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)]">
-            <RightNow data={data} leverageNow={leverageNow} ltv={ltv} now={now} />
+          <section className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)]">
+            <RightNow data={data} ltv={ltv} now={now} />
             <LoanSafety
               custodyUsd={custodyUsd}
               data={data}
@@ -164,7 +164,7 @@ export default function EarnMaxPage(props: EarnMaxProps) {
           <PositionHistory data={data} />
           <MoneyMoves data={data} />
 
-          <section className="grid gap-4 lg:grid-cols-2">
+          <section className="grid grid-cols-1 gap-4 lg:grid-cols-2">
             <WorkerHealth data={data} now={now} />
             <Latches data={data} now={now} />
           </section>
@@ -270,7 +270,7 @@ function Pulse({
   );
 }
 
-function verdict(
+export function verdict(
   route: Route | null,
   latches: Array<{ reason: string }> | null,
   ltv: number | null
@@ -279,22 +279,22 @@ function verdict(
   if (latches?.length)
     return { bad: true, text: "The worker is stopped and needs a clear." };
   if (latches === null) return { bad: true, text: "Safety holds could not be checked." };
-  if (route.navUsd === null || route.aumUsd === null || ltv === null || route.navFresh === false)
+  if (route.navUsd === null || route.aumUsd === null || ltv === null)
     return { bad: true, text: "Current valuation is unavailable." };
   if (route.updatedAgeS > 3 * 60) return { bad: true, text: "Worker observations are stale." };
   if ((route.reportAgeS ?? Infinity) > STALE_REPORT_S)
     return { bad: true, text: "NAV reports have stalled." };
+  if (route.navFresh === false)
+    return { bad: false, text: "Valuation available; NAV report update pending." };
   return { bad: false, text: "Reporting normally." };
 }
 
 function RightNow({
   data,
-  leverageNow,
   ltv,
   now,
 }: {
   data: EarnMaxData;
-  leverageNow: number | null;
   ltv: number | null;
   now: number;
 }) {
@@ -335,6 +335,9 @@ function RightNow({
           : "",
       ].join(" ");
   const apyNow = route?.currentApy;
+  const apyAge = secondsSince(apyNow?.observedAt, now);
+  const portfolio = apyNow?.portfolio && apyAge !== null && apyAge >= 0 && apyAge <= 15 * 60 && (route?.updatedAgeS ?? Infinity) <= 180
+    ? apyNow.portfolio : null;
   const realized = data.apy.ok ? data.apy.value : null;
   const series = data.navSeries.ok ? data.navSeries.value : [];
 
@@ -394,16 +397,12 @@ function RightNow({
         <div className="grid grid-cols-2 gap-4">
           <Fact
             hint={
-              apyNow
-                ? `${apyNow.lane ?? "position"} at ${
-                    leverageNow === null ? "—" : `${leverageNow.toFixed(2)}x`
-                  }${apyNow.flat ? " · no position" : ""} · ${ago(
-                    secondsSince(apyNow.observedAt, now)
-                  )} ago`
-                : "Not published by the worker yet"
+              portfolio
+                ? `All holdings and idle cash, after borrowing costs and performance fees · ${ago(apyAge)} ago`
+                : "A fresh estimate covering every holding is unavailable"
             }
-            label="APY now"
-            value={apyNow ? pct(apyNow.apyPct) : "—"}
+            label="Estimated vault APY"
+            value={portfolio ? pct(portfolio.apyBps / 100) : "—"}
           />
           <Fact
             hint={
@@ -413,10 +412,39 @@ function RightNow({
                 ? "Needs 12 hours of history"
                 : `Voltr unavailable: ${data.apy.error}`
             }
-            label="Realized APY, 7 days"
+            label="Realized APY"
             value={realized ? pct(realized.apy * 100) : "—"}
           />
         </div>
+
+        {portfolio ? (
+          <div className="space-y-2">
+            <Table aria-label="Vault APY breakdown">
+              <TableHeader><TableRow>
+                <TableHead>Holding</TableHead>
+                <TableHead className="text-right">Net value</TableHead>
+                <TableHead className="text-right">Position APY</TableHead>
+              </TableRow></TableHeader>
+              <TableBody>
+                {portfolio.positions.map((position) => (
+                  <TableRow key={position.lane}>
+                    <TableCell>{position.lane}
+                      {position.debtValueRaw > 0 ? <p className="text-xs text-muted-foreground">{usd(position.debtValueRaw / 1e6)} borrowed, deducted from value</p> : null}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">{usd(position.equityRaw / 1e6)}</TableCell>
+                    <TableCell className="text-right tabular-nums">{position.apyBps === null ? "—" : pct(position.apyBps / 100)}</TableCell>
+                  </TableRow>
+                ))}
+                <TableRow>
+                  <TableCell>Idle USDC</TableCell>
+                  <TableCell className="text-right tabular-nums">{usd(portfolio.idleUsdcRaw / 1e6)}</TableCell>
+                  <TableCell className="text-right tabular-nums">0.00%</TableCell>
+                </TableRow>
+              </TableBody>
+            </Table>
+            <p className="text-xs text-muted-foreground">Forward estimate at current rates on {usd(portfolio.totalValueRaw / 1e6)} of vault value. Future trading costs and rate changes are excluded; realized return comes from the share price.</p>
+          </div>
+        ) : null}
 
         <div className="space-y-1">
           <Label>Value in the loop, last 24 hours</Label>
@@ -451,13 +479,41 @@ function LoanSafety({
 }) {
   const route = data.route.ok ? data.route.value : null;
   const target = route?.leverageTarget ?? null;
-  const targetHint = target === null
+  let targetHint: ReactNode = target === null
     ? "No recorded target for this route"
     : leverageNow !== null && Math.abs(target - leverageNow) < 0.05
-      ? "At target"
+      ? "At the approved target; the worker reassesses borrowing automatically"
       : route?.upApproved === false && leverageNow !== null && target > leverageNow
         ? "Additional borrowing is not approved"
         : "Recorded target; execution depends on worker checks";
+  const apy = route?.currentApy;
+  const decision = apy?.leverageDecision;
+  const now = Date.parse(data.loadedAt);
+  const decisionAge = secondsSince(apy?.observedAt, now);
+  if (decision && !apy?.flat && decision.targetLevel === target && decisionAge !== null && decisionAge >= 0 && decisionAge <= 15 * 60 && (route?.updatedAgeS ?? Infinity) <= 180) {
+    const reasons: Record<string, string> = {
+      up_move_not_worth_cost: "Extra borrowing is not worthwhile after costs.",
+      up_move_approved: "Higher leverage approved; execution checks still apply.",
+      spread_rule: "Selected from the current yield spread and risk limits.",
+      new_allocation_limit: "New borrowing is blocked by cash reserve or allocation limits.",
+      borrow_capacity_unknown: "Waiting for verified borrowing capacity.",
+      leverage_step_below_minimum: "The next borrowing step is below the minimum size.",
+      leverage_rate_unavailable: "Waiting for a current borrowing rate.",
+      fee_terms_unavailable: "Waiting for verified fee terms.",
+      fee_forecast_unavailable: "Waiting for a complete fee estimate.",
+      leverage_cost_unavailable: "Waiting for a complete execution cost estimate.",
+    };
+    const reason = reasons[decision.reason];
+    if (reason) {
+      targetHint = <>
+        {reason}
+        {decision.reason === "up_move_not_worth_cost" ? <span className="mt-1 block">
+          {decision.horizonDays}-day net benefit {usd(decision.netBenefitRaw / 1e6)} after {usd(decision.costRaw / 1e6)} in entry/exit costs.
+        </span> : null}
+        <span className="mt-1 block">Evaluated {ago(decisionAge)} ago.</span>
+      </>;
+    }
+  }
 
   return (
     <Card>
@@ -475,7 +531,7 @@ function LoanSafety({
           <Fact hint="Value in US dollars" label="Collateral" value={usd(route?.collateralUsd)} />
           <Fact hint="Debt value in US dollars" label="Borrowed" value={usd(route?.debtUsd)} />
           <Fact hint="Collateral / equity in this route" label="Leverage now" value={leverageNow === null ? "—" : `${leverageNow.toFixed(2)}x`} />
-          <Fact hint={targetHint} label="Leverage target" value={target === null ? "—" : levelLabel(target)} />
+          <Fact hint={targetHint} label="Approved leverage target" value={target === null ? "—" : levelLabel(target)} />
           <Fact hint={<AddressLink address={data.selectedVault.cashAta} />} label="Worker USDC cash" value={usd(custodyUsd)} />
           <Fact hint={<AddressLink address={data.selectedVault.idleAta} />} label="Vault USDC cash" value={data.balances.ok ? usd(data.balances.value.idle) : "—"} />
         </div>
@@ -705,15 +761,15 @@ function ApyHistory({ data }: { data: EarnMaxData }) {
           </p>
         ) : (
           <div className="grid gap-6 md:grid-cols-2">
-            {chart("7-day APY", "sevenDayApy")}
+            {chart("Realized APY", "sevenDayApy")}
             {chart("Daily APY", "dayApy")}
           </div>
         )}
         <p className="text-xs text-muted-foreground">
-          From the Voltr share price at the end of each UTC day. The 7-day line
-          ends at now; the daily line shows finished days only. This is what
-          depositors actually earned, unlike the APY now figure, which is the
-          forecast for the live position.
+          Annualized from the Voltr share price. The realized line aims for a
+          week and uses the available history when dates are missing; the current
+          figure shows its actual start date above. The daily line uses successive
+          reported days. The estimated vault APY is a forecast at current rates.
         </p>
       </CardContent>
     </Card>
@@ -880,13 +936,11 @@ function WorkerHealth({ data, now }: { data: EarnMaxData; now: number }) {
         <div className="grid grid-cols-2 gap-x-6 gap-y-4">
           <Fact
             hint={
-              route?.leaseOwner ? (
-                <span className="break-all font-mono">{route.leaseOwner}</span>
-              ) : (
-                "No lease holder"
-              )
+              route?.workerOwner
+                ? `Last observed ${ago(route.updatedAgeS)} ago`
+                : "Release not recorded by this worker"
             }
-            label="Worker version"
+            label="Last reporting worker"
             value={route?.version ?? "—"}
           />
           <Fact
@@ -902,7 +956,7 @@ function WorkerHealth({ data, now }: { data: EarnMaxData; now: number }) {
             hint={
               route?.reportSlot
                 ? `Slot ${route.reportSlot.toLocaleString("en-US")}${
-                    route.navFresh === false ? " · marked stale" : ""
+                    route.navFresh === false ? " · update pending" : ""
                   }`
                 : "—"
             }
@@ -916,7 +970,9 @@ function WorkerHealth({ data, now }: { data: EarnMaxData; now: number }) {
           <Fact
             hint={
               health
-                ? `${health.navFailed} failed · ${
+                ? `${health.navRefusedBeforeSending} refused before sending · ${
+                    health.navFailed - health.navRefusedBeforeSending
+                  } signed attempts failed · ${
                     health.navAll - health.navReconciled - health.navFailed
                   } other`
                 : "—"
@@ -928,11 +984,18 @@ function WorkerHealth({ data, now }: { data: EarnMaxData; now: number }) {
         {health ? (
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-1">
-              <Label>Why NAV reports failed</Label>
+              <Label>Why NAV attempts did not land</Label>
               {health.navFailureReasons.length ? (
                 health.navFailureReasons.map((row) => (
-                  <p className="flex justify-between gap-3" key={row.reason}>
-                    <span>{words(row.reason)}</span>
+                  <p className="flex justify-between gap-3" key={`${row.reason}:${row.beforeSending}`}>
+                    <span>
+                      {row.reason === "hold:stale"
+                        ? "Freshness check refused"
+                        : row.reason === "hold:chain_refused"
+                          ? "Transaction preparation refused"
+                          : words(row.reason)}
+                      {row.beforeSending ? " · not sent" : ""}
+                    </span>
                     <span className="font-mono tabular-nums">{row.count}</span>
                   </p>
                 ))

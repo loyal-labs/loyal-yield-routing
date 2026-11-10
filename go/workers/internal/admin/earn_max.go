@@ -23,6 +23,7 @@ import (
 	"github.com/solana-foundation/solana-go/v2/rpc"
 	"github.com/solana-foundation/solana-go/v2/rpc/jsonrpc"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/backyard"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnmax"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
@@ -92,15 +93,18 @@ type EarnMaxRoute struct {
 	SelectorReason     *string               `json:"selectorReason"`
 	UpdatedAgeS        int32                 `json:"updatedAgeS"`
 	Version            *string               `json:"version"`
+	WorkerOwner        *string               `json:"workerOwner"`
 	WithdrawalStatus   *string               `json:"withdrawalStatus"`
 }
 
 type EarnMaxCurrentApy struct {
-	ApyPct     float64  `json:"apyPct"`
-	Flat       bool     `json:"flat"`
-	Lane       *string  `json:"lane"`
-	Level      *float64 `json:"level"`
-	ObservedAt *string  `json:"observedAt"`
+	Portfolio        *backyard.PortfolioAPY            `json:"portfolio"`
+	LeverageDecision *backyard.LeverageDecisionSummary `json:"leverageDecision"`
+	ApyPct           float64                           `json:"apyPct"`
+	Flat             bool                              `json:"flat"`
+	Lane             *string                           `json:"lane"`
+	Level            *float64                          `json:"level"`
+	ObservedAt       *string                           `json:"observedAt"`
 }
 
 type EarnMaxLeverageWatch struct {
@@ -123,12 +127,13 @@ type EarnMaxNavPoint struct {
 }
 
 type EarnMaxHealth struct {
-	FailedSteps          []EarnMaxFailedStep    `json:"failedSteps" nullable:"false"`
-	NavAll               int64                  `json:"navAll"`
-	NavFailed            int64                  `json:"navFailed"`
-	NavFailureReasons    []EarnMaxFailureReason `json:"navFailureReasons" nullable:"false"`
-	NavReconciled        int64                  `json:"navReconciled"`
-	RefusedBeforeSending int64                  `json:"refusedBeforeSending"`
+	FailedSteps             []EarnMaxFailedStep    `json:"failedSteps" nullable:"false"`
+	NavAll                  int64                  `json:"navAll"`
+	NavFailed               int64                  `json:"navFailed"`
+	NavRefusedBeforeSending int64                  `json:"navRefusedBeforeSending"`
+	NavFailureReasons       []EarnMaxFailureReason `json:"navFailureReasons" nullable:"false"`
+	NavReconciled           int64                  `json:"navReconciled"`
+	RefusedBeforeSending    int64                  `json:"refusedBeforeSending"`
 }
 
 type EarnMaxFailedStep struct {
@@ -137,8 +142,9 @@ type EarnMaxFailedStep struct {
 }
 
 type EarnMaxFailureReason struct {
-	Count  int32  `json:"count"`
-	Reason string `json:"reason"`
+	Count         int32  `json:"count"`
+	Reason        string `json:"reason"`
+	BeforeSending bool   `json:"beforeSending"`
 }
 
 type EarnMaxMove struct {
@@ -474,6 +480,29 @@ func earnMaxLoadRoute(ctx context.Context, d *Deps, cfg earnMaxConfig) (EarnMaxR
 			Level: earnMaxNum(apy["level"]), ObservedAt: earnMaxStr(apy["observedAt"]),
 		}
 	}
+	if portfolio := apy["portfolio"]; portfolio != nil {
+		encoded, err := json.Marshal(portfolio)
+		if err != nil {
+			return route, err
+		}
+		var value backyard.PortfolioAPY
+		if err := json.Unmarshal(encoded, &value); err != nil {
+			return route, err
+		}
+		if route.CurrentApy == nil {
+			route.CurrentApy = &EarnMaxCurrentApy{ObservedAt: earnMaxStr(apy["observedAt"])}
+		}
+		route.CurrentApy.Portfolio = &value
+	}
+	if decision := apy["leverageDecision"]; decision != nil && route.CurrentApy != nil {
+		encoded, err := json.Marshal(decision)
+		if err != nil {
+			return route, err
+		}
+		if err := json.Unmarshal(encoded, &route.CurrentApy.LeverageDecision); err != nil {
+			return route, err
+		}
+	}
 	route.CurrentOperationID = earnMaxStr(state["currentOperationId"])
 	route.DebtUsd = earnMaxDiv(earnMaxNum(observation["positionDebtValueRaw"]), 1e6)
 	route.CollateralUsd = earnMaxDiv(earnMaxNum(observation["positionCollateralValueRaw"]), 1e6)
@@ -502,16 +531,22 @@ func earnMaxLoadRoute(ctx context.Context, d *Deps, cfg earnMaxConfig) (EarnMaxR
 	route.RouteStatus = earnMaxStr(observation["routeStatus"])
 	route.SelectorAction = earnMaxStr(earnMaxRec(selector)["action"])
 	route.SelectorReason = earnMaxStr(earnMaxRec(selector)["reason"])
-	if route.LeaseOwner != nil {
-		owner := *route.LeaseOwner
-		if len(owner) > 40 {
-			owner = owner[len(owner)-40:]
-		}
-		version := owner[:min(7, len(owner))]
-		route.Version = &version
-	}
+	route.WorkerOwner = earnMaxStr(observation["workerOwner"])
+	route.Version = earnMaxWorkerVersion(route.WorkerOwner)
 	route.WithdrawalStatus = earnMaxStr(earnMaxRec(state["withdrawal"])["status"])
 	return route, nil
+}
+
+func earnMaxWorkerVersion(owner *string) *string {
+	if owner == nil {
+		return nil
+	}
+	_, release, ok := strings.Cut(*owner, ":sha-")
+	if !ok || len(release) != 40 || strings.Trim(release, "0123456789abcdef") != "" {
+		return nil
+	}
+	version := release[:7]
+	return &version
 }
 
 func earnMaxDecodeReport(program, returnData, request *string, expectedProgram string) (float64, bool) {
@@ -581,10 +616,10 @@ func earnMaxLoadNavSeries(ctx context.Context, d *Deps, cfg earnMaxConfig) ([]Ea
 func earnMaxLoadHealth(ctx context.Context, d *Deps, cfg earnMaxConfig) (EarnMaxHealth, error) {
 	health := EarnMaxHealth{FailedSteps: []EarnMaxFailedStep{}, NavFailureReasons: []EarnMaxFailureReason{}}
 	err := d.YieldRead(ctx, func(tx pgx.Tx) error {
-		nav, err := tx.Query(ctx, `SELECT status, recovery_reason AS reason, count(*)::int AS count
+		nav, err := tx.Query(ctx, `SELECT status, recovery_reason AS reason, transaction_signature IS NULL AS before_sending, count(*)::int AS count
        FROM loyal_yield.multiply_operations
        WHERE route_key = $1 AND action = 'REPORT_NAV' AND created_at > now() - interval '24 hours'
-       GROUP BY 1, 2 ORDER BY 3 DESC`, cfg.RouteKey)
+       GROUP BY 1, 2, 3 ORDER BY 4 DESC`, cfg.RouteKey)
 		if err != nil {
 			return err
 		}
@@ -592,19 +627,23 @@ func earnMaxLoadHealth(ctx context.Context, d *Deps, cfg earnMaxConfig) (EarnMax
 			var status string
 			var reason *string
 			var count int32
-			if err := nav.Scan(&status, &reason, &count); err != nil {
+			var beforeSending bool
+			if err := nav.Scan(&status, &reason, &beforeSending, &count); err != nil {
 				return err
 			}
 			health.NavAll += int64(count)
 			switch status {
 			case "failed":
 				health.NavFailed += int64(count)
+				if beforeSending {
+					health.NavRefusedBeforeSending += int64(count)
+				}
 				if len(health.NavFailureReasons) < 5 {
 					text := "no reason"
 					if reason != nil {
 						text = *reason
 					}
-					health.NavFailureReasons = append(health.NavFailureReasons, EarnMaxFailureReason{Count: count, Reason: text})
+					health.NavFailureReasons = append(health.NavFailureReasons, EarnMaxFailureReason{Count: count, Reason: text, BeforeSending: beforeSending})
 				}
 			case "reconciled":
 				health.NavReconciled += int64(count)

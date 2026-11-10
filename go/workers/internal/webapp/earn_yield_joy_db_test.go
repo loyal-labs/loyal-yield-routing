@@ -3,6 +3,8 @@ package webapp
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -35,7 +37,9 @@ func joyTestPool(t *testing.T) *pgxpool.Pool {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	_, err = pool.Exec(ctx, `DROP TABLE IF EXISTS earn_yield_push_state, app_user_smart_accounts, app_users, push_tokens;
+	_, err = pool.Exec(ctx, `DROP SCHEMA IF EXISTS loyal_yield CASCADE;
+DROP TABLE IF EXISTS earn_yield_push_state, app_user_smart_accounts, app_users, push_tokens;
+CREATE SCHEMA loyal_yield;
 CREATE TABLE earn_yield_push_state (
 	id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
 	wallet_public_key text NOT NULL UNIQUE,
@@ -62,7 +66,27 @@ CREATE TABLE push_tokens (
 	if err != nil {
 		t.Fatal(err)
 	}
+	migration, err := os.ReadFile("../../../../migrations/yield/0144_earn_yield_joy_progress.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, string(migration)); err != nil {
+		t.Fatal(err)
+	}
 	return pool
+}
+
+// joyCrons shares one disposable pool as both App and Yield database.
+func joyCrons(pool *pgxpool.Pool) Crons {
+	return NewCrons(pool, Earn{YieldDB: pool, Cluster: Mainnet})
+}
+
+// startNextJoyCycle lets a test rerun the cron the way the next daily cycle would.
+func startNextJoyCycle(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(), `DELETE FROM loyal_yield.earn_yield_joy_progress`); err != nil {
+		t.Fatal(err)
+	}
 }
 
 type joyRow struct {
@@ -92,7 +116,7 @@ FROM earn_yield_push_state WHERE wallet_public_key = $1`, wallet).
 func TestEarnJoyClaimIsCompareAndSwap(t *testing.T) {
 	pool := joyTestPool(t)
 	ctx := context.Background()
-	c := NewCrons(pool, Earn{})
+	c := joyCrons(pool)
 	now := time.Date(2026, 11, 9, 12, 0, 0, 0, time.UTC)
 
 	seed := selectJoyPush(10, 10, now, nil)
@@ -212,7 +236,7 @@ func TestEarnJoyRunSkipsUnavailableWallet(t *testing.T) {
 		status int
 		body   string
 	}{200, `{"id":"n1"}`})
-	c := NewCrons(pool, Earn{})
+	c := joyCrons(pool)
 	c.h.CampaignPush = push
 	c.Earnings = func(_ context.Context, _, _, wallet string) (joyEarnings, bool, error) {
 		if wallet == "W2" {
@@ -276,7 +300,7 @@ func TestEarnJoyEmitsOnlyAcceptedPushes(t *testing.T) {
 		return append([]string(nil), sentTo...)
 	}
 	tracker, tracked := mixpanelStub(t)
-	c := NewCrons(pool, Earn{})
+	c := joyCrons(pool)
 	c.h.CampaignPush = push
 	c.Mixpanel = tracker
 	c.Earnings = func(_ context.Context, _, _, wallet string) (joyEarnings, bool, error) {
@@ -384,7 +408,7 @@ func TestEarnJoyUnregisteredWalletKeepsItsClaim(t *testing.T) {
 		}
 		return []string{"sub-" + wallet}, nil
 	}
-	c := NewCrons(pool, Earn{})
+	c := joyCrons(pool)
 	c.h.CampaignPush = push
 	c.Earnings = func(context.Context, string, string, string) (joyEarnings, bool, error) {
 		return joyEarnings{earnLifetimeUSD: 5}, true, nil
@@ -402,12 +426,105 @@ func TestEarnJoyUnregisteredWalletKeepsItsClaim(t *testing.T) {
 		t.Fatalf("claim spent without a registered device: %+v", row)
 	}
 
+	// The skipped wallet is retried in the next daily cycle.
 	registered = true
+	startNextJoyCycle(t, pool)
 	summary, err = c.EarnYieldJoy(ctx, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(summary.Pushed) != 1 || summary.Pushed[0].Campaign != "yield-total-1" || len(requests()) != 1 {
 		t.Fatalf("registered run: summary = %+v, requests = %d", summary, len(requests()))
+	}
+}
+
+func TestEarnYieldJoyResumesUntilDailyCycleCompletes(t *testing.T) {
+	pool := joyTestPool(t)
+	ctx := context.Background()
+	users := map[string]string{}
+	for i := range 12 {
+		wallet := fmt.Sprintf("wallet%02d", i)
+		var id string
+		if err := pool.QueryRow(ctx, `INSERT INTO app_users (id, created_at, subject_address) VALUES (gen_random_uuid(), now() - interval '2 days', $1) RETURNING id::text`, wallet).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		users[wallet] = id
+		if _, err := pool.Exec(ctx, `INSERT INTO app_user_smart_accounts (user_id, state, solana_env, settings_pda) VALUES ($1, 'ready', $2, $3)`, id, smartAccountsSolanaEnv, "settings-"+wallet); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A second ready account for a wallet must not cause a second notification attempt.
+	if _, err := pool.Exec(ctx, `INSERT INTO app_user_smart_accounts (user_id, state, solana_env, settings_pda, updated_at) VALUES ($1, 'ready', $2, 'older', now() - interval '1 day')`, users["wallet00"], smartAccountsSolanaEnv); err != nil {
+		t.Fatal(err)
+	}
+	c := joyCrons(pool)
+	seen := map[string]int{}
+	var mu sync.Mutex
+	c.Earnings = func(_ context.Context, _, settings, wallet string) (joyEarnings, bool, error) {
+		if settings == "older" {
+			return joyEarnings{}, false, errors.New("selected old settings")
+		}
+		mu.Lock()
+		seen[wallet]++
+		mu.Unlock()
+		time.Sleep(1100 * time.Millisecond)
+		return joyEarnings{}, true, nil
+	}
+	first, err := c.earnYieldJoyBatch(ctx, false, time.Second)
+	if err != nil || first.Processed != 5 || !first.Truncated || first.Errors != 0 {
+		t.Fatalf("first batch: %+v, %v", first, err)
+	}
+	cycle, after, completed, err := c.joyProgress(ctx, time.Now())
+	if err != nil || after != "wallet04" || completed {
+		t.Fatalf("progress: %s %s %v %v", cycle, after, completed, err)
+	}
+	// An unfinished scan must survive the next day's boundary.
+	laterCycle, laterAfter, _, err := c.joyProgress(ctx, cycle.Add(25*time.Hour))
+	if err != nil || !laterCycle.Equal(cycle) || laterAfter != after {
+		t.Fatal("unfinished cycle reset at midnight")
+	}
+	c.Earnings = func(_ context.Context, _, _, wallet string) (joyEarnings, bool, error) {
+		mu.Lock()
+		seen[wallet]++
+		mu.Unlock()
+		switch wallet {
+		case "wallet06":
+			return joyEarnings{}, false, errors.New("temporary earnings failure")
+		case "wallet07":
+			return joyEarnings{}, false, nil
+		}
+		return joyEarnings{}, true, nil
+	}
+	// A dry run must not advance progress or claim a notification.
+	dry, err := c.EarnYieldJoy(ctx, true)
+	if err != nil || dry.Processed != 7 {
+		t.Fatalf("dry run: %+v %v", dry, err)
+	}
+	if _, dryAfter, _, err := c.joyProgress(ctx, time.Now()); err != nil || dryAfter != after {
+		t.Fatal("dry run advanced cursor")
+	}
+	var claims int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM earn_yield_push_state`).Scan(&claims); err != nil || claims != 5 {
+		t.Fatalf("dry run wrote claims: %d %v", claims, err)
+	}
+	second, err := c.earnYieldJoyBatch(ctx, false, time.Second)
+	if err != nil || second.Processed != 7 || second.Truncated || second.Errors != 1 || second.Unavailable != 1 {
+		t.Fatalf("second batch: %+v %v", second, err)
+	}
+	for wallet, count := range seen {
+		want := 2 // Dry run plus live continuation.
+		if strings.Compare(wallet, "wallet04") <= 0 {
+			want = 1
+		}
+		if count != want {
+			t.Fatalf("%s processed %d times, want %d", wallet, count, want)
+		}
+	}
+	idle, err := c.earnYieldJoyBatch(ctx, false, time.Second)
+	if err != nil || idle.Processed != 0 {
+		t.Fatalf("completed cycle repeated: %+v %v", idle, err)
+	}
+	if _, nextAfter, done, err := c.joyProgress(ctx, cycle.Add(25*time.Hour)); err != nil || nextAfter != "" || done {
+		t.Fatal("next daily cycle did not restart")
 	}
 }

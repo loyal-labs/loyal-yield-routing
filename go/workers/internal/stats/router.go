@@ -48,8 +48,9 @@ func New(cfg Config) http.Handler {
 	site := webserve.New(cfg.Dist)
 	vaults := newVaultList(cfg.Yield)
 	growth := newGrowthMetrics(cfg.Yield)
+	backyard := newBackyardDashboard(cfg.Yield)
 	r := chi.NewRouter()
-	r.Use(headers(cfg.Release))
+	r.Use(headers(cfg.Release), backyardHostOnly)
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	r.Get("/readyz", func(w http.ResponseWriter, _ *http.Request) {
 		if !site.Ready() {
@@ -62,6 +63,8 @@ func New(cfg Config) http.Handler {
 	r.Get("/api/earn/vaults", vaults.ServeHTTP)
 	r.Head("/api/earn/vaults", vaults.ServeHTTP)
 	r.Get("/api/earn/growth-metrics", growth.ServeHTTP)
+	r.Get("/api/backyard", backyard.ServeHTTP)
+	r.Head("/api/backyard", backyard.ServeHTTP)
 	r.Handle("/api/*", http.NotFoundHandler())
 	r.Handle("/*", site)
 	return r

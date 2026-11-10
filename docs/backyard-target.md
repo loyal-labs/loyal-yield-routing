@@ -140,7 +140,15 @@ binary holds the whole vault on `invalid_lane_levels`, the brake included:
 `UPDATE loyal_yield.backyard_lane_levels SET level = 1.75 WHERE level > 1.75`. Lowering a cap delevers a lane
 held above it by rule 6 (Maple at 1.75x steps down to 1.5x).
 
-Earn MAX scores optional moves over seven days; Looping retains 30 days.
+Earn MAX scores optional moves over seven days and retains its diversification
+policy. Backyard (Looping) evaluates moves over 90 days, ranks executable entries
+and rotations by net benefit, and permits economic leverage within each lane's
+existing cap. Backyard has no forced provider percentages, gross provider
+allocation cap or blanket no-borrowing rule. Its 10% cash buffer, $1,000 execution
+cap, fresh capacity and exit-price checks, minimum benefit, uncertainty allowance
+and withdrawal protections remain enforced. This temporary policy has no
+automatic expiry; restoring allocation restrictions requires an explicit Backyard
+policy update.
 The selector uses 30-minute
 persistence, $0.25 minimum benefit and 10 bps uncertainty (on the vault's
 investable equity for cash, on the tranche for a rotation): cash entering a
