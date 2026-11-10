@@ -685,7 +685,9 @@ func inboundStep(s Snapshot, t LaneTarget, hard int64, d func(Action, string, in
 	}
 	if s.SquadsIdleRaw > 0 && s.NewAllocation != nil {
 		returnRaw := min(s.SquadsIdleRaw, allocationCashDeficit(s))
-		if min(s.NewAllocation.ProviderRoomRaw, s.NewAllocation.EquityRoomRaw) == 0 {
+		// Return unleveraged cash dust instead of letting an uneconomic swap block its collateral deposit.
+		if min(s.NewAllocation.ProviderRoomRaw, s.NewAllocation.EquityRoomRaw) == 0 ||
+			s.NewAllocation.UnleveredEntry && s.SquadsIdleRaw <= partialWithdrawalDustRaw {
 			returnRaw = s.SquadsIdleRaw
 		}
 		if returnRaw > 0 {
