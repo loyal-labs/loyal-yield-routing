@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 const (
@@ -20,6 +22,14 @@ type mixpanelEvent struct {
 	Name, DistinctID, InsertID string
 	Time                       time.Time
 	Properties                 map[string]any
+}
+
+var mixpanelInsertNamespace = uuid.NewSHA1(uuid.NameSpaceURL, []byte("https://askloyal.com/mixpanel-insert-id"))
+
+// Mixpanel accepts an $insert_id of at most 36 bytes of [A-Za-z0-9-] and
+// strict mode rejects the whole batch otherwise, so each name maps to a stable UUID.
+func mixpanelInsertID(name string) string {
+	return uuid.NewSHA1(mixpanelInsertNamespace, []byte(name)).String()
 }
 
 // MixpanelTracker posts events to Mixpanel's /track endpoint. A nil tracker
@@ -52,7 +62,7 @@ func (m *MixpanelTracker) track(ctx context.Context, events []mixpanelEvent) err
 			}
 			properties["token"] = m.token
 			properties["distinct_id"] = event.DistinctID
-			properties["$insert_id"] = event.InsertID
+			properties["$insert_id"] = mixpanelInsertID(event.InsertID)
 			properties["time"] = event.Time.UnixMilli()
 			body[i] = map[string]any{"event": event.Name, "properties": properties}
 		}

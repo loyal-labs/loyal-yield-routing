@@ -345,7 +345,7 @@ func TestEarnJoyEmitsOnlyAcceptedPushes(t *testing.T) {
 		props["campaign"] != "yield-total-1" || props["lifetime_usd"] != float64(5) {
 		t.Fatalf("event = %v", event)
 	}
-	if want := "earnings:yield-total-1:W1:" + time.Now().UTC().Format("2006-01-02"); props["$insert_id"] != want {
+	if want := "earnings:yield-total-1:W1:" + time.Now().UTC().Format("2006-01-02"); props["$insert_id"] != mixpanelInsertID(want) {
 		t.Fatalf("$insert_id = %v, want %v", props["$insert_id"], want)
 	}
 }

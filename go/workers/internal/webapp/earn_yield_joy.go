@@ -114,11 +114,15 @@ func joyMilestoneDone(sent []string, i int) bool {
 	return false
 }
 
-// joyWithinWindow keeps the pushes that still count against the weekly cap.
+// joyWithinWindow keeps the pushes that still count against the weekly cap:
+// those on this UTC day or the six before it. Comparing days, like the daily
+// cap, keeps a wallet processed a few minutes earlier than last week from
+// still counting that push.
 func joyWithinWindow(times []time.Time, now time.Time) []time.Time {
+	today := now.UTC().Truncate(joyDay)
 	kept := []time.Time{}
 	for _, at := range times {
-		if now.Sub(at) < joyCapWindow {
+		if today.Sub(at.UTC().Truncate(joyDay)) < joyCapWindow {
 			kept = append(kept, at)
 		}
 	}

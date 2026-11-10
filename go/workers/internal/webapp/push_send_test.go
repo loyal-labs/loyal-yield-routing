@@ -2,6 +2,7 @@ package webapp
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -281,16 +282,25 @@ func TestDebugSendGoesThroughOneSignalAsAlert(t *testing.T) {
 	}
 }
 
-func TestRetiredCohortCampaignsAreUnknown(t *testing.T) {
+// Mixpanel cohorts for retired campaigns are refused before any wallet is pushed.
+func TestRetiredCohortCampaignIsRefusedWithoutSending(t *testing.T) {
+	push, requests := oneSignalStub(t, struct {
+		status int
+		body   string
+	}{200, `{"id":"n1"}`})
+	h := earnRoutes{Earn: Earn{MixpanelCohortSecret: "cohort-secret"}}
+	h.CampaignPush = push
+	auth := "Basic " + base64.StdEncoding.EncodeToString([]byte(":cohort-secret"))
 	for _, name := range []string{"earning-while-away", "still-earning"} {
-		if _, ok := mixpanelCohortCampaigns[name]; ok {
-			t.Errorf("%s is still registered", name)
+		body := `{"action":"add_members","parameters":{"mixpanel_cohort_name":"push: ` + name + `","members":[{"mixpanel_distinct_id":"mob:W1"}]}}`
+		_, err := h.mixpanelCohort(context.Background(), &mixpanelCohortInput{Authorization: auth, Raw: rawJSON{data: []byte(body)}})
+		var rejected *campaignRejected
+		if !errors.As(err, &rejected) || rejected.GetStatus() != http.StatusBadRequest {
+			t.Fatalf("%s: err = %v, want a 400", name, err)
 		}
 	}
-	for _, name := range []string{"quest-1-nudge", "quest-2-nudge", "seeker-summer-ending"} {
-		if _, ok := mixpanelCohortCampaigns[name]; !ok {
-			t.Errorf("%s is missing", name)
-		}
+	if got := requests(); len(got) != 0 {
+		t.Fatalf("sent %d pushes for retired campaigns", len(got))
 	}
 }
 

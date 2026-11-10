@@ -92,12 +92,12 @@ func TestEarnEventsExportSeedsThenExports(t *testing.T) {
 	deposit, withdrawal := got[0][0], got[1][0]
 	props, _ := deposit["properties"].(map[string]any)
 	if deposit["event"] != "Earn Deposit Confirmed" || props["amount_usd"] != float64(25) || props["source"] != "autodeposit" ||
-		props["$insert_id"] != "earn-deposit:7" || props["distinct_id"] != "mob:W1" || props["deposit_id"] != float64(7) {
+		props["$insert_id"] != mixpanelInsertID("earn-deposit:7") || props["distinct_id"] != "mob:W1" || props["deposit_id"] != float64(7) {
 		t.Fatalf("deposit = %v", deposit)
 	}
 	props, _ = withdrawal["properties"].(map[string]any)
 	if withdrawal["event"] != "Earn Withdrawal Confirmed" || props["amount_usd"] != 10.5 || props["source"] != "manual" ||
-		props["source_type"] != "user" || props["$insert_id"] != "earn-withdrawal:3" || props["withdrawal_id"] != float64(3) {
+		props["source_type"] != "user" || props["$insert_id"] != mixpanelInsertID("earn-withdrawal:3") || props["withdrawal_id"] != float64(3) {
 		t.Fatalf("withdrawal = %v", withdrawal)
 	}
 }
@@ -171,7 +171,7 @@ SELECT g, 'W1', $1, 1000000, now() - interval '20 minutes', NULL FROM generate_s
 		for _, event := range request {
 			props, _ := event["properties"].(map[string]any)
 			ids[props["$insert_id"]] = true
-			if props["$insert_id"] == "earn-deposit:6" {
+			if props["$insert_id"] == mixpanelInsertID("earn-deposit:6") {
 				sixthTime = props["time"]
 			}
 		}

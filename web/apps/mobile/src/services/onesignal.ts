@@ -106,16 +106,20 @@ export async function requestOneSignalPermission(): Promise<boolean> {
 }
 
 /**
- * The device's OneSignal push subscription ID, or null when OneSignal is
- * unavailable or has not assigned one yet (the first launch gets it
- * asynchronously; addOneSignalSubscriptionIdListener reports it then).
+ * The device's OneSignal push subscription ID while it is opted in, or null
+ * when OneSignal is unavailable, has not assigned one yet (the first launch
+ * gets it asynchronously; addOneSignalSubscriptionIdListener reports it then),
+ * or notifications are off. The server spends a push claim on any registered
+ * subscription, so an opted-out one is never registered.
  */
 export async function getOneSignalSubscriptionId(): Promise<string | null> {
   await initSettled;
   const mod = await getOneSignal();
   if (!mod) return null;
   try {
-    return await mod.OneSignal.User.pushSubscription.getIdAsync();
+    const subscription = mod.OneSignal.User.pushSubscription;
+    if (!(await subscription.getOptedInAsync())) return null;
+    return await subscription.getIdAsync();
   } catch (error) {
     console.error("[onesignal] getIdAsync failed:", error);
     return null;
@@ -123,7 +127,7 @@ export async function getOneSignalSubscriptionId(): Promise<string | null> {
 }
 
 /**
- * Call `onId` whenever the push subscription changes and has an ID. Returns
+ * Call `onId` whenever the push subscription changes, has an ID and is opted in. Returns
  * an unsubscribe function, or null when OneSignal is unavailable.
  */
 export async function addOneSignalSubscriptionIdListener(
@@ -133,8 +137,8 @@ export async function addOneSignalSubscriptionIdListener(
   const mod = await getOneSignal();
   if (!mod) return null;
 
-  const handler = (event: { current: { id?: string } }) => {
-    if (event.current.id) onId(event.current.id);
+  const handler = (event: { current: { id?: string; optedIn: boolean } }) => {
+    if (event.current.id && event.current.optedIn) onId(event.current.id);
   };
   mod.OneSignal.User.pushSubscription.addEventListener("change", handler);
   return () => {

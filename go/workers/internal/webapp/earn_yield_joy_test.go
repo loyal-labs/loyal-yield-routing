@@ -125,6 +125,7 @@ func TestSelectJoyPushRule(t *testing.T) {
 		{"yesterday is fine", 10, 30, joyV2(20, one, now.Add(-23*time.Hour)), joyDecisionPush, "yield-digest", 10},
 		{"weekly cap", 10, 30, joyV2(20, one, now.Add(-day), now.Add(-2*day), now.Add(-3*day), now.Add(-4*day)), joyDecisionNone, "", 0},
 		{"cap window rolls", 10, 30, joyV2(20, one, now.Add(-day), now.Add(-2*day), now.Add(-3*day), now.Add(-8*day)), joyDecisionPush, "yield-digest", 10},
+		{"a push 7 days ago at a later minute no longer counts", 10, 30, joyV2(20, one, now.Add(-day), now.Add(-2*day), now.Add(-3*day), now.Add(-7*day+11*time.Minute)), joyDecisionPush, "yield-digest", 10},
 		{"milestone beats anniversary", 200, 120, joyV2(0, one), joyDecisionPush, "yield-total-100", 100},
 	}
 	for _, tc := range cases {

@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -64,7 +65,7 @@ func TestMixpanelTrackBody(t *testing.T) {
 	event := got[0][0]
 	props, _ := event["properties"].(map[string]any)
 	if event["event"] != "Earnings Push Sent" || props["token"] != "tok" || props["distinct_id"] != "mob:W1" ||
-		props["$insert_id"] != "earnings:yield-digest:W1:2026-11-09" || props["time"] != float64(1794238860000) ||
+		props["$insert_id"] != mixpanelInsertID("earnings:yield-digest:W1:2026-11-09") || props["time"] != float64(1794238860000) ||
 		props["amount_usd"] != 1.37 || props["route"] != "/(tabs)/earn" {
 		t.Fatalf("event = %v", event)
 	}
@@ -100,5 +101,19 @@ func TestMixpanelNilTrackerIsNoOp(t *testing.T) {
 	var m *MixpanelTracker
 	if err := m.track(context.Background(), []mixpanelEvent{{Name: "E"}}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// Mixpanel strict mode rejects a batch whose $insert_id is not 1-36 bytes of [A-Za-z0-9-].
+func TestMixpanelInsertIDFitsMixpanelFormat(t *testing.T) {
+	valid := regexp.MustCompile(`^[A-Za-z0-9-]{1,36}$`)
+	long := "earnings:yield-digest:9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin:2026-11-10"
+	for _, name := range []string{"earn-deposit:123", long} {
+		if id := mixpanelInsertID(name); !valid.MatchString(id) {
+			t.Fatalf("%q -> %q", name, id)
+		}
+	}
+	if mixpanelInsertID(long) != mixpanelInsertID(long) || mixpanelInsertID("earn-deposit:1") == mixpanelInsertID("earn-withdrawal:1") {
+		t.Fatal("insert ids must be stable per name and distinct across names")
 	}
 }

@@ -6,7 +6,16 @@ import { getDatabase } from "@/lib/core/database";
 export async function POST(req: Request): Promise<NextResponse> {
   try {
     const body = await req.json();
-    const { token, telegramUserId, walletPublicKey, platform } = body;
+    const { token, telegramUserId, walletPublicKey, platform, provider } = body;
+
+    // This route is unauthenticated, so it stores only legacy Expo tokens. OneSignal
+    // subscriptions are registered through Go, which checks the signed-in wallet.
+    if (provider !== undefined && provider !== "expo") {
+      return NextResponse.json(
+        { error: "Invalid push token for provider" },
+        { status: 400 }
+      );
+    }
 
     if (!token || (platform !== "ios" && platform !== "android")) {
       return NextResponse.json(
@@ -40,6 +49,7 @@ export async function POST(req: Request): Promise<NextResponse> {
         telegramUserId: telegramUserIdBigInt,
         walletPublicKey: walletPublicKeyValue,
         platform,
+        provider: "expo",
       })
       .onConflictDoUpdate({
         target: pushTokens.token,
@@ -47,6 +57,8 @@ export async function POST(req: Request): Promise<NextResponse> {
           telegramUserId: telegramUserIdBigInt,
           walletPublicKey: walletPublicKeyValue,
           platform,
+          // A rebound row is never a server push target.
+          provider: "expo",
           updatedAt: new Date(),
         },
       });

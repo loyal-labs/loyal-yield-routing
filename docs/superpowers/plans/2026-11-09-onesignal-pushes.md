@@ -635,3 +635,6 @@ Do these in order. Each item says what proves it worked.
   - Delete the unscheduled legacy Next route `web/apps/web/src/app/api/cron/earn-yield-joy`, because a manual call would push under the old rules.
   - Delete the `provider = 'expo'` rows from `push_tokens` once no store build still sends Expo tokens. Keep the table and `/api/push-tokens`: OneSignal subscriptions are registered through them.
   - Ask whoever owns the Mixpanel cohorts to stop syncing `push: earning-while-away` and `push: still-earning`. Until then, those syncs get a 400 "known campaign key" refusal from Go, and Mixpanel pauses them.
+  - Prune dead OneSignal subscriptions. The app registers only opted-in subscriptions, but a phone that later turns notifications off or uninstalls keeps its `push_tokens` row, so its due pushes spend their claims and report `undelivered`. Delete the rows OneSignal reports as invalid or unsubscribed after checking the real response shape with one approved test send.
+  - `earn-events-mixpanel` re-posts the trailing hour of a quiet stream on every 15-minute run. Mixpanel deduplicates these, so it only wastes requests.
+  - The joy run reads a pushed wallet's subscriptions twice (the pre-claim check and the send). Pass the IDs through when this matters.
