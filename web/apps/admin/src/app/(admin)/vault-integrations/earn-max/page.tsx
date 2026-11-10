@@ -479,13 +479,41 @@ function LoanSafety({
 }) {
   const route = data.route.ok ? data.route.value : null;
   const target = route?.leverageTarget ?? null;
-  const targetHint = target === null
+  let targetHint: ReactNode = target === null
     ? "No recorded target for this route"
     : leverageNow !== null && Math.abs(target - leverageNow) < 0.05
-      ? "At target"
+      ? "At the approved target; the worker reassesses borrowing automatically"
       : route?.upApproved === false && leverageNow !== null && target > leverageNow
         ? "Additional borrowing is not approved"
         : "Recorded target; execution depends on worker checks";
+  const apy = route?.currentApy;
+  const decision = apy?.leverageDecision;
+  const now = Date.parse(data.loadedAt);
+  const decisionAge = secondsSince(apy?.observedAt, now);
+  if (decision && !apy?.flat && decision.targetLevel === target && decisionAge !== null && decisionAge >= 0 && decisionAge <= 15 * 60 && (route?.updatedAgeS ?? Infinity) <= 180) {
+    const reasons: Record<string, string> = {
+      up_move_not_worth_cost: "Extra borrowing is not worthwhile after costs.",
+      up_move_approved: "Higher leverage approved; execution checks still apply.",
+      spread_rule: "Selected from the current yield spread and risk limits.",
+      new_allocation_limit: "New borrowing is blocked by cash reserve or allocation limits.",
+      borrow_capacity_unknown: "Waiting for verified borrowing capacity.",
+      leverage_step_below_minimum: "The next borrowing step is below the minimum size.",
+      leverage_rate_unavailable: "Waiting for a current borrowing rate.",
+      fee_terms_unavailable: "Waiting for verified fee terms.",
+      fee_forecast_unavailable: "Waiting for a complete fee estimate.",
+      leverage_cost_unavailable: "Waiting for a complete execution cost estimate.",
+    };
+    const reason = reasons[decision.reason];
+    if (reason) {
+      targetHint = <>
+        {reason}
+        {decision.reason === "up_move_not_worth_cost" ? <span className="mt-1 block">
+          {decision.horizonDays}-day net benefit {usd(decision.netBenefitRaw / 1e6)} after {usd(decision.costRaw / 1e6)} in entry/exit costs.
+        </span> : null}
+        <span className="mt-1 block">Evaluated {ago(decisionAge)} ago.</span>
+      </>;
+    }
+  }
 
   return (
     <Card>
@@ -503,7 +531,7 @@ function LoanSafety({
           <Fact hint="Value in US dollars" label="Collateral" value={usd(route?.collateralUsd)} />
           <Fact hint="Debt value in US dollars" label="Borrowed" value={usd(route?.debtUsd)} />
           <Fact hint="Collateral / equity in this route" label="Leverage now" value={leverageNow === null ? "—" : `${leverageNow.toFixed(2)}x`} />
-          <Fact hint={targetHint} label="Leverage target" value={target === null ? "—" : levelLabel(target)} />
+          <Fact hint={targetHint} label="Approved leverage target" value={target === null ? "—" : levelLabel(target)} />
           <Fact hint={<AddressLink address={data.selectedVault.cashAta} />} label="Worker USDC cash" value={usd(custodyUsd)} />
           <Fact hint={<AddressLink address={data.selectedVault.idleAta} />} label="Vault USDC cash" value={data.balances.ok ? usd(data.balances.value.idle) : "—"} />
         </div>

@@ -98,12 +98,13 @@ type EarnMaxRoute struct {
 }
 
 type EarnMaxCurrentApy struct {
-	Portfolio  *backyard.PortfolioAPY `json:"portfolio"`
-	ApyPct     float64                `json:"apyPct"`
-	Flat       bool                   `json:"flat"`
-	Lane       *string                `json:"lane"`
-	Level      *float64               `json:"level"`
-	ObservedAt *string                `json:"observedAt"`
+	Portfolio        *backyard.PortfolioAPY            `json:"portfolio"`
+	LeverageDecision *backyard.LeverageDecisionSummary `json:"leverageDecision"`
+	ApyPct           float64                           `json:"apyPct"`
+	Flat             bool                              `json:"flat"`
+	Lane             *string                           `json:"lane"`
+	Level            *float64                          `json:"level"`
+	ObservedAt       *string                           `json:"observedAt"`
 }
 
 type EarnMaxLeverageWatch struct {
@@ -492,6 +493,15 @@ func earnMaxLoadRoute(ctx context.Context, d *Deps, cfg earnMaxConfig) (EarnMaxR
 			route.CurrentApy = &EarnMaxCurrentApy{ObservedAt: earnMaxStr(apy["observedAt"])}
 		}
 		route.CurrentApy.Portfolio = &value
+	}
+	if decision := apy["leverageDecision"]; decision != nil && route.CurrentApy != nil {
+		encoded, err := json.Marshal(decision)
+		if err != nil {
+			return route, err
+		}
+		if err := json.Unmarshal(encoded, &route.CurrentApy.LeverageDecision); err != nil {
+			return route, err
+		}
 	}
 	route.CurrentOperationID = earnMaxStr(state["currentOperationId"])
 	route.DebtUsd = earnMaxDiv(earnMaxNum(observation["positionDebtValueRaw"]), 1e6)
