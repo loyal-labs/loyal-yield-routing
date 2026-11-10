@@ -23,6 +23,7 @@ import (
 	"github.com/solana-foundation/solana-go/v2/rpc"
 	"github.com/solana-foundation/solana-go/v2/rpc/jsonrpc"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/backyard"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnmax"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
@@ -97,11 +98,12 @@ type EarnMaxRoute struct {
 }
 
 type EarnMaxCurrentApy struct {
-	ApyPct     float64  `json:"apyPct"`
-	Flat       bool     `json:"flat"`
-	Lane       *string  `json:"lane"`
-	Level      *float64 `json:"level"`
-	ObservedAt *string  `json:"observedAt"`
+	Portfolio  *backyard.PortfolioAPY `json:"portfolio"`
+	ApyPct     float64                `json:"apyPct"`
+	Flat       bool                   `json:"flat"`
+	Lane       *string                `json:"lane"`
+	Level      *float64               `json:"level"`
+	ObservedAt *string                `json:"observedAt"`
 }
 
 type EarnMaxLeverageWatch struct {
@@ -476,6 +478,20 @@ func earnMaxLoadRoute(ctx context.Context, d *Deps, cfg earnMaxConfig) (EarnMaxR
 			ApyPct: earnMaxOr(earnMaxNum(apy["apyBps"]), 0) / 100, Flat: flat, Lane: earnMaxStr(apy["lane"]),
 			Level: earnMaxNum(apy["level"]), ObservedAt: earnMaxStr(apy["observedAt"]),
 		}
+	}
+	if portfolio := apy["portfolio"]; portfolio != nil {
+		encoded, err := json.Marshal(portfolio)
+		if err != nil {
+			return route, err
+		}
+		var value backyard.PortfolioAPY
+		if err := json.Unmarshal(encoded, &value); err != nil {
+			return route, err
+		}
+		if route.CurrentApy == nil {
+			route.CurrentApy = &EarnMaxCurrentApy{ObservedAt: earnMaxStr(apy["observedAt"])}
+		}
+		route.CurrentApy.Portfolio = &value
 	}
 	route.CurrentOperationID = earnMaxStr(state["currentOperationId"])
 	route.DebtUsd = earnMaxDiv(earnMaxNum(observation["positionDebtValueRaw"]), 1e6)
