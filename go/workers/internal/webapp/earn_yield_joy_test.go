@@ -3,144 +3,282 @@ package webapp
 import (
 	"context"
 	"errors"
-	"fmt"
-	"os"
+	"slices"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/solana-foundation/solana-go/v2"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnmax"
 )
 
-func TestEarnYieldJoyResumesUntilDailyCycleCompletes(t *testing.T) {
-	dsn := os.Getenv("EARN_JOY_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("set EARN_JOY_TEST_DATABASE_URL to a fresh local earn_joy_test database")
+func TestJoyEarningsCombinesAndRoutes(t *testing.T) {
+	e := joyEarnings{earnLifetimeUSD: 40, earnPrincipalUSD: 1000, earnMaxPerformanceUSD: -2.5, earnMaxEquityUSD: 300}
+	if got := e.lifetimeUSD(); got != 37.5 {
+		t.Fatalf("lifetimeUSD = %v, want 37.5", got)
 	}
-	config, err := pgxpool.ParseConfig(dsn)
-	if err != nil || config.ConnConfig.Host != "127.0.0.1" || config.ConnConfig.Database != "earn_joy_test" {
-		t.Fatal("test requires a disposable local earn_joy_test database")
+	if got := e.route(); got != "/(tabs)/earn" {
+		t.Fatalf("route = %q, want earn", got)
 	}
-	ctx := t.Context()
-	pool, err := pgxpool.NewWithConfig(ctx, config)
-	if err != nil {
-		t.Fatal(err)
+	if got := (joyEarnings{earnMaxPerformanceUSD: 3, earnMaxEquityUSD: 300}).route(); got != "/(tabs)/earn-max" {
+		t.Fatalf("route = %q, want earn-max", got)
 	}
-	defer pool.Close()
-	defer func() {
-		if _, err := pool.Exec(ctx, `DROP SCHEMA IF EXISTS loyal_yield CASCADE;
-DROP TABLE IF EXISTS app_user_smart_accounts, app_users, earn_yield_push_state`); err != nil {
-			t.Error(err)
+	if got := (joyEarnings{}).route(); got != "/(tabs)/earn" {
+		t.Fatalf("route = %q, want earn", got)
+	}
+}
+
+func TestEarnMaxEarningsAvailability(t *testing.T) {
+	cases := []struct {
+		name      string
+		activity  earnmax.Activity
+		perf, eq  float64
+		available bool
+	}{
+		{"held with earnings", earnmax.Activity{Earnings: &earnmax.Earnings{PerformanceUsd: 4.2}, Performance: []earnmax.PerformancePoint{{EquityUsd: 0}, {EquityUsd: 310}}}, 4.2, 310, true},
+		{"never held", earnmax.Activity{Performance: []earnmax.PerformancePoint{{EquityUsd: 0}}}, 0, 0, true},
+		{"no history", earnmax.Activity{Performance: []earnmax.PerformancePoint{}}, 0, 0, true},
+		{"history but earnings unknown", earnmax.Activity{Operations: []earnmax.ActivityItem{{}}, Performance: []earnmax.PerformancePoint{{EquityUsd: 0}}}, 0, 0, false},
+		{"held but earnings unknown", earnmax.Activity{Performance: []earnmax.PerformancePoint{{EquityUsd: 310}}}, 0, 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			perf, eq, ok := earnMaxEarnings(tc.activity)
+			if ok != tc.available {
+				t.Fatalf("available = %v, want %v", ok, tc.available)
+			}
+			if ok && (perf != tc.perf || eq != tc.eq) {
+				t.Fatalf("got (%v, %v), want (%v, %v)", perf, eq, tc.perf, tc.eq)
+			}
+		})
+	}
+}
+
+// Review Focus 1: a wallet whose Earn MAX cannot be read is skipped, never
+// pushed with an Earn-only number.
+func TestWalletEarningsUnavailableWhenEarnMaxFails(t *testing.T) {
+	_, ok, err := (Crons{}).walletEarnings(context.Background(), "mainnet", joyCandidate{})
+	if ok || err == nil {
+		t.Fatalf("got ok=%v err=%v, want an error", ok, err)
+	}
+}
+
+func TestWalletEarningsUnavailableWhenEarnMaxActivityErrors(t *testing.T) {
+	settings := solana.NewWallet().PublicKey().String()
+	earn := joyEarnings{earnLifetimeUSD: 40, earnPrincipalUSD: 1000}
+	run := func(fn func(context.Context, solana.PublicKey) (earnmax.Activity, error)) (joyEarnings, bool, error) {
+		return (Crons{EarnMaxActivity: fn}).withEarnMax(context.Background(), "wallet", settings, earn)
+	}
+	t.Run("call error", func(t *testing.T) {
+		got, ok, err := run(func(context.Context, solana.PublicKey) (earnmax.Activity, error) {
+			return earnmax.Activity{}, errors.New("rpc down")
+		})
+		if got != (joyEarnings{}) || ok || err != nil {
+			t.Fatalf("got (%+v, %v, %v), want (zero, false, nil)", got, ok, err)
 		}
-	}()
-	_, err = pool.Exec(ctx, `CREATE SCHEMA loyal_yield;
-CREATE TABLE app_users (id text PRIMARY KEY, subject_address text, created_at timestamptz);
-CREATE TABLE app_user_smart_accounts (user_id text, settings_pda text, state text, solana_env text, updated_at timestamptz);
-CREATE TABLE earn_yield_push_state (wallet_public_key text PRIMARY KEY, last_pushed_at timestamptz, last_pushed_earned_usd numeric, sent_campaigns jsonb, updated_at timestamptz);`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	migration, err := os.ReadFile("../../../../migrations/yield/0144_earn_yield_joy_progress.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pool.Exec(ctx, string(migration)); err != nil {
-		t.Fatal(err)
-	}
-	for i := range 12 {
-		wallet := fmt.Sprintf("wallet%02d", i)
-		if _, err := pool.Exec(ctx, `INSERT INTO app_users VALUES ($1,$1,now()-interval '2 days')`, wallet); err != nil {
-			t.Fatal(err)
+	})
+	t.Run("holds Earn MAX but earnings unknown", func(t *testing.T) {
+		got, ok, err := run(func(context.Context, solana.PublicKey) (earnmax.Activity, error) {
+			return earnmax.Activity{Performance: []earnmax.PerformancePoint{{EquityUsd: 310}}}, nil
+		})
+		if got != (joyEarnings{}) || ok || err != nil {
+			t.Fatalf("got (%+v, %v, %v), want (zero, false, nil)", got, ok, err)
 		}
-		if _, err := pool.Exec(ctx, `INSERT INTO app_user_smart_accounts VALUES ($1,$1,'ready',$2,now())`, wallet, smartAccountsSolanaEnv); err != nil {
-			t.Fatal(err)
+	})
+	t.Run("readable combines", func(t *testing.T) {
+		got, ok, err := run(func(context.Context, solana.PublicKey) (earnmax.Activity, error) {
+			return earnmax.Activity{Earnings: &earnmax.Earnings{PerformanceUsd: 4}, Performance: []earnmax.PerformancePoint{{EquityUsd: 310}}}, nil
+		})
+		want := joyEarnings{earnLifetimeUSD: 40, earnPrincipalUSD: 1000, earnMaxPerformanceUSD: 4, earnMaxEquityUSD: 310}
+		if got != want || !ok || err != nil {
+			t.Fatalf("got (%+v, %v, %v), want (%+v, true, nil)", got, ok, err, want)
+		}
+	})
+}
+
+var joyTestNow = time.Date(2026, 11, 9, 15, 41, 0, 0, time.UTC)
+
+func joyV2(baseline float64, sent []string, recent ...time.Time) *joyState {
+	return &joyState{ruleVersion: 2, lastPushedEarnedUSD: baseline, sentCampaigns: sent, recentPushedAt: recent}
+}
+
+func TestSelectJoyPushRule(t *testing.T) {
+	now := joyTestNow
+	day := 24 * time.Hour
+	one := []string{"yield-total-1"}
+	cases := []struct {
+		name           string
+		age, lifetime  float64
+		state          *joyState
+		kind, campaign string
+		amount         float64
+	}{
+		{"new wallet seeds", 10, 37.2, nil, joyDecisionSeed, "", 0},
+		{"0.99 above baseline", 10, 20.99, joyV2(20, one), joyDecisionNone, "", 0},
+		{"exactly 1.00 above", 10, 21, joyV2(20, one), joyDecisionPush, "yield-digest", 1},
+		{"first dollar", 10, 1.2, joyV2(0.1, []string{}), joyDecisionPush, "yield-total-1", 1},
+		{"jump past two milestones", 10, 520, joyV2(90, one), joyDecisionPush, "yield-total-500", 500},
+		{"anniversary needs a dollar", 200, 0.8, joyV2(0, []string{}), joyDecisionNone, "", 0},
+		{"anniversary", 200, 3, joyV2(1.5, one), joyDecisionPush, "yield-six-months", 3},
+		{"same UTC day cap", 10, 30, joyV2(20, one, now.Add(-2*time.Hour)), joyDecisionNone, "", 0},
+		{"yesterday is fine", 10, 30, joyV2(20, one, now.Add(-23*time.Hour)), joyDecisionPush, "yield-digest", 10},
+		{"weekly cap", 10, 30, joyV2(20, one, now.Add(-day), now.Add(-2*day), now.Add(-3*day), now.Add(-4*day)), joyDecisionNone, "", 0},
+		{"cap window rolls", 10, 30, joyV2(20, one, now.Add(-day), now.Add(-2*day), now.Add(-3*day), now.Add(-8*day)), joyDecisionPush, "yield-digest", 10},
+		{"a push 7 days ago at a later minute no longer counts", 10, 30, joyV2(20, one, now.Add(-day), now.Add(-2*day), now.Add(-3*day), now.Add(-7*day+11*time.Minute)), joyDecisionPush, "yield-digest", 10},
+		{"milestone beats anniversary", 200, 120, joyV2(0, one), joyDecisionPush, "yield-total-100", 100},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := selectJoyPush(tc.age, tc.lifetime, now, tc.state)
+			if got.kind != tc.kind {
+				t.Fatalf("kind = %q, want %q (%+v)", got.kind, tc.kind, got)
+			}
+			if tc.kind == joyDecisionSeed {
+				if !slices.Equal(got.campaigns, []string{"yield-total-1"}) || got.recentPushedAt == nil || len(got.recentPushedAt) != 0 {
+					t.Fatalf("seed = %+v", got)
+				}
+			}
+			if tc.kind != joyDecisionPush {
+				return
+			}
+			if got.push.campaign != tc.campaign || got.push.amountUSD != tc.amount || got.push.lifetimeUSD != tc.lifetime {
+				t.Fatalf("push = %+v", got.push)
+			}
+		})
+	}
+	t.Run("cap window rolls stores", func(t *testing.T) {
+		st := joyV2(20, one, now.Add(-day), now.Add(-2*day), now.Add(-3*day), now.Add(-8*day))
+		got := selectJoyPush(10, 30, now, st)
+		want := []time.Time{now.Add(-day), now.Add(-2 * day), now.Add(-3 * day), now}
+		if !slices.Equal(got.recentPushedAt, want) {
+			t.Fatalf("recent = %v, want %v", got.recentPushedAt, want)
+		}
+	})
+}
+
+func TestSelectJoyPushHighWaterMark(t *testing.T) {
+	now := joyTestNow
+	one := []string{"yield-total-1"}
+	if got := selectJoyPush(10, 47, now, joyV2(50, one)); got.kind != joyDecisionNone {
+		t.Fatalf("drop: %+v", got)
+	}
+	if got := selectJoyPush(10, 50.9, now, joyV2(50, one)); got.kind != joyDecisionNone {
+		t.Fatalf("recovery: %+v", got)
+	}
+	got := selectJoyPush(10, 51, now, joyV2(50, one))
+	if got.kind != joyDecisionPush || got.push.amountUSD != 1 {
+		t.Fatalf("51: %+v", got)
+	}
+	if got := selectJoyPush(400, -3, now, joyV2(0, []string{})); got.kind != joyDecisionNone {
+		t.Fatalf("negative: %+v", got)
+	}
+}
+
+func TestSelectJoyPushRebaselinesOldRows(t *testing.T) {
+	now := joyTestNow
+	old := func(last time.Time) *joyState {
+		return &joyState{ruleVersion: 1, lastPushedEarnedUSD: 12, sentCampaigns: []string{"yield-first", "yield-total-10"}, lastPushedAt: &last}
+	}
+	got := selectJoyPush(10, 640, now, old(now.Add(-3*24*time.Hour)))
+	if got.kind != joyDecisionRebaseline {
+		t.Fatalf("kind = %q", got.kind)
+	}
+	for _, want := range []string{"yield-first", "yield-total-10", "yield-total-500"} {
+		if !slices.Contains(got.campaigns, want) {
+			t.Fatalf("campaigns %v missing %q", got.campaigns, want)
 		}
 	}
-	// A second ready account for a wallet must not cause a second notification attempt.
-	if _, err := pool.Exec(ctx, `INSERT INTO app_user_smart_accounts VALUES ('wallet00','older','ready',$1,now()-interval '1 day')`, smartAccountsSolanaEnv); err != nil {
-		t.Fatal(err)
+	if !slices.Equal(got.recentPushedAt, []time.Time{now.Add(-3 * 24 * time.Hour)}) {
+		t.Fatalf("recent = %v", got.recentPushedAt)
 	}
-	c := NewCrons(pool, Earn{YieldDB: pool, Cluster: Mainnet})
-	seen := map[string]int{}
-	var mu sync.Mutex
-	c.Earnings = func(_ context.Context, _, settings, wallet string) (float64, bool, error) {
-		if settings == "older" {
-			return 0, false, errors.New("selected old settings")
-		}
-		mu.Lock()
-		seen[wallet]++
-		mu.Unlock()
-		time.Sleep(1100 * time.Millisecond)
-		return 0, true, nil
+	got = selectJoyPush(10, 640, now, old(now.Add(-9*24*time.Hour)))
+	if got.recentPushedAt == nil || len(got.recentPushedAt) != 0 {
+		t.Fatalf("recent = %v", got.recentPushedAt)
 	}
-	first, err := c.earnYieldJoyBatch(ctx, false, time.Second)
-	if err != nil || first.Processed != 5 || !first.Truncated || first.Errors != 0 {
-		t.Fatalf("first batch: %+v, %v", first, err)
+}
+
+func TestJoyPushPayloadCopy(t *testing.T) {
+	now := joyTestNow
+	cases := []struct {
+		name        string
+		push        joyPush
+		title, body string
+		idem        string
+	}{
+		{"digest", joyPush{amountUSD: 1.37, lifetimeUSD: 48.2, route: "/(tabs)/earn", campaign: joyDigestCampaign, kind: joyKindDigest},
+			"+$1.37 earned", "$48.20 earned with Loyal so far.", "earnings:yield-digest:W1:2026-11-09"},
+		{"milestone 1", joyPush{amountUSD: 1, lifetimeUSD: 1.2, route: "/(tabs)/earn", campaign: "yield-total-1", kind: joyKindMilestone},
+			"$1 earned with Loyal", "Your first dollar, and it keeps going on its own.", "earnings:yield-total-1:W1:2026-11-09"},
+		{"milestone 5000", joyPush{amountUSD: 5000, lifetimeUSD: 5012.4, route: "/(tabs)/earn", campaign: "yield-total-5000", kind: joyKindMilestone},
+			"$5,000 earned with Loyal", "And it keeps going on its own.", "earnings:yield-total-5000:W1:2026-11-09"},
+		{"anniversary 6", joyPush{lifetimeUSD: 48.2, route: "/(tabs)/earn", campaign: joyAnniversarySixMo, months: 6, kind: joyKindAnniversary},
+			"Six months with Loyal", "$48.20 earned since you joined.", "earnings:yield-six-months:W1:2026-11-09"},
+		{"anniversary 12", joyPush{lifetimeUSD: 48.2, route: "/(tabs)/earn", campaign: joyAnniversaryOneYear, months: 12, kind: joyKindAnniversary},
+			"A year with Loyal", "$48.20 earned since you joined.", "earnings:yield-one-year:W1:2026-11-09"},
 	}
-	cycle, after, completed, err := c.joyProgress(ctx, time.Now())
-	if err != nil || after != "wallet04" || completed {
-		t.Fatalf("progress: %s %s %v %v", cycle, after, completed, err)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := joyPushPayload(tc.push, now, "W1")
+			if got.Title != tc.title || got.Body != tc.body || got.IdempotencyName != tc.idem ||
+				got.Category != pushCategoryEarnings || got.Delivery != pushDeliveryIntelligent || got.Route != "/(tabs)/earn" {
+				t.Fatalf("payload = %+v", got)
+			}
+		})
 	}
-	// An unfinished scan must survive the next day's boundary.
-	laterCycle, laterAfter, _, err := c.joyProgress(ctx, cycle.Add(25*time.Hour))
-	if err != nil || !laterCycle.Equal(cycle) || laterAfter != after {
-		t.Fatal("unfinished cycle reset at midnight")
+	if formatUSDWhole(1000) != "$1,000" || formatUSDWhole(1) != "$1" {
+		t.Fatalf("formatUSDWhole: %q %q", formatUSDWhole(1000), formatUSDWhole(1))
 	}
-	c.Earnings = func(_ context.Context, _, _, wallet string) (float64, bool, error) {
-		mu.Lock()
-		seen[wallet]++
-		mu.Unlock()
-		if wallet == "wallet06" {
-			return 0, false, errors.New("temporary earnings failure")
-		}
-		if wallet == "wallet07" {
-			return 0, false, nil
-		}
-		return 0, true, nil
+}
+
+func TestSelectJoyPushNeverResendsLowerMilestone(t *testing.T) {
+	now := joyTestNow
+	if got := selectJoyPush(10, 450, now, joyV2(640, []string{"yield-total-500"})); got.kind != joyDecisionNone {
+		t.Fatalf("450: %+v", got)
 	}
-	// A dry run must not advance progress or claim a notification.
-	dry, err := c.EarnYieldJoy(ctx, true)
-	if err != nil || dry.Processed != 7 {
-		t.Fatalf("dry run: %+v %v", dry, err)
+	if got := selectJoyPush(10, 90, now, joyV2(120, []string{"yield-total-100"})); got.kind != joyDecisionNone {
+		t.Fatalf("90: %+v", got)
 	}
-	_, dryAfter, _, err := c.joyProgress(ctx, time.Now())
-	var claims int
-	if err != nil || dryAfter != after {
-		t.Fatal("dry run advanced cursor")
+	got := selectJoyPush(10, 650, now, joyV2(640, []string{"yield-total-500"}))
+	if got.kind != joyDecisionPush || got.push.kind != joyKindDigest || got.push.amountUSD != 10 {
+		t.Fatalf("650: %+v", got)
 	}
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM earn_yield_push_state`).Scan(&claims); err != nil || claims != 5 {
-		t.Fatalf("dry run wrote claims: %d %v", claims, err)
+	got = selectJoyPush(10, 1001, now, joyV2(640, []string{"yield-total-500"}))
+	if got.kind != joyDecisionPush || got.push.campaign != "yield-total-1000" {
+		t.Fatalf("1001: %+v", got)
 	}
-	second, err := c.earnYieldJoyBatch(ctx, false, time.Second)
-	if err != nil || second.Processed != 7 || second.Truncated || second.Errors != 1 || second.Unavailable != 1 {
-		t.Fatalf("second batch: %+v %v", second, err)
+}
+
+func TestSelectJoyPushNegativeBaseline(t *testing.T) {
+	now := joyTestNow
+	seed := selectJoyPush(10, -50, now, nil)
+	if seed.kind != joyDecisionSeed || seed.baselineUSD != 0 {
+		t.Fatalf("seed = %+v", seed)
 	}
-	for wallet, count := range seen {
-		want := 2 // Dry run plus live continuation.
-		if strings.Compare(wallet, "wallet04") <= 0 {
-			want = 1
-		}
-		if count != want {
-			t.Fatalf("%s processed %d times, want %d", wallet, count, want)
-		}
+	stored := joyV2(seed.baselineUSD, []string{})
+	if got := selectJoyPush(10, 0.5, now, stored); got.kind != joyDecisionNone {
+		t.Fatalf("0.50 after underwater seed: %+v", got)
 	}
-	idle, err := c.earnYieldJoyBatch(ctx, false, time.Second)
-	if err != nil || idle.Processed != 0 {
-		t.Fatalf("completed cycle repeated: %+v %v", idle, err)
+	got := selectJoyPush(10, 1, now, stored)
+	if got.kind != joyDecisionPush || got.push.amountUSD != 1 || got.push.lifetimeUSD != 1 {
+		t.Fatalf("1.00 after underwater seed: %+v", got)
 	}
-	_, nextAfter, done, err := c.joyProgress(ctx, cycle.Add(25*time.Hour))
-	if err != nil || nextAfter != "" || done {
-		t.Fatal("next daily cycle did not restart")
+	old := &joyState{ruleVersion: 1, lastPushedEarnedUSD: 3, sentCampaigns: []string{}}
+	if got := selectJoyPush(10, -20, now, old); got.kind != joyDecisionRebaseline || got.baselineUSD != 0 {
+		t.Fatalf("rebaseline = %+v", got)
 	}
-	// Replaying a chunk after a crash must not claim a campaign twice.
-	now := time.Now()
-	claimed, err := c.claimJoyState(ctx, "claim", nil, []string{joyFirstCampaign}, now, 1)
-	if err != nil || !claimed {
-		t.Fatalf("first claim: %v %v", claimed, err)
+	if got := selectJoyPush(10, 7, now, old); got.baselineUSD != 7 {
+		t.Fatalf("positive rebaseline = %+v", got)
 	}
-	claimed, err = c.claimJoyState(ctx, "claim", nil, []string{joyFirstCampaign}, now, 1)
-	if err != nil || claimed {
-		t.Fatalf("duplicate claim: %v %v", claimed, err)
+}
+
+func TestEarnYieldJoyRefusesWithoutEarningsChannel(t *testing.T) {
+	c := Crons{Earnings: func(context.Context, string, string, string) (joyEarnings, bool, error) {
+		return joyEarnings{}, false, nil
+	}}
+	c.h.CampaignPush = NewWalletPush(nil, OneSignalConfig{AppID: "app", RESTAPIKey: "key", AlertsChannelID: "alerts"}, "secret")
+	_, err := c.EarnYieldJoy(context.Background(), false)
+	if err == nil || !strings.Contains(err.Error(), "ONESIGNAL_EARNINGS_CHANNEL_ID") {
+		t.Fatalf("err = %v", err)
 	}
 }

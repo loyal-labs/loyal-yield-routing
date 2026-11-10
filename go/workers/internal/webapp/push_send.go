@@ -13,202 +13,199 @@ import (
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 const (
-	walletPushPath      = "/api/push-tokens/debug-send"
-	walletPushSource    = "debug"
-	walletPushTimeout   = 30 * time.Second
-	expoSendURL         = "https://exp.host/--/api/v2/push/send"
-	expoBatchSize       = 100
-	pushRowBatchSize    = 1000
-	deviceNotRegistered = "DeviceNotRegistered"
-	expoMaxBody         = 1 << 20
+	walletPushPath    = "/api/push-tokens/debug-send"
+	walletPushTimeout = 30 * time.Second
+	oneSignalSendURL  = "https://api.onesignal.com/notifications?c=push"
+	oneSignalMaxBody  = 1 << 20
+	oneSignalRetryGap = time.Second
+	// oneSignalMaxSubscriptions caps the devices one wallet push targets (OneSignal allows 20,000).
+	oneSignalMaxSubscriptions = 100
 )
 
+// pushIdempotencyNamespace is the fixed namespace for deterministic idempotency keys.
+var pushIdempotencyNamespace = uuid.MustParse("5b1f3c0e-7a52-4d8e-9c64-2f0a8e6b1d37")
+
+type pushCategory int
+
+const (
+	pushCategoryAlerts pushCategory = iota
+	pushCategoryEarnings
+)
+
+type pushDelivery int
+
+const (
+	pushDeliveryNow pushDelivery = iota
+	pushDeliveryIntelligent
+)
+
+type OneSignalConfig struct {
+	AppID, RESTAPIKey, EarningsChannelID, AlertsChannelID string
+}
+
 type WalletPush struct {
-	DB     *pgxpool.Pool
 	Secret string
 	HTTP   *http.Client
 
-	expoURL string
+	cfg           OneSignalConfig
+	url           string
+	retryDelay    time.Duration
+	subscriptions func(ctx context.Context, wallet string) ([]string, error)
 }
 
-func NewWalletPush(db *pgxpool.Pool, secret string) *WalletPush {
-	return &WalletPush{DB: db, Secret: secret, HTTP: http.DefaultClient, expoURL: expoSendURL}
-}
-
-type expoMessage struct {
-	To    string          `json:"to"`
-	Title string          `json:"title"`
-	Body  string          `json:"body"`
-	Sound string          `json:"sound"`
-	Data  json.RawMessage `json:"data,omitempty"`
-}
-
-type expoTicket struct {
-	token   string
-	id      *string
-	status  string
-	message *string
-	err     *string
-}
-
-func (t expoTicket) deviceNotRegistered() bool {
-	return t.status == "error" && t.err != nil && *t.err == deviceNotRegistered
-}
-
-func (p *WalletPush) sendToWallet(ctx context.Context, wallet, title, body string, data json.RawMessage) (int, error) {
-	rows, err := p.DB.Query(ctx, `SELECT token FROM push_tokens WHERE wallet_public_key = $1`, wallet)
-	if err != nil {
-		return 0, fmt.Errorf("read push tokens: %w", err)
-	}
-	tokens, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		return 0, fmt.Errorf("read push tokens: %w", err)
-	}
-	if len(tokens) == 0 {
-		return 0, nil
-	}
-	messages := make([]expoMessage, len(tokens))
-	for i, token := range tokens {
-		messages[i] = expoMessage{To: token, Title: title, Body: body, Sound: "default", Data: data}
-	}
-	return len(tokens), p.dispatch(ctx, walletPushSource, messages)
-}
-
-func (p *WalletPush) dispatch(ctx context.Context, source string, messages []expoMessage) error {
-	var sendID string
-	if err := p.DB.QueryRow(ctx, `INSERT INTO push_notification_sends (source, audience, title, body, data, status, requested_count)
-VALUES ($1, 'all', $2, $3, NULL, 'sending', $4) RETURNING id`,
-		source, messages[0].Title, messages[0].Body, len(messages)).Scan(&sendID); err != nil {
-		return fmt.Errorf("create push notification send record: %w", err)
-	}
-	if err := p.deliver(ctx, sendID, messages); err != nil {
-		slog.WarnContext(ctx, "[push] Failed to send push notifications", "error", err.Error(), "sendId", sendID)
-		failCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
-		defer cancel()
-		if _, err := p.DB.Exec(failCtx, `UPDATE push_notification_sends SET status = 'failed', error_message = $2, updated_at = now() WHERE id = $1`,
-			sendID, err.Error()); err != nil {
-			return fmt.Errorf("mark push notification send failed: %w", err)
-		}
-	}
-	return nil
-}
-
-func (p *WalletPush) deliver(ctx context.Context, sendID string, messages []expoMessage) error {
-	tickets, err := p.expo(ctx, messages)
-	if err != nil {
-		return err
-	}
-	for start := 0; start < len(tickets); start += pushRowBatchSize {
-		batch := tickets[start:min(start+pushRowBatchSize, len(tickets))]
-		tokens := make([]string, len(batch))
-		ids := make([]*string, len(batch))
-		statuses := make([]string, len(batch))
-		msgs := make([]*string, len(batch))
-		errs := make([]*string, len(batch))
-		for i, t := range batch {
-			tokens[i], ids[i], statuses[i], msgs[i], errs[i] = t.token, t.id, t.status, t.message, t.err
-		}
-		if _, err := p.DB.Exec(ctx, `INSERT INTO push_notification_tickets (send_id, token, ticket_id, ticket_status, ticket_message, ticket_error)
-SELECT $1, * FROM unnest($2::text[], $3::text[], $4::text[], $5::text[], $6::text[])`,
-			sendID, tokens, ids, statuses, msgs, errs); err != nil {
-			return err
-		}
-	}
-	var stale []string
-	seen := map[string]bool{}
-	for _, t := range tickets {
-		if t.deviceNotRegistered() && !seen[t.token] {
-			seen[t.token] = true
-			stale = append(stale, t.token)
-		}
-	}
-	for start := 0; start < len(stale); start += pushRowBatchSize {
-		if _, err := p.DB.Exec(ctx, `DELETE FROM push_tokens WHERE token = ANY($1)`, stale[start:min(start+pushRowBatchSize, len(stale))]); err != nil {
-			return err
-		}
-	}
-	_, err = p.DB.Exec(ctx, `UPDATE push_notification_sends SET status = 'sent', ticket_count = $2, device_not_registered_count = $3, sent_at = $4, updated_at = $4 WHERE id = $1`,
-		sendID, len(tickets), len(stale), time.Now())
-	return err
-}
-
-func (p *WalletPush) expo(ctx context.Context, messages []expoMessage) ([]expoTicket, error) {
-	var tickets []expoTicket
-	for start := 0; start < len(messages); start += expoBatchSize {
-		batch := messages[start:min(start+expoBatchSize, len(messages))]
-		var payload bytes.Buffer
-		encoder := json.NewEncoder(&payload)
-		encoder.SetEscapeHTML(false)
-		if err := encoder.Encode(batch); err != nil {
-			return nil, err
-		}
-		request, err := http.NewRequestWithContext(ctx, http.MethodPost, p.expoURL, bytes.NewReader(bytes.TrimRight(payload.Bytes(), "\n")))
+// NewWalletPush sends to the OneSignal subscription IDs that the signed-in app registered for a
+// wallet in push_tokens. It never targets the OneSignal external_id: the app sets that alias
+// itself with OneSignal.login, without proving it owns the wallet.
+func NewWalletPush(appDB *pgxpool.Pool, cfg OneSignalConfig, secret string) *WalletPush {
+	p := &WalletPush{Secret: secret, HTTP: http.DefaultClient, cfg: cfg, url: oneSignalSendURL, retryDelay: oneSignalRetryGap}
+	p.subscriptions = func(ctx context.Context, wallet string) ([]string, error) {
+		rows, err := appDB.Query(ctx, `SELECT token FROM push_tokens WHERE wallet_public_key = $1 AND provider = 'onesignal' ORDER BY updated_at DESC LIMIT $2`,
+			wallet, oneSignalMaxSubscriptions)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("read push subscriptions: %w", err)
 		}
-		request.Header.Set("Content-Type", "application/json")
-		request.Header.Set("Accept", "application/json")
-		response, err := p.HTTP.Do(request)
+		ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("read push subscriptions: %w", err)
 		}
-		raw, err := io.ReadAll(io.LimitReader(response.Body, expoMaxBody))
-		_ = response.Body.Close()
-		if err != nil {
-			return nil, err
-		}
-		if response.StatusCode < 200 || response.StatusCode > 299 {
-			return nil, fmt.Errorf("Expo Push API failed with %d: %s", response.StatusCode, raw)
-		}
-		var envelope struct {
-			Data json.RawMessage `json:"data"`
-		}
-		if err := json.Unmarshal(raw, &envelope); err != nil {
-			return nil, err
-		}
-		var items []json.RawMessage
-		if json.Unmarshal(envelope.Data, &items) != nil {
-			continue
-		}
-		for i, item := range items {
-			if ticket, ok := parseExpoTicket(item); ok && i < len(batch) {
-				ticket.token = batch[i].To
-				tickets = append(tickets, ticket)
+		return ids, nil
+	}
+	return p
+}
+
+func (p *WalletPush) earningsChannelSet() bool {
+	return p.cfg.EarningsChannelID != ""
+}
+
+func pushIdempotencyKey(name string) string {
+	if name == "" {
+		return uuid.NewString()
+	}
+	return uuid.NewSHA1(pushIdempotencyNamespace, []byte(name)).String()
+}
+
+type oneSignalText struct {
+	EN string `json:"en"`
+}
+
+type oneSignalRequest struct {
+	AppID            string          `json:"app_id"`
+	TargetChannel    string          `json:"target_channel"`
+	SubscriptionIDs  []string        `json:"include_subscription_ids"`
+	Headings         oneSignalText   `json:"headings"`
+	Contents         oneSignalText   `json:"contents"`
+	Data             json.RawMessage `json:"data,omitempty"`
+	AndroidChannelID string          `json:"android_channel_id,omitempty"`
+	DelayedOption    string          `json:"delayed_option,omitempty"`
+	IdempotencyKey   string          `json:"idempotency_key"`
+}
+
+// registered reports whether the app registered at least one OneSignal subscription for the wallet.
+func (p *WalletPush) registered(ctx context.Context, wallet string) (bool, error) {
+	ids, err := p.subscriptions(ctx, wallet)
+	return len(ids) > 0, err
+}
+
+// sendToWallet reports whether OneSignal accepted the notification for at least one subscribed device.
+func (p *WalletPush) sendToWallet(ctx context.Context, wallet string, msg autodepositWalletPush, data json.RawMessage) (bool, error) {
+	ids, err := p.subscriptions(ctx, wallet)
+	if err != nil {
+		return false, err
+	}
+	if len(ids) == 0 {
+		return false, nil
+	}
+	if data == nil && msg.Route != "" {
+		data, _ = json.Marshal(map[string]string{"route": msg.Route})
+	}
+	req := oneSignalRequest{
+		AppID:           p.cfg.AppID,
+		TargetChannel:   "push",
+		SubscriptionIDs: ids,
+		Headings:        oneSignalText{EN: msg.Title},
+		Contents:        oneSignalText{EN: msg.Body},
+		Data:            data,
+		IdempotencyKey:  pushIdempotencyKey(msg.IdempotencyName),
+	}
+	req.AndroidChannelID = p.cfg.AlertsChannelID
+	if msg.Category == pushCategoryEarnings {
+		req.AndroidChannelID = p.cfg.EarningsChannelID
+	}
+	if msg.Delivery == pushDeliveryIntelligent {
+		req.DelayedOption = "last-active"
+	}
+	var payload bytes.Buffer
+	encoder := json.NewEncoder(&payload)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(req); err != nil {
+		return false, err
+	}
+	body := bytes.TrimRight(payload.Bytes(), "\n")
+
+	id, err := p.post(ctx, body)
+	if err != nil {
+		return false, err
+	}
+	return id != "", nil
+}
+
+func (p *WalletPush) post(ctx context.Context, body []byte) (string, error) {
+	var lastErr error
+	for attempt := 0; attempt < 2; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return "", ctx.Err()
+			case <-time.After(p.retryDelay):
 			}
 		}
+		id, retryable, err := p.postOnce(ctx, body)
+		if err == nil {
+			return id, nil
+		}
+		lastErr = err
+		if !retryable || ctx.Err() != nil {
+			break
+		}
 	}
-	return tickets, nil
+	return "", lastErr
 }
 
-func parseExpoTicket(raw json.RawMessage) (expoTicket, bool) {
-	var fields map[string]json.RawMessage
-	if json.Unmarshal(raw, &fields) != nil {
-		return expoTicket{}, false
+func (p *WalletPush) postOnce(ctx context.Context, body []byte) (id string, retryable bool, err error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, p.url, bytes.NewReader(body))
+	if err != nil {
+		return "", false, err
 	}
-	var t expoTicket
-	if json.Unmarshal(fields["status"], &t.status) != nil || (t.status != "ok" && t.status != "error") {
-		return expoTicket{}, false
+	request.Header.Set("Content-Type", "application/json; charset=utf-8")
+	request.Header.Set("Accept", "application/json")
+	request.Header.Set("Authorization", "Key "+p.cfg.RESTAPIKey)
+	response, err := p.HTTP.Do(request)
+	if err != nil {
+		// net/http errors wrap only the URL, never the headers.
+		return "", true, fmt.Errorf("OneSignal request failed: %w", err)
 	}
-	t.id = optionalString(fields["id"])
-	t.message = optionalString(fields["message"])
-	var details map[string]json.RawMessage
-	if json.Unmarshal(fields["details"], &details) == nil {
-		t.err = optionalString(details["error"])
+	raw, err := io.ReadAll(io.LimitReader(response.Body, oneSignalMaxBody))
+	_ = response.Body.Close()
+	if err != nil {
+		return "", true, fmt.Errorf("OneSignal read response: %w", err)
 	}
-	return t, true
-}
-
-func optionalString(raw json.RawMessage) *string {
-	var s *string
-	if json.Unmarshal(raw, &s) != nil {
-		return nil
+	if response.StatusCode < 200 || response.StatusCode > 299 {
+		retry := response.StatusCode == http.StatusTooManyRequests || response.StatusCode >= 500
+		return "", retry, fmt.Errorf("OneSignal API failed with %d: %s", response.StatusCode, raw)
 	}
-	return s
+	var parsed struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return "", false, fmt.Errorf("OneSignal response: %w", err)
+	}
+	return parsed.ID, false, nil
 }
 
 type WalletPushRequest struct {
@@ -297,15 +294,15 @@ func registerWalletPush(api huma.API, push *WalletPush) {
 		}
 		ctx, cancel := context.WithTimeout(ctx, walletPushTimeout)
 		defer cancel()
-		sent, err := push.sendToWallet(ctx, wallet, title, body, data)
+		sent, err := push.sendToWallet(ctx, wallet, autodepositWalletPush{Title: title, Body: body}, data)
 		if err != nil {
 			slog.WarnContext(ctx, "[wallet-push] debug-send failed", "error", err.Error(), "walletAddress", wallet)
 			return nil, errWalletPushFailed
 		}
-		if sent == 0 {
+		if !sent {
 			return nil, errWalletPushNoTokens
 		}
-		return &walletPushOutput{WalletPushSent{Success: true, SentTo: sent}}, nil
+		return &walletPushOutput{WalletPushSent{Success: true, SentTo: 1}}, nil
 	})
 	documentJSONBody[WalletPushRequest](api, walletPushPath)
 }

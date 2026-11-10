@@ -2094,6 +2094,7 @@ export type PushError = {
 
 export type PushTokenRequest = {
     platform?: string;
+    provider?: string;
     token?: string;
     [key: string]: unknown;
 };

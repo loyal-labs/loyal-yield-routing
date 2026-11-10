@@ -1,7 +1,7 @@
 import { pushTokens } from "@loyal-labs/db-core/schema";
 import { WALLET_PUSH_SEND_SECRET_ENV } from "@loyal-labs/shared/expo-push";
 import { timingSafeEqual } from "crypto";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 
 import { serverEnv } from "@/lib/core/config/server";
@@ -71,7 +71,13 @@ export async function POST(request: Request): Promise<NextResponse> {
   const rows = await db
     .select({ token: pushTokens.token })
     .from(pushTokens)
-    .where(eq(pushTokens.walletPublicKey, walletPublicKey));
+    .where(
+      and(
+        eq(pushTokens.walletPublicKey, walletPublicKey),
+        // OneSignal subscription IDs are not Expo tokens; Expo would mark them stale.
+        eq(pushTokens.provider, "expo")
+      )
+    );
 
   if (rows.length === 0) {
     return NextResponse.json(

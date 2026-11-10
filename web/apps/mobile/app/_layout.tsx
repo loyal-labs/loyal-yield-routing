@@ -19,9 +19,16 @@ import { WalletProvider } from "@/lib/wallet/wallet-provider";
 import {
   setupNotificationHandler,
 } from "@/services/notifications";
-import { initOneSignal } from "@/services/onesignal";
+import {
+  type NotificationRoute,
+  notificationRoute,
+} from "@/services/notification-route";
+import {
+  addOneSignalClickListener,
+  initOneSignal,
+} from "@/services/onesignal";
 import { useFonts } from "expo-font";
-import { Stack } from "expo-router";
+import { router, Stack, useRootNavigationState } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import { StatusBar } from "expo-status-bar";
 import { useCallback, useEffect, useState } from "react";
@@ -32,6 +39,10 @@ SplashScreen.preventAutoHideAsync();
 
 export default function RootLayout() {
   const [showSplash, setShowSplash] = useState(true);
+  // A cold-start tap is replayed as soon as the click listener is added, which
+  // can be before the Stack mounts; navigate once the root navigator exists.
+  const [pendingRoute, setPendingRoute] = useState<NotificationRoute | null>(null);
+  const navigatorKey = useRootNavigationState()?.key;
 
   const [fontsLoaded] = useFonts({
     Geist_400Regular: require("@expo-google-fonts/geist/400Regular/Geist_400Regular.ttf"),
@@ -50,7 +61,27 @@ export default function RootLayout() {
   useEffect(() => {
     void setupNotificationHandler();
     void initOneSignal();
+
+    let cancelled = false;
+    let removeClickListener: (() => void) | null = null;
+    void addOneSignalClickListener((route) => {
+      const target = notificationRoute({ route });
+      if (target) setPendingRoute(target);
+    }).then((remove) => {
+      if (cancelled) remove?.();
+      else removeClickListener = remove;
+    });
+    return () => {
+      cancelled = true;
+      removeClickListener?.();
+    };
   }, []);
+
+  useEffect(() => {
+    if (!pendingRoute || !navigatorKey) return;
+    router.push(pendingRoute);
+    setPendingRoute(null);
+  }, [pendingRoute, navigatorKey]);
 
   useEffect(() => {
     void initAnalytics();

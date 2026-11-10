@@ -1,0 +1,13 @@
+# Every 15 minutes; a run missed while the host was down starts at boot.
+[Unit]
+Description=Loyal web cron earn-events-mixpanel, every 15 minutes
+
+[Timer]
+Unit=loyal-web-cron@earn-events-mixpanel.service
+OnCalendar=*:0/15
+RandomizedDelaySec=60
+Persistent=true
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

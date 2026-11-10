@@ -11,18 +11,19 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnmax"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/webapp"
 )
 
-const cronUsage = "usage: loyal-web cron smart-account-reconcile | earn-yield-joy [--dry-run]"
+const cronUsage = "usage: loyal-web cron smart-account-reconcile | earn-yield-joy [--dry-run] | earn-events-mixpanel [--dry-run]"
 
 // runCron runs one of the jobs vercel.json used to schedule and prints the
 // summary the Next route answered with. A job that cannot start, or that is
 // refused the lock, exits non-zero so the timer's unit shows failed.
 func runCron(ctx context.Context, args []string) error {
 	dryRun := len(args) == 2 && args[1] == "--dry-run"
-	if len(args) == 0 || (len(args) == 2 && !dryRun) || len(args) > 2 || (dryRun && args[0] != "earn-yield-joy") {
+	if len(args) == 0 || (len(args) == 2 && !dryRun) || len(args) > 2 || (dryRun && args[0] != "earn-yield-joy" && args[0] != "earn-events-mixpanel") {
 		return errors.New(cronUsage)
 	}
 	appDB := openDB(ctx, "cron", "WEB_APP_DATABASE_URL")
@@ -50,12 +51,16 @@ func runCron(ctx context.Context, args []string) error {
 	if webEarn == nil {
 		return errors.New("cron needs a valid LOYAL_WEB_SOLANA_CLUSTER")
 	}
-	if checkGrants(ctx, appDB, yieldDB).PushSend {
-		push := newWalletPush(appDB)
+	if push := newWalletPush(appDB); push != nil {
 		webEarn.CampaignPush = push
 		enableEarnPush(webEarn, push)
 	}
 	crons := webapp.NewCrons(appDB, *webEarn)
+	if token, ok := optionalCredential("earnings analytics", "MIXPANEL_PROJECT_TOKEN"); token != "" {
+		crons.Mixpanel = webapp.NewMixpanelTracker(token)
+	} else if ok {
+		degraded("earnings analytics", errors.New("MIXPANEL_PROJECT_TOKEN is not installed"))
+	}
 	var summary any
 	var err error
 	switch args[0] {
@@ -65,7 +70,16 @@ func runCron(ctx context.Context, args []string) error {
 		if yieldDB == nil || timescaleDB == nil {
 			return errors.New("earn-yield-joy needs WEB_YIELD_DATABASE_URL and TIMESCALEDB_URL")
 		}
+		if rpcClient == nil {
+			return errors.New("earn-yield-joy needs WEB_SOLANA_RPC_URL for Earn MAX")
+		}
+		crons.EarnMax = earnmax.NewReader(rpcClient, yieldDB)
 		summary, err = crons.EarnYieldJoy(ctx, dryRun)
+	case "earn-events-mixpanel":
+		if yieldDB == nil || crons.Mixpanel == nil {
+			return errors.New("earn-events-mixpanel needs WEB_YIELD_DATABASE_URL and MIXPANEL_PROJECT_TOKEN")
+		}
+		summary, err = crons.EarnEventsMixpanel(ctx, dryRun)
 	default:
 		return errors.New(cronUsage)
 	}

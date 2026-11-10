@@ -1,5 +1,5 @@
 import { pushTokens } from "@loyal-labs/db-core/schema";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 
 import { getDatabase } from "@/lib/core/database";
 
@@ -19,7 +19,13 @@ export async function sendPushToWallet(
   const rows = await db
     .select({ token: pushTokens.token })
     .from(pushTokens)
-    .where(eq(pushTokens.walletPublicKey, walletPublicKey));
+    .where(
+      and(
+        eq(pushTokens.walletPublicKey, walletPublicKey),
+        // OneSignal subscription IDs are not Expo tokens; Expo would mark them stale.
+        eq(pushTokens.provider, "expo")
+      )
+    );
 
   if (rows.length === 0) {
     return { sentTo: 0 };

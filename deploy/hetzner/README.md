@@ -435,7 +435,10 @@ proxying the session routes to Next.
 | `REALTIME_AUTH_SECRET` | no | the realtime deployment's value (one `realtime-envelope` input); with it Go serves `POST /api/smart-accounts/yield-optimization/realtime/token`, without it the route answers 503 `realtime_unavailable` |
 | `REALTIME_EVENTS_URL` | no | the events URL returned in the token response (`realtime.askloyal.com/events` by default) |
 | `TIMESCALEDB_URL` | no | file `loyal-web-timescale-db`; the Next deployment's value (the reserve APY feed); without it earn earnings, earn state and earn deposit prepare log one line and keep proxying to Next |
-| `PUSH_DEBUG_SECRET` | no | file `loyal-web-push-debug-secret`; the app's `PUSH_DEBUG_SECRET`; with it, and an App role that holds the push-send grants, Go serves `POST /api/push-tokens/debug-send`; without it the route keeps proxying to Next |
+| `PUSH_DEBUG_SECRET` | no | file `loyal-web-push-debug-secret`; the app's `PUSH_DEBUG_SECRET`; with it, and the OneSignal credentials below, Go serves `POST /api/push-tokens/debug-send`; without it the route keeps proxying to Next |
+| `ONESIGNAL_APP_ID`, `ONESIGNAL_REST_API_KEY` | no | files `loyal-web-onesignal-app-id` and `loyal-web-onesignal-rest-api-key`, on `loyal-web` and `loyal-web-cron@`; every wallet push goes through OneSignal, to the subscription ids the app registered for that wallet in `push_tokens` (`provider = 'onesignal'`, read with `WEB_APP_DATABASE_URL`), never to the client-set external id. Without both, or without `WEB_APP_DATABASE_URL`, all wallet pushes are off (one `wallet push` degraded line) and the joy cron refuses to run |
+| `ONESIGNAL_EARNINGS_CHANNEL_ID`, `ONESIGNAL_ALERTS_CHANNEL_ID` | no | plain config; the Android notification channel ids for earnings and account-alert pushes |
+| `MIXPANEL_PROJECT_TOKEN` | no | file `loyal-web-mixpanel-project-token`, on `loyal-web-cron@` only; the earn-yield-joy cron reports each accepted earnings push to Mixpanel as `Earnings Push Sent`. Without it the cron still runs and reports nothing (one `earnings analytics` degraded line) |
 | `LOYAL_AUTODEPOSIT_PUSH` | no | plain config; `on` makes the autodeposit confirm ops send the wallet push in process; unset or any other value logs one line (`autodeposit wallet push off`) and sends no push |
 
 `AUTH_COOKIE_PARENT_DOMAIN` is plain config, not a credential:
@@ -569,6 +572,7 @@ The jobs `web/apps/web/vercel.json` used to schedule run from `loyal-web`:
 |---|---|---|
 | `smart-account-reconcile` | `loyal-web-cron@smart-account-reconcile.service` | `loyal-web-cron-smart-account-reconcile.timer`, every 15 minutes |
 | `earn-yield-joy` | `loyal-web-cron@earn-yield-joy.service` | `loyal-web-cron-earn-yield-joy.timer`, every 15 minutes; daily cycle starts at 15:41 UTC |
+| `earn-events-mixpanel` | `loyal-web-cron@earn-events-mixpanel.service` | `loyal-web-cron-earn-events-mixpanel.timer`, every 15 minutes |
 | `telemetry-heartbeat` | goroutine in `loyal-web.service`, every 5 minutes from start | none |
 
 The heartbeat needs `OBSERVABILITY_OTLP_ENDPOINT` and `OBSERVABILITY_INGESTION_API_KEY`
@@ -593,8 +597,20 @@ is untouched.
 A run needs `WEB_APP_DATABASE_URL` (both jobs) and `WEB_SOLANA_RPC_URL` and
 `SMART_ACCOUNT_SPONSOR_PK` (reconcile), `WEB_YIELD_DATABASE_URL`, `TIMESCALEDB_URL`,
 and no push API pair: joy sends through loyal-web's in-process wallet push sender and needs
-the push-send grants (checkCrons PushSend). By hand,
+the two OneSignal credentials and `ONESIGNAL_EARNINGS_CHANNEL_ID`; without any of them it
+refuses to run. Set both `ONESIGNAL_EARNINGS_CHANNEL_ID` and `ONESIGNAL_ALERTS_CHANNEL_ID`
+on both `loyal-web` and `loyal-web-cron@`. Without the alerts one, account alerts land in
+OneSignal's default channel. By hand,
 `loyal-web cron earn-yield-joy --dry-run` prints what a run would push and writes nothing.
+A wallet due a push with no device registered through the app is counted as `unregistered`
+and keeps its claim, so it gets that push in the first daily cycle after it registers.
+`earn-events-mixpanel` sends confirmed Earn deposits and withdrawals to Mixpanel; it needs
+`WEB_YIELD_DATABASE_URL` and `MIXPANEL_PROJECT_TOKEN`, seeds its watermark at the first run
+(no history backfill), and `--dry-run` writes and sends nothing. The deposit and withdrawal
+SELECTs on `loyal_yield.user_yield_position_deposits` and `user_yield_position_withdrawals`
+go through `WEB_YIELD_DATABASE_URL`, and `analytics_export_watermarks` (SELECT, INSERT and
+UPDATE) through `WEB_APP_DATABASE_URL`. Grants are needed only if those credentials are not
+the table owners.
 Enable with `systemctl enable --now loyal-web-cron-<job>.timer`. Every run takes a Postgres
 advisory lock on the App database, so a second run of one job exits non-zero while the
 first holds it.
@@ -616,11 +632,11 @@ On rollback restore the daily timer before restoring the old binary. The progres
 table may remain; it is independent of push claims and vault transaction state.
 
 `POST /api/push/mixpanel-cohort` and `POST /api/solana-week/sweep-notify` are served by Go
-only when `MOBILE_PUSH_API_BASE_URL`, `MOBILE_PUSH_API_SECRET`, `WEB_YIELD_DATABASE_URL`
-with INSERT on `loyal_yield.push_campaign_sends` (and USAGE on its id sequence) and the
-route's own secret are installed: `MIXPANEL_COHORT_WEBHOOK_SECRET` for the first,
-`SOLANA_WEEK_NOTIFY_SECRET` for the second (the Next deployment's values). Until then each
-keeps proxying to Next. The retail engine's sweep notice moves to Go by setting
+only when all three are installed: `WEB_YIELD_DATABASE_URL` (with INSERT on
+`loyal_yield.push_campaign_sends` and USAGE on its id sequence), the OneSignal credentials
+(through the wallet push sender), and the route's own secret, `MIXPANEL_COHORT_WEBHOOK_SECRET`
+for the first and `SOLANA_WEEK_NOTIFY_SECRET` for the second (the Next deployment's values).
+Without them each keeps proxying to Next. The retail engine's sweep notice moves to Go by setting
 `RETAIL_SWEEP_NOTIFY_ENDPOINT=https://next.askloyal.com/api/solana-week/sweep-notify`
 (the host whose tunnel reaches `loyal-web`; a path Go does not serve is proxied to Next, so
 the value is safe before the credentials above exist) with the secret unchanged.
@@ -690,6 +706,11 @@ The differences:
   200 naming `X-Loyal-Release: <sha>` (30 s grace) — an old release also
   stays up, so the release header is the real gate. Otherwise the previous
   drop-in comes back and the previous release restarts.
+
+Before rolling loyal-web back past the OneSignal pushes release, run
+`systemctl disable --now loyal-web-cron-earn-yield-joy.timer`. The old joy code would push
+`yield-first` and `yield-total-10` to wallets the new code seeded, and would send its
+sub-$1 digests.
 
 Roll back with `bun run deploy web <prev-sha>`. The host log is
 `/var/log/loyal-deploy/web-<sha>.log`.

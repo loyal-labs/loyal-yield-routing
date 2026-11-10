@@ -10,19 +10,31 @@ import (
 type autodepositWalletPush struct {
 	Body  string `json:"body"`
 	Title string `json:"title"`
+
+	// Zero values are deliberate: an unset push is an immediate account alert.
+	Category        pushCategory
+	Delivery        pushDelivery
+	Route           string
+	IdempotencyName string
 }
 
-const autodepositPushSendTimeout = 5 * time.Second
+const autodepositPushSendTimeout = 10 * time.Second
 
-func (p *WalletPush) send(ctx context.Context, walletAddress string, payload autodepositWalletPush) {
+func (p *WalletPush) send(ctx context.Context, walletAddress string, payload autodepositWalletPush) bool {
 	if p == nil {
-		return
+		return false
 	}
 	ctx, cancel := context.WithTimeout(ctx, autodepositPushSendTimeout)
 	defer cancel()
-	if _, err := p.sendToWallet(ctx, walletAddress, payload.Title, payload.Body, nil); err != nil {
+	sent, err := p.sendToWallet(ctx, walletAddress, payload, nil)
+	if err != nil {
 		slog.WarnContext(ctx, "[wallet-push] push send failed", "errorMessage", err.Error(), "walletAddress", walletAddress)
+		return false
 	}
+	if !sent {
+		slog.InfoContext(ctx, "[wallet-push] wallet has no subscribed device", "walletAddress", walletAddress)
+	}
+	return sent
 }
 
 func autodepositEnabledPush() autodepositWalletPush {

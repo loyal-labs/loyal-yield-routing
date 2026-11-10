@@ -11,6 +11,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/solana-foundation/solana-go/v2"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnmax"
 )
 
 // The Vercel crons, run from Go. Each is the body of one
@@ -18,7 +20,12 @@ import (
 
 type Crons struct {
 	h        earnRoutes
-	Earnings func(ctx context.Context, cluster, settings, wallet string) (lifetimeEarnedUSD float64, available bool, err error)
+	Earnings func(ctx context.Context, cluster, settings, wallet string) (joyEarnings, bool, error)
+	EarnMax  *earnmax.Reader
+	// Mixpanel is nil when no project token is installed; a nil tracker drops events.
+	Mixpanel *MixpanelTracker
+	// EarnMaxActivity replaces EarnMax.Activity (a test seam).
+	EarnMaxActivity func(ctx context.Context, settings solana.PublicKey) (earnmax.Activity, error)
 }
 
 func NewCrons(appDB *pgxpool.Pool, earn Earn) Crons {
