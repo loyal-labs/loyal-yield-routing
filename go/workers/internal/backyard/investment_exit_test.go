@@ -553,7 +553,7 @@ func TestInvestmentExitPreparedWireRechecksAndBindsApproval(t *testing.T) {
 	o.Snapshot.WithdrawalDemandRaw = 0
 	o.Snapshot.CollateralIdleRaw, o.Snapshot.CollateralIdleValueRaw = 0, 0
 	d.Action, d.Reason, d.AmountRaw = SwapStableToCollateralStep, "entry_swap", 1_000_000_000
-	e := JupiterExecutionEvidence{Request: executionSwap(t, m.vault, d.Action, uint64(d.AmountRaw), uint64(d.AmountRaw))}
+	e := JupiterExecutionEvidence{Request: executionSwap(t, m.vault, d.Action, uint64(d.AmountRaw), uint64(d.AmountRaw), 20)}
 	route, err := m.route(d.StrategyKey)
 	if err != nil {
 		t.Fatal(err)

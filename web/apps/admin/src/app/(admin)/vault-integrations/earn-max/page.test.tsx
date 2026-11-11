@@ -136,5 +136,9 @@ test("both vaults explain a cost-held target and suppress stale or mismatched de
     html = renderToStaticMarkup(<EarnMaxPage {...props} />);
     expect(html).toContain("Higher leverage approved; execution checks still apply.");
     expect(html).not.toContain("$8.43");
+    apy.leverageDecision!.reason = "portfolio_apy_target_met";
+    expect(renderToStaticMarkup(<EarnMaxPage {...props} />)).toContain("Whole-vault APY target reached; additional borrowing is paused.");
+    apy.leverageDecision!.reason = "portfolio_apy_unavailable";
+    expect(renderToStaticMarkup(<EarnMaxPage {...props} />)).toContain("Waiting for complete whole-vault yield data.");
   }
 });

@@ -176,7 +176,7 @@ func TestNewCashCapBlocksBorrowingWithoutResettingHeldTarget(t *testing.T) {
 	s.NewAllocation = &allocationLimits{CashReserveRaw: 10_000_000_000}
 	armLeverageCapacityFixture(&s)
 	market := leverageMarket(s.RouteLane, .20, math.Log1p(.01))
-	d, ok := decideLeverageTarget(s, SelectorResult{Action: SelectorKeep}, []LaneEconomics{market}, productionRWAPolicy, twentyBPSStepCost, nil)
+	d, ok := decideLeverageTarget(nil, s, SelectorResult{Action: SelectorKeep}, []LaneEconomics{market}, productionRWAPolicy, twentyBPSStepCost, nil)
 	if !ok || d.Next != 1.75 || d.BorrowRaw != 0 || d.Down.MaxCostBPS != 0 {
 		t.Fatal("cap rewrote the existing leverage target", d)
 	}

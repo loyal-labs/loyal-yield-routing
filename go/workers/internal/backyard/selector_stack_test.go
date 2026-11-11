@@ -3,6 +3,7 @@ package backyard
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -71,6 +72,7 @@ func autoJupiterTransport(t *testing.T, route RuntimeRoute, quote func(in, desti
 		switch req.URL.Path {
 		case "/quote":
 			q := req.URL.Query()
+			slippage, _ := strconv.ParseUint(q.Get("slippageBps"), 10, 16)
 			amount, _ := strconv.ParseUint(q.Get("amount"), 10, 64)
 			in, destination := q.Get("inputMint"), q.Get("outputMint")
 			quoted, minimum := quote(in, destination, amount)
@@ -79,7 +81,7 @@ func autoJupiterTransport(t *testing.T, route RuntimeRoute, quote func(in, desti
 					quoted, minimum = out, min
 				}
 			}
-			payload := jupiter.Quote{InputMint: in, OutputMint: destination, InAmount: fmt.Sprint(amount), OutAmount: fmt.Sprint(quoted), OtherAmountThreshold: fmt.Sprint(minimum), SwapMode: "ExactIn", SlippageBPS: 50, RoutePlan: []json.RawMessage{json.RawMessage(`{}`)}}
+			payload := jupiter.Quote{InputMint: in, OutputMint: destination, InAmount: fmt.Sprint(amount), OutAmount: fmt.Sprint(quoted), OtherAmountThreshold: fmt.Sprint(minimum), SwapMode: "ExactIn", SlippageBPS: uint16(slippage), RoutePlan: []json.RawMessage{json.RawMessage(`{}`)}}
 			raw, _ := json.Marshal(payload)
 			return response(string(raw)), nil
 		case "/swap-instructions":
@@ -105,6 +107,12 @@ func autoJupiterTransport(t *testing.T, route RuntimeRoute, quote func(in, desti
 				action = SwapCollateralToStableStep
 			}
 			instruction := autoJupiterTestInstruction(t, action, amount, quoted, 2)
+			data, err := base64.StdEncoding.DecodeString(instruction.Data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			binary.LittleEndian.PutUint16(data[jupiter.V2SlippageOffset:], body.QuoteResponse.SlippageBPS)
+			instruction.Data = base64.StdEncoding.EncodeToString(data)
 			raw, _ := json.Marshal(map[string]any{"swapInstruction": instruction, "addressLookupTableAddresses": []string{}})
 			return response(string(raw)), nil
 		}

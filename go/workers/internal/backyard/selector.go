@@ -120,19 +120,20 @@ func projectedBorrowAPR(e LaneEconomics, additionalDebt debtMintRaw) (float64, e
 }
 
 type SelectorPolicy struct {
-	Horizon           time.Duration `json:"horizon"`
-	Persistence       time.Duration `json:"persistence"`
-	MaxSampleGap      time.Duration `json:"maxSampleGap"`
-	MarketMaxAge      time.Duration `json:"marketMaxAge"`
-	NativeMaxAge      time.Duration `json:"nativeMaxAge"`
-	QuoteMaxAge       time.Duration `json:"quoteMaxAge"`
-	MinimumBenefitRaw int64         `json:"minimumBenefitRaw"`
-	UncertaintyBPS    int64         `json:"uncertaintyBps"`
-	IdleBufferRaw     int64         `json:"idleBufferRaw"`
-	IdleBufferBPS     int64         `json:"idleBufferBps,omitempty"`
-	IdleBufferCapRaw  int64         `json:"idleBufferCapRaw,omitempty"`
-	DiversifyNewCash  bool          `json:"diversifyNewCash,omitempty"`
-	UnleveredNewCash  bool          `json:"unleveredNewCash,omitempty"`
+	Horizon               time.Duration `json:"horizon"`
+	Persistence           time.Duration `json:"persistence"`
+	MaxSampleGap          time.Duration `json:"maxSampleGap"`
+	MarketMaxAge          time.Duration `json:"marketMaxAge"`
+	NativeMaxAge          time.Duration `json:"nativeMaxAge"`
+	QuoteMaxAge           time.Duration `json:"quoteMaxAge"`
+	MinimumBenefitRaw     int64         `json:"minimumBenefitRaw"`
+	UncertaintyBPS        int64         `json:"uncertaintyBps"`
+	IdleBufferRaw         int64         `json:"idleBufferRaw"`
+	IdleBufferBPS         int64         `json:"idleBufferBps,omitempty"`
+	IdleBufferCapRaw      int64         `json:"idleBufferCapRaw,omitempty"`
+	DiversifyNewCash      bool          `json:"diversifyNewCash,omitempty"`
+	UnleveredNewCash      bool          `json:"unleveredNewCash,omitempty"`
+	TargetPortfolioAPYBPS int64         `json:"targetPortfolioApyBps,omitempty"`
 }
 
 const selectorHorizon = 30 * 24 * time.Hour
@@ -141,6 +142,9 @@ func DefaultSelectorPolicy() SelectorPolicy {
 	return SelectorPolicy{Horizon: selectorHorizon, Persistence: 30 * time.Minute, MaxSampleGap: 10 * time.Minute, MarketMaxAge: 90 * time.Second, NativeMaxAge: 2 * time.Hour, QuoteMaxAge: 30 * time.Second, MinimumBenefitRaw: 250_000, UncertaintyBPS: 10, IdleBufferRaw: 0}
 }
 func (p SelectorPolicy) validate() error {
+	if p.TargetPortfolioAPYBPS < 0 || p.TargetPortfolioAPYBPS > 10_000 {
+		return fmt.Errorf("invalid_selector_policy")
+	}
 	if p.IdleBufferBPS < 0 || p.IdleBufferBPS > 10_000 || p.IdleBufferCapRaw < 0 || (p.IdleBufferBPS > 0 && p.IdleBufferCapRaw < p.IdleBufferRaw) {
 		return fmt.Errorf("invalid_selector_policy")
 	}
