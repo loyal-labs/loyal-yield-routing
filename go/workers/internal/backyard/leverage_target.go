@@ -17,6 +17,8 @@ const (
 	leverageReasonCostUnavailable        = "leverage_cost_unavailable"
 	leverageReasonNotWorthCost           = "up_move_not_worth_cost"
 	leverageReasonApproved               = "up_move_approved"
+	leverageReasonPortfolioTargetMet     = "portfolio_apy_target_met"
+	leverageReasonPortfolioUnavailable   = "portfolio_apy_unavailable"
 )
 
 type leverageDecision struct {
@@ -48,7 +50,7 @@ func leverageSettled(s Snapshot, selector SelectorResult) bool {
 		cashReady && s.VoltrStrategyIdleRaw == 0
 }
 
-func decideLeverageTarget(s Snapshot, selector SelectorResult, markets []LaneEconomics, p SelectorPolicy, price leverageStepPricer, downPrice leverageDownPricer) (leverageDecision, bool) {
+func decideLeverageTarget(portfolio *PortfolioAPY, s Snapshot, selector SelectorResult, markets []LaneEconomics, p SelectorPolicy, price leverageStepPricer, downPrice leverageDownPricer) (leverageDecision, bool) {
 	out := leverageDecision{Lane: s.RouteLane, RoomRaw: s.AdditionalDebtRoomRaw}
 	out.TermDays, out.TermKnown = termDays(s)
 	market := economicsOf(markets, s.RouteLane)
@@ -90,6 +92,14 @@ func decideLeverageTarget(s Snapshot, selector SelectorResult, markets []LaneEco
 	level, up := leverageUpLevel(candidateSnapshot)
 	if up && level < out.Next {
 		out.Next = max(level, out.Current)
+	}
+	if up && p.TargetPortfolioAPYBPS > 0 {
+		if portfolio == nil {
+			return out.held(leverageReasonPortfolioUnavailable), true
+		}
+		if portfolio.APYBPS >= p.TargetPortfolioAPYBPS {
+			return out.held(leverageReasonPortfolioTargetMet), true
+		}
 	}
 	raw := leverageDesiredRaw(s, level)
 	if !allocationBorrowAllowed(s, raw) {
@@ -190,12 +200,15 @@ func (d leverageDecision) storeChanges(s Snapshot) bool {
 	return d.level() != laneLevel{Level: s.LeverageTargetLevel, UpApproved: s.LeverageUpApproved, Down: s.LeverageDown}
 }
 
-func decideOverflowLevel(source Snapshot, markets []LaneEconomics, p SelectorPolicy, now time.Time) (string, laneLevel, bool) {
+func decideOverflowLevel(portfolio *PortfolioAPY, source Snapshot, markets []LaneEconomics, p SelectorPolicy, now time.Time) (string, laneLevel, bool) {
 	lane, ok := overflowLaneOf(source.RouteLane)
 	if p.UnleveredNewCash || !ok || !source.HasPosition || !overflowSourceBorrowClosed(source) || source.OverflowRoom == nil || containsLane(source.heldLanes(), lane) {
 		return "", laneLevel{}, false
 	}
 	maxLevel := laneMaxLevel(lane)
+	if p.TargetPortfolioAPYBPS > 0 && (portfolio == nil || portfolio.APYBPS >= p.TargetPortfolioAPYBPS) {
+		return lane, laneLevel{Level: maxLevel}, true
+	}
 	e := overflowEquityRaw(source, maxLevel)
 	if e <= 0 {
 		return "", laneLevel{}, false

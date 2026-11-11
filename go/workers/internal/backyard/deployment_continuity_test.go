@@ -80,7 +80,7 @@ func TestFullBorrowPoolDoesNotLiquidateExistingPosition(t *testing.T) {
 		armFeeAuthorityFixture(t, &s)
 		market := leverageMarket(s.RouteLane, .10, math.Log1p(.06))
 		market.DebtBorrowRaw = market.DebtSupplyRaw
-		decision, ok := decideLeverageTarget(s, SelectorResult{Action: SelectorKeep}, []LaneEconomics{market}, productionRWAPolicy, nil, nil)
+		decision, ok := decideLeverageTarget(nil, s, SelectorResult{Action: SelectorKeep}, []LaneEconomics{market}, productionRWAPolicy, nil, nil)
 		if !ok || decision.Next < level || decision.BorrowRaw != 0 || decision.Down.MaxCostBPS != 0 {
 			t.Fatalf("full pool reset a %.2fx position: %+v", level, decision)
 		}

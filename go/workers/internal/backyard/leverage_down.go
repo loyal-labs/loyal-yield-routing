@@ -174,6 +174,7 @@ func productionLeverageDownPricer(ctx context.Context, rpc *chain.Client, view *
 		// allowing its first sale. A full-size quote is conservative about depth.
 		steps := 1 + (receipts-1)/limit
 		st.collateralBalance, st.debtBalance = 0, 0
+		st.maxSlippageBPS = m.vault.LeverageSlippageBPS
 		step, _, err := assembleStep(ctx, rpc, view, client, m, p.policies, st, stepDown, receipts, sold, s.Slot)
 		if err != nil {
 			return leverageReduction{}, costOutage(stageExitQuote, err)

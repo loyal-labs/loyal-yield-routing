@@ -192,7 +192,7 @@ func (p lanePricer) priceStep(ctx context.Context, accounts []ConfirmedAccount, 
 	if err != nil {
 		return leverageStepCost{}, costOutage(stagePrice, err)
 	}
-	st := stepState{route: route, collateral: collateral, slot: uint64(slot), topology: topology}
+	st := stepState{route: route, collateral: collateral, slot: uint64(slot), topology: topology, maxSlippageBPS: p.manifest.vault.LeverageSlippageBPS}
 	up, _, err := assembleStep(ctx, p.rpc, p.view, p.client, p.manifest, p.policies, st, stepUp, borrowRaw, borrowRaw, slot)
 	if err != nil {
 		return leverageStepCost{}, costOutage(stepStage(stageEntryQuote, err), err)

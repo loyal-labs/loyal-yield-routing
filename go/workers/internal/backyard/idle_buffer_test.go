@@ -62,8 +62,8 @@ func TestShortHoldingHorizonRefusesSlowPaybackBorrow(t *testing.T) {
 	market := leverageMarket(s.RouteLane, .12, math.Log1p(.06))
 	long := productionRWAPolicy
 	long.Horizon = 30 * 24 * time.Hour
-	old, _ := decideLeverageTarget(s, SelectorResult{Action: SelectorKeep}, []LaneEconomics{market}, long, twentyBPSStepCost, nil)
-	short, _ := decideLeverageTarget(s, SelectorResult{Action: SelectorKeep}, []LaneEconomics{market}, productionRWAPolicy, twentyBPSStepCost, nil)
+	old, _ := decideLeverageTarget(nil, s, SelectorResult{Action: SelectorKeep}, []LaneEconomics{market}, long, twentyBPSStepCost, nil)
+	short, _ := decideLeverageTarget(nil, s, SelectorResult{Action: SelectorKeep}, []LaneEconomics{market}, productionRWAPolicy, twentyBPSStepCost, nil)
 	if old.BorrowRaw == 0 || short.BorrowRaw != 0 || short.GainRaw >= 0 {
 		t.Fatalf("slow-payback borrowing survived: 30 days %+v; production %+v", old, short)
 	}

@@ -494,6 +494,8 @@ function LoanSafety({
     const reasons: Record<string, string> = {
       up_move_not_worth_cost: "Extra borrowing is not worthwhile after costs.",
       up_move_approved: "Higher leverage approved; execution checks still apply.",
+      portfolio_apy_target_met: "Whole-vault APY target reached; additional borrowing is paused.",
+      portfolio_apy_unavailable: "Waiting for complete whole-vault yield data.",
       spread_rule: "Selected from the current yield spread and risk limits.",
       new_allocation_limit: "New borrowing is blocked by cash reserve or allocation limits.",
       borrow_capacity_unknown: "Waiting for verified borrowing capacity.",

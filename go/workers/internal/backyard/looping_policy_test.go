@@ -3,10 +3,82 @@ package backyard
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"math"
 	"testing"
 	"time"
 )
+
+func TestBackyardLeverageTargetsTheWholePortfolio(t *testing.T) {
+	for _, level := range []float64{1, 1.5, 1.75, 2} {
+		t.Run(fmt.Sprint(level), func(t *testing.T) {
+			s := leverageSnapshot(level)
+			s.Trustful = true
+			s.TotalVaultNAVRaw, s.VoltrIdleRaw = 2_016_636_063, 293_186_999
+			s.StrategyNAVRaw = s.TotalVaultNAVRaw - s.VoltrIdleRaw
+			s.PositionCollateralValueRaw = int64(1_624_154_610 * level)
+			s.PositionDebtValueRaw = s.PositionCollateralValueRaw - 1_624_154_610
+			s.PositionCollateralRaw, s.PositionDebtRaw = s.PositionCollateralValueRaw, s.PositionDebtValueRaw
+			armFeeAuthorityFixture(t, &s)
+			s.AdminPerformanceFeeBPS, s.ApprovedAdminPerformanceFeeBPS = 0, 0
+			armLeverageCapacityFixture(&s)
+			s.HeldLanes = s.RouteLane + "," + MapleSyrupUSDCLaneID + "," + onreONycUSDC
+			s.net = fixtureSnapshotCertificate(s)
+			lanes := []Snapshot{s,
+				{RouteLane: MapleSyrupUSDCLaneID, Slot: s.Slot, PositionCollateralValueRaw: 91_168_806, PositionDebtValueRaw: 414_387},
+				{RouteLane: onreONycUSDC, Slot: s.Slot, PositionCollateralValueRaw: 10_047_266},
+			}
+			for i := range lanes {
+				lanes[i].net = fixtureSnapshotCertificate(lanes[i])
+			}
+			markets := []LaneEconomics{leverageMarket(s.RouteLane, .1076, math.Log1p(.0663)),
+				{Lane: MapleSyrupUSDCLaneID, NativeAPY: .0492, CurrentBorrowAPY: .036},
+				{Lane: onreONycUSDC, NativeAPY: .1102},
+			}
+			o := Observation{Snapshot: s, lanes: lanes}
+			portfolio := currentPortfolioAPY(o, markets, time.Now())
+			if portfolio == nil {
+				t.Fatal("incomplete portfolio fixture")
+			}
+			d, ok := decideLeverageTarget(portfolio, s, SelectorResult{Action: SelectorKeep}, markets, productionLoopingPolicy, twentyBPSStepCost, nil)
+			t.Logf("AUTO %.2fx: whole-vault APY %.2f%%; next %.2fx; %s", level, float64(portfolio.APYBPS)/100, d.Next, d.Reason)
+			if !ok {
+				t.Fatal("missing leverage decision")
+			}
+			if level < 2 {
+				if portfolio.APYBPS >= 1200 || d.Reason != leverageReasonApproved || d.Next <= level || !d.level().UpApproved {
+					t.Fatal("profitable progress toward whole-vault target blocked", portfolio, d)
+				}
+			} else if portfolio.APYBPS < 1200 || d.Next != level || d.Reason != leverageReasonPortfolioTargetMet || d.level().UpApproved {
+				t.Fatal("continued borrowing after reaching the portfolio target", portfolio, d)
+			}
+			if level == 2 {
+				markets[0].NativeAPY = .103
+				portfolio = currentPortfolioAPY(o, markets, time.Now())
+				d, _ = decideLeverageTarget(portfolio, s, SelectorResult{Action: SelectorKeep}, markets, productionLoopingPolicy, twentyBPSStepCost, nil)
+				if portfolio.APYBPS >= 1200 || !d.level().UpApproved || d.Next != 2.5 {
+					t.Fatal("profitable borrowing did not resume after rates fell", portfolio, d)
+				}
+			}
+			unavailable, _ := decideLeverageTarget(nil, s, SelectorResult{Action: SelectorKeep}, markets, productionLoopingPolicy, twentyBPSStepCost, nil)
+			if unavailable.Reason != leverageReasonPortfolioUnavailable || unavailable.level().UpApproved {
+				t.Fatal("borrowed without whole-vault yield data", unavailable)
+			}
+		})
+	}
+}
+
+func TestBackyardTargetRevokesUnusedOverflowApproval(t *testing.T) {
+	s := leverageSnapshot(1)
+	s.AdditionalDebtRoomRaw = 0
+	s.OverflowRoom = &overflowBorrowRoom{DebtRaw: 1_000_000_000, FlooredUSDCValue: 1_000_000_000}
+	for _, portfolio := range []*PortfolioAPY{nil, {APYBPS: 1200}} {
+		lane, level, ok := decideOverflowLevel(portfolio, s, nil, productionLoopingPolicy, time.Now())
+		if !ok || lane != autoAUTOWYLDSLane || level.UpApproved {
+			t.Fatal("unused overflow approval could bypass the portfolio target", lane, level, ok)
+		}
+	}
+}
 
 func TestBackyardUnleveredEntryEarnsCostsAndRequiresFreshPersistence(t *testing.T) {
 	in := selectorFixture()
@@ -126,7 +198,7 @@ func TestBackyardAllowsEconomicBorrowingButKeepsCashAndRiskExits(t *testing.T) {
 	applyAllocationLimits(lanes, productionLoopingPolicy)
 	s = lanes[0]
 	market := leverageMarket(s.RouteLane, .1067, math.Log1p(.0666))
-	d, ok := decideLeverageTarget(s, SelectorResult{Action: SelectorKeep}, []LaneEconomics{market}, productionLoopingPolicy, twentyBPSStepCost, nil)
+	d, ok := decideLeverageTarget(&PortfolioAPY{APYBPS: 890}, s, SelectorResult{Action: SelectorKeep}, []LaneEconomics{market}, productionLoopingPolicy, twentyBPSStepCost, nil)
 	if !ok || d.BorrowRaw == 0 || d.Next != 1.5 || d.Reason != leverageReasonApproved {
 		t.Fatal("Backyard's live-sized position could not take an economic leverage step", d)
 	}

@@ -190,9 +190,10 @@ func (p *selectorSampler) sample(ctx, feedCtx context.Context, markets []LaneEco
 		}, logf)
 	}
 	var leverageSummary *LeverageDecisionSummary
+	policy := worker.manifest.vault.selectorPolicy()
+	portfolio := currentPortfolioAPY(observed, markets, time.Now())
 	for _, lane := range observed.lanes {
-		policy := worker.manifest.vault.selectorPolicy()
-		decision, ok := decideLeverageTarget(lane, result, markets, policy, productionLeverageStepPricer(feedCtx, rpc, view, e.runtime.Jupiter, worker.manifest, observed, lane),
+		decision, ok := decideLeverageTarget(portfolio, lane, result, markets, policy, productionLeverageStepPricer(feedCtx, rpc, view, e.runtime.Jupiter, worker.manifest, observed, lane),
 			productionLeverageDownPricer(feedCtx, rpc, view, e.runtime.Jupiter, worker.manifest, observed, lane))
 		if !ok {
 			delete(p.downWindows, lane.RouteLane)
@@ -220,7 +221,7 @@ func (p *selectorSampler) sample(ctx, feedCtx context.Context, markets []LaneEco
 		}
 	}
 	for _, source := range observed.lanes {
-		if lane, level, ok := decideOverflowLevel(source, markets, worker.manifest.vault.selectorPolicy(), time.Now().UTC()); ok && observed.planning != nil && observed.planning.inputs.Levels[lane] != level {
+		if lane, level, ok := decideOverflowLevel(portfolio, source, markets, policy, time.Now().UTC()); ok && observed.planning != nil && observed.planning.inputs.Levels[lane] != level {
 			if err := database.RecordLaneLevel(ctx, routeKey, lane, level); err != nil {
 				printf("overflow lane level not stored: %s\n", sanitizedSelectorEvaluateFailure(err))
 			}

@@ -79,6 +79,9 @@ func executionEntryLimit(v *Vault, lane string) uint64 {
 
 func boundedExecutionDecision(v *Vault, o Observation, d Decision) (Decision, error) {
 	s := o.Snapshot
+	if v != nil && v.LeverageSlippageBPS > 0 && (stepKind(d) == stepUp && d.Reason != termKeepAliveReason || d.Reason == leverageDownPartialReason || d.Reason == debtZeroReason && s.Target.Rule == ruleLevel) {
+		d.MaxSlippageBPS = min(effectiveJupiterSlippage(d.MaxSlippageBPS), v.LeverageSlippageBPS)
+	}
 	if !protectedExecution(v, s, d) {
 		return d, nil
 	}

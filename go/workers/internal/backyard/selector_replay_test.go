@@ -144,7 +144,7 @@ func TestSelectorReplayLiveBook(t *testing.T) {
 		result := SelectOpportunity(SelectorInput{Now: c.Now, Snapshot: o.Snapshot, Markets: markets, Policy: p}, SelectorState{})
 		for _, lane := range o.lanes {
 			priced := false
-			d, ok := decideLeverageTarget(lane, result, markets, p, func(uint64) (leverageStepCost, error) {
+			d, ok := decideLeverageTarget(nil, lane, result, markets, p, func(uint64) (leverageStepCost, error) {
 				priced = true
 				return leverageStepCost{}, costOutage(stageInputs, staleHold("replay"))
 			}, nil)
@@ -153,7 +153,7 @@ func TestSelectorReplayLiveBook(t *testing.T) {
 			if !ok || !priced || got != want[approved][lane.RouteLane] {
 				t.Fatalf("approved=%v %s: decided %+v (priced %v)", approved, lane.RouteLane, got, priced)
 			}
-			if overflow, level, decided := decideOverflowLevel(lane, markets, p, c.Now); decided {
+			if overflow, level, decided := decideOverflowLevel(nil, lane, markets, p, c.Now); decided {
 				t.Fatalf("%s decided an overflow level for %s: %+v", lane.RouteLane, overflow, level)
 			}
 		}
@@ -204,12 +204,12 @@ func TestSelectorReplayLiveStepCost(t *testing.T) {
 	markets := replayMarkets(t, o.routeBatch.Accounts, c.Now)
 	below := lane
 	below.LTVBPS, below.LeverageDesiredRaw[2], below.LeverageDesiredRaw[3] = leverageLevelLTVBPS(1.5), borrow, borrow
-	d, ok := decideLeverageTarget(below, SelectorResult{Action: "KEEP"}, markets, DefaultSelectorPolicy(), productionLeverageStepPricer(context.Background(), rpc, view, client, m, o, below), nil)
+	d, ok := decideLeverageTarget(nil, below, SelectorResult{Action: "KEEP"}, markets, DefaultSelectorPolicy(), productionLeverageStepPricer(context.Background(), rpc, view, client, m, o, below), nil)
 	t.Log(d.logLine())
 	if !ok || d.Reason != leverageReasonNotWorthCost || d.BorrowRaw != 0 || d.Cost.TotalMicros != got.TotalMicros || d.GainRaw >= 0 {
 		t.Fatalf("floor-losing live step admitted: %+v", d)
 	}
-	quotedDecision, _ := decideLeverageTarget(below, SelectorResult{Action: "KEEP"}, markets, DefaultSelectorPolicy(), func(uint64) (leverageStepCost, error) {
+	quotedDecision, _ := decideLeverageTarget(nil, below, SelectorResult{Action: "KEEP"}, markets, DefaultSelectorPolicy(), func(uint64) (leverageStepCost, error) {
 		quoted := got
 		quoted.TotalMicros = got.QuotedTotalMicros
 		return quoted, nil
@@ -230,6 +230,52 @@ func TestSelectorReplayLiveStepCost(t *testing.T) {
 	if err != nil || wylds.NetworkMicros != got.NetworkMicros || wylds.TotalMicros <= wylds.NetworkMicros {
 		t.Fatalf("Hastra step: %+v (%v)", wylds, err)
 	}
+}
+
+func TestBackyardLeveragePricesTighterExecutableSlippage(t *testing.T) {
+	c := loadLiveCapture(t, "testdata/live_state_2026-10-12.json.gz")
+	o := observeLiveAtRest(t, c, liveInputs(true))
+	rpc, view, _ := liveReplayStack(t, o, 0)
+	m := embeddedTestManifest(t)
+	route, _ := m.route(autoAUTOPYUSD.Lane)
+	prices, err := batchLanePrices(o.routeBatch.Accounts, route)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := autoJupiterTransport(t, route, func(in, out string, amount uint64) (uint64, uint64) {
+		from, to, fromDecimals, toDecimals := prices.debt, prices.collateral, prices.debtDecimals, prices.collateralDecimals
+		if in == route.Kamino.CollateralMint {
+			from, to, fromDecimals, toDecimals = to, from, toDecimals, fromDecimals
+		}
+		value, err := valueBetweenTokenRaw(amount, fromDecimals, toDecimals, from, to, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		value -= value * 2 / 10_000
+		return value, value
+	}, nil)
+	var lane Snapshot
+	for _, s := range o.lanes {
+		if s.RouteLane == route.Lane {
+			lane = s
+		}
+	}
+	const borrow = 812_000_000
+	old, err := productionLeverageStepPricer(context.Background(), rpc, view, client, m, o, lane)(borrow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := *m.vault
+	v.LeverageSlippageBPS = looping.LeverageSlippageBPS
+	m.vault = &v
+	cost, err := productionLeverageStepPricer(context.Background(), rpc, view, client, m, o, lane)(borrow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cost.TotalMicros <= cost.QuotedTotalMicros || cost.TotalMicros >= old.TotalMicros/3 || cost.QuotedTotalMicros != old.QuotedTotalMicros {
+		t.Fatalf("tighter wire did not reduce only the slippage allowance: before=%+v after=%+v", old, cost)
+	}
+	t.Logf("$812 additional borrowing: quoted $%.2f, old budget $%.2f, Backyard budget $%.2f", float64(cost.QuotedTotalMicros)/1e6, float64(old.TotalMicros)/1e6, float64(cost.TotalMicros)/1e6)
 }
 
 // entryReplay is one flat-vault entry decided on a synthetic stack: the

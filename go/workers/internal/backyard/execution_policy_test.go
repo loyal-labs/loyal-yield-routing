@@ -47,6 +47,30 @@ func TestExecutionAtomicPortionsKeepWithdrawSwapRepayTogether(t *testing.T) {
 				}
 				t.Run(fmt.Sprintf("%s/%d/held=%d", v.Name, kind, held), func(t *testing.T) {
 					o, d := executionFixture(t, &v)
+					d.Action, d.Reason = DeleverRouteStep, debtZeroReason
+					o.Snapshot.Target.Rule = ruleLevel
+					o.Snapshot.WithdrawalDemandRaw = 0
+					if kind == stepUp {
+						d.Action, d.Reason = OpenRouteStep, leverageUpReason
+						o.Snapshot.Target.Rule = ruleEntry
+					} else if kind == stepExit {
+						d.Action, d.Reason = DeleverRouteStep, exitWithdrawReason
+						o.Snapshot.Target.Rule = ruleWithdrawal
+						o.Snapshot.WithdrawalDemandRaw = 5_000_000_000
+					}
+					bindSnapshotNAV(&o.Snapshot)
+					bounded, err := boundedExecutionDecision(&v, o, d)
+					if err != nil {
+						t.Fatal(err)
+					}
+					d = bounded
+					wantSlippage := uint16(20)
+					if v.Name == looping.Name && kind != stepExit {
+						wantSlippage = 10
+					}
+					if d.MaxSlippageBPS != wantSlippage {
+						t.Fatal("wrong vault leverage or withdrawal slippage", d)
+					}
 					route, _ := v.route(d.StrategyKey)
 					reserve, err := decodeKaminoReserve(accountAt(o.routeBatch.Accounts, route.Kamino.CollateralReserve), route.Kamino.CollateralMint, route.Kamino)
 					if err != nil {
@@ -65,7 +89,10 @@ func TestExecutionAtomicPortionsKeepWithdrawSwapRepayTogether(t *testing.T) {
 							if amount > uint64(executionTradeValueRaw) {
 								t.Errorf("oversized quote: %d", amount)
 							}
-							payload = jupiter.Quote{InputMint: q.Get("inputMint"), OutputMint: q.Get("outputMint"), InAmount: fmt.Sprint(amount), OutAmount: fmt.Sprint(amount), OtherAmountThreshold: fmt.Sprint(jupiterOutputFloor(amount, 20)), SwapMode: "ExactIn", SlippageBPS: 20, RoutePlan: []json.RawMessage{json.RawMessage(`{}`)}}
+							if q.Get("slippageBps") != fmt.Sprint(wantSlippage) {
+								t.Fatal("quote lost the executable slippage limit", q)
+							}
+							payload = jupiter.Quote{InputMint: q.Get("inputMint"), OutputMint: q.Get("outputMint"), InAmount: fmt.Sprint(amount), OutAmount: fmt.Sprint(amount), OtherAmountThreshold: fmt.Sprint(jupiterOutputFloor(amount, wantSlippage)), SwapMode: "ExactIn", SlippageBPS: wantSlippage, RoutePlan: []json.RawMessage{json.RawMessage(`{}`)}}
 						case "/swap-instructions":
 							var body struct{ QuoteResponse jupiter.Quote }
 							if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
@@ -76,7 +103,7 @@ func TestExecutionAtomicPortionsKeepWithdrawSwapRepayTogether(t *testing.T) {
 							if body.QuoteResponse.InputMint == fleet.USDCMint {
 								action = SwapStableToCollateralStep
 							}
-							payload = map[string]any{"swapInstruction": executionSwap(t, &v, action, amount, amount).Instruction}
+							payload = map[string]any{"swapInstruction": executionSwap(t, &v, action, amount, amount, body.QuoteResponse.SlippageBPS).Instruction}
 						default:
 							t.Fatalf("unexpected request: %s", req.URL.Path)
 						}
@@ -86,7 +113,7 @@ func TestExecutionAtomicPortionsKeepWithdrawSwapRepayTogether(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					st := stepState{route: route, collateral: reserve, topology: []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve}, conversionCap: uint64(executionTradeValueRaw), maxSlippageBPS: 20, collateralBalance: held}
+					st := stepState{route: route, collateral: reserve, topology: []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve}, conversionCap: uint64(executionTradeValueRaw), maxSlippageBPS: d.MaxSlippageBPS, collateralBalance: held}
 					e, _, err := assembleStep(context.Background(), rpc, fixtureView(t, rpc), client, v.manifest, policies, st, kind, 5_000_000_000, 5_000_000_000+held, o.Snapshot.Slot)
 					if err != nil {
 						t.Fatal(err)
@@ -97,12 +124,7 @@ func TestExecutionAtomicPortionsKeepWithdrawSwapRepayTogether(t *testing.T) {
 					if (kind == stepExit) != (e.Request.Close == nil) {
 						t.Fatal("atomic closing leg lost")
 					}
-					d.Action, d.Reason = DeleverRouteStep, debtZeroReason
-					if kind == stepUp {
-						d.Action, d.Reason = OpenRouteStep, leverageUpReason
-						o.Snapshot.Target.Rule = ruleEntry
-						bindSnapshotNAV(&o.Snapshot)
-					}
+
 					guarded, err := protectExecutionPrice(&v, o, d, e.Request)
 					if err != nil {
 						t.Fatal(err)
@@ -132,17 +154,17 @@ func TestExecutionAtomicPortionsKeepWithdrawSwapRepayTogether(t *testing.T) {
 	}
 }
 
-func executionSwap(t *testing.T, v *Vault, action Action, in, out uint64) JupiterSwapRequest {
+func executionSwap(t *testing.T, v *Vault, action Action, in, out uint64, slippage uint16) JupiterSwapRequest {
 	t.Helper()
 	r := stepTestSwap(t, MapleSyrupUSDCLaneID, action, 0)
-	r.AmountRaw, r.QuotedOutputRaw, r.MinimumOutputRaw, r.MaxSlippageBPS = in, out, jupiterOutputFloor(out, 20), 20
+	r.AmountRaw, r.QuotedOutputRaw, r.MinimumOutputRaw, r.MaxSlippageBPS = in, out, jupiterOutputFloor(out, slippage), slippage
 	data, err := base64.StdEncoding.DecodeString(r.Instruction.Data)
 	if err != nil {
 		t.Fatal(err)
 	}
 	binary.LittleEndian.PutUint64(data[jupiter.V2InAmountOffset:], in)
 	binary.LittleEndian.PutUint64(data[jupiter.V2QuotedOutOffset:], out)
-	binary.LittleEndian.PutUint16(data[jupiter.V2SlippageOffset:], 20)
+	binary.LittleEndian.PutUint16(data[jupiter.V2SlippageOffset:], slippage)
 	r.Instruction.Data = base64.StdEncoding.EncodeToString(data)
 	_, _, from, to, err := jupiterEdgeForRoute(v, action, r.RouteLane)
 	if err != nil {
@@ -168,7 +190,7 @@ func TestExecutionPriceRejectsInitialDiscountAndSealsBothVaultWires(t *testing.T
 						o.Snapshot.Target = LaneTarget{Rule: ruleEntry}
 						bindSnapshotNAV(&o.Snapshot)
 					}
-					r := executionSwap(t, &v, action, uint64(d.AmountRaw), quote)
+					r := executionSwap(t, &v, action, uint64(d.AmountRaw), quote, 20)
 					got, err := protectExecutionPrice(&v, o, d, r)
 					if quote < 998_000_000 {
 						var hold *PreSendHold
@@ -347,12 +369,12 @@ func TestPublicWithdrawalRetainsAutomaticFloorWithoutConsent(t *testing.T) {
 	d.AmountRaw = executionTradeValueRaw
 	o.Snapshot.net.quotes = []ExitCost{{Lane: d.StrategyKey, MarkSF: kaminoOne(), QuotedCollateralRaw: 10_000_000_000, BPS: microBPSWhole / 1000,
 		Source: exitCostQuote, Slot: o.Snapshot.Slot, At: time.Now(), scope: &exitQuoteScope{vault: rwa.squads, manifest: rwa.manifest.SHA256, path: quotePath(rwa.manifest, d.StrategyKey), usdc: kaminoOne()}}}
-	r := executionSwap(t, rwa, d.Action, uint64(d.AmountRaw), 998_500_000)
+	r := executionSwap(t, rwa, d.Action, uint64(d.AmountRaw), 998_500_000, 20)
 	effects := ExpectedEffects{Sale: &ExpectedSale{Lane: d.StrategyKey, SoldRaw: r.AmountRaw, MarkSF: kaminoOne(), MarkValueRaw: uint64(d.AmountRaw)}}
 	if _, err := prepareWithdrawalCost(context.Background(), nil, nil, nil, rwa.manifest, d, o, r, effects); err == nil {
 		t.Fatal("sale below the NAV allowance was accepted")
 	}
-	r = executionSwap(t, rwa, d.Action, uint64(d.AmountRaw), 999_500_000)
+	r = executionSwap(t, rwa, d.Action, uint64(d.AmountRaw), 999_500_000, 20)
 	got, err := prepareWithdrawalCost(context.Background(), nil, nil, nil, rwa.manifest, d, o, r, effects)
 	if err != nil {
 		t.Fatal("public sale required consent/database", err)
@@ -415,7 +437,7 @@ func TestExecutionTickWaitsThenRequotesAndReturnsCollectedCash(t *testing.T) {
 			if d.AmountRaw != executionTradeValueRaw {
 				t.Fatal("uncapped trade reached quoting", d)
 			}
-			return ob, JupiterExecutionEvidence{Request: executionSwap(t, &v, d.Action, uint64(d.AmountRaw), quote)}, nil
+			return ob, JupiterExecutionEvidence{Request: executionSwap(t, &v, d.Action, uint64(d.AmountRaw), quote, 20)}, nil
 		},
 		prepareBridge: func(_ context.Context, _ RouteManifest, d Decision, ob Observation) (Observation, BridgeExecutionEvidence, error) {
 			if d.Action != StageSquadsToVoltr || d.AmountRaw != 400_000_000 {

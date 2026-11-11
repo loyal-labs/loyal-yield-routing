@@ -21,7 +21,7 @@ func TestEconomicReductionNeedsNetBenefitAndPersistence(t *testing.T) {
 	}
 	market := leverageMarket(s.RouteLane, .10, math.Log1p(.13))
 	decide := func() leverageDecision {
-		d, ok := decideLeverageTarget(s, SelectorResult{Action: SelectorKeep}, []LaneEconomics{market}, p, nil, price)
+		d, ok := decideLeverageTarget(nil, s, SelectorResult{Action: SelectorKeep}, []LaneEconomics{market}, p, nil, price)
 		if !ok {
 			t.Fatal("settled economic decision absent")
 		}
@@ -114,7 +114,7 @@ func TestReductionDoesNotBuyBackItsCashResidue(t *testing.T) {
 	}
 	// After a pause or restart the old permission can expire while cash remains.
 	// Fresh profitable samples must be able to authorize the unfinished target.
-	d, ok := decideLeverageTarget(s, SelectorResult{Action: SelectorKeep}, []LaneEconomics{market}, productionRWAPolicy, nil, price)
+	d, ok := decideLeverageTarget(nil, s, SelectorResult{Action: SelectorKeep}, []LaneEconomics{market}, productionRWAPolicy, nil, price)
 	if !ok || d.Next != 2 || !d.Down.active(s.ChainUnix) {
 		t.Fatalf("retained cash deadlocked reduction approval: %+v, eligible=%v", d, ok)
 	}
