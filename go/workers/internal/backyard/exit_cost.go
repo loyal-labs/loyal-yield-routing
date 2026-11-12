@@ -123,7 +123,8 @@ func (c ExitCost) outlier(realized *ExitCost) bool {
 
 func (e exitCosts) quoteDue(b heldExitBasis, lastAttempt, now time.Time) bool {
 	costs := e[b.st.route.Lane]
-	if costs.Quote != nil && costs.Quote.fresh(b.heldRaw, b.mark) && costs.Quote.scope != nil && costs.Quote.scope.usdc == b.usdc && costs.Quote.validAt(now, b.st.position.Slot) {
+	// Refresh halfway through validity so preparation does not consume the last valid slots.
+	if costs.Quote != nil && costs.Quote.fresh(b.heldRaw, b.mark) && costs.Quote.scope != nil && costs.Quote.scope.usdc == b.usdc && costs.Quote.validAt(now.Add(exitQuoteInterval/2), b.st.position.Slot+min(observationLagSlots(), adaptorMaxReportAgeSlots)/2) {
 		return false
 	}
 	return lastAttempt.IsZero() || lastAttempt.After(now) || now.Sub(lastAttempt) >= exitQuoteRetryInterval
