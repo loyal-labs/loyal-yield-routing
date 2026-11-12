@@ -109,7 +109,7 @@ def metrics(family):
     return found
 
 
-def journal_failures(unit, cursor):
+def journal_failures(unit, cursor, stopping_invocation=None):
     lines = command('journalctl', '-u', unit, '--after-cursor', cursor, '--no-pager', '-o', 'json')
     failures = []
     for line in lines.splitlines():
@@ -124,6 +124,11 @@ def journal_failures(unit, cursor):
             event = {}
         if not isinstance(event, dict):
             event = {}
+        # Older web releases logged normal metrics shutdown as an error.
+        if (unit == 'loyal-web.service' and stopping_invocation
+                and entry.get('_SYSTEMD_INVOCATION_ID') == stopping_invocation
+                and event.get('msg') == 'loyal-web metrics' and event.get('error') == 'context canceled'):
+            continue
         name = str(event.get('msg', event.get('message', '')))
         if (str(event.get('level', '')).lower() in ('error', 'fatal', 'panic')
                 or name in ('backyard_operation_failed_after_send', 'backyard_worker_exit', 'backyard_latched')
@@ -134,7 +139,7 @@ def journal_failures(unit, cursor):
     return failures
 
 
-def snapshot(family, since, cursor=None, allow_startup=False):
+def snapshot(family, since, cursor=None, allow_startup=False, stopping_invocation=None):
     unit = f'loyal-{family}.service'
     props = command('systemctl', 'show', unit, '--property=ActiveState,SubState,NRestarts,MainPID,InvocationID')
     state = dict(line.split('=', 1) for line in props.splitlines() if '=' in line)
@@ -142,7 +147,8 @@ def snapshot(family, since, cursor=None, allow_startup=False):
     require(int(state['NRestarts']) == 0, f'{unit} restarted')
     require(int(state['MainPID']) > 0 and bool(state['InvocationID']), 'missing process identity')
     if cursor:
-        require(not journal_failures(unit, cursor), f'{unit}: error/exit since preflight; inspect its journal')
+        stopped = stopping_invocation if state['InvocationID'] != stopping_invocation else None
+        require(not journal_failures(unit, cursor, stopped), f'{unit}: error/exit since preflight; inspect its journal')
     raw_cursor = command('journalctl', '-u', unit, '-n', '0', '--show-cursor', '--no-pager')
     current_cursor = re.search(r'^-- cursor: (.+)$', raw_cursor, re.M)
     require(current_cursor is not None, 'journal cursor is unavailable')
@@ -211,7 +217,8 @@ def watch(family, sha, baseline, seconds=120):
     previous = None
     fresh = False
     while True:
-        current = snapshot(family, before['at'], before['cursor'], allow_startup=observing is None)
+        current = snapshot(family, before['at'], before['cursor'], allow_startup=observing is None,
+                           stopping_invocation=before['invocation'])
         fresh = check_sample(before, current, sha, observing if observing is not None else started, previous) or fresh
         previous = current
         if observing is None:
