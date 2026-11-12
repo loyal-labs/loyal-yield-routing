@@ -22,7 +22,9 @@ merging and the first production rollout need the owner's authorization.
 3. Store the independently verified host public key in environment secret
    `LOYAL_WORKERS_KNOWN_HOSTS`, in OpenSSH known_hosts format, using the hostname
    or IP in environment variable `LOYAL_WORKERS_HOST`. Host key checking is
-   strict; a changed/missing key fails before deployment.
+   strict; a changed/missing key fails before deployment. Configure the private
+   network below before enabling CI; `LOYAL_WORKERS_HOST` remains the public
+   endpoint, while SSH uses the tunnel and pins that endpoint with `HostKeyAlias`.
 4. Set repository variable `NEXT_PUBLIC_PRIVY_APP_ID`. Copy the production
    application's other public build settings into the matching repository
    variables listed in `.github/workflows/web-go.yml`; their allowlist lives in
@@ -48,7 +50,64 @@ merging and the first production rollout need the owner's authorization.
    `Read-only preflight passed for all services. No deployment performed.`
 7. Run `Production rollout` on `main`, then inspect every service's verification
    line in the GitHub job summary. Subsequent runtime changes merged into main
-   run it automatically. Documentation-only commits do not trigger a rollout.
+   run it automatically. Changes outside the workflow's runtime/deployment
+   paths do not trigger a rollout.
+
+## Private CI network
+
+Keep Hetzner's TCP 22 source restriction. Add a separate inbound **UDP 51820**
+rule from `0.0.0.0/0` to the workers firewall. Standard GitHub runners have
+changing source addresses; WireGuard authenticates the dedicated peer before
+accepting tunnel traffic. Only the protected production job receives its key.
+
+The host uses `10.203.0.1/32`, the CI peer `10.203.0.2/32`, and the interface is
+`loyal-ci`. Check for route/address and UDP port conflicts before installation.
+No default route, DNS change, NAT or forwarding is needed. The dedicated
+`inet loyal_ci` nftables table permits the peer to reach SSH and ping on the
+tunnel address, drops every other tunnel input, and drops all forwarded tunnel
+traffic. It does not change Docker's rules or the public SSH restriction.
+
+One-time host provisioning, with owner authorization:
+
+1. Install `wireguard-tools` and `nftables`. Generate separate host and CI keys
+   with `wg genkey`, holding private values in memory. Derive public keys using
+   `wg pubkey` on stdin. Send the CI private key directly to
+   `gh secret set LOYAL_WORKERS_WIREGUARD_KEY --env production` on stdin; never
+   save it in a config file or pass it as an argument. Set production variable
+   `LOYAL_WORKERS_WIREGUARD_PUBLIC_KEY` to the host's public key.
+2. Encrypt the host private key on the host by piping it to
+   `systemd-creds encrypt --name=private-key --with-key=host - /etc/credstore.encrypted/loyal-ci-wireguard.cred`.
+   Set mode `0600`. The host private key never leaves the host.
+3. Install `ci-network/loyal-ci.conf` as `/etc/wireguard/loyal-ci.conf`, replacing
+   `CI_PUBLIC_KEY` with the CI public key, and install `ci-network/loyal-ci.nft`
+   as `/etc/wireguard/loyal-ci.nft`, both mode `0600`. Install
+   `ci-network/credentials.conf` under
+   `/etc/systemd/system/wg-quick@loyal-ci.service.d/credentials.conf`.
+   `LoadCredentialEncrypted` decrypts the host key into systemd's runtime
+   credential directory; the interface reads it there, never from a plaintext
+   persistent config. `SaveConfig` must remain disabled.
+4. Run `nft --check -f /etc/wireguard/loyal-ci.nft`, then
+   `systemctl daemon-reload` and `systemctl enable --now wg-quick@loyal-ci`.
+   Verify `systemctl is-active wg-quick@loyal-ci`, `wg show loyal-ci public-key`,
+   `wg show loyal-ci allowed-ips` and `nft list table inet loyal_ci`.
+   Never use `wg showconf` or `wg show ... dump` in logs; those expose private keys.
+5. Run the production workflow. `Private workers tunnel connected` proves the
+   authenticated tunnel works. The following SSH preflight also verifies the
+   existing host-key pin and deployment identity. A tunnel timeout means UDP
+   access, key pairing or the host unit is wrong; it happens before activation.
+
+The packaged `wg-quick@loyal-ci` unit restores the interface at boot and removes
+its firewall table after a stop or failed start. CI removes its interface after
+every run, including failures. Rotate the CI peer and its GitHub secret together
+while no production job is active. Disable access with
+`systemctl disable --now wg-quick@loyal-ci` and remove the UDP rule; existing
+public SSH access remains available. Worker signing and database credentials
+are not part of this network setup.
+
+`sudo bash scripts/ci-worker-network_test.sh` verifies real handshakes, SSH
+access, blocked ports/forwarding and failed-connection cleanup in temporary
+network namespaces using generated test keys. It needs Linux, WireGuard,
+nftables and Python; CI runs it without production credentials.
 
 ## What the gates mean
 

@@ -96,6 +96,16 @@ jobs:
           cd "$LOYAL_DEPLOY_ARTIFACT_DIR"
           sha256sum -c workers-SHA256SUMS web-SHA256SUMS realtime-SHA256SUMS
           chmod 0555 loyal-*
+      - name: Install private network tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends wireguard-tools
+      - name: Connect the private workers network
+        env:
+          DEPLOY_HOST: ${{ vars.LOYAL_WORKERS_HOST }}
+          WG_PUBLIC_KEY: ${{ vars.LOYAL_WORKERS_WIREGUARD_PUBLIC_KEY }}
+          WG_PRIVATE_KEY: ${{ secrets.LOYAL_WORKERS_WIREGUARD_KEY }}
+        run: bash scripts/ci-worker-network.sh up
       - name: Configure the production SSH identity
         env:
           DEPLOY_KEY: ${{ secrets.LOYAL_WORKERS_DEPLOY_KEY }}
@@ -111,7 +121,7 @@ jobs:
           umask 077
           mkdir -p "$HOME/.ssh"
           printf '%s\n' "$KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
-          printf 'Host loyal-workers\n  HostName %s\n  User root\n  BatchMode yes\n  StrictHostKeyChecking yes\n  ConnectTimeout 10\n  ServerAliveInterval 15\n  ServerAliveCountMax 3\n' "$DEPLOY_HOST" > "$HOME/.ssh/config"
+          printf 'Host loyal-workers\n  HostName 10.203.0.1\n  HostKeyAlias %s\n  User root\n  BatchMode yes\n  StrictHostKeyChecking yes\n  ConnectTimeout 10\n  ServerAliveInterval 15\n  ServerAliveCountMax 3\n' "$DEPLOY_HOST" > "$HOME/.ssh/config"
           eval "$(ssh-agent -s)" >/dev/null
           printf '%s\n' "$DEPLOY_KEY" | ssh-add - >/dev/null 2>&1
           printf 'SSH_AUTH_SOCK=%s\nSSH_AGENT_PID=%s\n' "$SSH_AUTH_SOCK" "$SSH_AGENT_PID" >> "$GITHUB_ENV"
@@ -120,5 +130,6 @@ jobs:
       - name: Remove deployment access
         if: always()
         run: |
+          trap 'bash scripts/ci-worker-network.sh down' EXIT
           if [ -n "${SSH_AGENT_PID:-}" ]; then ssh-agent -k >/dev/null; fi
           rm -f "$HOME/.ssh/config" "$HOME/.ssh/known_hosts"

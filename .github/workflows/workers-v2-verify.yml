@@ -37,7 +37,9 @@ jobs:
       - name: Install offline alert validators
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends prometheus prometheus-alertmanager python3-yaml
+          sudo apt-get install -y --no-install-recommends prometheus prometheus-alertmanager python3-yaml wireguard-tools nftables
+      - name: Private deployment network isolation and cleanup
+        run: sudo bash scripts/ci-worker-network_test.sh
       - name: Verify paging decisions, routing and Telegram rendering
         working-directory: deploy/hetzner/monitoring
         run: |
@@ -67,7 +69,7 @@ jobs:
           else
             echo rust=false >> "$GITHUB_OUTPUT"
           fi
-          if test "$GITHUB_EVENT_NAME" != pull_request || git diff --name-only "$BASE" HEAD | grep -qE '^(go/workers/|migrations/|deploy/hetzner/|docs/evidence/backyard-rwa-go/|scripts/(.*rollout.*|deploy-workers\.sh|ci-tree-key\.sh|activate-vaults_test\.py|verify-workers-v2\.sh|check-go-ts-refs\.sh|build-svm-fixtures\.sh|prepare-vault-withdrawal-test-db\.sh)$|\.github/workflows/(workers-v2-verify|production)\.yml$|Cargo\.(toml|lock)$|rust-toolchain\.toml$|crates/(squads-test-harness|mock-yield-protocols-program|loyal-actions|loyal-solana-env|loyal-hub-abi|loyal-voltr-rwa-nav-adaptor)/)'; then
+          if test "$GITHUB_EVENT_NAME" != pull_request || git diff --name-only "$BASE" HEAD | grep -qE '^(go/workers/|migrations/|deploy/hetzner/|docs/evidence/backyard-rwa-go/|scripts/(.*rollout.*|ci-worker-network.*|deploy-workers\.sh|ci-tree-key\.sh|activate-vaults_test\.py|verify-workers-v2\.sh|check-go-ts-refs\.sh|build-svm-fixtures\.sh|prepare-vault-withdrawal-test-db\.sh)$|\.github/workflows/(workers-v2-verify|production)\.yml$|Cargo\.(toml|lock)$|rust-toolchain\.toml$|crates/(squads-test-harness|mock-yield-protocols-program|loyal-actions|loyal-solana-env|loyal-hub-abi|loyal-voltr-rwa-nav-adaptor)/)'; then
             echo workers=true >> "$GITHUB_OUTPUT"
           else
             echo workers=false >> "$GITHUB_OUTPUT"
