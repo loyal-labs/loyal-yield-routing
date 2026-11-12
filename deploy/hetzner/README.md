@@ -168,7 +168,7 @@ a fresh `/tmp/loyal-monitoring.*` dir and runs `install-rules.sh <sha>
 2. If the uploaded `loyal.rules.yml` is byte-identical to the host's, says
    so and stops.
 3. Otherwise runs `promtool check rules loyal.rules.yml`, `promtool test
-   rules loyal.rules.test.yml` and `python3 verify-alert-messages.py` in the
+   rules loyal*.rules.test.yml` and `python3 verify-alert-messages.py` in the
    upload; any failure leaves the host file as it was.
 4. Replaces the file atomically, runs `systemctl reload prometheus` and
    reads Prometheus on `127.0.0.1:9090`: a successful config reload after
@@ -799,7 +799,7 @@ The alerts are:
 | Alert | Fires when |
 |---|---|
 | LoyalFamilyProgressStale | No completed work for about 3m (observer), 10m (autodeposit, fleet) or 30m (multiply, lookup, backyard). Restarts do not reset this clock |
-| LoyalFamilyFailing | At least 3 failed-attempt samples with one code in 15m, sustained for 5m; then held until the condition stays clear for 30m. Selector evaluations are not distinct transactions |
+| LoyalFamilyFailing | Excludes the two vaults; other families page at least 3 failed-attempt samples with one code in 15m, sustained for 5m; then held until the condition stays clear for 30m. Selector evaluations are not distinct transactions |
 | LoyalBackyardWithdrawalAttention | Persisted withdrawal attention for a stable family/route, sustained for 1m |
 | LoyalBackyardWithdrawalHealthUnavailable | Observation older than 5m or missing health metrics, sustained for 1m |
 | LoyalBackyardNAVReportStale | No NAV report landed for 3h on a route whose vault holds value (an empty vault exports no series), or no report time exported at all, sustained for 5m |
@@ -807,7 +807,7 @@ The alerts are:
 | LoyalFeePayerLow | A fee payer has been below 0.55 SOL for 5m (warning) |
 | LoyalFeePayerExhausted | A fee payer is below 0.05 SOL: Autodeposit starts nothing. Alertmanager inhibits Autodeposit's LoyalFamilyProgressStale on the same unit while it fires, so the one cause pages once |
 | LoyalLaneStalled | A lane (lookup planner or writer; fleet planner, position sweep or executor) has had no tick finish without error for 15m. Its clock starts when the lane starts; transient errors that clear do not page. One opportunity or submission failing is recorded on its row and does not fail the executor tick |
-| LoyalInflightStuck | Work in flight with no landed or failed outcome for 3m, twice the blockhash expiry |
+| LoyalInflightStuck | Work in flight without completion for 3m, scoped to service/instance; Backyard failures do not count as completion |
 | LoyalWorkerDown | A Go unit that systemd is running does not serve `/metrics` for 2m |
 | LoyalUnitDown | Any `loyal-*` unit is `failed`, or stuck `activating`, for 2m |
 | LoyalUnitRestartLoop | Any `loyal-*` unit restarts more than 3 times in 15m |
@@ -815,7 +815,7 @@ The alerts are:
 | LoyalDbVolumeLow | `/srv/postgresql` on loyal-db-primary has under 100 GiB free for 5m |
 | LoyalDbWalLarge | `pg_wal` on loyal-db-primary is over 60 GB for 5m |
 | LoyalDbMetricsStale | The pg_wal textfile has not been rewritten for 10m, or `loyal_db_pg_wal_bytes` is gone, so LoyalDbWalLarge is blind |
-| Watchdog | Always firing. It goes to the heartbeat receiver, and the external switch pages when it stops |
+| Watchdog | Always firing, but the heartbeat receiver is empty as of 2026-11-12. Whole-host outage coverage requires an external receiver |
 
 Known Autodeposit gaps:
 
@@ -833,7 +833,7 @@ Check the monitoring config with these commands:
 ```sh
 promtool check config prometheus.yml   # with the rule/target paths pointed here
 promtool check rules monitoring/loyal.rules.yml
-cd monitoring && promtool test rules loyal.rules.test.yml
+cd monitoring && promtool test rules loyal*.rules.test.yml
 amtool check-config monitoring/alertmanager.yml
 python3 monitoring/verify-alert-messages.py  # requires python3-yaml and amtool
 systemd-analyze verify deploy/hetzner/systemd/*.service   # Linux only
@@ -869,8 +869,8 @@ health. It grants no transaction authority. Alerts group by stable family and
 route, not changing causes or retry IDs. The 1m debounce absorbs brief state
 transitions; an ongoing incident repeats after 4h. Ordinary cooldown waits and
 the typed `selector_finish_current_work_first` deferral are not failures.
-Unknown selector failures remain covered by `LoyalFamilyFailing`; its existing
-threshold math is unchanged.
+Selector failures remain diagnostic. Vaults page on persistent management or
+financial impact under the [vault alert policy](../../docs/vault-alerts.md).
 
 1. Check the alert's route, the worker release and its logs. Read the persisted
    withdrawal health and its observation time for the canonical vault, program
@@ -932,22 +932,21 @@ One prod Helius project serves Loyal's workers and robinx. Billing is 20 credits
 
 ### Backyard alert response
 
-Every checked-in rule has a signal description, impact, action and recovery
-check. Telegram shows the rule and available stable code, service, lane or
-route. Distinct causes/resources use separate groups to avoid combining
-unrelated failures in one long message. Failure detection thresholds and the five-minute firing delay are unchanged.
-`LoyalFamilyFailing` now uses a 30-minute recovery hold: bursts within that
-window remain one incident instead of resetting the four-hour reminder timer.
-A firing incident can therefore include a recovering worker. The hold delays
-resolution, not the first page. Missing samples also count as a clear condition,
-so operators must check fresh telemetry and the independent down/stale alerts
-before declaring recovery. Receivers, four-hour reminders and inhibition rules
-are unchanged. Withdrawal-attention, in-flight and service-down rules do not
-use this additional delay.
+The [vault alert policy and activation runbook](../../docs/vault-alerts.md)
+replaces raw warning/failure-count paging with holder-value, loan-risk and
+management-outcome alerts. It includes the six legacy ClickStack alert IDs,
+telemetry rollout prerequisites and remaining external-heartbeat gap.
+
+Every rule has a signal description, impact, action and recovery check. Telegram
+names the affected vault and available service, lane or route. Generic
+`LoyalFamilyFailing` and its thirty-minute recovery hold apply to other families;
+Backyard retry bursts are diagnostic. Critical financial conditions retain their
+own pages, while worker-down and recovery-latch pages suppress secondary
+freshness symptoms for that service. Four-hour reminders remain unchanged.
 
 | Alert | First checks | Recovery evidence |
 |---|---|---|
-| `LoyalFamilyFailing` | Exact code, first event, current release and dependency | Fresh attempts complete; not an expired counter window |
+| `LoyalFamilyFailing` (other families) | Exact code, first event, current release and dependency | Fresh attempts complete; not an expired counter window |
 | `LoyalFamilyProgressStale` | Process/metrics, oldest operation, recovery latch, RPC/DB | Actual completions with advancing timestamps |
 | `LoyalInflightStuck` | Persisted status, signature, last-valid height and finality | Reconciled terminal outcome; never blind resend |
 | `LoyalLaneStalled` | Named lane's oldest work and dependency errors | That lane completes work, not a healthy sibling |

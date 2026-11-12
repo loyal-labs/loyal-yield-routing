@@ -85,7 +85,7 @@ cd "$monitoring"
 checked=$(promtool check rules loyal.rules.yml 2>&1) || fail "promtool check rules: $checked; $rules not changed"
 rule_count=$(printf '%s\n' "$checked" | sed -n 's/.*SUCCESS: \([0-9][0-9]*\) rules found.*/\1/p')
 [ -n "$rule_count" ] || fail "promtool printed no rule count; $rules not changed"
-promtool test rules loyal.rules.test.yml || fail "promtool test rules failed; $rules not changed"
+promtool test rules loyal*.rules.test.yml || fail "promtool test rules failed; $rules not changed"
 python3 verify-alert-messages.py || fail "verify-alert-messages.py failed; $rules not changed"
 cp -p "$rules" previous.rules.yml
 install -m 0644 -o root -g root loyal.rules.yml "$rules.tmp"

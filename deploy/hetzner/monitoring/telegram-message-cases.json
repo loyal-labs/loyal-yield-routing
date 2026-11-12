@@ -52,11 +52,11 @@
       "severity": "page"
     },
     "annotations": {
-      "action": "Read the current scoped withdrawal-health reason and timestamp. Compare pending demand, available cash and active operation with confirmed chain state. Review the specific guard; never clear latches or grant full-debt repayment just to clear the alert.",
+      "summary": "Vault withdrawal needs operator attention on test-route",
       "impact": "Pending vault withdrawals require operator attention; normal cooldown alone does not trigger this alert.",
-      "recovery": "Verify a fresh assessment showing the blocker removed or funding progress resumed. Missing metrics can expire an alert and do not prove recovery; verify each user payment separately.",
-      "summary": "Earn MAX withdrawal needs operator attention on test-route",
-      "trigger": "The persisted withdrawal-attention state remained active for 1 minute."
+      "action": "Read the current scoped withdrawal-health reason and timestamp. Compare pending demand, available cash and active operation with confirmed chain state. Review the specific guard; never clear latches or grant full-debt repayment just to clear the alert.",
+      "trigger": "The persisted withdrawal-attention state remained active for 1 minute.",
+      "recovery": "Verify a fresh assessment showing the blocker removed or funding progress resumed. Missing metrics can expire an alert and do not prove recovery; verify each user payment separately."
     }
   },
   {
@@ -67,11 +67,11 @@
       "severity": "page"
     },
     "annotations": {
-      "action": "Check the Backyard metrics endpoint, coherent observation timestamp, and database read/write errors. Restore the missing evidence path, then verify a new durable assessment; do not infer healthy withdrawals from a successful scrape alone.",
+      "summary": "Vault withdrawal health is unavailable",
       "impact": "Current withdrawal status cannot be established. Previously blocked withdrawals must not be treated as recovered.",
-      "recovery": "Verify both health metrics exist and the observation advances from fresh confirmed evidence. A resolved freshness alert does not establish claimability or payment.",
-      "summary": "Earn MAX withdrawal health is unavailable",
-      "trigger": "Required withdrawal-health metrics are missing or the observation is over 5 minutes old; condition persisted for 1 minute."
+      "action": "Check the Backyard metrics endpoint, coherent observation timestamp, and database read/write errors. Restore the missing evidence path, then verify a new durable assessment; do not infer healthy withdrawals from a successful scrape alone.",
+      "trigger": "Required withdrawal-health metrics are missing or the observation is over 5 minutes old; condition persisted for 1 minute.",
+      "recovery": "Verify both health metrics exist and the observation advances from fresh confirmed evidence. A resolved freshness alert does not establish claimability or payment."
     }
   },
   {
@@ -82,11 +82,11 @@
       "severity": "page"
     },
     "annotations": {
-      "action": "Read the route's latest REPORT_NAV operation and any manual-recovery latch or held decision that stops reports. Check RPC and database health, then verify the next report reconciles on chain; do not clear a latch or force a report just to silence the alert.",
+      "summary": "Vault NAV report is overdue",
+      "trigger": "A vault that holds value has had no NAV report land in over 3 hours (routine cadence is hourly), or no report time is exported at all; condition persisted for 5 minutes.",
       "impact": "The vault's reported NAV is stale, so deposits and withdrawals may be priced from an old value.",
-      "recovery": "Verify a new REPORT_NAV reconciled and the exported report time advanced. A vanished series is not proof that reports resumed.",
-      "summary": "Earn MAX NAV report is overdue",
-      "trigger": "A vault that holds value has had no NAV report land in over 3 hours (routine cadence is hourly), or no report time is exported at all; condition persisted for 5 minutes."
+      "action": "Read the route's latest REPORT_NAV operation and any manual-recovery latch or held decision that stops reports. Check RPC and database health, then verify the next report reconciles on chain; do not clear a latch or force a report just to silence the alert.",
+      "recovery": "Verify a new REPORT_NAV reconciled and the exported report time advanced. A vanished series is not proof that reports resumed."
     }
   },
   {
@@ -211,11 +211,11 @@
       "unit": "loyal-backyard.service"
     },
     "annotations": {
-      "summary": "Earn Max rwa lane AUTO/AUTO/wYLDS term debt is under 2 days from maturity",
-      "trigger": "The lane's term debt is under 2 days from maturity: its keep-alive borrow (inside 3 days) has not landed.",
-      "impact": "Past maturity KLend refuses new borrowing on the lane and its debt becomes liquidatable, ramping to the whole debt over 3 days.",
-      "action": "Read the lane's loyal_backyard_hold reason (no_room under rule term_keepalive: the debt reserve has no room for the keep-alive borrow) and the 'leverage decision' line's term_days. Under 1 day without room the worker repays the debt by itself (debt_zero); if that step holds no_room too, see LoyalBackyardSafetyStepNoRoom. Do not extend or roll the term by hand.",
-      "recovery": "A keep-alive or leverage_up borrow lands and the lane's days to maturity read about 30, or the lane's debt is repaid and the series is gone."
+      "summary": "Term-loan repayment is overdue on AUTO/AUTO/wYLDS",
+      "trigger": "Debt remains under 24 hours from maturity for 15 minutes, after automatic repayment becomes due when renewal is unavailable.",
+      "impact": "The automatic safety action has not cleared the debt. At maturity the loan becomes eligible for liquidation.",
+      "action": "Check whether renewal or debt repayment is landing, the current debt balance and any blocked safety step. Verify in-flight signatures before intervening; do not manually roll the loan.",
+      "recovery": "Verify a fresh observation proving zero debt or a renewed maturity. Missing telemetry is not repayment."
     }
   },
   {
@@ -227,11 +227,11 @@
       "severity": "page"
     },
     "annotations": {
-      "summary": "Earn Max rwa lane AUTO/AUTO/PYUSD cannot take its hard_ltv step: no room on chain",
-      "trigger": "For 10 minutes every tick's hard_ltv step on the lane held no_room: the chain has no room for the move its target wants.",
-      "impact": "The lane stays above its hard LTV and nearer liquidation.",
-      "action": "Read the worker's hourly 'no_room lane=... rule=...' line and the HOLD rows' cause (step_no_withdraw_room: the obligation cannot release collateral without outside cash; utilization: the debt reserve is full). Bring outside cash or wait for the reserve; do not raise caps or bypass the step.",
-      "recovery": "A step of the rule lands for the lane, or its target no longer needs the move; the series stops increasing."
+      "summary": "A required loan-safety action is blocked on AUTO/AUTO/PYUSD",
+      "trigger": "A hard-LTV or maturity repayment encountered insufficient room and the lane remains held for that reason for 2 minutes.",
+      "impact": "Automatic debt reduction cannot protect the position while the liquidity or collateral constraint persists.",
+      "action": "Inspect the current no_room cause, debt balance and executable repayment path. Check any in-flight signature; do not raise risk limits or bypass the guard.",
+      "recovery": "Confirm the safety action landed or a fresh decision no longer requires it. Historical failure counters alone do not keep this alert open."
     }
   },
   {
@@ -252,7 +252,8 @@
     "labels": {
       "alertname": "LoyalUnitDown",
       "name": "loyal-backyard.service",
-      "severity": "page"
+      "severity": "page",
+      "unit": "loyal-backyard.service"
     },
     "annotations": {
       "action": "Check the intended service state and the first startup error in its journal, including credentials, executable and resource failures. Restore only an intended active service using the runbook; never revive a retired worker.",
@@ -266,7 +267,8 @@
     "labels": {
       "alertname": "LoyalUnitRestartLoop",
       "name": "loyal-backyard.service",
-      "severity": "page"
+      "severity": "page",
+      "unit": "loyal-backyard.service"
     },
     "annotations": {
       "action": "Inspect the first exit cause, OOM/resource events, startup configuration and dependency failures. Check signed/in-flight state before remediation; stop repeated blind restarts and follow the release rollback/recovery runbook.",
@@ -439,6 +441,134 @@
       "recovery": "Verify the external receiver is receiving current heartbeats and that normal worker alert delivery works.",
       "summary": "Alerting pipeline heartbeat",
       "trigger": "Continuous heartbeat; the external receiver must detect when it stops."
+    }
+  },
+  {
+    "labels": {
+      "alertname": "LoyalVaultUnavailable",
+      "severity": "page",
+      "vault": "rwa",
+      "unit": "loyal-earn-max.service",
+      "lane": "AUTO/AUTO/wYLDS"
+    },
+    "annotations": {
+      "summary": "Vault worker is unavailable",
+      "trigger": "An expected vault worker has no successful metrics scrape for 2 minutes, including a stopped service or missing scrape target.",
+      "impact": "Deposits, withdrawals and automatic loan protection may no longer be managed.",
+      "action": "Check the named service, its expected release and first failure. Inspect unresolved signed operations before restarting; restore fresh vault observations.",
+      "recovery": "Verify fresh observations and successful vault work after the service returns; a metrics endpoint alone is not sufficient."
+    }
+  },
+  {
+    "labels": {
+      "alertname": "LoyalBackyardRecoveryRequired",
+      "severity": "page",
+      "vault": "looping",
+      "unit": "loyal-backyard.service",
+      "lane": "AUTO/AUTO/wYLDS"
+    },
+    "annotations": {
+      "summary": "Vault management is paused for operator recovery",
+      "trigger": "The persisted manual-recovery latch has remained active for 1 minute.",
+      "impact": "The worker has stopped managing the vault, including automatic protection of any outstanding loans.",
+      "action": "Read the recovery reason and operation journal, reconcile chain effects, and resolve the underlying fault before clearing the latch.",
+      "recovery": "Verify the latch was explicitly cleared after safe reconciliation and fresh vault management resumed."
+    }
+  },
+  {
+    "labels": {
+      "alertname": "LoyalBackyardValuationUnavailable",
+      "severity": "page",
+      "vault": "rwa",
+      "unit": "loyal-earn-max.service",
+      "lane": "AUTO/AUTO/wYLDS"
+    },
+    "annotations": {
+      "summary": "Current holder value cannot be established",
+      "trigger": "No coherent certified valuation for over 10 minutes, sustained for 5 minutes; a worker that never publishes one alerts after 5 minutes.",
+      "impact": "The loss detector cannot establish current holder value. A healthy process or an old NAV report does not establish that funds are safe.",
+      "action": "Check missing or expired exit quotes, reserve observations and NAV evidence. Restore a coherent valuation; do not substitute zero or an old report for missing value.",
+      "recovery": "Verify the certified valuation timestamp advances from fresh evidence and review the first new per-share value."
+    }
+  },
+  {
+    "labels": {
+      "alertname": "LoyalBackyardValueFalling",
+      "severity": "page",
+      "vault": "rwa",
+      "unit": "loyal-earn-max.service",
+      "lane": "AUTO/AUTO/wYLDS"
+    },
+    "annotations": {
+      "summary": "Estimated holder value per share has fallen",
+      "trigger": "Certified value per share is more than 0.2% below a sustained five-minute value in the previous six hours, for 3 minutes.",
+      "impact": "Holders may be losing value through execution costs, market moves or fees. Normal proportional deposits and withdrawals do not cause this signal; it is not proof of realized loss.",
+      "action": "Compare the first decline with reconciled sales, debt credits, fees and collateral prices. Check whether further costly operations are planned and investigate their cause.",
+      "recovery": "Verify fresh per-share observations are stable and the cause is addressed. Leaving the comparison window does not recover earlier losses."
+    }
+  },
+  {
+    "labels": {
+      "alertname": "LoyalBackyardDebtSafetyRisk",
+      "severity": "page",
+      "vault": "rwa",
+      "unit": "loyal-earn-max.service",
+      "lane": "AUTO/AUTO/wYLDS"
+    },
+    "annotations": {
+      "summary": "Automatic debt reduction has not restored the safety margin on AUTO/AUTO/wYLDS",
+      "trigger": "The last observed LTV remains at or above the worker safety threshold for 2 minutes while debt is outstanding.",
+      "impact": "The position is closer to liquidation than the configured safety margin permits.",
+      "action": "Inspect current LTV, debt, collateral prices and the repayment operation. Check why automatic reduction is not landing; verify signatures before any intervention.",
+      "recovery": "Verify a fresh observation below the safety threshold or explicitly repaid debt. A missing lane series is not evidence of safety."
+    }
+  },
+  {
+    "labels": {
+      "alertname": "LoyalBackyardLiquidatable",
+      "severity": "page",
+      "vault": "rwa",
+      "unit": "loyal-earn-max.service",
+      "lane": "AUTO/AUTO/wYLDS"
+    },
+    "annotations": {
+      "summary": "Loan has reached its liquidation threshold on AUTO/AUTO/wYLDS",
+      "trigger": "The last coherent observation has LTV at or above the liquidation threshold and still shows outstanding debt.",
+      "impact": "Collateral can be liquidated and holders can lose money now.",
+      "action": "Immediately inspect confirmed debt and collateral, current prices and in-flight protective repayments. Coordinate recovery without duplicating a signed transaction.",
+      "recovery": "Verify confirmed debt repayment or a restored liquidation margin from fresh evidence. Missing telemetry does not clear the known exposure."
+    }
+  },
+  {
+    "labels": {
+      "alertname": "LoyalBackyardDebtRiskUnknown",
+      "severity": "page",
+      "vault": "rwa",
+      "unit": "loyal-earn-max.service",
+      "lane": "AUTO/AUTO/wYLDS"
+    },
+    "annotations": {
+      "summary": "Loan risk cannot be refreshed on AUTO/AUTO/wYLDS",
+      "trigger": "An outstanding loan has had no coherent debt and LTV observation for over 5 minutes, sustained for 5 minutes.",
+      "impact": "Automatic protection is operating without a current view of this loan; the last healthy LTV may no longer apply.",
+      "action": "Restore reserve and obligation observations and check the current position directly. Confirm the protection loop resumes with fresh chain evidence.",
+      "recovery": "Verify a fresh risk observation or an explicit observation of zero debt; disappearing metrics do not prove recovery."
+    }
+  },
+  {
+    "labels": {
+      "alertname": "LoyalBackyardTermDebtExpired",
+      "severity": "page",
+      "vault": "rwa",
+      "unit": "loyal-earn-max.service",
+      "lane": "AUTO/AUTO/wYLDS"
+    },
+    "annotations": {
+      "summary": "Unpaid term loan has matured on AUTO/AUTO/wYLDS",
+      "trigger": "The observed term has expired and the lane still has outstanding debt.",
+      "impact": "The debt is eligible for maturity-based liquidation even if its price-based LTV looks healthy.",
+      "action": "Immediately inspect the confirmed debt, repayment attempts and blocked safety action. Reconcile any in-flight signature before taking recovery action.",
+      "recovery": "Verify fresh evidence of zero debt or an on-chain renewed maturity. Missing telemetry is not repayment."
     }
   }
 ]
