@@ -1,5 +1,6 @@
 name: Web journey contracts
 on:
+  workflow_call:
   pull_request:
     paths:
       - "web/apps/web/**"
@@ -18,7 +19,7 @@ defaults:
 permissions:
   contents: read
 concurrency:
-  group: web-journeys-${{ github.ref }}
+  group: web-journeys-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 jobs:
   production-read-only:

@@ -80,6 +80,11 @@ A shared lock on the old family key also excludes legacy combined workers.
 
 ## Release (Backyard, Loyal Earn MAX, retail and observer)
 
+For verified main deployments across all nine services, see
+[automatic production rollouts](automatic-rollouts.md). That runbook covers
+initial activation, the CI gates and recovery; the commands below remain the
+manual deployment procedure.
+
 Each family deploys with one command from a Mac clone, and only with the
 owner's go-ahead (implementation lanes never deploy):
 

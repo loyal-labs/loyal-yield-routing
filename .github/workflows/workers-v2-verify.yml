@@ -1,35 +1,8 @@
 name: Workers v2 branch verification
 
 on:
+  workflow_call:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - go/workers/**
-      - scripts/verify-workers-v2.sh
-      - scripts/activate-vaults_test.py
-      - deploy/hetzner/activate.sh
-      - scripts/check-go-ts-refs.sh
-      - scripts/build-svm-fixtures.sh
-      - scripts/prepare-vault-withdrawal-test-db.sh
-      - scripts/clickstack-*
-      - scripts/fixtures/clickstack-*
-      - deploy/hetzner/monitoring/**
-      - migrations/**
-      # The fixtures the backyard Go tests read.
-      - docs/evidence/backyard-rwa-go/**
-      - .github/workflows/workers-v2-verify.yml
-      # The Rust workspace the connected SVM fixtures build in, and the
-      # crates they build with their workspace dependencies.
-      - Cargo.toml
-      - Cargo.lock
-      - rust-toolchain.toml
-      - crates/squads-test-harness/**
-      - crates/mock-yield-protocols-program/**
-      - crates/loyal-actions/**
-      - crates/loyal-solana-env/**
-      - crates/loyal-hub-abi/**
-      - crates/loyal-voltr-rwa-nav-adaptor/**
 
   # Every PR reports the required checks; the changes job skips them when
   # no workers path changed.
@@ -59,6 +32,8 @@ jobs:
           persist-credentials: false
       - run: python3 scripts/clickstack-vault-alerts_test.py
       - run: python3 scripts/clickstack-looping-alerts_test.py
+      - name: Deployment refusals, observation and rollback
+        run: python3 -B -m unittest discover -s scripts -p '*rollout_test.py'
       - name: Install offline alert validators
         run: |
           sudo apt-get update -qq
@@ -92,7 +67,7 @@ jobs:
           else
             echo rust=false >> "$GITHUB_OUTPUT"
           fi
-          if test "$GITHUB_EVENT_NAME" != pull_request || git diff --name-only "$BASE" HEAD | grep -qE '^(go/workers/|migrations/|deploy/hetzner/activate\.sh$|docs/evidence/backyard-rwa-go/|scripts/(activate-vaults_test\.py|verify-workers-v2\.sh|check-go-ts-refs\.sh|build-svm-fixtures\.sh|prepare-vault-withdrawal-test-db\.sh)$|\.github/workflows/workers-v2-verify\.yml$|Cargo\.(toml|lock)$|rust-toolchain\.toml$|crates/(squads-test-harness|mock-yield-protocols-program|loyal-actions|loyal-solana-env|loyal-hub-abi|loyal-voltr-rwa-nav-adaptor)/)'; then
+          if test "$GITHUB_EVENT_NAME" != pull_request || git diff --name-only "$BASE" HEAD | grep -qE '^(go/workers/|migrations/|deploy/hetzner/|docs/evidence/backyard-rwa-go/|scripts/(.*rollout.*|deploy-workers\.sh|ci-tree-key\.sh|activate-vaults_test\.py|verify-workers-v2\.sh|check-go-ts-refs\.sh|build-svm-fixtures\.sh|prepare-vault-withdrawal-test-db\.sh)$|\.github/workflows/(workers-v2-verify|production)\.yml$|Cargo\.(toml|lock)$|rust-toolchain\.toml$|crates/(squads-test-harness|mock-yield-protocols-program|loyal-actions|loyal-solana-env|loyal-hub-abi|loyal-voltr-rwa-nav-adaptor)/)'; then
             echo workers=true >> "$GITHUB_OUTPUT"
           else
             echo workers=false >> "$GITHUB_OUTPUT"
@@ -205,8 +180,8 @@ jobs:
           tests="TestBridgeOutQuoteIsNotServedWithoutItsRow TestTrackerStoresEachHashFromTheStatusThatCarriedIt TestForeignInflowStoreCommitsEvidenceAndCursorTogether TestExitLiabilityUsesConfirmedReportAtEachMark TestEvmDepositRelaySignedRefusesEmbeddedWalletWhenPrivyLookupIsEmpty TestEvmDepositConcurrentPostsMakeOnePrivyCreate TestWithdrawalCostDatabaseCrossWorkerReservationAndConsentWidening TestWithdrawalCostDatabaseCoveredSaleAndObservationOrdering TestWithdrawalCostDatabaseLoaderUsesActualGenerationAndEscrow TestWithdrawalCostDatabaseSimulationDisclosureCrashRetainsExactWire TestWithdrawalCostDatabaseDisclosedFailureAndManualLandingSatisfyProductionConstraint TestWithdrawalCostDatabaseEngineSweepsWithoutDemandOrNewSigning TestWithdrawalCostDatabaseSweepTimeoutDoesNotStarveLaterWireAndJoins TestWithdrawalAttemptDatabaseFeeReservationSurvivesWideningAndRetries TestWithdrawalConsentStoreConcurrentImmutableVersions TestWithdrawalCostStatusGenerationVersionsAndUnknown TestWithdrawalCostDatabaseIdleRequesterDoesNotStallAdmittedFunding TestWithdrawalCostDatabaseSigningRefusesConsentReplacedAfterReservation TestReleaseControlDefaultDenyCASAndAdmissionFence TestEarnJoyClaimIsCompareAndSwap TestEarnJoyRunSkipsUnavailableWallet TestEarnJoyEmitsOnlyAcceptedPushes TestEarnEventsExportSeedsThenExports TestEarnEventsExportKeepsWatermarkWhenTrackFails TestEarnEventsExportPagesThroughABusyHour TestWalletPushTargetsOnlyRegisteredOneSignalSubscriptions TestEarnJoyUnregisteredWalletKeepsItsClaim"
           log="$RUNNER_TEMP/dbtests.log"
           tests="$tests TestEarnYieldJoyResumesUntilDailyCycleCompletes TestEarnMaxHealthUsesSignedStateAndReportedWorker"
-          go test -p 1 -count=1 -v -run "^($(echo $tests | tr ' ' '|'))\$" ./internal/bridge ./internal/backyard ./internal/earnmax ./internal/webapp ./internal/releasecontrol ./internal/admin | tee "$log"
-          ! grep -- '--- SKIP' "$log"
+          go test -p 1 -count=1 -v -run "^($(echo "$tests" | tr ' ' '|'))\$" ./internal/bridge ./internal/backyard ./internal/earnmax ./internal/webapp ./internal/releasecontrol ./internal/admin | tee "$log"
+          if grep -q -- '--- SKIP' "$log"; then exit 1; fi
           for t in $tests; do grep -q -- "--- PASS: $t " "$log"; done
       - name: Save Go module and build caches
         if: github.event_name == 'push'
@@ -214,6 +189,30 @@ jobs:
         with:
           path: ${{ runner.temp }}/workers-go
           key: ${{ steps.go-cache.outputs.cache-primary-key }}
+      - name: Build the deployable worker and Telegram binaries
+        if: github.event_name != 'pull_request'
+        working-directory: go/workers
+        env:
+          GOTOOLCHAIN: local
+          GOENV: 'off'
+          GOMODCACHE: ${{ runner.temp }}/workers-go/gomod
+          GOCACHE: ${{ runner.temp }}/workers-go/gobuild
+        run: |
+          make release RELEASE="sha-$GITHUB_SHA"
+          cd bin
+          sha256sum loyal-engine loyal-observer loyal-telegram > workers-SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        if: github.event_name != 'pull_request'
+        with:
+          name: production-workers-${{ github.sha }}
+          overwrite: true
+          path: |
+            go/workers/bin/loyal-engine
+            go/workers/bin/loyal-observer
+            go/workers/bin/loyal-telegram
+            go/workers/bin/workers-SHA256SUMS
+          if-no-files-found: error
+          retention-days: 7
 
   workers-image:
     needs: changes
