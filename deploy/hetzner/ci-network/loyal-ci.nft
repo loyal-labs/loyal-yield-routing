@@ -1,0 +1,16 @@
+# Own this table only; Docker and existing host rules remain independent.
+add table inet loyal_ci
+flush table inet loyal_ci
+table inet loyal_ci {
+  chain input {
+    type filter hook input priority -5; policy accept;
+    iifname "loyal-ci" ip saddr 10.203.0.2 ip daddr 10.203.0.1 tcp dport 22 accept
+    iifname "loyal-ci" ip saddr 10.203.0.2 ip daddr 10.203.0.1 icmp type echo-request accept
+    iifname "loyal-ci" drop
+  }
+  chain forward {
+    type filter hook forward priority -5; policy accept;
+    iifname "loyal-ci" drop
+    oifname "loyal-ci" drop
+  }
+}
