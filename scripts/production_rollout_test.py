@@ -93,6 +93,20 @@ class HealthTest(unittest.TestCase):
         with patch.object(health, 'command', return_value=json.dumps(entry)):
             self.assertEqual(health.journal_failures('loyal-backyard.service', 'cursor'), [])
 
+    def test_only_expected_old_web_metrics_cancellation_is_normal_shutdown(self):
+        for unit, invocation, stopping, error, failed in (
+            ('loyal-web.service', 'old', 'old', 'context canceled', False),
+            ('loyal-web.service', 'new', 'old', 'context canceled', True),
+            ('loyal-web.service', 'old', None, 'context canceled', True),
+            ('loyal-web.service', 'old', 'old', 'listen failed', True),
+            ('loyal-backyard.service', 'old', 'old', 'context canceled', True),
+        ):
+            with self.subTest(unit=unit, invocation=invocation, stopping=stopping, error=error):
+                entry = {'_SYSTEMD_INVOCATION_ID': invocation,
+                         'MESSAGE': json.dumps({'msg': 'loyal-web metrics', 'level': 'ERROR', 'error': error})}
+                with patch.object(health, 'command', return_value=json.dumps(entry)):
+                    self.assertEqual(bool(health.journal_failures(unit, 'cursor', stopping)), failed)
+
     def test_missing_and_nonfinite_metrics_cannot_satisfy_health(self):
         for raw in (b'not a metric', b'loyal_family_failed_total NaN'):
             response = unittest.mock.MagicMock()
@@ -109,11 +123,12 @@ class HealthTest(unittest.TestCase):
                 clock[0] += seconds
             with patch.object(health.time, 'time', side_effect=lambda: clock[0]), \
                  patch.object(health.time, 'sleep', side_effect=sleep), \
-                 patch.object(health, 'snapshot', side_effect=lambda *args, **kwargs: sample(NEW, 'new', clock[0])), \
+                 patch.object(health, 'snapshot', side_effect=lambda *args, **kwargs: sample(NEW, 'new', clock[0])) as snapshot, \
                  patch('sys.stdout', new_callable=io.StringIO) as out:
                 health.watch('backyard', NEW, baseline, seconds=10)
                 self.assertEqual(clock[0], 1011)
                 self.assertTrue(json.loads(out.getvalue())['fresh'])
+                self.assertTrue(all(call.kwargs['stopping_invocation'] == 'old' for call in snapshot.call_args_list))
 
     def test_startup_wait_preserves_full_observation_window_and_has_a_deadline(self):
         for delay, expected, error in ((15, 1026, None), (65, 1061, 'startup observation timed out')):
@@ -174,7 +189,7 @@ class HealthTest(unittest.TestCase):
             with self.subTest(allow=allow, lanes=lanes, failed=failed, journal=journal):
                 vault = dict(sample()['vault'], recovery=0, failed_or_held=failed)
                 with patch.object(health, 'command', side_effect=[state, '-- cursor: now']), \
-                     patch.object(health, 'journal_failures', return_value=journal), \
+                     patch.object(health, 'journal_failures', return_value=journal) as journal_probe, \
                      patch.object(health, 'metrics', return_value=lanes), \
                      patch.object(health, 'vault_snapshot', return_value=vault) as probe, \
                      patch.object(health.time, 'time', return_value=1001), \
@@ -185,11 +200,12 @@ class HealthTest(unittest.TestCase):
                      patch.object(health.os, 'access', return_value=True):
                     if error:
                         with self.assertRaisesRegex(RuntimeError, error):
-                            health.snapshot('backyard', 1000, 'cursor', allow_startup=allow)
+                            health.snapshot('backyard', 1000, 'cursor', allow_startup=allow, stopping_invocation='new')
                     else:
-                        current = health.snapshot('backyard', 1000, 'cursor', allow_startup=allow)
+                        current = health.snapshot('backyard', 1000, 'cursor', allow_startup=allow, stopping_invocation='new')
                         self.assertEqual(current['lane_observed_at'], 0)
                         probe.assert_called_once_with('backyard', 1000)
+                        journal_probe.assert_called_once_with('loyal-backyard.service', 'cursor', None)
 
     def test_watch_stops_on_first_failure_without_waiting_out_window(self):
         with tempfile.TemporaryDirectory() as directory:

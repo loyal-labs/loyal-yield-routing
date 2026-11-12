@@ -376,7 +376,7 @@ func run(ctx context.Context) error {
 			return err
 		}
 		go func() {
-			if err := metrics.Run(ctx); err != nil {
+			if err := metrics.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 				slog.Error("loyal-web metrics", "error", err)
 			}
 		}()
