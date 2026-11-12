@@ -1,6 +1,7 @@
 name: Workers v2 branch verification
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
     paths:
@@ -13,7 +14,7 @@ on:
       - scripts/prepare-vault-withdrawal-test-db.sh
       - scripts/clickstack-*
       - scripts/fixtures/clickstack-*
-      - deploy/hetzner/monitoring/clickstack-*
+      - deploy/hetzner/monitoring/**
       - migrations/**
       # The fixtures the backyard Go tests read.
       - docs/evidence/backyard-rwa-go/**
@@ -58,6 +59,17 @@ jobs:
           persist-credentials: false
       - run: python3 scripts/clickstack-vault-alerts_test.py
       - run: python3 scripts/clickstack-looping-alerts_test.py
+      - name: Install offline alert validators
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends prometheus prometheus-alertmanager python3-yaml
+      - name: Verify paging decisions, routing and Telegram rendering
+        working-directory: deploy/hetzner/monitoring
+        run: |
+          promtool check rules loyal.rules.yml
+          promtool test rules loyal*.rules.test.yml
+          amtool check-config alertmanager.yml
+          python3 verify-alert-messages.py
 
   changes:
     runs-on: ubuntu-24.04
@@ -72,15 +84,15 @@ jobs:
       - id: diff
         env:
           BASE: ${{ github.event.pull_request.base.sha }}
-        # Pushes are already filtered by the push paths above, and always
-        # replay the Rust golden fixtures; PRs replay them when a crate input changed.
+        # Pushes and explicit release verification replay all fixtures;
+        # PRs replay Rust when a crate input changed.
         run: |
-          if test "$GITHUB_EVENT_NAME" = push || git diff --name-only "$BASE" HEAD | grep -qE '^(Cargo\.(toml|lock)$|rust-toolchain\.toml$|crates/)'; then
+          if test "$GITHUB_EVENT_NAME" != pull_request || git diff --name-only "$BASE" HEAD | grep -qE '^(Cargo\.(toml|lock)$|rust-toolchain\.toml$|crates/)'; then
             echo rust=true >> "$GITHUB_OUTPUT"
           else
             echo rust=false >> "$GITHUB_OUTPUT"
           fi
-          if test "$GITHUB_EVENT_NAME" = push || git diff --name-only "$BASE" HEAD | grep -qE '^(go/workers/|migrations/|deploy/hetzner/activate\.sh$|docs/evidence/backyard-rwa-go/|scripts/(activate-vaults_test\.py|verify-workers-v2\.sh|check-go-ts-refs\.sh|build-svm-fixtures\.sh|prepare-vault-withdrawal-test-db\.sh)$|\.github/workflows/workers-v2-verify\.yml$|Cargo\.(toml|lock)$|rust-toolchain\.toml$|crates/(squads-test-harness|mock-yield-protocols-program|loyal-actions|loyal-solana-env|loyal-hub-abi|loyal-voltr-rwa-nav-adaptor)/)'; then
+          if test "$GITHUB_EVENT_NAME" != pull_request || git diff --name-only "$BASE" HEAD | grep -qE '^(go/workers/|migrations/|deploy/hetzner/activate\.sh$|docs/evidence/backyard-rwa-go/|scripts/(activate-vaults_test\.py|verify-workers-v2\.sh|check-go-ts-refs\.sh|build-svm-fixtures\.sh|prepare-vault-withdrawal-test-db\.sh)$|\.github/workflows/workers-v2-verify\.yml$|Cargo\.(toml|lock)$|rust-toolchain\.toml$|crates/(squads-test-harness|mock-yield-protocols-program|loyal-actions|loyal-solana-env|loyal-hub-abi|loyal-voltr-rwa-nav-adaptor)/)'; then
             echo workers=true >> "$GITHUB_OUTPUT"
           else
             echo workers=false >> "$GITHUB_OUTPUT"
@@ -181,7 +193,7 @@ jobs:
           MOCK_YIELD_PROTOCOLS_PROGRAM_SO: ${{ github.workspace }}/target/deploy/mock_yield_protocols_program.so
           SQUADS_SMART_ACCOUNT_PROGRAM_SO: ${{ github.workspace }}/crates/squads-test-harness/fixtures/squads/squads_smart_account_program.so
           WORKERS_V2_CACHE_DIR: ${{ runner.temp }}/workers-go
-          WORKERS_V2_RACE: ${{ github.event_name == 'push' && '1' || '' }}
+          WORKERS_V2_RACE: ${{ github.event_name != 'pull_request' && '1' || '' }}
         run: bash scripts/verify-workers-v2.sh
       - name: Database tests ran and were not skipped
         working-directory: go/workers
@@ -270,7 +282,7 @@ jobs:
   # deploy-workers.sh deploys a commit only when this artifact exists for its
   # inputs. A PR run names it after the merge commit it tested.
   verified:
-    needs: [verify, workers-image]
+    needs: [verify, workers-image, monitoring-contracts]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4

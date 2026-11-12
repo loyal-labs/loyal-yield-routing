@@ -41,11 +41,11 @@ groups:
       # Keep attention across scrape gaps within the 24h history window.
       # Freshness alerts below cover unknown state independently.
       - alert: LoyalBackyardWithdrawalAttention
-        expr: max by (family, route) (last_over_time(loyal_backyard_withdrawal_attention{family="backyard"}[24h])) == 1
+        expr: max by (family, route, unit) (last_over_time(loyal_backyard_withdrawal_attention{family="backyard"}[24h])) == 1
         for: 1m
         labels: {severity: page}
         annotations:
-          summary: "Earn MAX withdrawal needs operator attention on {{ $labels.route }}"
+          summary: "Vault withdrawal needs operator attention on {{ $labels.route }}"
           impact: "Pending vault withdrawals require operator attention; normal cooldown alone does not trigger this alert."
           action: "Read the current scoped withdrawal-health reason and timestamp. Compare pending demand, available cash and active operation with confirmed chain state. Review the specific guard; never clear latches or grant full-debt repayment just to clear the alert."
           trigger: "The persisted withdrawal-attention state remained active for 1 minute."
@@ -57,13 +57,13 @@ groups:
       - alert: LoyalBackyardWithdrawalHealthUnavailable
         expr: |
           (
-            max by (family, route) (last_over_time(loyal_backyard_withdrawal_attention{family="backyard"}[24h]))
-            or max by (family, route) (last_over_time(loyal_backyard_withdrawal_observed_timestamp_seconds{family="backyard"}[24h]))
+            max by (family, route, unit) (last_over_time(loyal_backyard_withdrawal_attention{family="backyard"}[24h]))
+            or max by (family, route, unit) (last_over_time(loyal_backyard_withdrawal_observed_timestamp_seconds{family="backyard"}[24h]))
           )
-          unless on (family, route)
+          unless on (family, route, unit)
           (
-            (time() - max by (family, route) (loyal_backyard_withdrawal_observed_timestamp_seconds{family="backyard"}) <= 300)
-            and on (family, route) max by (family, route) (loyal_backyard_withdrawal_attention{family="backyard"})
+            (time() - max by (family, route, unit) (loyal_backyard_withdrawal_observed_timestamp_seconds{family="backyard"}) <= 300)
+            and on (family, route, unit) max by (family, route, unit) (loyal_backyard_withdrawal_attention{family="backyard"})
           )
           or (
             absent(loyal_backyard_withdrawal_attention{family="backyard"})
@@ -75,7 +75,7 @@ groups:
         for: 1m
         labels: {severity: page}
         annotations:
-          summary: "Earn MAX withdrawal health is unavailable"
+          summary: "Vault withdrawal health is unavailable"
           impact: "Current withdrawal status cannot be established. Previously blocked withdrawals must not be treated as recovered."
           action: "Check the Backyard metrics endpoint, coherent observation timestamp, and database read/write errors. Restore the missing evidence path, then verify a new durable assessment; do not infer healthy withdrawals from a successful scrape alone."
           trigger: "Required withdrawal-health metrics are missing or the observation is over 5 minutes old; condition persisted for 1 minute."
@@ -83,7 +83,7 @@ groups:
 
       - alert: LoyalBackyardNAVReportStale
         expr: |
-          time() - max by (family, route) (loyal_backyard_nav_reported_timestamp_seconds{family="backyard"}) > 3 * 3600
+          time() - max by (family, route, unit) (loyal_backyard_nav_reported_timestamp_seconds{family="backyard"}) > 3 * 3600
           or (
             absent(loyal_backyard_nav_reported_timestamp_seconds{family="backyard"})
             unless on (family) max by (family) (last_over_time(loyal_backyard_nav_reported_timestamp_seconds{family="backyard"}[24h]))
@@ -91,16 +91,16 @@ groups:
         for: 5m
         labels: {severity: page}
         annotations:
-          summary: "Earn MAX NAV report is overdue"
+          summary: "Vault NAV report is overdue"
           trigger: "A vault that holds value has had no NAV report land in over 3 hours (routine cadence is hourly), or no report time is exported at all; condition persisted for 5 minutes."
           impact: "The vault's reported NAV is stale, so deposits and withdrawals may be priced from an old value."
           action: "Read the route's latest REPORT_NAV operation and any manual-recovery latch or held decision that stops reports. Check RPC and database health, then verify the next report reconciles on chain; do not clear a latch or force a report just to silence the alert."
           recovery: "Verify a new REPORT_NAV reconciled and the exported report time advanced. A vanished series is not proof that reports resumed."
 
-      # Repeated failed attempts per stable code, including selector evaluations;
-      # these samples are not a count of distinct transactions.
+      # Other families retain failure-count paging. Vaults page on holder impact
+      # and persistent management faults; their attempt counters are diagnostic.
       - alert: LoyalFamilyFailing
-        expr: sum by (family, code) (increase(loyal_family_failed_total[15m])) >= 3
+        expr: sum by (family, code) (increase(loyal_family_failed_total{family!="backyard"}[15m])) >= 3
         for: 5m
         # Keep periodic dependency failures in one incident. Otherwise each
         # quiet counter window resolves it and resets Alertmanager's repeat timer.
@@ -168,9 +168,9 @@ groups:
       - alert: LoyalInflightStuck
         expr: |
           loyal_family_inflight > 0
-          unless on (family)
-            (sum by (family) (increase(loyal_family_landed_total[3m])) > 0
-             or sum by (family) (increase(loyal_family_failed_total[3m])) > 0)
+          unless on (family, unit, instance)
+            (sum by (family, unit, instance) (increase(loyal_family_landed_total[3m])) > 0
+             or sum by (family, unit, instance) (increase(loyal_family_failed_total{family!="backyard"}[3m])) > 0)
         for: 3m
         labels: {severity: page}
         annotations:
@@ -217,21 +217,23 @@ groups:
           action: "Read the latest 'leverage decision' line (reason, gain, cost, borrow, room) and the lane's loyal_backyard_hold reason (at_target: no approved up step; no_room: the step does not fit the chain). An approval refused as up_move_not_worth_cost is the cost model's answer, not a fault; anything else is why the borrow is not planned or does not land. Do not lower the target or raise limits to clear it."
           recovery: "Confirm a leverage_up borrow lands for the lane (backyard_leverage_up_landed) or the gap closes. The series vanishing or a restart is not recovery."
 
-      # Term debt (wYLDS, 30-day term): a held lane borrows again inside its
-      # last 3 days (keep-alive) and delevers fully under 1 day when it
-      # cannot. Under 2 days means neither keep-alive has landed yet; past
-      # maturity KLend refuses borrowing and the debt becomes liquidatable,
-      # ramping to the whole debt over 3 days.
+      # Page after the automatic repayment window has begun and debt persists.
+      # A two-day renewal reminder alone is not a failed safety action.
       - alert: LoyalBackyardTermDebtNearMaturity
-        expr: loyal_backyard_term_debt_days_to_maturity < 2
-        for: 5m
-        labels: {severity: page}
+        expr: |
+          last_over_time(loyal_backyard_term_debt_days_to_maturity[24h]) < 1
+          and on (vault, lane, unit) last_over_time(loyal_backyard_lane_has_debt[24h]) == 1
+        for: 15m
+        labels:
+          severity: page
         annotations:
-          summary: "Earn Max {{ $labels.vault }} lane {{ $labels.lane }} term debt is under 2 days from maturity"
-          trigger: "The lane's term debt is under 2 days from maturity: its keep-alive borrow (inside 3 days) has not landed."
-          impact: "Past maturity KLend refuses new borrowing on the lane and its debt becomes liquidatable, ramping to the whole debt over 3 days."
-          action: "Read the lane's loyal_backyard_hold reason (no_room under rule term_keepalive: the debt reserve has no room for the keep-alive borrow) and the 'leverage decision' line's term_days. Under 1 day without room the worker repays the debt by itself (debt_zero); if that step holds no_room too, see LoyalBackyardSafetyStepNoRoom. Do not extend or roll the term by hand."
-          recovery: "A keep-alive or leverage_up borrow lands and the lane's days to maturity read about 30, or the lane's debt is repaid and the series is gone."
+          summary: Term-loan repayment is overdue on {{ $labels.lane }}
+          trigger: Debt remains under 24 hours from maturity for 15 minutes, after automatic repayment becomes due when renewal
+            is unavailable.
+          impact: The automatic safety action has not cleared the debt. At maturity the loan becomes eligible for liquidation.
+          action: Check whether renewal or debt repayment is landing, the current debt balance and any blocked safety step. Verify
+            in-flight signatures before intervening; do not manually roll the loan.
+          recovery: Verify a fresh observation proving zero debt or a renewed maturity. Missing telemetry is not repayment.
 
       # The target wants a safety move (hard LTV, term maturity, a
       # withdrawal, an operator exit) the chain has no room for: no withdraw
@@ -239,23 +241,28 @@ groups:
       # lane cannot make. The worker retries every tick; only outside cash or
       # the reserve recovering moves it.
       - alert: LoyalBackyardSafetyStepNoRoom
-        expr: sum by (vault, lane, rule) (increase(loyal_backyard_step_no_room_total{rule=~"hard_ltv|term_maturity|term_keepalive|withdrawal|operator_exit|custody"}[10m])) > 0
-        for: 10m
-        labels: {severity: page}
+        expr: |
+          sum by (vault, lane, rule, unit) (increase(loyal_backyard_step_no_room_total{rule=~"hard_ltv|term_maturity"}[5m])) > 0
+          and on (vault, lane, unit) loyal_backyard_hold{reason="no_room"} == 1
+        for: 2m
+        labels:
+          severity: page
         annotations:
-          summary: "Earn Max {{ $labels.vault }} lane {{ $labels.lane }} cannot take its {{ $labels.rule }} step: no room on chain"
-          trigger: "For 10 minutes every tick's {{ $labels.rule }} step on the lane held no_room: the chain has no room for the move its target wants."
-          impact: "{{ if eq $labels.rule \"hard_ltv\" }}The lane stays above its hard LTV and nearer liquidation.{{ else if match \"^term_\" $labels.rule }}The lane's term debt nears or passes maturity, after which it becomes liquidatable.{{ else if eq $labels.rule \"withdrawal\" }}Queued withdrawals wait.{{ else }}The operator's exit does not progress.{{ end }}"
-          action: "Read the worker's hourly 'no_room lane=... rule=...' line and the HOLD rows' cause (step_no_withdraw_room: the obligation cannot release collateral without outside cash; utilization: the debt reserve is full). Bring outside cash or wait for the reserve; do not raise caps or bypass the step."
-          recovery: "A step of the rule lands for the lane, or its target no longer needs the move; the series stops increasing."
-
+          summary: A required loan-safety action is blocked on {{ $labels.lane }}
+          trigger: A hard-LTV or maturity repayment encountered insufficient room and the lane remains held for that reason for
+            2 minutes.
+          impact: Automatic debt reduction cannot protect the position while the liquidity or collateral constraint persists.
+          action: Inspect the current no_room cause, debt balance and executable repayment path. Check any in-flight signature;
+            do not raise risk limits or bypass the guard.
+          recovery: Confirm the safety action landed or a fresh decision no longer requires it. Historical failure counters alone
+            do not keep this alert open.
   - name: loyal-units
     rules:
       # A Go unit systemd runs (or is restarting) that does not serve /metrics.
       # A deliberately stopped or never-installed unit is not scraped and is silent.
       - alert: LoyalWorkerDown
         expr: |
-          up{job="loyal"} == 0
+          up{job="loyal",unit!~"loyal-(backyard|earn-max)\\.service"} == 0
           and on (unit)
             label_replace(node_systemd_unit_state{state=~"active|activating|deactivating|failed"} == 1, "unit", "$1", "name", "(.+)")
         for: 2m
@@ -278,7 +285,7 @@ groups:
           or
           node_systemd_unit_state{name=~"loyal-.+\\.service", name!~"loyal-web-cron@.+\\.service", state="activating"} == 1
         for: 2m
-        labels: {severity: page}
+        labels: {severity: page, unit: "{{ $labels.name }}"}
         annotations:
           summary: "{{ $labels.name }} is {{ $labels.state }}"
           trigger: "The named service has remained failed or stuck activating for 2 minutes."
@@ -288,7 +295,7 @@ groups:
 
       - alert: LoyalUnitRestartLoop
         expr: increase(node_systemd_service_restart_total{name=~"loyal-.+\\.service"}[15m]) > 3
-        labels: {severity: page}
+        labels: {severity: page, unit: "{{ $labels.name }}"}
         annotations:
           summary: "{{ $labels.name }} is repeatedly restarting"
           trigger: "The service restart counter increased by more than 3 in 15 minutes."
@@ -443,3 +450,134 @@ groups:
           impact: "If heartbeat delivery stops, the host or monitoring stack may be unavailable and unable to alert for itself."
           action: "Check the external heartbeat receiver, host reachability and monitoring services. Do not silence the dead-man switch without restoring an independent health signal."
           recovery: "Verify the external receiver is receiving current heartbeats and that normal worker alert delivery works."
+
+  - name: loyal-vault-holder-risk
+    rules:
+    - alert: LoyalVaultUnavailable
+      expr: |-
+        up{job="loyal",unit=~"loyal-(backyard|earn-max)\\.service"} == 0
+        or absent(up{job="loyal",unit="loyal-earn-max.service"})
+        or absent(up{job="loyal",unit="loyal-backyard.service"})
+      for: 2m
+      labels:
+        severity: page
+      annotations:
+        summary: Vault worker is unavailable
+        trigger: An expected vault worker has no successful metrics scrape for 2 minutes, including a stopped service or missing
+          scrape target.
+        impact: Deposits, withdrawals and automatic loan protection may no longer be managed.
+        action: Check the named service, its expected release and first failure. Inspect unresolved signed operations before
+          restarting; restore fresh vault observations.
+        recovery: Verify fresh observations and successful vault work after the service returns; a metrics endpoint alone is
+          not sufficient.
+    - alert: LoyalBackyardRecoveryRequired
+      expr: last_over_time(loyal_backyard_recovery_required[24h]) == 1
+      for: 1m
+      labels:
+        severity: page
+      annotations:
+        summary: Vault management is paused for operator recovery
+        trigger: The persisted manual-recovery latch has remained active for 1 minute.
+        impact: The worker has stopped managing the vault, including automatic protection of any outstanding loans.
+        action: Read the recovery reason and operation journal, reconcile chain effects, and resolve the underlying fault before
+          clearing the latch.
+        recovery: Verify the latch was explicitly cleared after safe reconciliation and fresh vault management resumed.
+    - alert: LoyalBackyardValuationUnavailable
+      expr: |-
+        time() - max_over_time(loyal_backyard_valued_timestamp_seconds[24h]) > 600
+        or (
+          up{job="loyal",unit=~"loyal-(backyard|earn-max)\\.service"} == 1
+          unless on (unit) max_over_time(loyal_backyard_valued_timestamp_seconds[24h])
+        )
+      for: 5m
+      labels:
+        severity: page
+      annotations:
+        summary: Current holder value cannot be established
+        trigger: No coherent certified valuation for over 10 minutes, sustained for 5 minutes; a worker that never publishes
+          one alerts after 5 minutes.
+        impact: The loss detector cannot establish current holder value. A healthy process or an old NAV report does not establish
+          that funds are safe.
+        action: Check missing or expired exit quotes, reserve observations and NAV evidence. Restore a coherent valuation; do
+          not substitute zero or an old report for missing value.
+        recovery: Verify the certified valuation timestamp advances from fresh evidence and review the first new per-share value.
+    - alert: LoyalBackyardValueFalling
+      expr: |-
+        last_over_time(loyal_backyard_net_value_per_share[24h])
+          < 0.998 * max_over_time((
+            min_over_time(loyal_backyard_net_value_per_share[5m])
+            and count_over_time(loyal_backyard_net_value_per_share[5m:1m]) >= 5
+          )[6h:1m])
+        and on (vault, unit) last_over_time(loyal_backyard_share_supply_raw[24h]) > 0
+      for: 3m
+      labels:
+        severity: page
+      annotations:
+        summary: Estimated holder value per share has fallen
+        trigger: Certified value per share is more than 0.2% below a sustained five-minute value in the previous six hours,
+          for 3 minutes.
+        impact: Holders may be losing value through execution costs, market moves or fees. Normal proportional deposits and
+          withdrawals do not cause this signal; it is not proof of realized loss.
+        action: Compare the first decline with reconciled sales, debt credits, fees and collateral prices. Check whether further
+          costly operations are planned and investigate their cause.
+        recovery: Verify fresh per-share observations are stable and the cause is addressed. Leaving the comparison window does
+          not recover earlier losses.
+    - alert: LoyalBackyardDebtSafetyRisk
+      expr: |-
+        last_over_time(loyal_backyard_safety_ltv_margin_bps[24h]) <= 0
+        and on (vault, lane, unit) last_over_time(loyal_backyard_lane_has_debt[24h]) == 1
+      for: 2m
+      labels:
+        severity: page
+      annotations:
+        summary: Automatic debt reduction has not restored the safety margin on {{ $labels.lane }}
+        trigger: The last observed LTV remains at or above the worker safety threshold for 2 minutes while debt is outstanding.
+        impact: The position is closer to liquidation than the configured safety margin permits.
+        action: Inspect current LTV, debt, collateral prices and the repayment operation. Check why automatic reduction is not
+          landing; verify signatures before any intervention.
+        recovery: Verify a fresh observation below the safety threshold or explicitly repaid debt. A missing lane series is
+          not evidence of safety.
+    - alert: LoyalBackyardLiquidatable
+      expr: |-
+        last_over_time(loyal_backyard_liquidation_margin_bps[24h]) <= 0
+        and on (vault, lane, unit) last_over_time(loyal_backyard_lane_has_debt[24h]) == 1
+      for: 0m
+      labels:
+        severity: page
+      annotations:
+        summary: Loan has reached its liquidation threshold on {{ $labels.lane }}
+        trigger: The last coherent observation has LTV at or above the liquidation threshold and still shows outstanding debt.
+        impact: Collateral can be liquidated and holders can lose money now.
+        action: Immediately inspect confirmed debt and collateral, current prices and in-flight protective repayments. Coordinate
+          recovery without duplicating a signed transaction.
+        recovery: Verify confirmed debt repayment or a restored liquidation margin from fresh evidence. Missing telemetry does
+          not clear the known exposure.
+    - alert: LoyalBackyardDebtRiskUnknown
+      expr: |-
+        time() - max_over_time(loyal_backyard_risk_observed_timestamp_seconds[24h]) > 300
+        and on (vault, lane, unit) last_over_time(loyal_backyard_lane_has_debt[24h]) == 1
+      for: 5m
+      labels:
+        severity: page
+      annotations:
+        summary: Loan risk cannot be refreshed on {{ $labels.lane }}
+        trigger: An outstanding loan has had no coherent debt and LTV observation for over 5 minutes, sustained for 5 minutes.
+        impact: Automatic protection is operating without a current view of this loan; the last healthy LTV may no longer apply.
+        action: Restore reserve and obligation observations and check the current position directly. Confirm the protection
+          loop resumes with fresh chain evidence.
+        recovery: Verify a fresh risk observation or an explicit observation of zero debt; disappearing metrics do not prove
+          recovery.
+    - alert: LoyalBackyardTermDebtExpired
+      expr: |-
+        last_over_time(loyal_backyard_term_debt_days_to_maturity[24h]) <= 0
+        and on (vault, lane, unit) last_over_time(loyal_backyard_lane_has_debt[24h]) == 1
+      for: 0m
+      labels:
+        severity: page
+      annotations:
+        summary: Unpaid term loan has matured on {{ $labels.lane }}
+        trigger: The observed term has expired and the lane still has outstanding debt.
+        impact: The debt is eligible for maturity-based liquidation even if its price-based LTV looks healthy.
+        action: Immediately inspect the confirmed debt, repayment attempts and blocked safety action. Reconcile any in-flight
+          signature before taking recovery action.
+        recovery: Verify fresh evidence of zero debt or an on-chain renewed maturity. Missing telemetry is not repayment.

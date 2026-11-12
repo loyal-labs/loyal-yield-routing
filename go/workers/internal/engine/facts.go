@@ -11,6 +11,15 @@ import (
 // Facts are the only health signal a family emits. Alerting rules live in
 // Alertmanager; nothing in-process interprets them.
 type Facts struct {
+	vaultRecovery       *prometheus.GaugeVec
+	vaultValue          *prometheus.GaugeVec
+	vaultShareValue     *prometheus.GaugeVec
+	vaultShareSupply    *prometheus.GaugeVec
+	vaultValued         *prometheus.GaugeVec
+	laneDebt            *prometheus.GaugeVec
+	laneSafetyMargin    *prometheus.GaugeVec
+	laneLiquidation     *prometheus.GaugeVec
+	laneRiskObserved    *prometheus.GaugeVec
 	withdrawalAttention *prometheus.GaugeVec
 	withdrawalObserved  *prometheus.GaugeVec
 	navReported         *prometheus.GaugeVec
@@ -49,6 +58,33 @@ type Facts struct {
 
 func NewFacts(registerer prometheus.Registerer) *Facts {
 	f := &Facts{
+		vaultRecovery: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "loyal_backyard_recovery_required", Help: "Vault management is stopped by its persisted manual-recovery latch.",
+		}, []string{"vault"}),
+		vaultValue: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "loyal_backyard_net_value_usd", Help: "Fresh certified total vault value, including idle cash and quoted exit costs.",
+		}, []string{"vault"}),
+		vaultShareValue: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "loyal_backyard_net_value_per_share", Help: "Certified total NAV raw divided by LP supply including accrued fees; fixed raw-share units for each vault, not a cross-vault price.",
+		}, []string{"vault"}),
+		vaultValued: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "loyal_backyard_valued_timestamp_seconds", Help: "Last coherent certified total-vault valuation; unknown evidence never advances it.",
+		}, []string{"vault"}),
+		vaultShareSupply: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "loyal_backyard_share_supply_raw", Help: "Observed LP supply including accrued fees; zero distinguishes a drained vault from loss of value.",
+		}, []string{"vault"}),
+		laneDebt: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "loyal_backyard_lane_has_debt", Help: "One while a lane has observed borrowing; zero only after a coherent observation proves it cleared.",
+		}, []string{"vault", "lane"}),
+		laneSafetyMargin: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "loyal_backyard_safety_ltv_margin_bps", Help: "Worker safety LTV threshold minus current LTV for each borrowed lane; nonpositive requires debt reduction.",
+		}, []string{"vault", "lane"}),
+		laneLiquidation: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "loyal_backyard_liquidation_margin_bps", Help: "Liquidation LTV threshold minus current LTV for each borrowed lane.",
+		}, []string{"vault", "lane"}),
+		laneRiskObserved: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "loyal_backyard_risk_observed_timestamp_seconds", Help: "Last coherent debt and LTV observation for each borrowed lane.",
+		}, []string{"vault", "lane"}),
 		withdrawalAttention: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "loyal_backyard_withdrawal_attention", Help: "Durable Backyard withdrawal requires operator attention.",
 		}, []string{"family", "route"}),
@@ -149,6 +185,7 @@ func NewFacts(registerer prometheus.Registerer) *Facts {
 		unmovedSeries: map[string]map[incomingSeries]struct{}{},
 	}
 	registerer.MustRegister(f.withdrawalAttention, f.withdrawalObserved, f.navReported, f.landed, f.failed, f.inflight, f.progress, f.lane, f.payer, f.oldestDue, f.fleetReplans, f.fleetSimulations, f.fleetMovable,
+		f.vaultRecovery, f.vaultValue, f.vaultShareValue, f.vaultShareSupply, f.vaultValued, f.laneDebt, f.laneSafetyMargin, f.laneLiquidation, f.laneRiskObserved,
 		f.leverageRoom, f.leverageGap, f.leverageLanded, f.leverageReaction, f.leverageOutages, f.termDebtDays, f.stepNoRoom, f.hold, f.privyGasSpend, f.privyGasRead,
 		f.bridgePolled, f.bridgeAdvanced, f.bridgeSeen, f.bridgeRecorded, f.bridgeBatchFailed, f.bridgeDetected, f.bridgeUnmoved, f.bridgeScanned, f.bridgeScanFailed)
 	return f
@@ -219,6 +256,42 @@ func (f *Facts) BackyardWithdrawalHealth(route string, attention bool, observed 
 	}
 	f.withdrawalAttention.WithLabelValues(string(FamilyBackyard), route).Set(value)
 	f.withdrawalObserved.WithLabelValues(string(FamilyBackyard), route).Set(float64(observed.Unix()))
+}
+
+func (f *Facts) BackyardRecoveryRequired(vault string, required bool) {
+	value := float64(0)
+	if required {
+		value = 1
+	}
+	f.vaultRecovery.WithLabelValues(vault).Set(value)
+}
+
+func (f *Facts) BackyardValuation(vault string, navRaw, supplyRaw int64, observed time.Time) {
+	if navRaw < 0 || supplyRaw < 0 || observed.IsZero() || (supplyRaw == 0 && navRaw != 0) {
+		return
+	}
+	f.vaultValue.WithLabelValues(vault).Set(float64(navRaw) / 1_000_000)
+	f.vaultShareSupply.WithLabelValues(vault).Set(float64(supplyRaw))
+	f.vaultValued.WithLabelValues(vault).Set(float64(observed.Unix()))
+	if supplyRaw == 0 {
+		f.vaultShareValue.DeleteLabelValues(vault)
+		return
+	}
+	f.vaultShareValue.WithLabelValues(vault).Set(float64(navRaw) / float64(supplyRaw))
+}
+
+func (f *Facts) BackyardLaneRisk(vault, lane string, safetyMargin, liquidationMargin int64, observed time.Time) {
+	f.laneDebt.WithLabelValues(vault, lane).Set(1)
+	f.laneSafetyMargin.WithLabelValues(vault, lane).Set(float64(safetyMargin))
+	f.laneLiquidation.WithLabelValues(vault, lane).Set(float64(liquidationMargin))
+	f.laneRiskObserved.WithLabelValues(vault, lane).Set(float64(observed.Unix()))
+}
+
+func (f *Facts) BackyardLaneRiskGone(vault, lane string, observed time.Time) {
+	f.laneDebt.WithLabelValues(vault, lane).Set(0)
+	f.laneSafetyMargin.DeleteLabelValues(vault, lane)
+	f.laneLiquidation.DeleteLabelValues(vault, lane)
+	f.laneRiskObserved.WithLabelValues(vault, lane).Set(float64(observed.Unix()))
 }
 
 func (f *Facts) BackyardNAVReported(route string, reported time.Time) {

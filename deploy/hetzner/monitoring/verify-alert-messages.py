@@ -13,13 +13,15 @@ root = Path(__file__).resolve().parent
 rules = [r for g in yaml.safe_load((root / "loyal.rules.yml").read_text())["groups"] for r in g["rules"]]
 config = yaml.safe_load((root / "alertmanager.yml").read_text())
 cases = json.loads((root / "telegram-message-cases.json").read_text())
+fixtures = [group for path in sorted(root.glob("loyal*.rules.test.yml"))
+            for group in yaml.safe_load(path.read_text())["tests"]]
 assert len(cases) == len(rules), "Every rule variant needs a render case"
 required = {"summary", "trigger", "impact", "action", "recovery"}
 for rule, case in zip(rules, cases):
     assert case["labels"]["alertname"] == rule["alert"]
     assert required <= rule["annotations"].keys()
     assert all(rule["annotations"][key].strip() for key in required)
-for group in yaml.safe_load((root / "loyal.rules.test.yml").read_text())["tests"]:
+for group in fixtures:
     for test in group.get("alert_rule_test", []):
         if test["alertname"] == "LoyalFamilyFailing":
             cases.extend({"labels": {"alertname": test["alertname"], **a["exp_labels"]}, "annotations": a["exp_annotations"]} for a in test.get("exp_alerts", []))
@@ -28,7 +30,7 @@ assert {"code", "lane", "instance", "payer"} <= set(config["route"]["group_by"])
 # the rules really carry: some source and target alert the promtool fixtures
 # expect that agree on its equal labels.
 fixture_alerts = [{"alertname": test["alertname"], **a["exp_labels"]}
-                  for group in yaml.safe_load((root / "loyal.rules.test.yml").read_text())["tests"]
+                  for group in fixtures
                   for test in group.get("alert_rule_test", []) for a in test.get("exp_alerts", [])]
 def matches(matchers, labels):
     for matcher in matchers:
@@ -49,6 +51,19 @@ def group_by(labels):
 for alert in fixture_alerts:
     if "address" in alert:
         assert {"alertname", "address", "chain", "asset"} <= set(group_by(alert)), f"alerts labelled by address must not share a Telegram message: {alert['alertname']}"
+# Exercise the actual routing parser without sending a notification.
+for labels, receiver in [
+    ({"severity": "warning", "unit": "loyal-earn-max.service"}, "diagnostics"),
+    ({"severity": "warning", "unit": "loyal-backyard.service"}, "diagnostics"),
+    ({"alertname": "LoyalFamilyFailing", "family": "backyard", "severity": "page"}, "diagnostics"),
+    ({"alertname": "LoyalBackyardLiquidatable", "vault": "rwa", "severity": "page"}, "telegram"),
+    ({"alertname": "LoyalBackyardRecoveryRequired", "vault": "looping", "severity": "page"}, "telegram"),
+    ({"alertname": "LoyalFeePayerLow", "unit": "loyal-retail.service", "severity": "warning"}, "telegram"),
+]:
+    result = subprocess.run(["amtool", "config", "routes", "test", "--config.file=" + str(root / "alertmanager.yml"),
+                             "--verify.receivers=" + receiver, *[f"{k}={v}" for k, v in labels.items()]],
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stdout + result.stderr
 message = next(r for r in config["receivers"] if r["name"] == "telegram")["telegram_configs"][0]["message"]
 assert "GeneratorURL" not in message and "ExternalURL" not in message
 alerts = []
@@ -72,6 +87,10 @@ messages = [m for m in re.split(r"(?=<b>(?:FIRING|RESOLVED) · )", text) if m.st
 assert len(messages) == len(alerts)
 for alert, rendered in zip(alerts, messages):
     assert len(rendered) < 2000, "Keep room for firing/resolved transition pairs under Telegram's 4096 limit"
+    if alert["labels"].get("vault") == "rwa":
+        assert "· Loyal Earn MAX vault</b>" in rendered
+    elif alert["labels"].get("vault") == "looping":
+        assert "· Backyard vault</b>" in rendered
     if alert["status"] == "firing":
         assert "Signal:" in rendered and "Impact:" in rendered and "Next:" in rendered
     else:
