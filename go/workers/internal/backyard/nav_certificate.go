@@ -63,6 +63,15 @@ func (c *certifiedNAV) valid(now time.Time, slot int64) bool {
 	}
 	return true
 }
+
+func (c *certifiedNAV) maxSlot() int64 {
+	oldest := c.slot
+	for _, q := range c.quotes {
+		oldest = min(oldest, q.Slot)
+	}
+	return oldest + min(observationLagSlots(), adaptorMaxReportAgeSlots)
+}
+
 func (s Snapshot) netKnown(now time.Time) bool {
 	return s.net.valid(now, s.Slot) && s.net.snapshotBook != "" && s.net.snapshotBook == snapshotNAVBook(s)
 }

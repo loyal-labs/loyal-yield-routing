@@ -27,7 +27,7 @@ func (d *Database) recordNAVEvidence(ctx context.Context, v *Vault, o Observatio
 	return d.inTx(ctx, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `INSERT INTO loyal_yield.backyard_certified_nav(vault,manifest_sha256,total_nav_raw,certified_slot,max_slot,valid_until) VALUES($1,$2,$3,$4,$5,$6)
 ON CONFLICT (vault) DO UPDATE SET manifest_sha256=EXCLUDED.manifest_sha256,total_nav_raw=EXCLUDED.total_nav_raw,certified_slot=EXCLUDED.certified_slot,max_slot=EXCLUDED.max_slot,valid_until=EXCLUDED.valid_until,updated_at=now()
-WHERE backyard_certified_nav.certified_slot<=EXCLUDED.certified_slot`, v.VoltrVault, net.manifest, strconv.FormatInt(o.Snapshot.TotalVaultNAVRaw, 10), net.slot, net.slot+min(observationLagSlots(), adaptorMaxReportAgeSlots), net.validUntil); err != nil {
+WHERE backyard_certified_nav.certified_slot<=EXCLUDED.certified_slot`, v.VoltrVault, net.manifest, strconv.FormatInt(o.Snapshot.TotalVaultNAVRaw, 10), net.slot, net.maxSlot(), net.validUntil); err != nil {
 			return err
 		}
 		var operation string
