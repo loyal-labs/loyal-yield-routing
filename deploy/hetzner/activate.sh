@@ -62,6 +62,9 @@ got=$(sha256sum "$bin" | cut -d' ' -f1)
 [ -f "$dropin" ] || fail "$dropin is missing; the first install is manual (deploy/hetzner/README.md)"
 prev=$(sed -n "s|^ExecStart=$releases/\([0-9a-f]\{40\}\)/$binary\$|\1|p" "$dropin")
 [ ${#prev} -eq 40 ] || fail "cannot read the running release from $dropin"
+if [ -n "${LOYAL_DEPLOY_EXPECTED_RELEASE:-}" ] && [ "$prev" != "$LOYAL_DEPLOY_EXPECTED_RELEASE" ]; then
+	fail "release changed after preflight; $unit untouched on $prev"
+fi
 state=$(systemctl is-active "$unit" || true)
 if [ "$prev" = "$sha" ] && [ "$state" = active ]; then
 	say "already running $sha"

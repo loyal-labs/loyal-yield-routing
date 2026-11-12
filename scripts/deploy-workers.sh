@@ -53,6 +53,10 @@ sha=$(git rev-parse --verify --quiet "${target}^{commit}") || {
   echo "unknown commit '$target'" >&2
   exit 1
 }
+if [[ ${LOYAL_DEPLOY_REQUIRE_HEAD:-} == 1 && $sha != "$(git rev-parse origin/main)" ]]; then
+  echo "refusing superseded production release $sha" >&2
+  exit 1
+fi
 if [[ $check_ci == yes || ( $web_family == yes && ${LOYAL_DEPLOY_DRY_RUN:-} == 1 ) ]]; then
   :
 elif ! git merge-base --is-ancestor "$sha" origin/main; then
@@ -60,11 +64,18 @@ elif ! git merge-base --is-ancestor "$sha" origin/main; then
   exit 1
 fi
 
-# web-go.yml runs on PRs only, so web families have no verification to look up.
+# Production CI gates web artifacts through its native job dependencies.
 if [[ $web_family == no ]]; then
   artifact=$(scripts/ci-tree-key.sh "$sha")
+  verification_workflow=workers-v2-verify.yml
+  artifact_filter=''
+  if git cat-file -e "$sha:.github/workflows/production.yml" 2>/dev/null; then
+    verification_workflow=production.yml
+    # Main's marker includes race tests. A later rollout failure does not revoke it.
+    artifact_filter=' | select(.workflow_run.head_branch == "main")'
+  fi
   green=$(gh api -X GET "repos/{owner}/{repo}/actions/artifacts" -f name="$artifact" \
-    --jq '[.artifacts[] | select(.expired == false and .workflow_run.head_repository_id == .workflow_run.repository_id)] | length')
+    --jq "[.artifacts[] | select(.expired == false and .workflow_run.head_repository_id == .workflow_run.repository_id)$artifact_filter] | length")
   if [[ ! $green =~ ^[0-9]+$ ]]; then
     echo "cannot read Workers v2 verification artifacts from GitHub: $green" >&2
     exit 1
@@ -74,22 +85,24 @@ if [[ $web_family == no ]]; then
     exit 1
   fi
   echo "$sha has a green Workers v2 verification: $artifact"
-  failed=$(gh api -X GET "repos/{owner}/{repo}/actions/workflows/workers-v2-verify.yml/runs" -f head_sha="$sha" -f event=push \
+  if [[ $verification_workflow == workers-v2-verify.yml ]]; then
+    failed=$(gh api -X GET "repos/{owner}/{repo}/actions/workflows/$verification_workflow/runs" -f head_sha="$sha" -f event=push \
     --jq '[.workflow_runs[] | select(.status == "completed" and .conclusion == "failure")] | length')
-  if [[ ! $failed =~ ^[0-9]+$ ]]; then
-    echo "cannot read Workers v2 verification runs from GitHub: $failed" >&2
-    exit 1
-  fi
-  if [[ $failed != 0 ]]; then
-    echo "main's race-checked run failed for $sha; fix main before deploying" >&2
-    exit 1
+    if [[ ! $failed =~ ^[0-9]+$ ]]; then
+      echo "cannot read Workers v2 verification runs from GitHub: $failed" >&2
+      exit 1
+    fi
+    if [[ $failed != 0 ]]; then
+      echo "main's race-checked run failed for $sha; fix main before deploying" >&2
+      exit 1
+    fi
   fi
 fi
 if [[ $check_ci == yes ]]; then
   exit 0
 fi
 
-if [[ $family == web ]]; then
+if [[ $family == web && -z ${LOYAL_DEPLOY_ARTIFACT_DIR:-} ]]; then
   if [[ -z ${NEXT_PUBLIC_PRIVY_APP_ID:-} ]]; then
     echo "the web bundle inlines the names in web/apps/loyal/vite/public-env.ts from this environment; missing: NEXT_PUBLIC_PRIVY_APP_ID" >&2
     echo "it lives in the 1Password Environment loyal-noncritical-env (mounted at .env.1password);" >&2
@@ -147,6 +160,10 @@ if [[ ${#running} -ne 40 ]]; then
   exit 1
 fi
 echo "host $host runs $running; deploying $sha"
+if [[ -n ${LOYAL_DEPLOY_EXPECTED_RELEASE:-} && $running != "$LOYAL_DEPLOY_EXPECTED_RELEASE" ]]; then
+  echo "release changed after preflight; refusing $family" >&2
+  exit 1
+fi
 
 install_rules=yes
 rules_exit=0
@@ -212,7 +229,7 @@ fi
 
 mkdir -p "$HOME/.loyal"
 build=$(mktemp -d "$HOME/.loyal/deploy-build.XXXXXX")
-if [[ $web_family == yes ]]; then
+if [[ $web_family == yes && -z ${LOYAL_DEPLOY_ARTIFACT_DIR:-} ]]; then
   trap 'git worktree remove --force "$build/src" >/dev/null 2>&1 || true; rm -rf "$build"' EXIT
   git worktree add --detach --quiet "$build/src" "$sha"
   (cd "$build/src/web" && bun install --frozen-lockfile >/dev/null)
@@ -228,7 +245,14 @@ if [[ ! -f $tree/deploy/hetzner/activate.sh || ! -f $tree/deploy/hetzner/install
 fi
 
 if [[ $running != "$sha" || $mode == stopped ]]; then
-  if [[ $web_family == yes ]]; then
+  if [[ -n ${LOYAL_DEPLOY_ARTIFACT_DIR:-} ]]; then
+    [[ $goarch == amd64 ]] || { echo "CI artifacts require an amd64 host" >&2; exit 1; }
+    binary=$LOYAL_DEPLOY_ARTIFACT_DIR/$binary_name
+    [[ -f $binary ]] || { echo "missing verified artifact $binary_name" >&2; exit 1; }
+    LC_ALL=C grep -qa "$sha" "$binary" || { echo "artifact does not carry $sha" >&2; exit 1; }
+    sum=$(shasum -a 256 "$binary" | cut -d' ' -f1)
+    echo "using verified $binary_name $sha sha256 $sum"
+  elif [[ $web_family == yes ]]; then
     build_web_release "$goarch"
     if ! LC_ALL=C grep -qa "$sha" "$binary"; then
       echo "built binary does not carry $sha" >&2
@@ -252,7 +276,12 @@ if [[ $running != "$sha" || $mode == stopped ]]; then
   scp -q "$binary" "$host:$dir/$binary_name.tmp"
   scp -q "$tree/deploy/hetzner/activate.sh" "$host:$dir/activate.sh.tmp"
   if [[ $family == web && -f $tree/deploy/hetzner/retain-web-assets.sh ]]; then
-    scp -q -r "$tree/go/workers/cmd/loyal-web/dist/assets" "$host:$dir/"
+    assets=$tree/go/workers/cmd/loyal-web/dist/assets
+    if [[ -n ${LOYAL_DEPLOY_ARTIFACT_DIR:-} ]]; then
+      assets=$build/assets
+      cp -a "$LOYAL_DEPLOY_ARTIFACT_DIR/web-assets" "$assets"
+    fi
+    scp -q -r "$assets" "$host:$dir/"
     scp -q "$tree/deploy/hetzner/retain-web-assets.sh" "$host:$dir/"
   fi
   ssh "$host" sh -s -- "$dir" "$binary_name" <<'REMOTE'
@@ -263,6 +292,7 @@ REMOTE
 
   set +e
   ssh "$host" systemd-run --unit="loyal-deploy-$family-${sha:0:12}" --quiet --wait --pipe --collect \
+    --setenv="LOYAL_DEPLOY_EXPECTED_RELEASE=${LOYAL_DEPLOY_EXPECTED_RELEASE:-}" \
     /bin/sh "$dir/activate.sh" "$family" "$sha" "$sum" "$mode"
   status=$?
   set -e

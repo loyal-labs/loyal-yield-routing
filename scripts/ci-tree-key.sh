@@ -5,10 +5,14 @@
 set -euo pipefail
 commit=${1:?usage: scripts/ci-tree-key.sh <commit>}
 cd "$(git rev-parse --show-toplevel)"
-paths=$(git show "$commit:.github/workflows/workers-v2-verify.yml" |
-  sed -n '/^  push:$/,/^  pull_request:$/s|^      - \(.*\)$|\1|p' | sed 's|/\*\*$||')
+workflow=.github/workflows/production.yml
+if ! git cat-file -e "$commit:$workflow" 2>/dev/null; then
+  workflow=.github/workflows/workers-v2-verify.yml
+fi
+paths=$(git show "$commit:$workflow" |
+  sed -n '/^  push:$/,/^  \(pull_request\|workflow_dispatch\):/s|^      - \(.*\)$|\1|p' | sed 's|/\*\*$||')
 if [[ -z $paths ]]; then
-  echo "no push paths in .github/workflows/workers-v2-verify.yml at $commit" >&2
+  echo "no push paths in $workflow at $commit" >&2
   exit 1
 fi
 # shellcheck disable=SC2086

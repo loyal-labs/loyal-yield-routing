@@ -1,6 +1,7 @@
 name: loyal-web
 
 on:
+  workflow_call:
   pull_request:
     branches: [main]
     paths:
@@ -32,6 +33,21 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       NEXT_PUBLIC_GIT_COMMIT_HASH: ${{ github.sha }}
+      NEXT_PUBLIC_GIT_BRANCH: ${{ github.ref_name }}
+      NEXT_PUBLIC_APP_ENVIRONMENT: ${{ vars.NEXT_PUBLIC_APP_ENVIRONMENT }}
+      NEXT_PUBLIC_APP_URL: ${{ vars.NEXT_PUBLIC_APP_URL }}
+      NEXT_PUBLIC_DASHBOARD_URL: ${{ vars.NEXT_PUBLIC_DASHBOARD_URL }}
+      NEXT_PUBLIC_DATADOG_APPLICATION_ID: ${{ vars.NEXT_PUBLIC_DATADOG_APPLICATION_ID }}
+      NEXT_PUBLIC_DATADOG_CLIENT_TOKEN: ${{ vars.NEXT_PUBLIC_DATADOG_CLIENT_TOKEN }}
+      NEXT_PUBLIC_DEMO_RECIPE: ${{ vars.NEXT_PUBLIC_DEMO_RECIPE }}
+      NEXT_PUBLIC_FLAGS_MANIFEST_URL: ${{ vars.NEXT_PUBLIC_FLAGS_MANIFEST_URL }}
+      NEXT_PUBLIC_JUPITER_API_KEY: ${{ vars.NEXT_PUBLIC_JUPITER_API_KEY }}
+      NEXT_PUBLIC_MIXPANEL_PROXY_PATH: ${{ vars.NEXT_PUBLIC_MIXPANEL_PROXY_PATH }}
+      NEXT_PUBLIC_MIXPANEL_TOKEN: ${{ vars.NEXT_PUBLIC_MIXPANEL_TOKEN }}
+      NEXT_PUBLIC_PRIVY_APP_ID: ${{ vars.NEXT_PUBLIC_PRIVY_APP_ID }}
+      NEXT_PUBLIC_SKILLS_ENABLED: ${{ vars.NEXT_PUBLIC_SKILLS_ENABLED }}
+      NEXT_PUBLIC_SOLANA_ENV: ${{ vars.NEXT_PUBLIC_SOLANA_ENV }}
+      NEXT_PUBLIC_USERCENTRICS_SETTINGS_ID: ${{ vars.NEXT_PUBLIC_USERCENTRICS_SETTINGS_ID }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -58,6 +74,12 @@ jobs:
           bun scripts/web/gen-routes.ts --app admin --check
       - name: build
         run: |
+          for name in ${!NEXT_PUBLIC_@}; do
+            if [ -z "${!name}" ]; then unset "$name"; fi
+          done
+          if [ "$GITHUB_EVENT_NAME" != pull_request ]; then
+            test -n "${NEXT_PUBLIC_PRIVY_APP_ID:-}" || { echo 'Configure repository variable NEXT_PUBLIC_PRIVY_APP_ID before production builds' >&2; exit 1; }
+          fi
           sh scripts/web/build.sh
           sh scripts/web/build.sh admin
           sh scripts/web/build.sh stats
@@ -78,6 +100,21 @@ jobs:
         run: |
           go vet ./cmd/loyal-web ./cmd/loyal-admin ./internal/webapp ./internal/webserve ./internal/admin ./internal/earnmax ./internal/earnprep ./internal/jwt
           go test -race ./cmd/loyal-web ./cmd/loyal-admin ./internal/webapp ./internal/webserve ./internal/admin ./internal/earnmax ./internal/earnprep ./internal/jwt
+      - name: Seal the web release artifacts
+        if: github.event_name != 'pull_request'
+        run: |
+          cp -a go/workers/cmd/loyal-web/dist/assets bin/web-assets
+          cd bin
+          sha256sum loyal-web loyal-admin loyal-stats > web-SHA256SUMS
+          find web-assets -type f -print0 | sort -z | xargs -0 sha256sum >> web-SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        if: github.event_name != 'pull_request'
+        with:
+          name: production-web-${{ github.sha }}
+          overwrite: true
+          path: bin/
+          if-no-files-found: error
+          retention-days: 7
 
   mobile:
     runs-on: ubuntu-24.04

@@ -60,7 +60,7 @@ else:
 
 
 class ActivationTest(unittest.TestCase):
-    def run_activation(self, family, mode='ok'):
+    def run_activation(self, family, mode='ok', expected=OLD):
         temp = tempfile.TemporaryDirectory(prefix='vault-activation-')
         self.addCleanup(temp.cleanup)
         root = Path(temp.name)
@@ -87,6 +87,7 @@ class ActivationTest(unittest.TestCase):
         dropin.parent.mkdir(parents=True)
         dropin.write_text(f'[Service]\nExecStart=\nExecStart={release}/{OLD}/loyal-engine\n')
         env = dict(os.environ, PATH=str(commands) + ':/usr/bin:/bin',
+                   LOYAL_DEPLOY_EXPECTED_RELEASE=expected,
                    ACTIVATION_TEST_ROOT=str(root), ACTIVATION_TEST_MODE=mode,
                    ACTIVATION_TEST_VAULT='rwa' if family == 'earn-max' else 'looping')
         result = subprocess.run(['sh', str(script), family, NEW,
@@ -113,6 +114,13 @@ class ActivationTest(unittest.TestCase):
         result, calls, dropin = self.run_activation('backyard', 'legacy')
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('previous release cannot pass the vault-scoped gate', result.stdout)
+        self.assertFalse(any(call[:2] == ['systemctl', 'stop'] for call in calls))
+        self.assertIn(OLD, dropin)
+
+    def test_concurrent_release_is_refused_before_stopping_the_worker(self):
+        result, calls, dropin = self.run_activation('backyard', expected='c' * 40)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('release changed after preflight', result.stdout)
         self.assertFalse(any(call[:2] == ['systemctl', 'stop'] for call in calls))
         self.assertIn(OLD, dropin)
 

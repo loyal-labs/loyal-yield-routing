@@ -1,0 +1,124 @@
+name: Production rollout
+
+on:
+  push:
+    branches: [main]
+    # ci-tree-key.sh also hashes these inputs for the verification artifact.
+    paths:
+      - go/workers/**
+      - web/**
+      - scripts/**
+      - deploy/hetzner/**
+      - migrations/**
+      - docs/evidence/backyard-rwa-go/**
+      - .github/workflows/**
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
+      - Dockerfile.light-workers
+      - crates/squads-test-harness/**
+      - crates/mock-yield-protocols-program/**
+      - crates/loyal-actions/**
+      - crates/loyal-solana-env/**
+      - crates/loyal-hub-abi/**
+      - crates/loyal-voltr-rwa-nav-adaptor/**
+      - crates/loyal-observability/**
+      - crates/loyal-yield-realtime/**
+      - crates/loyal-yield-realtime-core/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Never cancel an activation. Pending obsolete commits are replaced by the newest.
+concurrency:
+  group: loyal-production
+  cancel-in-progress: false
+
+jobs:
+  merge-checks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: read
+      statuses: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Require a merged main PR and its successful checks
+        run: |
+          pr=$(gh api --paginate "repos/$GH_REPO/commits/$GITHUB_SHA/pulls?per_page=100" | \
+            jq -ers '[.[][] | select(.merged_at != null and .base.ref == "main" and .merge_commit_sha == env.GITHUB_SHA)] | if length == 1 then .[0].number else error("expected one merged main PR for this commit") end')
+          gh pr checks "$pr" --watch --interval 10 --fail-fast
+          gh pr checks "$pr" --json name,bucket > "$RUNNER_TEMP/merged-pr-checks.json"
+          jq -e 'length > 0 and all(.[]; .bucket == "pass" or .bucket == "skipping")' "$RUNNER_TEMP/merged-pr-checks.json"
+  workers:
+    uses: ./.github/workflows/workers-v2-verify.yml
+  web:
+    uses: ./.github/workflows/web-go.yml
+  journeys:
+    uses: ./.github/workflows/web-journeys.yml
+  realtime:
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/realtime-image.yml
+
+  deploy:
+    needs: [merge-checks, workers, web, journeys, realtime]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    environment: production
+    permissions:
+      contents: read
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Refuse a superseded release
+        run: |
+          test "$(git rev-parse origin/main)" = "$GITHUB_SHA"
+          echo "LOYAL_DEPLOY_ARTIFACT_DIR=$RUNNER_TEMP/loyal-release" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: production-*-${{ github.sha }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/loyal-release
+      - name: Verify the exact artifacts before using production access
+        run: |
+          cd "$LOYAL_DEPLOY_ARTIFACT_DIR"
+          sha256sum -c workers-SHA256SUMS web-SHA256SUMS realtime-SHA256SUMS
+          chmod 0555 loyal-*
+      - name: Configure the production SSH identity
+        env:
+          DEPLOY_KEY: ${{ secrets.LOYAL_WORKERS_DEPLOY_KEY }}
+          KNOWN_HOSTS: ${{ secrets.LOYAL_WORKERS_KNOWN_HOSTS }}
+          DEPLOY_HOST: ${{ vars.LOYAL_WORKERS_HOST }}
+        run: |
+          set -eu
+          if [[ -z "$DEPLOY_KEY" || -z "$KNOWN_HOSTS" || -z "$DEPLOY_HOST" ]]; then
+            echo 'Configure the production environment SSH key, pinned known_hosts and LOYAL_WORKERS_HOST' >&2
+            exit 1
+          fi
+          [[ "$DEPLOY_HOST" =~ ^[a-zA-Z0-9.-]+$ ]] || exit 1
+          umask 077
+          mkdir -p "$HOME/.ssh"
+          printf '%s\n' "$KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          printf 'Host loyal-workers\n  HostName %s\n  User root\n  BatchMode yes\n  StrictHostKeyChecking yes\n  ConnectTimeout 10\n  ServerAliveInterval 15\n  ServerAliveCountMax 3\n' "$DEPLOY_HOST" > "$HOME/.ssh/config"
+          eval "$(ssh-agent -s)" >/dev/null
+          printf '%s\n' "$DEPLOY_KEY" | ssh-add - >/dev/null 2>&1
+          printf 'SSH_AUTH_SOCK=%s\nSSH_AGENT_PID=%s\n' "$SSH_AUTH_SOCK" "$SSH_AGENT_PID" >> "$GITHUB_ENV"
+      - name: Preflight, deploy and observe each service
+        run: python3 scripts/production-rollout.py "$GITHUB_SHA"
+      - name: Remove deployment access
+        if: always()
+        run: |
+          if [ -n "${SSH_AGENT_PID:-}" ]; then ssh-agent -k >/dev/null; fi
+          rm -f "$HOME/.ssh/config" "$HOME/.ssh/known_hosts"

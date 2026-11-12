@@ -1,20 +1,10 @@
 name: realtime-image
 
 # Builds the light-workers image, which now holds only loyal-yield-realtime.
-# Main pushes publish an immutable sha-<commit> tag; Render stays pinned.
+# The production workflow publishes the image and deploys its verified binary.
 on:
+  workflow_call:
   pull_request:
-    paths:
-      - .github/workflows/realtime-image.yml
-      - Dockerfile.light-workers
-      - Cargo.lock
-      - Cargo.toml
-      - rust-toolchain.toml
-      - crates/loyal-observability/**
-      - crates/loyal-yield-realtime/**
-      - crates/loyal-yield-realtime-core/**
-  push:
-    branches: [main]
     paths:
       - .github/workflows/realtime-image.yml
       - Dockerfile.light-workers
@@ -34,7 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       IMAGE: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-${{ github.sha }}
-      PUBLISH: ${{ github.event_name == 'push' }}
+      PUBLISH: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -65,3 +55,20 @@ jobs:
           docker image inspect "$IMAGE" | jq -e '.[0].Config.Cmd == ["/usr/local/bin/loyal-yield-realtime"]' >/dev/null
           docker run --rm --network=none --read-only --cap-drop=ALL --security-opt=no-new-privileges \
             --entrypoint sh "$IMAGE" -c 'test -x /usr/local/bin/loyal-yield-realtime'
+      - name: Extract the verified realtime binary
+        if: env.PUBLISH == 'true'
+        run: |
+          mkdir release
+          container=$(docker create "$IMAGE")
+          trap 'docker rm "$container" >/dev/null' EXIT
+          docker cp "$container:/usr/local/bin/loyal-yield-realtime" release/
+          cd release
+          sha256sum loyal-yield-realtime > realtime-SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        if: env.PUBLISH == 'true'
+        with:
+          name: production-realtime-${{ github.sha }}
+          overwrite: true
+          path: release/
+          if-no-files-found: error
+          retention-days: 7
