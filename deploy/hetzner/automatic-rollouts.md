@@ -67,8 +67,10 @@ The observed executable checksum must match the verified artifact. If an already
 running SHA has different binary bytes, the workflow requires a new commit
 instead of silently replacing or accepting that release.
 
-After each activation, the host observes that service for 120 seconds, polling
-every five seconds. It requires fresh progress and vault position observations,
+After each activation, a new worker has up to 60 seconds to publish its first
+lane observation, with all failure, restart and vault guards active throughout.
+The full 120-second observation then starts, polling every five seconds.
+It requires fresh progress and vault position observations,
 unchanged persisted target levels, exit requests and release permissions, no
 recovery latch, no newly failed/held operation, no new error counter/journal
 error, and no exit/restart. Selector sampling timestamps and transient economic

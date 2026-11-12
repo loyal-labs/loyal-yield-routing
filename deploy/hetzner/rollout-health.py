@@ -134,7 +134,7 @@ def journal_failures(unit, cursor):
     return failures
 
 
-def snapshot(family, since, cursor=None):
+def snapshot(family, since, cursor=None, allow_startup=False):
     unit = f'loyal-{family}.service'
     props = command('systemctl', 'show', unit, '--property=ActiveState,SubState,NRestarts,MainPID,InvocationID')
     state = dict(line.split('=', 1) for line in props.splitlines() if '=' in line)
@@ -166,9 +166,10 @@ def snapshot(family, since, cursor=None):
         values = metrics(family)
         progress = 'loyal_family_last_progress_timestamp_seconds' if family == 'observer' else 'loyal_lane_last_success_timestamp_seconds'
         lanes = {key: value for key, value in values.items() if key.startswith(progress)}
-        require(bool(lanes), 'worker lane observations are missing')
-        require(all(0 <= result['at'] - value <= 300 for value in lanes.values()), 'worker lane observation is stale')
-        result['lane_observed_at'] = max(lanes.values())
+        ready = bool(lanes) and all(value != 0 for value in lanes.values())
+        require(ready or allow_startup, 'worker lane observations are missing')
+        require(all(0 <= result['at'] - value <= 300 for value in lanes.values() if value != 0), 'worker lane observation is stale')
+        result['lane_observed_at'] = max(lanes.values()) if ready else 0
         result['failures'] = {key: value for key, value in values.items() if key.startswith('loyal_family_failed_total')}
     if family in VAULTS:
         result['vault'] = vault_snapshot(family, since)
@@ -206,13 +207,20 @@ def watch(family, sha, baseline, seconds=120):
     before = json.loads(Path(baseline).read_text())
     require(before['family'] == family, 'wrong preflight family')
     started = time.time()
+    observing = None
     previous = None
     fresh = False
     while True:
-        current = snapshot(family, before['at'], before['cursor'])
-        fresh = check_sample(before, current, sha, started, previous) or fresh
+        current = snapshot(family, before['at'], before['cursor'], allow_startup=observing is None)
+        fresh = check_sample(before, current, sha, observing if observing is not None else started, previous) or fresh
         previous = current
-        if time.time() - started >= seconds:
+        if observing is None:
+            if current.get('lane_observed_at', current['at']) > 0:
+                observing = time.time()
+            else:
+                require(current['invocation'] != before['invocation'], 'existing worker lane observations are missing')
+                require(time.time() - started < 60, 'worker startup observation timed out')
+        if observing is not None and time.time() - observing >= seconds:
             require(fresh, 'no fresh observation from the deployed process')
             print(json.dumps({'family': family, 'release': sha, 'observed_seconds': seconds, 'fresh': True}), flush=True)
             return

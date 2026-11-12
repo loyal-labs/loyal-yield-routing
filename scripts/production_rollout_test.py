@@ -109,11 +109,87 @@ class HealthTest(unittest.TestCase):
                 clock[0] += seconds
             with patch.object(health.time, 'time', side_effect=lambda: clock[0]), \
                  patch.object(health.time, 'sleep', side_effect=sleep), \
-                 patch.object(health, 'snapshot', side_effect=lambda *args: sample(NEW, 'new', clock[0])), \
+                 patch.object(health, 'snapshot', side_effect=lambda *args, **kwargs: sample(NEW, 'new', clock[0])), \
                  patch('sys.stdout', new_callable=io.StringIO) as out:
                 health.watch('backyard', NEW, baseline, seconds=10)
                 self.assertEqual(clock[0], 1011)
                 self.assertTrue(json.loads(out.getvalue())['fresh'])
+
+    def test_startup_wait_preserves_full_observation_window_and_has_a_deadline(self):
+        for delay, expected, error in ((15, 1026, None), (65, 1061, 'startup observation timed out')):
+            with self.subTest(delay=delay), tempfile.TemporaryDirectory() as directory:
+                baseline = Path(directory) / 'before.json'
+                baseline.write_text(json.dumps(sample()))
+                clock = [1001]
+                def sleep(seconds):
+                    clock[0] += seconds
+                def snapshot(*args, **kwargs):
+                    current = sample(NEW, 'new', clock[0])
+                    if clock[0] < 1001 + delay:
+                        self.assertTrue(kwargs['allow_startup'])
+                        current['lane_observed_at'] = 0
+                    return current
+                with patch.object(health.time, 'time', side_effect=lambda: clock[0]), \
+                     patch.object(health.time, 'sleep', side_effect=sleep), \
+                     patch.object(health, 'snapshot', side_effect=snapshot), \
+                     patch('sys.stdout', new_callable=io.StringIO):
+                    if error:
+                        with self.assertRaisesRegex(RuntimeError, error):
+                            health.watch('backyard', NEW, baseline, seconds=10)
+                    else:
+                        health.watch('backyard', NEW, baseline, seconds=10)
+                self.assertEqual(clock[0], expected)
+
+    def test_startup_wait_stops_on_failure_restart_or_changed_permissions(self):
+        for mutate in (
+            lambda s: s.update(invocation='restarted'),
+            lambda s: s['failures'].update({'failed': 1}),
+            lambda s: s['vault'].update(intent_fingerprint='changed'),
+        ):
+            with tempfile.TemporaryDirectory() as directory:
+                baseline = Path(directory) / 'before.json'
+                baseline.write_text(json.dumps(sample()))
+                first = sample(NEW, 'new', 1001)
+                first['lane_observed_at'] = 0
+                second = copy.deepcopy(first)
+                mutate(second)
+                with patch.object(health.time, 'time', return_value=1001), \
+                     patch.object(health.time, 'sleep') as sleep, \
+                     patch.object(health, 'snapshot', side_effect=[first, second]), \
+                     self.assertRaises(RuntimeError):
+                    health.watch('backyard', NEW, baseline)
+                sleep.assert_called_once_with(5)
+
+    def test_startup_snapshot_keeps_vault_and_journal_guards_and_strict_preflight(self):
+        binary = Path(f'/opt/loyal/releases/backyard/{NEW}/loyal-engine')
+        state = 'ActiveState=active\nSubState=running\nNRestarts=0\nMainPID=123\nInvocationID=new'
+        for allow, lanes, failed, journal, error in (
+            (False, {}, 0, [], 'observations are missing'),
+            (True, {}, 0, [], None),
+            (True, {'loyal_lane_last_success_timestamp_seconds': 0}, 0, [], None),
+            (True, {}, 1, [], 'failed/held operation'),
+            (True, {}, 0, ['error'], 'error/exit'),
+            (True, {'loyal_lane_last_success_timestamp_seconds': 1}, 0, [], 'observation is stale'),
+        ):
+            with self.subTest(allow=allow, lanes=lanes, failed=failed, journal=journal):
+                vault = dict(sample()['vault'], recovery=0, failed_or_held=failed)
+                with patch.object(health, 'command', side_effect=[state, '-- cursor: now']), \
+                     patch.object(health, 'journal_failures', return_value=journal), \
+                     patch.object(health, 'metrics', return_value=lanes), \
+                     patch.object(health, 'vault_snapshot', return_value=vault) as probe, \
+                     patch.object(health.time, 'time', return_value=1001), \
+                     patch.object(Path, 'read_text', return_value=f'ExecStart={binary}'), \
+                     patch.object(Path, 'resolve', return_value=binary), \
+                     patch.object(Path, 'is_file', return_value=True), \
+                     patch.object(Path, 'read_bytes', return_value=b'release'), \
+                     patch.object(health.os, 'access', return_value=True):
+                    if error:
+                        with self.assertRaisesRegex(RuntimeError, error):
+                            health.snapshot('backyard', 1000, 'cursor', allow_startup=allow)
+                    else:
+                        current = health.snapshot('backyard', 1000, 'cursor', allow_startup=allow)
+                        self.assertEqual(current['lane_observed_at'], 0)
+                        probe.assert_called_once_with('backyard', 1000)
 
     def test_watch_stops_on_first_failure_without_waiting_out_window(self):
         with tempfile.TemporaryDirectory() as directory:
