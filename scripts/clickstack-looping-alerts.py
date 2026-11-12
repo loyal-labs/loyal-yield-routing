@@ -173,6 +173,7 @@ def main(argv=None):
     parser.add_argument('--apply', action='store_true')
     parser.add_argument('--journal', type=Path, help='Required fresh file for --apply; never overwrite earlier evidence')
     args = parser.parse_args(argv)
+    require(not args.apply, 'Legacy vault paging is retired; use Prometheus. See docs/vault-alerts.md')
     require(not args.apply or args.journal is not None, '--apply requires --journal')
     require(not args.apply or not args.journal.exists(), 'Journal exists; choose a fresh path')
     require(args.output is None or args.journal is None or args.output.resolve() != args.journal.resolve(), 'Plan and journal paths must differ')

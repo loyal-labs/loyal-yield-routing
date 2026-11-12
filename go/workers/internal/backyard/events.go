@@ -40,6 +40,7 @@ type events struct {
 	roomOpenedAt map[string]time.Time
 	roomRaw      map[string]uint64
 	heldLanes    map[string]bool
+	riskLanes    map[string]bool
 }
 
 func newEvents(log *slog.Logger, facts *engine.Facts, vault string) *events {
@@ -115,6 +116,7 @@ func (e *events) latched(reason string) {
 	e.mu.Unlock()
 	e.log.Error("backyard_latched", "code", reason, "cause", cause)
 	if e.facts != nil {
+		e.facts.BackyardRecoveryRequired(e.vault, true)
 		e.facts.Failed(engine.FamilyBackyard, "manual_recovery_latched")
 	}
 }
@@ -132,6 +134,9 @@ func (e *events) noteLatch(latched bool, reason string) {
 	e.mu.Unlock()
 	if cleared {
 		e.log.Info("backyard_latch_cleared", "code", previous)
+	}
+	if e.facts != nil {
+		e.facts.BackyardRecoveryRequired(e.vault, latched)
 	}
 }
 
@@ -164,6 +169,9 @@ func (e *events) noteSnapshot(s Snapshot, observedAt time.Time) {
 	if e == nil || !s.Fresh || s.ManualReason != "" || observedAt.IsZero() {
 		return
 	}
+	if e.facts != nil && s.netKnown(e.now()) {
+		e.facts.BackyardValuation(e.vault, s.TotalVaultNAVRaw, s.LPSupplyInclFeesRaw, observedAt)
+	}
 	e.mu.Lock()
 	e.snapshot = s
 	e.snapshotAt = observedAt
@@ -175,6 +183,44 @@ func (e *events) noteSnapshot(s Snapshot, observedAt time.Time) {
 		e.withdrawSince = time.Time{}
 	}
 	e.mu.Unlock()
+}
+
+// Risk telemetry uses every observed lane, including underwater positions
+// that cannot be represented by the positive-equity leverage calculation.
+func (e *events) riskObserved(o Observation) {
+	if e == nil || e.facts == nil || !o.Snapshot.Fresh || o.ObservedAt.IsZero() || len(o.lanes) == 0 {
+		return
+	}
+	held := map[string]bool{}
+	for _, s := range o.lanes {
+		if s.RouteLane == "" || !s.Fresh || s.PositionDebtRaw < 0 {
+			return
+		}
+		if s.PositionDebtRaw > 0 {
+			if s.LiquidationThresholdBPS <= 0 || s.MaxLTVBPS <= 0 || s.LTVBPS < 0 {
+				return
+			}
+			held[s.RouteLane] = true
+		}
+	}
+	for _, s := range o.lanes {
+		if held[s.RouteLane] {
+			e.facts.BackyardLaneRisk(e.vault, s.RouteLane, hardLTVBPS(s.LiquidationThresholdBPS, s.MaxLTVBPS)-s.LTVBPS,
+				s.LiquidationThresholdBPS-s.LTVBPS, o.ObservedAt)
+		} else {
+			// Publish repayment after restarts too, when the in-memory lane set is empty.
+			e.facts.BackyardLaneRiskGone(e.vault, s.RouteLane, o.ObservedAt)
+		}
+	}
+	e.mu.Lock()
+	previous := e.riskLanes
+	e.riskLanes = held
+	e.mu.Unlock()
+	for lane := range previous {
+		if !held[lane] {
+			e.facts.BackyardLaneRiskGone(e.vault, lane, o.ObservedAt)
+		}
+	}
 }
 
 func (e *events) tickResult(err error, fatal bool) {

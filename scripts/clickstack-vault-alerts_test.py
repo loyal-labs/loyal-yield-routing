@@ -51,6 +51,12 @@ class FakeTransport:
 
 
 class RepairTests(unittest.TestCase):
+    def test_retired_apply_is_rejected_before_reads_or_network(self):
+        with patch.object(repair, 'load_snapshots', side_effect=AssertionError('must not read')), \
+             patch.object(repair, 'Transport', side_effect=AssertionError('must not connect')):
+            with self.assertRaisesRegex(ValueError, 'Legacy vault paging is retired'):
+                repair.main(['--apply', '--snapshots', '/missing', '--output', '/missing-plan'])
+
     def setUp(self):
         self.objects, self.inventories = fixtures()
         self.plan = repair.build_plan(self.objects, self.inventories, SPEC)
