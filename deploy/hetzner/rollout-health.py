@@ -24,6 +24,23 @@ VAULTS = {
 }
 METRICS_PORTS = {'backyard': 9103, 'earn-max': 9105, 'retail': 9102, 'observer': 9101}
 ADDRESS_VARS = {'web': 'LOYAL_WEB_ADDRESS', 'admin': 'LOYAL_ADMIN_ADDRESS', 'stats': 'LOYAL_STATS_ADDRESS', 'telegram': 'LOYAL_TELEGRAM_ADDRESS'}
+# Required by the production features we run, including optional-at-startup integrations.
+CREDENTIALS = {
+    'backyard': 'BACKYARD_DATABASE_URL BACKYARD_SOLANA_RPC_URL BACKYARD_POLICY_KEYPAIR BACKYARD_HELIUS_API_KEY JUPITER_API_KEY',
+    'retail': 'RETAIL_DATABASE_URL RETAIL_TIMESCALE_DATABASE_URL RETAIL_SOLANA_RPC_URL RETAIL_JUPITER_API_KEY RETAIL_DELEGATE_KEYPAIR RETAIL_FEE_PAYER_KEYPAIR RETAIL_LOOKUP_MANAGER_KEYPAIR RETAIL_PRIVY_APP_ID RETAIL_PRIVY_APP_SECRET RETAIL_RELAY_API_KEY RETAIL_SWEEP_NOTIFY_ENDPOINT RETAIL_SWEEP_NOTIFY_SECRET',
+    'observer': 'HELIUS_API_KEY SOLANA_RPC_URL NEON_DATABASE_URL TIMESCALEDB_URL',
+    'telegram': 'TELEGRAM_APP_DATABASE_URL TELEGRAM_BOT_TOKEN TELEGRAM_WEBHOOK_SECRET MESSAGE_ENCRYPTION_KEY REDPILL_AI_API_KEY R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY',
+    'web': 'WEB_APP_DATABASE_URL AUTH_JWT_SECRET WEB_SOLANA_RPC_URL COINGECKO_API_KEY OBSERVABILITY_OTLP_ENDPOINT OBSERVABILITY_INGESTION_API_KEY CAP_SECRET WEB_YIELD_DATABASE_URL EARN_YIELD_ROUTER_PUBLIC_KEY SMART_ACCOUNT_SPONSOR_PK REALTIME_AUTH_SECRET TIMESCALEDB_URL PRIVY_APP_ID PRIVY_APP_SECRET WEB_EVM_RPC_URLS RELAY_API_KEY ONESIGNAL_APP_ID ONESIGNAL_REST_API_KEY',
+    'admin': 'ADMIN_USER ADMIN_PASSWORD ADMIN_APP_DATABASE_URL ADMIN_YIELD_DATABASE_URL ADMIN_TIMESCALE_DATABASE_URL CLICKSTACK_READ_KEY R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY',
+    'stats': 'STATS_APP_DATABASE_URL STATS_YIELD_DATABASE_URL',
+    'realtime': 'realtime-envelope',
+}
+CREDENTIALS['earn-max'] = CREDENTIALS['backyard']
+CRONS = {
+    'smart-account-reconcile': 'WEB_APP_DATABASE_URL WEB_YIELD_DATABASE_URL WEB_SOLANA_RPC_URL SMART_ACCOUNT_SPONSOR_PK',
+    'earn-yield-joy': 'WEB_APP_DATABASE_URL WEB_YIELD_DATABASE_URL TIMESCALEDB_URL WEB_SOLANA_RPC_URL ONESIGNAL_APP_ID ONESIGNAL_REST_API_KEY MIXPANEL_PROJECT_TOKEN',
+    'earn-events-mixpanel': 'WEB_APP_DATABASE_URL WEB_YIELD_DATABASE_URL MIXPANEL_PROJECT_TOKEN',
+}
 
 
 def require(condition, message):
@@ -45,6 +62,102 @@ def fingerprint(value):
 def unit_environment(unit):
     text = command('systemctl', 'show', unit, '--property=Environment', '--value')
     return dict(item.split('=', 1) for item in shlex.split(text) if '=' in item)
+
+
+def unit_properties(unit, properties):
+    text = command('systemctl', 'show', unit, '--property=' + properties)
+    return dict(line.split('=', 1) for line in text.splitlines() if '=' in line)
+
+
+def credential_references(unit):
+    references = {}
+    for line in command('systemctl', 'cat', unit).splitlines():
+        if not line.startswith('LoadCredentialEncrypted='):
+            continue
+        value = line.split('=', 1)[1]
+        if not value:
+            references.clear()
+            continue
+        for entry in shlex.split(value):
+            name, separator, path = entry.partition(':')
+            require(separator and path.startswith('/etc/credstore.encrypted/'), f'{unit}: unsupported encrypted credential reference')
+            references[name] = path
+    return references
+
+
+def check_credentials(unit, required):
+    references = credential_references(unit)
+    missing = set(required.split()) - references.keys()
+    require(not missing, f'{unit}: missing credentials: ' + ', '.join(sorted(missing)))
+    # Check ciphertext usability, not merely filenames. Values never leave host memory.
+    for name, path in references.items():
+        value = command('systemd-creds', 'decrypt', '--name=' + name, path, '-')
+        require(bool(value.strip()), f'{unit}: empty credential {name}')
+        if name == 'realtime-envelope':
+            values = json.loads(value)['values']
+            require(all(values.get(key) for key in ('NEON_DATABASE_URL', 'REALTIME_AUTH_SECRET', 'REALTIME_ALLOWED_ORIGINS')),
+                    f'{unit}: incomplete realtime credential envelope')
+
+
+def cron_jobs():
+    jobs = ['smart-account-reconcile', 'earn-yield-joy']
+    optional = unit_properties('loyal-web-cron-earn-events-mixpanel.timer', 'LoadState')
+    if optional.get('LoadState') != 'not-found':
+        jobs.append('earn-events-mixpanel')
+    return jobs
+
+
+def configuration(family):
+    check_credentials(f'loyal-{family}.service', CREDENTIALS[family])
+    if family != 'web':
+        return
+    for unit in ('loyal-web.service', 'loyal-web-cron@earn-yield-joy.service'):
+        env = unit_environment(unit)
+        missing = [name for name in ('ONESIGNAL_EARNINGS_CHANNEL_ID', 'ONESIGNAL_ALERTS_CHANNEL_ID') if not env.get(name, '').strip()]
+        require(not missing, f'{unit}: missing configuration: ' + ', '.join(missing))
+    for job in cron_jobs():
+        check_credentials(f'loyal-web-cron@{job}.service', CRONS[job])
+
+
+def wait_for_crons():
+    deadline = time.monotonic() + 600
+    while True:
+        running = False
+        for job in cron_jobs():
+            state = unit_properties(f'loyal-web-cron@{job}.service', 'ActiveState,Result')
+            require(state.get('Result') == 'success' and state.get('ActiveState') != 'failed', f'{job}: scheduled job failed')
+            running |= state.get('ActiveState') in ('active', 'activating')
+        if not running:
+            return
+        require(time.monotonic() < deadline, 'scheduled jobs did not finish before deployment')
+        time.sleep(5)
+
+
+def cron_snapshot(release, before=None):
+    results = {}
+    uptime = float(Path('/proc/uptime').read_text().split()[0])
+    for job in cron_jobs():
+        unit = f'loyal-web-cron@{job}.service'
+        timer = unit_properties(f'loyal-web-cron-{job}.timer', 'ActiveState,UnitFileState')
+        require(timer.get('ActiveState') == 'active' and timer.get('UnitFileState') == 'enabled', f'{job}: cron timer is not enabled and active')
+        state = unit_properties(unit, 'Result,ExecMainStatus,ActiveState,ExecMainStartTimestampMonotonic,ExecMainExitTimestampMonotonic,ExecStart')
+        require(state.get('Result') == 'success' and state.get('ExecMainStatus') == '0'
+                and state.get('ActiveState') in ('inactive', 'activating', 'active'), f'{job}: scheduled job failed')
+        require(f'/opt/loyal/releases/web/{release}/loyal-web cron ' in state.get('ExecStart', ''),
+                f'{job}: cron release differs from web; resolve its recovery override before deployment')
+        started = int(state.get('ExecMainStartTimestampMonotonic', '0')) / 1e6
+        finished = int(state.get('ExecMainExitTimestampMonotonic', '0')) / 1e6
+        running = state['ActiveState'] in ('activating', 'active')
+        require((running and started > 0 and 0 <= uptime - started <= 600)
+                or (not running and finished > 0 and 0 <= uptime - finished <= 1800), f'{job}: no recent scheduled run')
+        if before is not None:
+            require(job in before, f'{job}: scheduled jobs changed during deployment')
+            require(not journal_failures(unit, before[job]['cursor']), f'{job}: error since preflight; inspect its journal')
+        cursor = re.search(r'^-- cursor: (.+)$', command('journalctl', '-u', unit, '-n', '0', '--show-cursor', '--no-pager'), re.M)
+        require(cursor is not None, f'{job}: journal cursor unavailable')
+        results[job] = {'cursor': cursor[1], 'started_at': time.time() - uptime + started,
+                        'completed': finished >= started and state['ActiveState'] == 'inactive'}
+    return results
 
 
 def database_snapshot(family, since):
@@ -132,6 +245,8 @@ def journal_failures(unit, cursor, stopping_invocation=None):
         name = str(event.get('msg', event.get('message', '')))
         if (str(event.get('level', '')).lower() in ('error', 'fatal', 'panic')
                 or name in ('backyard_operation_failed_after_send', 'backyard_worker_exit', 'backyard_latched')
+                or (unit.startswith('loyal-web-cron@') and (
+                    'wallet failed' in name or (isinstance(event.get('errors'), int) and event['errors'] > 0)))
                 or entry.get('PRIORITY') in ('0', '1', '2', '3')
                 or re.search(r'\b(panic:|FATAL|ERROR)\b', message)):
             # Never forward raw journal messages or their transaction/credential fields.
@@ -139,7 +254,7 @@ def journal_failures(unit, cursor, stopping_invocation=None):
     return failures
 
 
-def snapshot(family, since, cursor=None, allow_startup=False, stopping_invocation=None):
+def snapshot(family, since, cursor=None, allow_startup=False, stopping_invocation=None, crons_before=None):
     unit = f'loyal-{family}.service'
     props = command('systemctl', 'show', unit, '--property=ActiveState,SubState,NRestarts,MainPID,InvocationID')
     state = dict(line.split('=', 1) for line in props.splitlines() if '=' in line)
@@ -190,6 +305,8 @@ def snapshot(family, since, cursor=None, allow_startup=False, stopping_invocatio
         with urllib.request.urlopen(f'http://{address}{path}', timeout=10) as response:
             if family in ('web', 'admin', 'stats'):
                 require(response.headers.get('X-Loyal-Release') in (result['release'], 'sha-' + result['release']), 'readiness serves a different release')
+    if family == 'web':
+        result['crons'] = cron_snapshot(result['release'], crons_before)
     return result
 
 
@@ -206,6 +323,9 @@ def check_sample(before, current, sha, watch_started, previous=None):
     if 'vault' in current:
         require(current['vault']['intent_fingerprint'] == before['vault']['intent_fingerprint'], 'vault targets or permissions changed during rollout')
         fresh = fresh and current['vault']['observed_at'] > watch_started
+    if 'crons' in current:
+        require(current['crons'].keys() == before['crons'].keys(), 'scheduled jobs changed during deployment')
+        fresh = fresh and all(job['completed'] and job['started_at'] > watch_started for job in current['crons'].values())
     return fresh
 
 
@@ -218,7 +338,7 @@ def watch(family, sha, baseline, seconds=120):
     fresh = False
     while True:
         current = snapshot(family, before['at'], before['cursor'], allow_startup=observing is None,
-                           stopping_invocation=before['invocation'])
+                           stopping_invocation=before['invocation'], crons_before=before.get('crons'))
         fresh = check_sample(before, current, sha, observing if observing is not None else started, previous) or fresh
         previous = current
         if observing is None:
@@ -228,6 +348,9 @@ def watch(family, sha, baseline, seconds=120):
                 require(current['invocation'] != before['invocation'], 'existing worker lane observations are missing')
                 require(time.time() - started < 60, 'worker startup observation timed out')
         if observing is not None and time.time() - observing >= seconds:
+            if not fresh and family == 'web' and time.time() - started < 1500:
+                time.sleep(5)
+                continue
             require(fresh, 'no fresh observation from the deployed process')
             print(json.dumps({'family': family, 'release': sha, 'observed_seconds': seconds, 'fresh': True}), flush=True)
             return
@@ -242,6 +365,10 @@ def main():
     parser.add_argument('--sha')
     parser.add_argument('--baseline')
     args = parser.parse_args()
+    if args.mode != 'database':
+        configuration(args.family)
+    if args.mode == 'snapshot' and args.family == 'web':
+        wait_for_crons()
     since = args.since if args.since is not None else time.time() - 120
     if args.mode == 'watch':
         require(args.sha is not None and re.fullmatch('[0-9a-f]{40}', args.sha) is not None and args.baseline, 'watch requires a SHA and baseline')

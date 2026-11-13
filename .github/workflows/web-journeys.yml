@@ -1,14 +1,6 @@
 name: Web journey contracts
 on:
   workflow_call:
-  pull_request:
-    paths:
-      - "web/apps/web/**"
-      - "web/apps/admin/src/app/(admin)/journeys/**"
-      - "web/packages/smart-account-vaults/**"
-      - "web/packages/shared/**"
-      - ".github/workflows/web-journeys.yml"
-      - "web/scripts/observability/**"
   workflow_dispatch:
   schedule:
     - cron: "23 */6 * * *"

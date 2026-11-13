@@ -1,11 +1,32 @@
 # Automatic production rollouts
 
-The `Production rollout` workflow checks the exact merged main commit, then
-deploys Backyard, Earn MAX, retail, observer, Telegram, web, admin, stats and
-realtime sequentially. It requires a merged main PR with passing checks, the
-worker/database/SVM and monitoring checks, web/mobile checks, browser journeys,
-and the realtime image probe. Deployment uses binaries and assets from that
-same workflow run. PR jobs receive no production SSH credentials.
+The `Production rollout` workflow selects affected services, checks the exact
+merged main commit, then deploys the selected services sequentially. It covers
+Backyard, Earn MAX, retail, observer, Telegram, web, admin, stats and realtime.
+PR checks use the same selection. A web-only change runs web checks and browser
+journeys and deploys web; it does not run engine simulations or deploy workers.
+Admin, stats, observer, Telegram and realtime have their own selections. Mobile
+changes run mobile checks without a Hetzner deployment.
+
+`scripts/production-scope.py` reads Go imports, workspace package dependencies
+and realtime Cargo dependencies from both committed snapshots. Shared code
+selects its consumers. Backyard, Earn MAX and retail compile the same engine
+command package and binary, including its package initialization; changes to
+that shared dependency graph select all three. Go tests also verify each
+selected service's shared packages.
+
+Production scope includes every intermediate change since the last successful
+production workflow, so a failed rollout followed by a revert cannot silently
+drop a service. Renames and deletions include the previous dependency graph.
+Tests can select checks without deployment; documentation selects neither.
+CI orchestration changes run regression gates without restarting unchanged
+applications. Each run uploads `scope.json` and lists its checks and deployments
+in the job summary. Empty deployment selections never connect to production.
+
+The final `verified` job requires every selected check to succeed and every
+unselected job to be skipped deliberately. Per-service verification receipts,
+binaries and assets belong to that exact main SHA and workflow run. PR jobs
+receive no production SSH credentials.
 
 ## Activate once
 
@@ -47,11 +68,12 @@ merging and the first production rollout need the owner's authorization.
 
    It creates/removes a temporary helper directory and transient read-only
    credential processes. It never activates a service. Success ends with
-   `Read-only preflight passed for all services. No deployment performed.`
+   `Read-only preflight passed for selected services. No deployment performed.`
+   To probe one service, add `--services-json '["web"]'` (or another service).
 7. Run `Production rollout` on `main`, then inspect every service's verification
    line in the GitHub job summary. Subsequent runtime changes merged into main
-   run it automatically. Changes outside the workflow's runtime/deployment
-   paths do not trigger a rollout.
+   run it automatically. Commits without changed production services finish
+   without deployment.
 
 ## Private CI network
 
@@ -117,7 +139,7 @@ been activated. `ROLLOUT BLOCKED` or `ROLLOUT HALTED` means the configuration wa
 loaded but a safety/health gate refused progress; inspect the named service.
 Missing evidence is a failure, not a successful empty check.
 
-Before the first mutation, all services pass identity/health and migration/unit
+Before the first mutation, all selected services pass identity/health and migration/unit
 checks. Before each activation, the workflow rechecks main's SHA and that
 service's current release. The host lock and expected-release comparison prevent
 overlapping or unexpected replacements. The vaults drain using the existing
@@ -125,6 +147,21 @@ scoped in-flight gates; stopped services are never started implicitly.
 The observed executable checksum must match the verified artifact. If an already
 running SHA has different binary bytes, the workflow requires a new commit
 instead of silently replacing or accepting that release.
+
+Preflight also checks the required production credentials, including integrations
+that the application permits to be absent at startup. It decrypts them in host
+memory to verify they are usable and nonempty; values never reach CI. A new
+credential read must be classified as required or as an intentional fallback in
+the regression contract. Web additionally requires the OneSignal credentials,
+both Android channel IDs, and the earnings cron's Mixpanel token.
+
+Web's scheduled jobs must have enabled, active timers, recent successful runs,
+and the same release as web. A running preflight job is allowed to finish before
+activation. After activation the observer waits for successful scheduled
+executions from the new release (up to 25 minutes), in addition to HTTP readiness.
+It does not send a synthetic push or manually replay a job. The first job failure,
+failed-wallet event, nonzero summary error count or missing evidence halts the
+rollout. An installed optional analytics timer is checked too.
 
 After each activation, a new worker has up to 60 seconds to publish its first
 lane observation, with all failure, restart and vault guards active throughout.

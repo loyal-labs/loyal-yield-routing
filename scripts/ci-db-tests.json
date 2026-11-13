@@ -1,0 +1,44 @@
+{
+  "./internal/earnmax": [
+    "TestWithdrawalAttemptDatabaseFeeReservationSurvivesWideningAndRetries",
+    "TestWithdrawalCostStatusGenerationVersionsAndUnknown",
+    "TestExitLiabilityUsesConfirmedReportAtEachMark",
+    "TestWithdrawalConsentStoreConcurrentImmutableVersions"
+  ],
+  "./internal/releasecontrol": [
+    "TestReleaseControlDefaultDenyCASAndAdmissionFence"
+  ],
+  "./internal/admin": [
+    "TestEarnMaxHealthUsesSignedStateAndReportedWorker"
+  ],
+  "./internal/bridge": [
+    "TestTrackerStoresEachHashFromTheStatusThatCarriedIt"
+  ],
+  "./internal/webapp": [
+    "TestEarnJoyClaimIsCompareAndSwap",
+    "TestEarnJoyEmitsOnlyAcceptedPushes",
+    "TestEarnJoyRunSkipsUnavailableWallet",
+    "TestEarnJoyUnregisteredWalletKeepsItsClaim",
+    "TestEarnYieldJoyResumesUntilDailyCycleCompletes",
+    "TestWalletPushTargetsOnlyRegisteredOneSignalSubscriptions",
+    "TestEvmDepositConcurrentPostsMakeOnePrivyCreate",
+    "TestEvmDepositRelaySignedRefusesEmbeddedWalletWhenPrivyLookupIsEmpty",
+    "TestEarnEventsExportKeepsWatermarkWhenTrackFails",
+    "TestEarnEventsExportPagesThroughABusyHour",
+    "TestEarnEventsExportSeedsThenExports",
+    "TestBridgeOutQuoteIsNotServedWithoutItsRow"
+  ],
+  "./internal/backyard": [
+    "TestWithdrawalCostDatabaseIdleRequesterDoesNotStallAdmittedFunding",
+    "TestWithdrawalCostDatabaseLoaderUsesActualGenerationAndEscrow",
+    "TestWithdrawalCostDatabaseDisclosedFailureAndManualLandingSatisfyProductionConstraint",
+    "TestWithdrawalCostDatabaseSimulationDisclosureCrashRetainsExactWire",
+    "TestPublishedNAVStopsAtOldestQuoteSlot",
+    "TestForeignInflowStoreCommitsEvidenceAndCursorTogether",
+    "TestWithdrawalCostDatabaseCoveredSaleAndObservationOrdering",
+    "TestWithdrawalCostDatabaseCrossWorkerReservationAndConsentWidening",
+    "TestWithdrawalCostDatabaseSigningRefusesConsentReplacedAfterReservation",
+    "TestWithdrawalCostDatabaseEngineSweepsWithoutDemandOrNewSigning",
+    "TestWithdrawalCostDatabaseSweepTimeoutDoesNotStarveLaterWireAndJoins"
+  ]
+}

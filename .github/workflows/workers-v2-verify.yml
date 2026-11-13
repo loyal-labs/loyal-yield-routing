@@ -2,12 +2,19 @@ name: Workers v2 branch verification
 
 on:
   workflow_call:
-  workflow_dispatch:
-
-  # Every PR reports the required checks; the changes job skips them when
-  # no workers path changed.
-  pull_request:
-    branches: [main]
+    inputs:
+      services:
+        type: string
+        required: true
+      packages:
+        type: string
+        required: true
+      engine:
+        type: boolean
+        required: true
+      rust:
+        type: boolean
+        required: true
 
 env:
   # The runner has 4 vCPUs.
@@ -23,67 +30,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  monitoring-contracts:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - run: python3 scripts/clickstack-vault-alerts_test.py
-      - run: python3 scripts/clickstack-looping-alerts_test.py
-      - name: Deployment refusals, observation and rollback
-        run: python3 -B -m unittest discover -s scripts -p '*rollout_test.py'
-      - name: Install offline alert validators
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends prometheus prometheus-alertmanager python3-yaml wireguard-tools nftables
-      - name: Private deployment network isolation and cleanup
-        run: sudo bash scripts/ci-worker-network_test.sh
-      - name: Verify paging decisions, routing and Telegram rendering
-        working-directory: deploy/hetzner/monitoring
-        run: |
-          promtool check rules loyal.rules.yml
-          promtool test rules loyal*.rules.test.yml
-          amtool check-config alertmanager.yml
-          python3 verify-alert-messages.py
-
-  changes:
-    runs-on: ubuntu-24.04
-    outputs:
-      workers: ${{ steps.diff.outputs.workers }}
-      rust: ${{ steps.diff.outputs.rust }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - id: diff
-        env:
-          BASE: ${{ github.event.pull_request.base.sha }}
-        # Pushes and explicit release verification replay all fixtures;
-        # PRs replay Rust when a crate input changed.
-        run: |
-          if test "$GITHUB_EVENT_NAME" != pull_request || git diff --name-only "$BASE" HEAD | grep -qE '^(Cargo\.(toml|lock)$|rust-toolchain\.toml$|crates/)'; then
-            echo rust=true >> "$GITHUB_OUTPUT"
-          else
-            echo rust=false >> "$GITHUB_OUTPUT"
-          fi
-          if test "$GITHUB_EVENT_NAME" != pull_request || git diff --name-only "$BASE" HEAD | grep -qE '^(go/workers/|migrations/|deploy/hetzner/|docs/evidence/backyard-rwa-go/|scripts/(.*rollout.*|ci-worker-network.*|deploy-workers\.sh|ci-tree-key\.sh|activate-vaults_test\.py|verify-workers-v2\.sh|check-go-ts-refs\.sh|build-svm-fixtures\.sh|prepare-vault-withdrawal-test-db\.sh)$|\.github/workflows/(workers-v2-verify|production)\.yml$|Cargo\.(toml|lock)$|rust-toolchain\.toml$|crates/(squads-test-harness|mock-yield-protocols-program|loyal-actions|loyal-solana-env|loyal-hub-abi|loyal-voltr-rwa-nav-adaptor)/)'; then
-            echo workers=true >> "$GITHUB_OUTPUT"
-          else
-            echo workers=false >> "$GITHUB_OUTPUT"
-          fi
-
   verify:
-    needs: changes
-    if: needs.changes.outputs.workers == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     # The Go tests that need Postgres skip when their env var is unset, and a
     # skip on trunk hid breakage twice. Packages run serially because bridge
     # and webapp tests create and drop the same loyal_yield schema.
     env:
+      WORKERS_V2_PACKAGES: ${{ inputs.packages }}
       BRIDGE_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/bridge_test?sslmode=disable
       EARNMAX_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/earnmax_test?sslmode=disable
       EARN_JOY_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/earn_joy_test?sslmode=disable
@@ -119,6 +73,7 @@ jobs:
       - name: Prepare withdrawal regressions with production lifecycle constraints
         run: bash scripts/prepare-vault-withdrawal-test-db.sh
       - name: Vault service deployment gates
+        if: inputs.engine
         run: python3 scripts/activate-vaults_test.py
       - uses: actions/setup-go@v5
         with:
@@ -136,6 +91,7 @@ jobs:
           restore-keys: workers-go-${{ hashFiles('go/workers/go.sum') }}
       # The fixtures are a pure function of these sources and the pinned tools.
       - name: Restore connected execution fixtures
+        if: inputs.engine
         id: fixtures
         uses: actions/cache@v4
         with:
@@ -145,7 +101,7 @@ jobs:
             target/svm-fixtures
           key: svm-fixtures-v2-agave-3.1.12-sbf-1.52-${{ hashFiles('scripts/build-svm-fixtures.sh', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'crates/squads-test-harness/**', 'crates/mock-yield-protocols-program/**', 'crates/loyal-actions/**', 'crates/loyal-solana-env/**', 'crates/loyal-hub-abi/**') }}
       - name: Install pinned SBF build tools
-        if: steps.fixtures.outputs.cache-hit != 'true'
+        if: inputs.engine && steps.fixtures.outputs.cache-hit != 'true'
         run: |
           curl --fail --location --retry 3 https://github.com/anza-xyz/agave/releases/download/v3.1.12/solana-release-x86_64-unknown-linux-gnu.tar.bz2 -o "$RUNNER_TEMP/solana-release.tar.bz2"
           echo "4d45dab6ccfe5321292ad6dc152f7ace71ccbddde5ecda0aaa3f92bbfe8ed803  $RUNNER_TEMP/solana-release.tar.bz2" | sha256sum --check
@@ -153,39 +109,25 @@ jobs:
           rm "$RUNNER_TEMP/solana-release.tar.bz2"
           echo "$RUNNER_TEMP/solana-release/bin" >> "$GITHUB_PATH"
       - name: Build local connected execution fixtures
-        if: steps.fixtures.outputs.cache-hit != 'true'
+        if: inputs.engine && steps.fixtures.outputs.cache-hit != 'true'
         run: bash scripts/build-svm-fixtures.sh
       - name: Replay the golden fixtures through the Rust crates
         # The golden tests read only crate files.
-        if: needs.changes.outputs.rust == 'true'
+        if: inputs.rust
         run: cargo test --locked -p loyal-actions -p loyal-voltr-rwa-nav-adaptor golden_
       - name: Verify Voltr deposit pricing and withdrawal protection in the SBF harness
         # Executes the committed TS-signed wires on captured mainnet Squads, Voltr and Lighthouse.
-        if: needs.changes.outputs.rust == 'true'
+        if: inputs.rust
         run: cargo test --locked -p squads-test-harness --test voltr_withdrawal_protection --test voltr_deposit_pricing
       - name: Verify offline behavior
         env:
-          SVM_HARNESS: ${{ github.workspace }}/target/debug/examples/fleet-local-svm
-          AUTODEPOSIT_TEST_SVM_FIXTURE_PATH: ${{ github.workspace }}/target/svm-fixtures/autodeposit.json
-          MOCK_YIELD_PROTOCOLS_PROGRAM_SO: ${{ github.workspace }}/target/deploy/mock_yield_protocols_program.so
-          SQUADS_SMART_ACCOUNT_PROGRAM_SO: ${{ github.workspace }}/crates/squads-test-harness/fixtures/squads/squads_smart_account_program.so
+          SVM_HARNESS: ${{ inputs.engine && format('{0}/target/debug/examples/fleet-local-svm', github.workspace) || '' }}
+          AUTODEPOSIT_TEST_SVM_FIXTURE_PATH: ${{ inputs.engine && format('{0}/target/svm-fixtures/autodeposit.json', github.workspace) || '' }}
+          MOCK_YIELD_PROTOCOLS_PROGRAM_SO: ${{ inputs.engine && format('{0}/target/deploy/mock_yield_protocols_program.so', github.workspace) || '' }}
+          SQUADS_SMART_ACCOUNT_PROGRAM_SO: ${{ inputs.engine && format('{0}/crates/squads-test-harness/fixtures/squads/squads_smart_account_program.so', github.workspace) || '' }}
           WORKERS_V2_CACHE_DIR: ${{ runner.temp }}/workers-go
           WORKERS_V2_RACE: ${{ github.event_name != 'pull_request' && '1' || '' }}
         run: bash scripts/verify-workers-v2.sh
-      - name: Database tests ran and were not skipped
-        working-directory: go/workers
-        env:
-          WORKERS_V2_CACHE_DIR: ${{ runner.temp }}/workers-go
-        run: |
-          export GOTOOLCHAIN=local GOENV=off
-          export GOMODCACHE="$WORKERS_V2_CACHE_DIR/gomod" GOCACHE="$WORKERS_V2_CACHE_DIR/gobuild"
-          tests="TestBridgeOutQuoteIsNotServedWithoutItsRow TestTrackerStoresEachHashFromTheStatusThatCarriedIt TestForeignInflowStoreCommitsEvidenceAndCursorTogether TestExitLiabilityUsesConfirmedReportAtEachMark TestEvmDepositRelaySignedRefusesEmbeddedWalletWhenPrivyLookupIsEmpty TestEvmDepositConcurrentPostsMakeOnePrivyCreate TestWithdrawalCostDatabaseCrossWorkerReservationAndConsentWidening TestWithdrawalCostDatabaseCoveredSaleAndObservationOrdering TestWithdrawalCostDatabaseLoaderUsesActualGenerationAndEscrow TestWithdrawalCostDatabaseSimulationDisclosureCrashRetainsExactWire TestWithdrawalCostDatabaseDisclosedFailureAndManualLandingSatisfyProductionConstraint TestWithdrawalCostDatabaseEngineSweepsWithoutDemandOrNewSigning TestWithdrawalCostDatabaseSweepTimeoutDoesNotStarveLaterWireAndJoins TestWithdrawalAttemptDatabaseFeeReservationSurvivesWideningAndRetries TestWithdrawalConsentStoreConcurrentImmutableVersions TestWithdrawalCostStatusGenerationVersionsAndUnknown TestWithdrawalCostDatabaseIdleRequesterDoesNotStallAdmittedFunding TestWithdrawalCostDatabaseSigningRefusesConsentReplacedAfterReservation TestReleaseControlDefaultDenyCASAndAdmissionFence TestEarnJoyClaimIsCompareAndSwap TestEarnJoyRunSkipsUnavailableWallet TestEarnJoyEmitsOnlyAcceptedPushes TestEarnEventsExportSeedsThenExports TestEarnEventsExportKeepsWatermarkWhenTrackFails TestEarnEventsExportPagesThroughABusyHour TestWalletPushTargetsOnlyRegisteredOneSignalSubscriptions TestEarnJoyUnregisteredWalletKeepsItsClaim"
-          log="$RUNNER_TEMP/dbtests.log"
-          tests="$tests TestEarnYieldJoyResumesUntilDailyCycleCompletes TestEarnMaxHealthUsesSignedStateAndReportedWorker"
-          tests="$tests TestPublishedNAVStopsAtOldestQuoteSlot"
-          go test -p 1 -count=1 -v -run "^($(echo "$tests" | tr ' ' '|'))\$" ./internal/bridge ./internal/backyard ./internal/earnmax ./internal/webapp ./internal/releasecontrol ./internal/admin | tee "$log"
-          if grep -q -- '--- SKIP' "$log"; then exit 1; fi
-          for t in $tests; do grep -q -- "--- PASS: $t " "$log"; done
       - name: Save Go module and build caches
         if: github.event_name == 'push'
         uses: actions/cache/save@v4
@@ -196,30 +138,34 @@ jobs:
         if: github.event_name != 'pull_request'
         working-directory: go/workers
         env:
+          SERVICES: ${{ inputs.services }}
           GOTOOLCHAIN: local
           GOENV: 'off'
           GOMODCACHE: ${{ runner.temp }}/workers-go/gomod
           GOCACHE: ${{ runner.temp }}/workers-go/gobuild
         run: |
-          make release RELEASE="sha-$GITHUB_SHA"
+          mkdir -p bin
+          mapfile -t binaries < <(python3 -c 'import json,os; print("\n".join(sorted({"loyal-engine" if x in ("backyard", "earn-max", "retail") else "loyal-"+x for x in json.loads(os.environ["SERVICES"])})))')
+          for binary in "${binaries[@]}"; do
+            stamp=engine.Release
+            if [ "$binary" = loyal-telegram ]; then stamp=webserve.stamp; fi
+            CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
+              -ldflags "-s -w -X github.com/loyal-labs/loyal-yield-routing/go/workers/internal/$stamp=sha-$GITHUB_SHA" \
+              -o "bin/$binary" "./cmd/$binary"
+          done
           cd bin
-          sha256sum loyal-engine loyal-observer loyal-telegram > workers-SHA256SUMS
+          sha256sum "${binaries[@]}" > workers-SHA256SUMS
       - uses: actions/upload-artifact@v4
         if: github.event_name != 'pull_request'
         with:
           name: production-workers-${{ github.sha }}
           overwrite: true
-          path: |
-            go/workers/bin/loyal-engine
-            go/workers/bin/loyal-observer
-            go/workers/bin/loyal-telegram
-            go/workers/bin/workers-SHA256SUMS
+          path: go/workers/bin/
           if-no-files-found: error
           retention-days: 7
 
   workers-image:
-    needs: changes
-    if: needs.changes.outputs.workers == 'true'
+    if: inputs.engine
     # This job only builds and probes a local CI image. No registry credentials,
     # publishing, production environment or deployment permission is granted.
     runs-on: ubuntu-24.04
@@ -280,21 +226,3 @@ jobs:
           docker run --rm --network none --read-only --cap-drop ALL \
             --security-opt no-new-privileges --entrypoint /bin/sh loyal-workers-v2:verification \
             -ec 'cd /usr/local/bin; sha256sum -c /usr/local/share/loyal-workers/SHA256SUMS; test "$(id -u)" = 65532'
-
-  # deploy-workers.sh deploys a commit only when this artifact exists for its
-  # inputs. A PR run names it after the merge commit it tested.
-  verified:
-    needs: [verify, workers-image, monitoring-contracts]
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - id: key
-        run: echo "name=$(bash scripts/ci-tree-key.sh HEAD)" >> "$GITHUB_OUTPUT"
-      - run: git rev-parse HEAD > verified-commit
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ${{ steps.key.outputs.name }}
-          path: verified-commit
-          overwrite: true

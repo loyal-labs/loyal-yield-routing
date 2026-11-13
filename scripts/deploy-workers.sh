@@ -64,8 +64,10 @@ elif ! git merge-base --is-ancestor "$sha" origin/main; then
   exit 1
 fi
 
-# Production CI gates web artifacts through its native job dependencies.
-if [[ $web_family == no ]]; then
+# A scoped release receipt proves this service's selected checks passed on main.
+scoped=no
+if git cat-file -e "$sha:scripts/production-scope.py" 2>/dev/null; then scoped=yes; fi
+if [[ $web_family == no || ( $scoped == yes && ( ${LOYAL_DEPLOY_DRY_RUN:-} != 1 || $check_ci == yes ) ) ]]; then
   artifact=$(scripts/ci-tree-key.sh "$sha")
   verification_workflow=workers-v2-verify.yml
   artifact_filter=''
@@ -73,6 +75,14 @@ if [[ $web_family == no ]]; then
     verification_workflow=production.yml
     # Main's marker includes race tests. A later rollout failure does not revoke it.
     artifact_filter=' | select(.workflow_run.head_branch == "main")'
+  fi
+  if [[ $scoped == yes ]]; then
+    artifact="production-verified-$family-$sha"
+    artifact_filter=" | select(.workflow_run.head_branch == \"main\" and .workflow_run.head_sha == \"$sha\")"
+    if [[ -n ${GITHUB_RUN_ID:-} ]]; then
+      [[ $GITHUB_RUN_ID =~ ^[0-9]+$ ]] || exit 1
+      artifact_filter+=" | select(.workflow_run.id == $GITHUB_RUN_ID)"
+    fi
   fi
   green=$(gh api -X GET "repos/{owner}/{repo}/actions/artifacts" -f name="$artifact" \
     --jq "[.artifacts[] | select(.expired == false and .workflow_run.head_repository_id == .workflow_run.repository_id)$artifact_filter] | length")
