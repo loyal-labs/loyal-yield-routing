@@ -63,6 +63,9 @@ func pushFields(raw []byte) (PushTokenRequest, *PushError) {
 	switch body.Provider {
 	case "", pushProviderExpo:
 		body.Provider = pushProviderExpo
+		if !validExpoToken(body.Token) {
+			return body, errPushToken
+		}
 	case pushProviderOneSignal:
 		// The server sends to these IDs, so only a canonical subscription UUID is stored.
 		id, err := uuid.Parse(body.Token)

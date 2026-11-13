@@ -53,11 +53,13 @@ func oneSignalStub(t *testing.T, replies ...struct {
 		AlertsChannelID:   "chan-alerts",
 	}, "secret")
 	p.url = server.URL + "/notifications?c=push"
+	p.expoURL = server.URL + "/expo"
 	p.retryDelay = 0
 	// Every wallet has one registered subscription, "sub-<wallet>".
 	p.subscriptions = func(_ context.Context, wallet string) ([]string, error) {
 		return []string{"sub-" + wallet}, nil
 	}
+	p.expoTokens = func(context.Context, string) ([]string, error) { return nil, nil }
 	return p, func() []capturedPush {
 		mu.Lock()
 		defer mu.Unlock()
@@ -187,6 +189,10 @@ func TestPushTokenProviderValidation(t *testing.T) {
 		refused              *PushError
 	}{
 		{`{"token":"ExponentPushToken[x]","platform":"ios"}`, "expo", "ExponentPushToken[x]", nil},
+		{`{"token":"ExpoPushToken[x]","platform":"android","provider":"expo"}`, "expo", "ExpoPushToken[x]", nil},
+		{`{"token":"` + sub + `","platform":"ios","provider":"expo"}`, "expo", sub, nil},
+		{`{"token":"not-a-push-token","platform":"android","provider":"expo"}`, "", "", errPushToken},
+		{`{"token":"ExpoPushToken[]","platform":"android"}`, "", "", errPushToken},
 		{`{"token":"` + sub + `","platform":"android","provider":"onesignal"}`, "onesignal", sub, nil},
 		{`{"token":"` + strings.ToUpper(sub) + `","platform":"android","provider":"onesignal"}`, "onesignal", sub, nil},
 		{`{"token":"W1","platform":"android","provider":"onesignal"}`, "", "", errPushToken},
@@ -227,6 +233,35 @@ func TestOneSignalRetriesOnceWithSameKey(t *testing.T) {
 	}
 	if n := len(requests()); n != 1 {
 		t.Errorf("requests on 400 = %d, want 1", n)
+	}
+}
+
+func TestOneSignalNeverFallsBackToExpo(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		reply reply
+	}{
+		{"accepted", reply{200, `{"id":"accepted"}`}},
+		{"unsubscribed", reply{200, `{"id":""}`}},
+		{"provider failure", reply{503, `unavailable`}},
+		{"ambiguous response", reply{200, `{`}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			push, _ := oneSignalStub(t, tc.reply)
+			expoLookups := 0
+			push.expoTokens = func(context.Context, string) ([]string, error) {
+				expoLookups++
+				return []string{"ExpoPushToken[legacy]"}, nil
+			}
+			_, _ = push.sendToWallet(context.Background(), "W1", autodepositWalletPush{Title: "t", Body: "b"}, nil)
+			if expoLookups != 0 {
+				t.Fatalf("OneSignal result triggered %d Expo lookups", expoLookups)
+			}
+			push.subscriptions = func(context.Context, string) ([]string, error) { return nil, errors.New("lookup failed") }
+			if _, err := push.sendToWallet(context.Background(), "W1", autodepositWalletPush{Title: "t", Body: "b"}, nil); err == nil || expoLookups != 0 {
+				t.Fatalf("failed lookup: err=%v, Expo lookups=%d", err, expoLookups)
+			}
+		})
 	}
 }
 

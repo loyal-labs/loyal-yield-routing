@@ -81,6 +81,7 @@ var PushGrants = []Grant{
 	TableGrant("push_tokens", "SELECT"),
 	TableGrant("push_tokens", "INSERT"),
 	TableGrant("push_tokens", "UPDATE"),
+	TableGrant("push_tokens", "DELETE"),
 }
 
 var YieldGrants = []Grant{

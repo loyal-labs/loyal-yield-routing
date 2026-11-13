@@ -57,16 +57,20 @@ type WalletPush struct {
 	url           string
 	retryDelay    time.Duration
 	subscriptions func(ctx context.Context, wallet string) ([]string, error)
+	expoTokens    func(ctx context.Context, wallet string) ([]string, error)
+	removeExpo    func(ctx context.Context, wallet string, tokens []string) error
+	expoURL       string
 }
 
-// NewWalletPush sends to the OneSignal subscription IDs that the signed-in app registered for a
-// wallet in push_tokens. It never targets the OneSignal external_id: the app sets that alias
-// itself with OneSignal.login, without proving it owns the wallet.
+// NewWalletPush prefers authenticated OneSignal registrations. Wallets that have not
+// registered with OneSignal keep receiving pushes through their existing Expo tokens.
+// It never targets the client-chosen OneSignal external_id, or switches providers
+// after attempting delivery.
 func NewWalletPush(appDB *pgxpool.Pool, cfg OneSignalConfig, secret string) *WalletPush {
-	p := &WalletPush{Secret: secret, HTTP: http.DefaultClient, cfg: cfg, url: oneSignalSendURL, retryDelay: oneSignalRetryGap}
-	p.subscriptions = func(ctx context.Context, wallet string) ([]string, error) {
-		rows, err := appDB.Query(ctx, `SELECT token FROM push_tokens WHERE wallet_public_key = $1 AND provider = 'onesignal' ORDER BY updated_at DESC LIMIT $2`,
-			wallet, oneSignalMaxSubscriptions)
+	p := &WalletPush{Secret: secret, HTTP: http.DefaultClient, cfg: cfg, url: oneSignalSendURL, retryDelay: oneSignalRetryGap, expoURL: expoSendURL}
+	read := func(ctx context.Context, wallet, provider string) ([]string, error) {
+		rows, err := appDB.Query(ctx, `SELECT token FROM push_tokens WHERE wallet_public_key = $1 AND provider = $2 ORDER BY updated_at DESC LIMIT $3`,
+			wallet, provider, oneSignalMaxSubscriptions)
 		if err != nil {
 			return nil, fmt.Errorf("read push subscriptions: %w", err)
 		}
@@ -75,6 +79,26 @@ func NewWalletPush(appDB *pgxpool.Pool, cfg OneSignalConfig, secret string) *Wal
 			return nil, fmt.Errorf("read push subscriptions: %w", err)
 		}
 		return ids, nil
+	}
+	p.subscriptions = func(ctx context.Context, wallet string) ([]string, error) {
+		return read(ctx, wallet, pushProviderOneSignal)
+	}
+	p.expoTokens = func(ctx context.Context, wallet string) ([]string, error) {
+		tokens, err := read(ctx, wallet, pushProviderExpo)
+		if err != nil {
+			return nil, err
+		}
+		valid := tokens[:0]
+		for _, token := range tokens {
+			if validExpoToken(token) {
+				valid = append(valid, token)
+			}
+		}
+		return valid, nil
+	}
+	p.removeExpo = func(ctx context.Context, wallet string, tokens []string) error {
+		_, err := appDB.Exec(ctx, `DELETE FROM push_tokens WHERE wallet_public_key = $1 AND provider = 'expo' AND token = ANY($2::text[])`, wallet, tokens)
+		return err
 	}
 	return p
 }
@@ -106,23 +130,33 @@ type oneSignalRequest struct {
 	IdempotencyKey   string          `json:"idempotency_key"`
 }
 
-// registered reports whether the app registered at least one OneSignal subscription for the wallet.
+// registered includes legacy Expo devices, so the cron keeps their existing delivery
+// path without spending claims for wallets that have no registered device.
 func (p *WalletPush) registered(ctx context.Context, wallet string) (bool, error) {
 	ids, err := p.subscriptions(ctx, wallet)
-	return len(ids) > 0, err
+	if err != nil || len(ids) > 0 {
+		return len(ids) > 0, err
+	}
+	tokens, err := p.expoTokens(ctx, wallet)
+	return len(tokens) > 0, err
 }
 
-// sendToWallet reports whether OneSignal accepted the notification for at least one subscribed device.
+// sendToWallet reports whether the selected provider accepted at least one device.
+// A partial Expo acceptance can return both true and an error; callers must not retry it.
 func (p *WalletPush) sendToWallet(ctx context.Context, wallet string, msg autodepositWalletPush, data json.RawMessage) (bool, error) {
 	ids, err := p.subscriptions(ctx, wallet)
 	if err != nil {
 		return false, err
 	}
-	if len(ids) == 0 {
-		return false, nil
-	}
 	if data == nil && msg.Route != "" {
 		data, _ = json.Marshal(map[string]string{"route": msg.Route})
+	}
+	if len(ids) == 0 {
+		tokens, err := p.expoTokens(ctx, wallet)
+		if err != nil || len(tokens) == 0 {
+			return false, err
+		}
+		return p.sendExpo(ctx, wallet, tokens, msg, data)
 	}
 	req := oneSignalRequest{
 		AppID:           p.cfg.AppID,
@@ -297,7 +331,9 @@ func registerWalletPush(api huma.API, push *WalletPush) {
 		sent, err := push.sendToWallet(ctx, wallet, autodepositWalletPush{Title: title, Body: body}, data)
 		if err != nil {
 			slog.WarnContext(ctx, "[wallet-push] debug-send failed", "error", err.Error(), "walletAddress", wallet)
-			return nil, errWalletPushFailed
+			if !sent {
+				return nil, errWalletPushFailed
+			}
 		}
 		if !sent {
 			return nil, errWalletPushNoTokens
