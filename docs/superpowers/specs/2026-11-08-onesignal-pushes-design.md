@@ -2,6 +2,21 @@
 
 Date: 2026-11-08 · Owner and reviewer: Rodion · Status: design approved in chat, not built
 
+## November 13 migration amendment
+
+The CI transition preserves delivery while installed apps adopt the registration
+OTA. A wallet with authenticated OneSignal registrations uses OneSignal. A wallet
+without any OneSignal registration continues to use its existing valid Expo
+tokens. Provider selection happens before sending; a OneSignal error never
+triggers an Expo send. The earnings rules and claim/cap protections apply to
+both providers, and a wallet with neither kind of recipient keeps its claim.
+
+This supersedes the immediate Expo removal described below. An existing
+OneSignal native SDK or wallet alias does not establish authenticated backend
+registration, and a missing registration does not identify an old native binary.
+Retain Expo tokens and transport until the remaining audience has an explicit
+migration outcome. No new secret or mobile change is needed for this bridge.
+
 ## Why
 
 Loyal makes money for its users, and a push is the cheapest way to make them feel it. The goal is

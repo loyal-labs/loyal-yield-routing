@@ -244,9 +244,11 @@ def journal_failures(unit, cursor, stopping_invocation=None):
             continue
         name = str(event.get('msg', event.get('message', '')))
         if (str(event.get('level', '')).lower() in ('error', 'fatal', 'panic')
-                or name in ('backyard_operation_failed_after_send', 'backyard_worker_exit', 'backyard_latched')
+                or name in ('backyard_operation_failed_after_send', 'backyard_worker_exit', 'backyard_latched',
+                            '[wallet-push] push send failed', '[earn-yield-joy] mixpanel track failed')
                 or (unit.startswith('loyal-web-cron@') and (
-                    'wallet failed' in name or (isinstance(event.get('errors'), int) and event['errors'] > 0)))
+                    'wallet failed' in name or any(isinstance(event.get(key), int) and event[key] > 0
+                                                  for key in ('errors', 'undelivered'))))
                 or entry.get('PRIORITY') in ('0', '1', '2', '3')
                 or re.search(r'\b(panic:|FATAL|ERROR)\b', message)):
             # Never forward raw journal messages or their transaction/credential fields.

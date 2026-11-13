@@ -350,16 +350,17 @@ func TestEarnJoyEmitsOnlyAcceptedPushes(t *testing.T) {
 	}
 }
 
-func TestWalletPushTargetsOnlyRegisteredOneSignalSubscriptions(t *testing.T) {
+func TestWalletPushSelectsOneProviderForAuthenticatedWallet(t *testing.T) {
 	pool := joyTestPool(t)
 	ctx := context.Background()
 	const sub = "3f2b8c1e-9d4a-4e7b-8c6f-1a2b3c4d5e6f"
 	if _, err := pool.Exec(ctx, `INSERT INTO push_tokens (token, wallet_public_key, platform, provider) VALUES
-	($1, 'W1', 'android', 'onesignal'), ('ExponentPushToken[w1]', 'W1', 'android', 'expo'), ('ExponentPushToken[w2]', 'W2', 'ios', 'expo')`, sub); err != nil {
+	($1, 'W1', 'android', 'onesignal'), ('ExponentPushToken[w1]', 'W1', 'android', 'expo'), ('ExponentPushToken[w2]', 'W2', 'ios', 'expo'), ('invalid-token', 'W3', 'android', 'expo')`, sub); err != nil {
 		t.Fatal(err)
 	}
 	var mu sync.Mutex
 	var targeted [][]string
+	var expoTargets []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			SubscriptionIDs []string `json:"include_subscription_ids"`
@@ -371,19 +372,147 @@ func TestWalletPushTargetsOnlyRegisteredOneSignalSubscriptions(t *testing.T) {
 		_, _ = w.Write([]byte(`{"id":"n"}`))
 	}))
 	t.Cleanup(server.Close)
+	expo := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body []struct {
+			To string `json:"to"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		mu.Lock()
+		for _, message := range body {
+			expoTargets = append(expoTargets, message.To)
+		}
+		mu.Unlock()
+		_, _ = w.Write([]byte(`{"data":[{"status":"ok","id":"expo-accepted"}]}`))
+	}))
+	t.Cleanup(expo.Close)
 	push := NewWalletPush(pool, OneSignalConfig{AppID: "app", RESTAPIKey: "key", AlertsChannelID: "alerts"}, "secret")
 	push.url = server.URL
+	push.expoURL = expo.URL
 	if sent, err := push.sendToWallet(ctx, "W1", autodepositWalletPush{Title: "t", Body: "b"}, nil); !sent || err != nil {
 		t.Fatalf("W1 sendToWallet = (%v, %v)", sent, err)
 	}
-	// W2 only has a legacy Expo token, so OneSignal is never called for it.
-	if sent, err := push.sendToWallet(ctx, "W2", autodepositWalletPush{Title: "t", Body: "b"}, nil); sent || err != nil {
-		t.Fatalf("W2 sendToWallet = (%v, %v), want (false, nil)", sent, err)
+	// W2 keeps Expo delivery; W1's Expo token is not sent a duplicate.
+	if sent, err := push.sendToWallet(ctx, "W2", autodepositWalletPush{Title: "t", Body: "b"}, nil); !sent || err != nil {
+		t.Fatalf("W2 sendToWallet = (%v, %v), want (true, nil)", sent, err)
+	}
+	if registered, err := push.registered(ctx, "W3"); registered || err != nil {
+		t.Fatalf("invalid Expo registration = %v, %v", registered, err)
+	}
+	if sent, err := push.sendToWallet(ctx, "W3", autodepositWalletPush{Title: "t", Body: "b"}, nil); sent || err != nil {
+		t.Fatalf("invalid Expo token send = %v, %v", sent, err)
 	}
 	mu.Lock()
 	defer mu.Unlock()
 	if len(targeted) != 1 || len(targeted[0]) != 1 || targeted[0][0] != sub {
 		t.Fatalf("targeted = %v, want [[%s]]", targeted, sub)
+	}
+	if len(expoTargets) != 1 || expoTargets[0] != "ExponentPushToken[w2]" {
+		t.Fatalf("Expo targets = %v, want only W2's Expo token", expoTargets)
+	}
+}
+
+func TestExpoInvalidDeviceCleanupStaysWithinWalletAndProvider(t *testing.T) {
+	pool := joyTestPool(t)
+	ctx := context.Background()
+	const promoted = "3f2b8c1e-9d4a-4e7b-8c6f-1a2b3c4d5e6f"
+	if _, err := pool.Exec(ctx, `INSERT INTO push_tokens (token, wallet_public_key, platform, provider) VALUES
+	('ExpoPushToken[dead]', 'W1', 'android', 'expo'),
+	('ExpoPushToken[transferred]', 'W1', 'android', 'expo'),
+	($1, 'W1', 'android', 'expo'),
+	('ExpoPushToken[other]', 'W2', 'android', 'expo')`, promoted); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var messages []struct {
+			To string `json:"to"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&messages); err != nil {
+			t.Error(err)
+		}
+		// Registration can change ownership/provider while an old send is in flight.
+		if _, err := pool.Exec(ctx, `UPDATE push_tokens SET wallet_public_key = 'W2' WHERE token = 'ExpoPushToken[transferred]';
+		UPDATE push_tokens SET provider = 'onesignal' WHERE token = '`+promoted+`'`); err != nil {
+			t.Error(err)
+		}
+		tickets := make([]map[string]any, len(messages))
+		for i, message := range messages {
+			if message.To == "ExpoPushToken[other]" {
+				t.Error("sent to another wallet's token")
+			}
+			tickets[i] = map[string]any{"status": "error", "details": map[string]string{"error": "DeviceNotRegistered"}}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": tickets})
+	}))
+	t.Cleanup(server.Close)
+	push := NewWalletPush(pool, OneSignalConfig{AppID: "app", RESTAPIKey: "key"}, "")
+	push.url = server.URL + "/unexpected-onesignal"
+	push.expoURL = server.URL
+	if sent, err := push.sendToWallet(ctx, "W1", autodepositWalletPush{Title: "t", Body: "b"}, nil); sent || err != nil {
+		t.Fatalf("all unregistered = %v, %v", sent, err)
+	}
+	var dead, transferred, oneSignal, other int
+	if err := pool.QueryRow(ctx, `SELECT
+	count(*) FILTER (WHERE token = 'ExpoPushToken[dead]'),
+	count(*) FILTER (WHERE token = 'ExpoPushToken[transferred]' AND wallet_public_key = 'W2'),
+	count(*) FILTER (WHERE token = $1 AND provider = 'onesignal'),
+	count(*) FILTER (WHERE token = 'ExpoPushToken[other]' AND wallet_public_key = 'W2') FROM push_tokens`, promoted).Scan(&dead, &transferred, &oneSignal, &other); err != nil {
+		t.Fatal(err)
+	}
+	if dead != 0 || transferred != 1 || oneSignal != 1 || other != 1 {
+		t.Fatalf("cleanup crossed registration boundary: dead=%d transferred=%d OneSignal=%d other=%d", dead, transferred, oneSignal, other)
+	}
+}
+
+func TestEarnJoyExpoWalletReceivesOnce(t *testing.T) {
+	pool := joyTestPool(t)
+	ctx := context.Background()
+	const id = "00000000-0000-0000-0000-000000000009"
+	if _, err := pool.Exec(ctx, `INSERT INTO app_users (id, created_at, subject_address) VALUES ($1, now() - interval '10 days', 'W9')`, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO app_user_smart_accounts (user_id, state, solana_env, settings_pda) VALUES ($1, 'ready', $2, 'settings-W9')`, id, smartAccountsSolanaEnv); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO earn_yield_push_state (wallet_public_key, last_pushed_earned_usd, sent_campaigns, rule_version) VALUES ('W9', 0, '[]'::jsonb, 2);
+	INSERT INTO push_tokens (token, wallet_public_key, platform, provider) VALUES ('ExpoPushToken[legacy]', 'W9', 'android', 'expo')`); err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	sends := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		sends++
+		mu.Unlock()
+		_, _ = w.Write([]byte(`{"data":[{"status":"ok","id":"accepted"}]}`))
+	}))
+	t.Cleanup(server.Close)
+	push := NewWalletPush(pool, OneSignalConfig{AppID: "app", RESTAPIKey: "key", EarningsChannelID: "earnings"}, "")
+	push.url = server.URL + "/unexpected-onesignal"
+	push.expoURL = server.URL
+	c := joyCrons(pool)
+	c.h.CampaignPush = push
+	c.Earnings = func(context.Context, string, string, string) (joyEarnings, bool, error) {
+		return joyEarnings{earnLifetimeUSD: 5}, true, nil
+	}
+	summary, err := c.EarnYieldJoy(ctx, false)
+	if err != nil || len(summary.Pushed) != 1 || summary.Unregistered != 0 {
+		t.Fatalf("Expo-only run: %+v, %v", summary, err)
+	}
+	row, _ := readJoyRow(t, pool, "W9")
+	if row.lastPushedAt == nil || len(row.recent) != 1 || row.sent != `["yield-total-1"]` {
+		t.Fatalf("Expo acceptance did not retain claim/cap: %+v", row)
+	}
+	startNextJoyCycle(t, pool)
+	summary, err = c.EarnYieldJoy(ctx, false)
+	if err != nil || len(summary.Pushed) != 0 || summary.Quiet != 1 {
+		t.Fatalf("same-day repeat escaped cap: %+v, %v", summary, err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if sends != 1 {
+		t.Fatalf("Expo received %d sends, want 1", sends)
 	}
 }
 

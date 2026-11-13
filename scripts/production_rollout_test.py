@@ -94,9 +94,21 @@ class HealthTest(unittest.TestCase):
 
     def test_cron_wallet_failures_and_partial_failure_summaries_stop_watch(self):
         for event in ({'msg': '[earn-yield-joy] wallet failed', 'level': 'WARN'},
-                      {'processed': 20, 'errors': 1}):
+                      {'msg': '[earn-yield-joy] mixpanel track failed', 'level': 'WARN'},
+                      {'processed': 20, 'errors': 1},
+                      {'processed': 20, 'errors': 0, 'undelivered': 1}):
             with patch.object(health, 'command', return_value=json.dumps({'MESSAGE': json.dumps(event)})):
                 self.assertTrue(health.journal_failures('loyal-web-cron@earn-yield-joy.service', 'cursor'))
+
+    def test_push_failure_stops_web_and_cron_watch_even_when_other_devices_accepted(self):
+        event = {'msg': '[wallet-push] push send failed', 'level': 'WARN'}
+        for unit in ('loyal-web.service', 'loyal-web-cron@earn-yield-joy.service'):
+            with self.subTest(unit=unit), \
+                 patch.object(health, 'command', return_value=json.dumps({'MESSAGE': json.dumps(event)})):
+                self.assertTrue(health.journal_failures(unit, 'cursor'))
+        summary = {'processed': 20, 'errors': 0, 'undelivered': 0, 'unregistered': 2, 'unavailable': 1}
+        with patch.object(health, 'command', return_value=json.dumps({'MESSAGE': json.dumps(summary)})):
+            self.assertEqual(health.journal_failures('loyal-web-cron@earn-yield-joy.service', 'cursor'), [])
 
     def test_web_watch_waits_for_scheduled_execution_of_the_new_release(self):
         before = sample()

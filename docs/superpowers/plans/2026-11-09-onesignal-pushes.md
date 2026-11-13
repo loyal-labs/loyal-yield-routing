@@ -1,5 +1,29 @@
 # OneSignal Pushes and Smarter Earnings Notifications Implementation Plan
 
+## November 13 CI transition amendment
+
+The original implementation is merged, and notification-only Android OTAs are
+published on both store channels. The remaining server transition uses
+OneSignal for wallets with authenticated OneSignal registrations and retains
+Expo for wallets without one. It never retries a OneSignal outcome through
+Expo. Keep the existing Expo token rows; their removal in the original checklist
+below is deferred until the remaining audience is accounted for.
+
+Owned-phone delivery, both Android categories and Earn/Earn MAX taps have been
+verified. Reach reporting must distinguish native compatibility from whether an
+installed OTA has actually run. The shared earnings caps, claims and retry
+protections remain required for both providers.
+
+The current resumable dry run can report a completed daily cursor or a partial
+scan; neither proves full audience coverage, and `pushed` is hypothetical. It
+does not validate provider credentials, so keep the separate configuration gate.
+Do not increase the time budget to force a full scan. Enabling the optional
+analytics export timer is outside this CI transition.
+
+Use the controlled reconciliation in
+`docs/evidence/notification-rollout-recovery-2026-11-13.md` before removing the
+recovery override. Keep the normal CI cron identity and scheduled-run gates.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Send every server push through OneSignal, and make the daily earnings push fire only when a wallet has at least $1 of new combined Earn + Earn MAX earnings, at most 4 times a week.

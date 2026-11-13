@@ -20,7 +20,7 @@
     "TestEarnJoyRunSkipsUnavailableWallet",
     "TestEarnJoyUnregisteredWalletKeepsItsClaim",
     "TestEarnYieldJoyResumesUntilDailyCycleCompletes",
-    "TestWalletPushTargetsOnlyRegisteredOneSignalSubscriptions",
+    "TestWalletPushSelectsOneProviderForAuthenticatedWallet",
     "TestEvmDepositConcurrentPostsMakeOnePrivyCreate",
     "TestEvmDepositRelaySignedRefusesEmbeddedWalletWhenPrivyLookupIsEmpty",
     "TestEarnEventsExportKeepsWatermarkWhenTrackFails",

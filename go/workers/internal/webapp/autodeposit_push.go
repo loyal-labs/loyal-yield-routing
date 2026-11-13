@@ -29,7 +29,7 @@ func (p *WalletPush) send(ctx context.Context, walletAddress string, payload aut
 	sent, err := p.sendToWallet(ctx, walletAddress, payload, nil)
 	if err != nil {
 		slog.WarnContext(ctx, "[wallet-push] push send failed", "errorMessage", err.Error(), "walletAddress", walletAddress)
-		return false
+		return sent
 	}
 	if !sent {
 		slog.InfoContext(ctx, "[wallet-push] wallet has no subscribed device", "walletAddress", walletAddress)
