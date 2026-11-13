@@ -105,9 +105,11 @@ release and its exact main-branch CI artifacts:
    command. Remove the reviewed instance override only after web readiness
    identifies that release, then restore the enabled timer. The web service and
    cron template must resolve to the same release.
-5. Stop on the first service failure, restart, failed-wallet event or nonzero
-   summary error count. Require successful scheduled runs and the unchanged
-   scoped CI preflight/watch before treating the transition as complete.
+5. Stop on the first service failure, restart, failed-wallet or push failure,
+   analytics failure, or nonzero summary error/undelivered count. The rollout
+   watch rejects these even when the cron exits successfully or other devices
+   accepted the push. Require successful scheduled runs and the scoped CI
+   preflight/watch before treating the transition as complete.
 
 If a new earnings run has already written the new rule state, do not restore the
 old Expo binary automatically: pause the timer and preserve the state for a
