@@ -30,11 +30,11 @@ if name == 'git':
         sys.stdout.buffer.write((root / 'source.tar').read_bytes())
     elif args[0] == 'diff' and mode == 'migration':
         print('migrations/yield/new.sql')
-    elif args[0] == 'cat-file' and args[-1].endswith((':.github/workflows/production.yml', ':scripts/production-scope.py')) and mode == 'failed-ci':
+    elif args[0] == 'cat-file' and args[-1].endswith((':.github/workflows/production.yml', ':scripts/production-scope.py')) and mode in ('failed-ci', 'legacy', 'missing-legacy-ci'):
         sys.exit(1)
 elif name == 'gh':
     if any('actions/artifacts' in arg for arg in args):
-        print(0 if mode == 'missing-ci' else 1)
+        print(0 if mode in ('missing-ci', 'missing-legacy-ci') else 1)
     else:
         print(1 if mode == 'failed-ci' else 0)
 elif name == 'ssh':
@@ -92,13 +92,15 @@ class DeploymentTest(unittest.TestCase):
                    ROLLOUT_TEST_FAMILY=family, ROLLOUT_TEST_MODE=mode)
         return root, env
 
-    def deploy(self, family='web', mode='ok'):
+    def deploy(self, family='web', mode='ok', legacy_key_fails=False):
         root, env = self.prepare(family, mode)
         scripts = root / 'scripts'
         scripts.mkdir()
         source = (ROOT / 'scripts/deploy-workers.sh').read_text().replace('$HOME/.loyal', str(root / 'build'))
         (scripts / 'deploy-workers.sh').write_text(source)
-        (scripts / 'ci-tree-key.sh').write_text('#!/bin/sh\necho workers-v2-verified-test\n')
+        (scripts / 'ci-tree-key.sh').write_text(
+            '#!/bin/sh\nprintf \'["ci-tree-key"]\\n\' >> "$ROLLOUT_TEST_ROOT/calls"\n'
+            + ('exit 1\n' if legacy_key_fails else 'echo workers-v2-verified-test\n'))
         (scripts / 'ci-tree-key.sh').chmod(0o700)
         with tarfile.open(root / 'source.tar', 'w') as archive:
             for name in ('deploy/hetzner/activate.sh', 'deploy/hetzner/install-rules.sh', 'deploy/hetzner/retain-web-assets.sh'):
@@ -129,8 +131,27 @@ class DeploymentTest(unittest.TestCase):
                 self.assertTrue(any('--setenv=LOYAL_DEPLOY_EXPECTED_RELEASE=' + OLD in call for call in calls))
                 self.assertTrue(any('name=production-verified-' + family + '-' + NEW in call for call in calls if call[0] == 'gh'))
 
+    def test_scoped_receipts_do_not_require_legacy_tree_key_discovery(self):
+        for family in ('web', 'retail'):
+            with self.subTest(family=family):
+                result, calls = self.deploy(family, legacy_key_fails=True)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertFalse(any(call[0] == 'ci-tree-key' for call in calls))
+                self.assertTrue(any('name=production-verified-' + family + '-' + NEW in call for call in calls if call[0] == 'gh'))
+                self.assertTrue(any(call[0] == 'scp' for call in calls))
+
+    def test_legacy_receipt_lookup_still_requires_its_tree_key(self):
+        result, calls = self.deploy('retail', 'legacy')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(['ci-tree-key'], calls)
+        self.assertTrue(any('name=workers-v2-verified-test' in call for call in calls if call[0] == 'gh'))
+        result, calls = self.deploy('retail', 'legacy', legacy_key_fails=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(['ci-tree-key'], calls)
+        self.assertFalse(any(call[0] in ('gh', 'scp') for call in calls))
+
     def test_refusals_happen_before_any_artifact_upload(self):
-        for family, mode in (('web', 'stale'), ('retail', 'missing-ci'), ('retail', 'failed-ci'),
+        for family, mode in (('web', 'stale'), ('retail', 'missing-ci'), ('retail', 'missing-legacy-ci'), ('retail', 'failed-ci'),
                              ('retail', 'migration'), ('web', 'concurrent-release'), ('web', 'wrong-artifact')):
             with self.subTest(family=family, mode=mode):
                 result, calls = self.deploy(family, mode)
