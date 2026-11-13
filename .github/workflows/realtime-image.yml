@@ -4,16 +4,6 @@ name: realtime-image
 # The production workflow publishes the image and deploys its verified binary.
 on:
   workflow_call:
-  pull_request:
-    paths:
-      - .github/workflows/realtime-image.yml
-      - Dockerfile.light-workers
-      - Cargo.lock
-      - Cargo.toml
-      - rust-toolchain.toml
-      - crates/loyal-observability/**
-      - crates/loyal-yield-realtime/**
-      - crates/loyal-yield-realtime-core/**
 
 permissions:
   contents: read

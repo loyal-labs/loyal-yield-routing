@@ -2,24 +2,16 @@ name: loyal-web
 
 on:
   workflow_call:
-  pull_request:
-    branches: [main]
-    paths:
-      - web/**
-      - go/workers/cmd/loyal-web/**
-      - go/workers/internal/webapp/**
-      - go/workers/internal/webserve/**
-      - go/workers/cmd/loyal-admin/**
-      - go/workers/internal/admin/**
-      - go/workers/internal/earnmax/**
-      - go/workers/cmd/loyal-stats/**
-      - go/workers/internal/stats/**
-      - go/workers/internal/earnstats/**
-      - scripts/web/**
-      - scripts/deploy-workers.sh
-      - deploy/hetzner/activate.sh
-      - deploy/hetzner/retain-web-assets.sh
-      - .github/workflows/web-go.yml
+    inputs:
+      services:
+        type: string
+        required: true
+      packages:
+        type: string
+        required: true
+      mobile:
+        type: boolean
+        required: true
 
 permissions:
   contents: read
@@ -30,8 +22,23 @@ concurrency:
 
 jobs:
   build:
+    if: inputs.services != '[]'
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        service: ${{ fromJSON(inputs.services) }}
     env:
+      WORKERS_V2_PACKAGES: ${{ toJSON(fromJSON(inputs.packages)[matrix.service]) }}
+      BRIDGE_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/bridge_test?sslmode=disable
+      EARNMAX_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/earnmax_test?sslmode=disable
+      EARN_JOY_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/earn_joy_test?sslmode=disable
+      EARN_MAX_HEALTH_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/earn_max_health_test?sslmode=disable
+      BACKYARD_FOREIGN_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/backyard_foreign_test?sslmode=disable
+      EVM_DEPOSIT_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/evm_deposit_ci_test?sslmode=disable
+      BACKYARD_WITHDRAWAL_TEST_DSN: postgres://postgres:postgres@127.0.0.1:5432/vault_cost_test_ci?sslmode=disable
+      EARNMAX_WITHDRAWAL_TEST_DSN: postgres://postgres:postgres@127.0.0.1:5432/vault_cost_test_ci?sslmode=disable
+      VAULT_CONSENT_TEST_ADMIN_DSN: postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable
       NEXT_PUBLIC_GIT_COMMIT_HASH: ${{ github.sha }}
       NEXT_PUBLIC_GIT_BRANCH: ${{ github.ref_name }}
       NEXT_PUBLIC_APP_ENVIRONMENT: ${{ vars.NEXT_PUBLIC_APP_ENVIRONMENT }}
@@ -48,6 +55,18 @@ jobs:
       NEXT_PUBLIC_SKILLS_ENABLED: ${{ vars.NEXT_PUBLIC_SKILLS_ENABLED }}
       NEXT_PUBLIC_SOLANA_ENV: ${{ vars.NEXT_PUBLIC_SOLANA_ENV }}
       NEXT_PUBLIC_USERCENTRICS_SETTINGS_ID: ${{ vars.NEXT_PUBLIC_USERCENTRICS_SETTINGS_ID }}
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 15
     steps:
       - uses: actions/checkout@v4
         with:
@@ -60,63 +79,88 @@ jobs:
         with:
           go-version-file: go/workers/go.mod
           cache-dependency-path: go/workers/go.sum
+      - name: Create disposable databases for the selected Go dependencies
+        env:
+          PGPASSWORD: postgres
+        run: |
+          for db in bridge_test earnmax_test backyard_foreign_test evm_deposit_ci_test earn_joy_test earn_max_health_test; do
+            psql -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE $db"
+          done
+          bash scripts/prepare-vault-withdrawal-test-db.sh
       - name: install web
         run: cd web && bun install --frozen-lockfile
       - name: assets survive releases and startup recovers without reload loops
+        if: matrix.service == 'web'
         timeout-minutes: 2
         run: |
           sh scripts/web/verify-retained-assets.sh
           browser_path="$(command -v google-chrome)"
           CHROMIUM_PATH="$browser_path" node scripts/web/verify-startup-recovery.mjs
-      - name: every Next page has a route
+      - name: every page has a route
+        if: matrix.service != 'stats'
+        env:
+          SERVICE: ${{ matrix.service }}
         run: |
-          bun scripts/web/gen-routes.ts --check
-          bun scripts/web/gen-routes.ts --app admin --check
+          if [ "$SERVICE" = web ]; then bun scripts/web/gen-routes.ts --check; fi
+          if [ "$SERVICE" = admin ]; then bun scripts/web/gen-routes.ts --app admin --check; fi
       - name: build
+        env:
+          SERVICE: ${{ matrix.service }}
         run: |
           for name in ${!NEXT_PUBLIC_@}; do
             if [ -z "${!name}" ]; then unset "$name"; fi
           done
-          if [ "$GITHUB_EVENT_NAME" != pull_request ]; then
+          if [ "$SERVICE" = web ] && [ "$GITHUB_EVENT_NAME" != pull_request ]; then
             test -n "${NEXT_PUBLIC_PRIVY_APP_ID:-}" || { echo 'Configure repository variable NEXT_PUBLIC_PRIVY_APP_ID before production builds' >&2; exit 1; }
           fi
-          sh scripts/web/build.sh
-          sh scripts/web/build.sh admin
-          sh scripts/web/build.sh stats
+          sh scripts/web/build.sh "${SERVICE/web/loyal}"
       - name: web API types match the Go routes
+        if: matrix.service == 'web'
         run: bun scripts/web/openapi-types.ts --check
       - name: mobile client paths have server routes
+        if: matrix.service == 'web'
         run: bun scripts/web/routes-census.ts --check
       - name: admin view props match the Go loaders
+        if: matrix.service == 'admin'
         working-directory: web/apps/admin
         run: bun run typecheck
       - name: stats page types
+        if: matrix.service == 'stats'
         working-directory: web/apps/dashboard
         run: bun run typecheck:vite
       - name: Go headers and locale redirects match loyal-app
+        if: matrix.service == 'web'
         run: bun scripts/web/parity.ts
       - name: go
         working-directory: go/workers
         run: |
-          go vet ./cmd/loyal-web ./cmd/loyal-admin ./internal/webapp ./internal/webserve ./internal/admin ./internal/earnmax ./internal/earnprep ./internal/jwt
-          go test -race ./cmd/loyal-web ./cmd/loyal-admin ./internal/webapp ./internal/webserve ./internal/admin ./internal/earnmax ./internal/earnprep ./internal/jwt
-      - name: Seal the web release artifacts
+          mapfile -t packages < <(python3 -c 'import json,os; print("\n".join(json.loads(os.environ["WORKERS_V2_PACKAGES"])))')
+          test "${#packages[@]}" -gt 0
+          go vet "${packages[@]}"
+          go test -race -p 1 "${packages[@]}"
+          python3 ../../scripts/ci-db-tests.py
+      - name: Seal the selected release artifact
         if: github.event_name != 'pull_request'
+        env:
+          SERVICE: ${{ matrix.service }}
         run: |
-          cp -a go/workers/cmd/loyal-web/dist/assets bin/web-assets
+          if [ "$SERVICE" = web ]; then cp -a go/workers/cmd/loyal-web/dist/assets bin/web-assets; fi
           cd bin
-          sha256sum loyal-web loyal-admin loyal-stats > web-SHA256SUMS
-          find web-assets -type f -print0 | sort -z | xargs -0 sha256sum >> web-SHA256SUMS
+          sha256sum "loyal-$SERVICE" > "$SERVICE-SHA256SUMS"
+          if [ "$SERVICE" = web ]; then
+            find web-assets -type f -print0 | sort -z | xargs -0 sha256sum >> web-SHA256SUMS
+          fi
       - uses: actions/upload-artifact@v4
         if: github.event_name != 'pull_request'
         with:
-          name: production-web-${{ github.sha }}
+          name: production-${{ matrix.service }}-${{ github.sha }}
           overwrite: true
           path: bin/
           if-no-files-found: error
           retention-days: 7
 
   mobile:
+    if: inputs.mobile
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4

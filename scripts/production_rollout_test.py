@@ -5,6 +5,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import tempfile
@@ -35,6 +36,79 @@ def sample(release=OLD, invocation='old', at=1000):
 
 
 class HealthTest(unittest.TestCase):
+    def test_unprovisioned_notification_credentials_block_before_decryption(self):
+        installed = 'WEB_APP_DATABASE_URL WEB_YIELD_DATABASE_URL TIMESCALEDB_URL WEB_SOLANA_RPC_URL'
+        references = {name: '/etc/credstore.encrypted/' + name for name in installed.split()}
+        with patch.object(health, 'credential_references', return_value=references), \
+             patch.object(health, 'command') as command, \
+             self.assertRaisesRegex(RuntimeError, 'ONESIGNAL_REST_API_KEY'):
+            health.check_credentials('loyal-web-cron@earn-yield-joy.service', health.CRONS['earn-yield-joy'])
+        command.assert_not_called()
+
+    def test_credential_reset_and_empty_values_are_not_treated_as_configured(self):
+        unit = '[Service]\nLoadCredentialEncrypted=OLD:/etc/credstore.encrypted/old\nLoadCredentialEncrypted=\nLoadCredentialEncrypted=NEW:/etc/credstore.encrypted/new\n'
+        with patch.object(health, 'command', return_value=unit):
+            self.assertEqual(health.credential_references('service'), {'NEW': '/etc/credstore.encrypted/new'})
+        with patch.object(health, 'credential_references', return_value={'NEW': '/etc/credstore.encrypted/new'}), \
+             patch.object(health, 'command', return_value='\n'), self.assertRaisesRegex(RuntimeError, 'empty credential NEW'):
+            health.check_credentials('service', 'NEW')
+
+    def test_production_credential_reads_require_an_explicit_requirement_or_fallback(self):
+        # These features deliberately proxy to the legacy app, use HS256, or stay off.
+        optional = {'AUTH_JWT_RS256_PUBLIC_KEY', 'AUTH_JWT_RS256_PRIVATE_KEY', 'EARN_MAX_INVITE_CODE_HASHES',
+                    'PUSH_DEBUG_SECRET', 'MIXPANEL_COHORT_WEBHOOK_SECRET', 'SOLANA_WEEK_NOTIFY_SECRET',
+                    'LIBRARY_UPLOAD_TOKEN', 'STATS_SLACK_WEBHOOK_URL'}
+        declared = set(' '.join([*health.CREDENTIALS.values(), *health.CRONS.values()]).split()) | optional
+        reads = set()
+        for directory in ('engine', 'observer', 'telegram', 'web', 'admin', 'stats'):
+            for path in (ROOT / 'go/workers/cmd' / ('loyal-' + directory)).glob('*.go'):
+                if path.name.endswith('_test.go'):
+                    continue
+                for call in re.findall(r'(?:OptionalCredential|Credential|optionalCredential)\([^\n]+', path.read_text()):
+                    reads.update(re.findall(r'"([A-Z][A-Z0-9_]+)"', call))
+        self.assertFalse(reads - declared, f'new credential requirements need a rollout contract: {reads - declared}')
+
+    def test_cron_failures_stale_runs_disabled_timers_and_recovery_pins_block(self):
+        good = {'Result': 'success', 'ExecMainStatus': '0', 'ActiveState': 'inactive',
+                'ExecMainStartTimestampMonotonic': '900000000', 'ExecMainExitTimestampMonotonic': '950000000',
+                'ExecStart': f'/opt/loyal/releases/web/{NEW}/loyal-web cron earn-yield-joy'}
+        for change, timer_change, expected in (
+            ({'Result': 'exit-code', 'ExecMainStatus': '1'}, {}, 'scheduled job failed'),
+            ({'ExecMainExitTimestampMonotonic': '0'}, {}, 'no recent scheduled run'),
+            ({'ExecStart': f'/opt/loyal/releases/web/{OLD}/loyal-web cron earn-yield-joy'}, {}, 'recovery override'),
+            ({}, {'UnitFileState': 'disabled'}, 'timer'),
+            ({}, {}, None),
+        ):
+            state = dict(good, **change)
+            timer = dict({'ActiveState': 'active', 'UnitFileState': 'enabled'}, **timer_change)
+            with self.subTest(change=change, timer=timer), \
+                 patch.object(health, 'cron_jobs', return_value=['earn-yield-joy']), \
+                 patch.object(health, 'unit_properties', side_effect=[timer, state]), \
+                 patch.object(Path, 'read_text', return_value='1000 1000'), \
+                 patch.object(health, 'command', return_value='-- cursor: cron-now'):
+                if expected:
+                    with self.assertRaisesRegex(RuntimeError, expected):
+                        health.cron_snapshot(NEW)
+                else:
+                    self.assertTrue(health.cron_snapshot(NEW)['earn-yield-joy']['completed'])
+
+    def test_cron_wallet_failures_and_partial_failure_summaries_stop_watch(self):
+        for event in ({'msg': '[earn-yield-joy] wallet failed', 'level': 'WARN'},
+                      {'processed': 20, 'errors': 1}):
+            with patch.object(health, 'command', return_value=json.dumps({'MESSAGE': json.dumps(event)})):
+                self.assertTrue(health.journal_failures('loyal-web-cron@earn-yield-joy.service', 'cursor'))
+
+    def test_web_watch_waits_for_scheduled_execution_of_the_new_release(self):
+        before = sample()
+        before.update(family='web', crons={'earn-yield-joy': {'started_at': 900, 'completed': True}})
+        del before['vault']
+        current = dict(before, release=NEW, invocation='new', at=1003, lane_observed_at=1003)
+        self.assertFalse(health.check_sample(before, current, NEW, 1002))
+        current['crons'] = {'earn-yield-joy': {'started_at': 1003, 'completed': False}}
+        self.assertFalse(health.check_sample(before, current, NEW, 1002))
+        current['crons']['earn-yield-joy']['completed'] = True
+        self.assertTrue(health.check_sample(before, current, NEW, 1002))
+
     def test_database_uses_decoded_credentials_without_arguments_or_session_options(self):
         with tempfile.TemporaryDirectory() as directory:
             url = 'postgresql://rollout:p%40ss@db.example:6432/loyal?sslmode=require'
@@ -226,11 +300,11 @@ class HealthTest(unittest.TestCase):
 
 
 class PipelineTest(unittest.TestCase):
-    def exercise(self, fail_watch=None, fail_preflight=None, stale=False, fail_activation=None):
+    def exercise(self, fail_watch=None, fail_preflight=None, stale=False, fail_activation=None, services=rollout.FAMILIES):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         directory = Path(temp.name)
-        for binary in set(rollout.BINARY.values()):
+        for binary in {rollout.BINARY[family] for family in services}:
             (directory / binary).write_text('artifact')
         calls = []
         deployed = set()
@@ -267,11 +341,35 @@ class PipelineTest(unittest.TestCase):
              patch.object(rollout, 'rollback') as rollback, patch.object(rollout, 'summary'), \
              patch.dict(os.environ, {'LOYAL_DEPLOY_ARTIFACT_DIR': str(directory)}):
             try:
-                rollout.rollout(NEW)
+                rollout.rollout(NEW, services=services)
                 error = None
             except RuntimeError as caught:
                 error = caught
             return calls, deployed, rollback.call_args_list, error
+
+    def test_each_selected_service_leaves_every_other_service_untouched(self):
+        for family in rollout.FAMILIES:
+            with self.subTest(family=family):
+                calls, deployed, restored, error = self.exercise(services=[family])
+                self.assertIsNone(error)
+                self.assertEqual(deployed, {family})
+                observed = {call[4] for call in calls if call[:2] == ('ssh', 'python3') and call[3] in ('snapshot', 'watch')}
+                self.assertEqual(observed, {family})
+                manifests = next(call[2:] for call in calls if call[:2] == ('sha256sum', '-c'))
+                self.assertEqual(manifests, (('workers' if family in rollout.FAMILIES[:5] else family) + '-SHA256SUMS',))
+                self.assertFalse(restored)
+
+    def test_empty_selection_uses_no_production_access(self):
+        calls, deployed, restored, error = self.exercise(services=[])
+        self.assertIsNone(error)
+        self.assertFalse(deployed or restored)
+        self.assertFalse(any(call[0] in ('ssh', 'scp', 'sha256sum') for call in calls))
+
+    def test_invalid_selection_is_refused_before_any_command(self):
+        for services in ('web', ['unknown'], ['web', 'web'], [{}]):
+            with self.subTest(services=services), patch.object(rollout, 'run') as run, self.assertRaises(RuntimeError):
+                rollout.rollout(NEW, services=services)
+            run.assert_not_called()
 
     def test_success_requires_all_preflights_before_any_service_deploys(self):
         calls, deployed, restored, error = self.exercise()

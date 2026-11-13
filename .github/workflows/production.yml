@@ -3,28 +3,8 @@ name: Production rollout
 on:
   push:
     branches: [main]
-    # ci-tree-key.sh also hashes these inputs for the verification artifact.
-    paths:
-      - go/workers/**
-      - web/**
-      - scripts/**
-      - deploy/hetzner/**
-      - migrations/**
-      - docs/evidence/backyard-rwa-go/**
-      - .github/workflows/**
-      - Cargo.toml
-      - Cargo.lock
-      - rust-toolchain.toml
-      - Dockerfile.light-workers
-      - crates/squads-test-harness/**
-      - crates/mock-yield-protocols-program/**
-      - crates/loyal-actions/**
-      - crates/loyal-solana-env/**
-      - crates/loyal-hub-abi/**
-      - crates/loyal-voltr-rwa-nav-adaptor/**
-      - crates/loyal-observability/**
-      - crates/loyal-yield-realtime/**
-      - crates/loyal-yield-realtime-core/**
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -32,11 +12,63 @@ permissions:
 
 # Never cancel an activation. Pending obsolete commits are replaced by the newest.
 concurrency:
-  group: loyal-production
-  cancel-in-progress: false
+  group: ${{ github.event_name == 'pull_request' && format('loyal-pr-{0}', github.ref) || 'loyal-production' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  scope:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      services: ${{ steps.plan.outputs.services }}
+      contracts: ${{ steps.plan.outputs.contracts }}
+      workers: ${{ steps.plan.outputs.workers }}
+      engine: ${{ steps.plan.outputs.engine }}
+      rust: ${{ steps.plan.outputs.rust }}
+      worker_services: ${{ steps.plan.outputs.worker_services }}
+      worker_packages: ${{ steps.plan.outputs.worker_packages }}
+      web: ${{ steps.plan.outputs.web }}
+      web_services: ${{ steps.plan.outputs.web_services }}
+      web_packages: ${{ steps.plan.outputs.web_packages }}
+      mobile: ${{ steps.plan.outputs.mobile }}
+      journeys: ${{ steps.plan.outputs.journeys }}
+      realtime: ${{ steps.plan.outputs.realtime }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go/workers/go.mod
+          cache: false
+      - id: plan
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            python3 scripts/production-scope.py --base "$BASE" --output scope.json
+          else
+            python3 scripts/production-scope.py --production --output scope.json
+          fi
+          python3 - <<'PYTHON'
+          import json, os
+          plan = json.load(open('scope.json'))
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              summary.write('Checks: ' + (', '.join(plan['checks']) or 'none') + '\n\n')
+              summary.write('Deploy: ' + (', '.join(plan['services']) or 'none') + '\n\n')
+          PYTHON
+      - uses: actions/upload-artifact@v4
+        with:
+          name: production-scope-${{ github.sha }}
+          path: scope.json
+          overwrite: true
+
   merge-checks:
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
@@ -55,21 +87,106 @@ jobs:
           gh pr checks "$pr" --watch --interval 10 --fail-fast
           gh pr checks "$pr" --json name,bucket > "$RUNNER_TEMP/merged-pr-checks.json"
           jq -e 'length > 0 and all(.[]; .bucket == "pass" or .bucket == "skipping")' "$RUNNER_TEMP/merged-pr-checks.json"
+  contracts:
+    needs: scope
+    if: needs.scope.outputs.contracts == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go/workers/go.mod
+          cache: false
+      - name: Service selection and database gate regressions
+        run: python3 scripts/production_scope_test.py
+      - run: python3 scripts/clickstack-vault-alerts_test.py
+      - run: python3 scripts/clickstack-looping-alerts_test.py
+      - name: Deployment refusals, observation and rollback
+        run: python3 -B -m unittest discover -s scripts -p '*rollout_test.py'
+      - name: Install offline alert validators
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends prometheus prometheus-alertmanager python3-yaml wireguard-tools nftables
+      - name: Private deployment network isolation and cleanup
+        run: sudo bash scripts/ci-worker-network_test.sh
+      - name: Verify paging decisions, routing and Telegram rendering
+        working-directory: deploy/hetzner/monitoring
+        run: |
+          promtool check rules loyal.rules.yml
+          promtool test rules loyal*.rules.test.yml
+          amtool check-config alertmanager.yml
+          python3 verify-alert-messages.py
+
   workers:
+    needs: scope
+    if: needs.scope.outputs.workers == 'true'
     uses: ./.github/workflows/workers-v2-verify.yml
+    with:
+      services: ${{ needs.scope.outputs.worker_services }}
+      packages: ${{ needs.scope.outputs.worker_packages }}
+      engine: ${{ needs.scope.outputs.engine == 'true' }}
+      rust: ${{ needs.scope.outputs.rust == 'true' }}
   web:
+    needs: scope
+    if: needs.scope.outputs.web == 'true'
     uses: ./.github/workflows/web-go.yml
+    with:
+      services: ${{ needs.scope.outputs.web_services }}
+      packages: ${{ needs.scope.outputs.web_packages }}
+      mobile: ${{ needs.scope.outputs.mobile == 'true' }}
   journeys:
+    needs: scope
+    if: needs.scope.outputs.journeys == 'true'
     uses: ./.github/workflows/web-journeys.yml
   realtime:
+    needs: scope
+    if: needs.scope.outputs.realtime == 'true'
     permissions:
       contents: read
       packages: write
     uses: ./.github/workflows/realtime-image.yml
 
+  verified:
+    needs: [scope, merge-checks, contracts, workers, web, journeys, realtime]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Every selected check passed
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PYTHON'
+          import json, os
+          needs = json.loads(os.environ['NEEDS_JSON'])
+          assert needs['scope']['result'] == 'success', 'service selection failed'
+          assert needs['merge-checks']['result'] == ('skipped' if os.environ['GITHUB_EVENT_NAME'] == 'pull_request' else 'success'), 'merged PR checks are not green'
+          for job in ('contracts', 'workers', 'web', 'journeys', 'realtime'):
+              selected = needs['scope']['outputs'][job] == 'true'
+              expected = 'success' if selected else 'skipped'
+              assert needs[job]['result'] == expected, f"{job}: expected {expected}, got {needs[job]['result']}"
+          PYTHON
+
+  receipts:
+    needs: [scope, verified]
+    if: github.ref == 'refs/heads/main' && needs.scope.outputs.services != '[]'
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        service: ${{ fromJSON(needs.scope.outputs.services) }}
+    steps:
+      - run: printf '%s\n' "$GITHUB_SHA" > verified-commit
+      - uses: actions/upload-artifact@v4
+        with:
+          name: production-verified-${{ matrix.service }}-${{ github.sha }}
+          path: verified-commit
+          overwrite: true
+
   deploy:
-    needs: [merge-checks, workers, web, journeys, realtime]
-    if: github.ref == 'refs/heads/main'
+    needs: [scope, verified, receipts]
+    if: github.ref == 'refs/heads/main' && needs.scope.outputs.services != '[]'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     environment: production
@@ -78,6 +195,7 @@ jobs:
       actions: read
     env:
       GH_TOKEN: ${{ github.token }}
+      SERVICES: ${{ needs.scope.outputs.services }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -94,7 +212,13 @@ jobs:
       - name: Verify the exact artifacts before using production access
         run: |
           cd "$LOYAL_DEPLOY_ARTIFACT_DIR"
-          sha256sum -c workers-SHA256SUMS web-SHA256SUMS realtime-SHA256SUMS
+          python3 - <<'PYTHON'
+          import json, os, subprocess
+          services = json.loads(os.environ['SERVICES'])
+          workers = {'backyard', 'earn-max', 'retail', 'observer', 'telegram'}
+          manifests = sorted({('workers' if service in workers else service) + '-SHA256SUMS' for service in services})
+          subprocess.run(['sha256sum', '-c', *manifests], check=True)
+          PYTHON
           chmod 0555 loyal-*
       - name: Install private network tools
         run: |
@@ -126,7 +250,7 @@ jobs:
           printf '%s\n' "$DEPLOY_KEY" | ssh-add - >/dev/null 2>&1
           printf 'SSH_AUTH_SOCK=%s\nSSH_AGENT_PID=%s\n' "$SSH_AUTH_SOCK" "$SSH_AGENT_PID" >> "$GITHUB_ENV"
       - name: Preflight, deploy and observe each service
-        run: python3 scripts/production-rollout.py "$GITHUB_SHA"
+        run: python3 scripts/production-rollout.py "$GITHUB_SHA" --services-json "$SERVICES"
       - name: Remove deployment access
         if: always()
         run: |

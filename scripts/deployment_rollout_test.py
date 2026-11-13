@@ -30,7 +30,7 @@ if name == 'git':
         sys.stdout.buffer.write((root / 'source.tar').read_bytes())
     elif args[0] == 'diff' and mode == 'migration':
         print('migrations/yield/new.sql')
-    elif args[0] == 'cat-file' and args[-1].endswith(':.github/workflows/production.yml') and mode == 'failed-ci':
+    elif args[0] == 'cat-file' and args[-1].endswith((':.github/workflows/production.yml', ':scripts/production-scope.py')) and mode == 'failed-ci':
         sys.exit(1)
 elif name == 'gh':
     if any('actions/artifacts' in arg for arg in args):
@@ -127,6 +127,7 @@ class DeploymentTest(unittest.TestCase):
                 self.assertFalse(any(call[0] in ('bun', 'make') for call in calls))
                 self.assertTrue(any(call[0] == 'scp' and '/artifacts/loyal-' in call[2] for call in calls))
                 self.assertTrue(any('--setenv=LOYAL_DEPLOY_EXPECTED_RELEASE=' + OLD in call for call in calls))
+                self.assertTrue(any('name=production-verified-' + family + '-' + NEW in call for call in calls if call[0] == 'gh'))
 
     def test_refusals_happen_before_any_artifact_upload(self):
         for family, mode in (('web', 'stale'), ('retail', 'missing-ci'), ('retail', 'failed-ci'),
@@ -141,7 +142,8 @@ class DeploymentTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         gh_calls = [call for call in calls if call[0] == 'gh']
         self.assertEqual(len(gh_calls), 1)
-        self.assertIn('select(.workflow_run.head_branch == "main")', gh_calls[0][-1])
+        self.assertIn('.workflow_run.head_branch == "main"', gh_calls[0][-1])
+        self.assertIn('.workflow_run.head_sha == "' + NEW + '"', gh_calls[0][-1])
 
     def realtime(self, mode='ok', expected=OLD):
         root, env = self.prepare('realtime', mode)
