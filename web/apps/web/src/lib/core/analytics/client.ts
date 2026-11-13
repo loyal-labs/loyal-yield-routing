@@ -142,8 +142,65 @@ function getWalletDistinctId(user: AuthSessionUser): string | null {
   return `wallet:${user.walletAddress}`;
 }
 
-export function initAnalytics(publicEnv: PublicEnv): Promise<void> {
-  return getAnalyticsClient(publicEnv).init();
+// Same keys and profile fields as the mobile app (apps/mobile/src/lib/analytics/
+// attribution.ts), so web and mobile campaign reads share one set of properties.
+const ATTRIBUTION_KEYS = [
+  "twclid",
+  "utm_source",
+  "utm_medium",
+  "utm_campaign",
+  "utm_term",
+  "utm_content",
+] as const;
+const LANDING_ATTRIBUTION_SOURCE = "landing_url";
+
+function readLandingAttribution(): Record<string, string> | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  const params = new URLSearchParams(window.location.search);
+  const attribution: Record<string, string> = {};
+  for (const key of ATTRIBUTION_KEYS) {
+    const value = params.get(key);
+    if (value) {
+      attribution[key] = value;
+    }
+  }
+
+  return Object.keys(attribution).length > 0 ? attribution : null;
+}
+
+// Mixpanel puts UTMs only on the landing event, so sign-ins and deposits later
+// in the visit (or on a return visit) lost their campaign. Persist the latest
+// campaign as super properties and keep the first one on the profile.
+// Profile updates made before identify are queued by mixpanel-browser and
+// attach to the wallet profile once identifyAuthenticatedUser runs.
+function captureLandingAttribution(client: AnalyticsClient): void {
+  const attribution = readLandingAttribution();
+  if (!attribution) {
+    return;
+  }
+
+  client.registerSuperProperties(attribution);
+  client.setUserProfile({
+    ...attribution,
+    attribution_source: LANDING_ATTRIBUTION_SOURCE,
+  });
+
+  const firstTouch: AnalyticsProperties = {
+    initial_attribution_source: LANDING_ATTRIBUTION_SOURCE,
+  };
+  for (const [key, value] of Object.entries(attribution)) {
+    firstTouch[`initial_${key}`] = value;
+  }
+  client.setUserProfileOnce(firstTouch);
+}
+
+export async function initAnalytics(publicEnv: PublicEnv): Promise<void> {
+  const client = getAnalyticsClient(publicEnv);
+  await client.init();
+  captureLandingAttribution(client);
 }
 
 export function track(

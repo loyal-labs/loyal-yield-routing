@@ -41,6 +41,7 @@ export type AnalyticsClient = {
   reset: () => void;
   setContext: (properties: AnalyticsProperties) => void;
   clearContext: () => void;
+  registerSuperProperties: (properties: AnalyticsProperties) => void;
   setUserProfile: (properties: AnalyticsProperties) => void;
   setUserProfileOnce: (properties: AnalyticsProperties) => void;
   unionUserProfile: (properties: AnalyticsProfileUnionProperties) => void;
@@ -211,6 +212,26 @@ export function createMixpanelBrowserClient(
     });
   }
 
+  // Persisted super properties: unlike setContext, they survive reloads and
+  // ride on every later event from this browser (Mixpanel `register`).
+  function registerSuperProperties(properties: AnalyticsProperties): void {
+    if (!canTrack()) {
+      return;
+    }
+
+    void init().then(() => {
+      if (!isInitialized || !mixpanel) {
+        return;
+      }
+
+      try {
+        mixpanel.register(properties);
+      } catch (error) {
+        console.error("Failed to register Mixpanel super properties", error);
+      }
+    });
+  }
+
   function setUserProfileOnce(properties: AnalyticsProperties): void {
     if (!canTrack()) {
       return;
@@ -288,6 +309,7 @@ export function createMixpanelBrowserClient(
     reset,
     setContext,
     clearContext,
+    registerSuperProperties,
     setUserProfile,
     setUserProfileOnce,
     unionUserProfile,
