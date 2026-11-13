@@ -1,1 +1,0 @@
-Fixed Earn balance display for Seeker and connected wallets. You can now sign in from Earn to view your balance. Improved transaction history labels.

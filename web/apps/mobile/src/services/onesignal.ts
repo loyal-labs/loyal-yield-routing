@@ -31,9 +31,9 @@ const initSettled = new Promise<void>((resolve) => {
 /**
  * Initialize the OneSignal SDK. Call once on app boot, before rendering the
  * main content. No-ops when EXPO_PUBLIC_ONESIGNAL_APP_ID is unset or the
- * native module is missing. Does NOT request push permission — the Expo
- * notifications flow (PushTokenRegistrar, wallet-gated) owns the OS prompt,
- * and OneSignal picks up the app-level grant on its own.
+ * native module is missing. Does NOT request push permission itself — the
+ * wallet-gated PushTokenRegistrar calls requestOneSignalPermission(), so
+ * OneSignal owns the OS prompt.
  */
 export async function initOneSignal(): Promise<void> {
   try {
@@ -85,4 +85,86 @@ export async function setOneSignalTags(
   await initSettled;
   const mod = await getOneSignal();
   mod?.OneSignal.User.addTags(tags);
+}
+
+/**
+ * Show the OS push prompt via OneSignal. Users who previously denied are
+ * NOT redirected to app settings (no fallback), so this is safe to call on
+ * every cold start. Resolves to whether permission is granted; false when
+ * the module is missing or the request fails.
+ */
+export async function requestOneSignalPermission(): Promise<boolean> {
+  await initSettled;
+  const mod = await getOneSignal();
+  if (!mod) return false;
+  try {
+    return await mod.OneSignal.Notifications.requestPermission(false);
+  } catch (error) {
+    console.error("[onesignal] requestPermission failed:", error);
+    return false;
+  }
+}
+
+/**
+ * The device's OneSignal push subscription ID while it is opted in, or null
+ * when OneSignal is unavailable, has not assigned one yet (the first launch
+ * gets it asynchronously; addOneSignalSubscriptionIdListener reports it then),
+ * or notifications are off. The server spends a push claim on any registered
+ * subscription, so an opted-out one is never registered.
+ */
+export async function getOneSignalSubscriptionId(): Promise<string | null> {
+  await initSettled;
+  const mod = await getOneSignal();
+  if (!mod) return null;
+  try {
+    const subscription = mod.OneSignal.User.pushSubscription;
+    if (!(await subscription.getOptedInAsync())) return null;
+    return await subscription.getIdAsync();
+  } catch (error) {
+    console.error("[onesignal] getIdAsync failed:", error);
+    return null;
+  }
+}
+
+/**
+ * Call `onId` whenever the push subscription changes, has an ID and is opted in. Returns
+ * an unsubscribe function, or null when OneSignal is unavailable.
+ */
+export async function addOneSignalSubscriptionIdListener(
+  onId: (subscriptionId: string) => void,
+): Promise<(() => void) | null> {
+  await initSettled;
+  const mod = await getOneSignal();
+  if (!mod) return null;
+
+  const handler = (event: { current: { id?: string; optedIn: boolean } }) => {
+    if (event.current.id && event.current.optedIn) onId(event.current.id);
+  };
+  mod.OneSignal.User.pushSubscription.addEventListener("change", handler);
+  return () => {
+    mod.OneSignal.User.pushSubscription.removeEventListener("change", handler);
+  };
+}
+
+/**
+ * Listen for notification taps. Hands the payload's additionalData to
+ * `onRoute`; returns an unsubscribe function, or null when OneSignal is
+ * unavailable.
+ */
+export async function addOneSignalClickListener(
+  onRoute: (route: string) => void,
+): Promise<(() => void) | null> {
+  await initSettled;
+  const mod = await getOneSignal();
+  if (!mod) return null;
+
+  const handler = (event: { notification: { additionalData?: object } }) => {
+    const data = event.notification.additionalData;
+    const route = (data as { route?: unknown } | undefined)?.route;
+    if (typeof route === "string") onRoute(route);
+  };
+  mod.OneSignal.Notifications.addEventListener("click", handler);
+  return () => {
+    mod.OneSignal.Notifications.removeEventListener("click", handler);
+  };
 }
