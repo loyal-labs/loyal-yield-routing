@@ -141,7 +141,7 @@ func TestQuoteCandidateWaitsForAccountSlotCatchupWithoutRequoting(t *testing.T) 
 }
 
 func TestProductionObserverCatchesUpToExitQuotes(t *testing.T) {
-	for _, scenario := range []string{"unchanged holdings", "custody changed", "quotes keep advancing"} {
+	for _, scenario := range []string{"unchanged holdings", "custody changed", "valid quote ages during recapture", "quote expires during recapture", "quotes keep advancing"} {
 		t.Run(scenario, func(t *testing.T) {
 			m := readyWorkerManifest(t)
 			m.RuntimeActivation.SelectedLane = PrimeUSDCLaneID
@@ -164,7 +164,7 @@ func TestProductionObserverCatchesUpToExitQuotes(t *testing.T) {
 				quotes++
 				quoted = append(quoted, b.heldRaw)
 				quoteSlot := slot
-				if quotes == 1 || scenario == "quotes keep advancing" {
+				if quotes == 1 || scenario == "quotes keep advancing" || scenario == "valid quote ages during recapture" || scenario == "quote expires during recapture" {
 					quoteSlot += 2
 				}
 				return exitCostOf(b.st.route.Lane, exitCostQuote, b.heldRaw, b.markValue, b.markValue, b.mark, quoteSlot, at)
@@ -173,6 +173,16 @@ func TestProductionObserverCatchesUpToExitQuotes(t *testing.T) {
 				state: &vaultState{}, exits: q, now: time.Now,
 				read: func(ctx context.Context, addresses []string, minSlot int64) (int64, []ConfirmedAccount, []programAccount, error) {
 					bank = max(bank, minSlot)
+					if (scenario == "valid quote ages during recapture" || scenario == "quote expires during recapture") && len(addresses) > 0 && minSlot > 77 {
+						bank += 18
+						if scenario == "quote expires during recapture" {
+							bank += 16
+						}
+						// Model a recapture longer than the retry interval without sleeping.
+						for key := range q.attempted {
+							q.attempted[key] = time.Now().Add(-exitQuoteRetryInterval)
+						}
+					}
 					return fixtureBatchRuntime(bank, batch(bank))(ctx, addresses, minSlot)
 				},
 				refreshValuation: func(ctx context.Context, routes []RuntimeRoute, addresses []string, minSlot int64) (int64, []ConfirmedAccount, error) {
@@ -183,13 +193,17 @@ func TestProductionObserverCatchesUpToExitQuotes(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if scenario == "quotes keep advancing" {
+			if scenario == "quotes keep advancing" || scenario == "quote expires during recapture" {
 				if refreshes != 3 || o.Snapshot.netKnown(time.Now()) || o.Snapshot.NAVUnavailable != exitUnpriced {
 					t.Fatal("unbounded catchup or future quote certified", refreshes, o.Snapshot.NAVUnavailable)
 				}
 				return
 			}
-			if !o.Snapshot.netKnown(time.Now()) || o.Snapshot.Slot != 79 || refreshes != 2 {
+			wantSlot := int64(79)
+			if scenario == "valid quote ages during recapture" {
+				wantSlot = 97
+			}
+			if !o.Snapshot.netKnown(time.Now()) || o.Snapshot.Slot != wantSlot || refreshes != 2 {
 				t.Fatal("fresh quote and coherent recapture did not certify", refreshes, o.Snapshot.Slot, o.Snapshot.NAVUnavailable)
 			}
 			if scenario == "custody changed" {

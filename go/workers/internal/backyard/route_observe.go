@@ -97,6 +97,7 @@ type routeObservationRuntime struct {
 	inputs           targetInputs
 	state            *vaultState
 	exits            *exitQuoter
+	reuseValidQuotes bool
 }
 
 func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest RouteManifest, runtime routeObservationRuntime) (Observation, []ConfirmedAccount, error) {
@@ -122,6 +123,8 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 		// Quotes can advance while the account snapshot is being priced. Recapture
 		// the whole book at that slot; every quantity and price is checked again.
 		runtime.minSlot, runtime.inputs.ExitCosts = nextSlot, observation.quotedExits
+		// Repricing an already valid recapture can move its quotes ahead again.
+		runtime.reuseValidQuotes = true
 	}
 }
 
@@ -246,11 +249,13 @@ func observeRouteSnapshotOnce(ctx context.Context, manifest RouteManifest, runti
 		views = append(views, view)
 	}
 	urgent := false
+	needsQuotes := !runtime.reuseValidQuotes
 	for _, o := range views {
 		s := o.Snapshot
+		needsQuotes = needsQuotes || !s.netKnown(runtime.now())
 		urgent = urgent || s.HasPosition && (s.LTVBPS >= hardLTVBPS(s.LiquidationThresholdBPS, s.MaxLTVBPS) || termDebtUnknown(s) || s.DebtTermEndUnix > 0 && s.DebtTermEndUnix <= s.ChainUnix)
 	}
-	if runtime.exits != nil && !urgent {
+	if runtime.exits != nil && !urgent && needsQuotes {
 		// Both vaults share two valuation requests/second; a held-lane batch must fit that pacing.
 		quoteCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 		runtime.inputs.ExitCosts = runtime.exits.quote(quoteCtx, manifest, slot, accounts, valued, runtime.inputs.ExitCosts)
