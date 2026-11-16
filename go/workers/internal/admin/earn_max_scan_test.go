@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/solana-foundation/solana-go/v2"
 )
 
@@ -20,7 +22,7 @@ func (f earnMaxScanTransport) RoundTrip(r *http.Request) (*http.Response, error)
 
 func TestEarnMaxScanMintHistory(t *testing.T) {
 	for _, vault := range []string{"loyal", "backyard"} {
-		for _, scenario := range []string{"complete", "missing deposit", "missing transaction", "stuck pagination"} {
+		for _, scenario := range []string{"complete", "known reports", "missing deposit", "missing transaction", "stuck pagination"} {
 			t.Run(vault+"/"+scenario, func(t *testing.T) {
 				cfg, err := earnMaxConfigFor(vault)
 				if err != nil {
@@ -34,6 +36,44 @@ func TestEarnMaxScanMintHistory(t *testing.T) {
 					var s solana.Signature
 					binary.LittleEndian.PutUint64(s[:8], n)
 					return s
+				}
+				var deps *Deps
+				if scenario == "known reports" {
+					dsn := os.Getenv("ADMIN_TEST_DATABASE_URL")
+					if dsn == "" {
+						t.Skip("requires disposable ADMIN_TEST_DATABASE_URL")
+					}
+					config, err := pgxpool.ParseConfig(dsn)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if config.ConnConfig.Host != "127.0.0.1" || config.ConnConfig.Database != "admin_vault_test" {
+						t.Fatal("requires local disposable admin_vault_test")
+					}
+					pool, err := pgxpool.NewWithConfig(context.Background(), config)
+					if err != nil {
+						t.Fatal(err)
+					}
+					t.Cleanup(pool.Close)
+					_, err = pool.Exec(context.Background(), `CREATE SCHEMA loyal_yield; CREATE TABLE loyal_yield.multiply_operations (route_key text, action text, status text, transaction_signature text)`)
+					if err != nil {
+						t.Fatal(err)
+					}
+					t.Cleanup(func() { _, _ = pool.Exec(context.Background(), `DROP SCHEMA loyal_yield CASCADE`) })
+					reports := []string{}
+					for n := uint64(1001); n < 2000; n++ {
+						reports = append(reports, sig(n).String())
+					}
+					_, err = pool.Exec(context.Background(), `INSERT INTO loyal_yield.multiply_operations SELECT $1,'REPORT_NAV','reconciled',unnest($2::text[]);
+`, cfg.RouteKey, reports)
+					if err != nil {
+						t.Fatal(err)
+					}
+					_, err = pool.Exec(context.Background(), `INSERT INTO loyal_yield.multiply_operations VALUES ('other-route','REPORT_NAV','reconciled',$1),($2,'REPORT_NAV','failed',$3),($2,'DEPOSIT','reconciled',$4)`, sig(1).String(), cfg.RouteKey, sig(2).String(), sig(3).String())
+					if err != nil {
+						t.Fatal(err)
+					}
+					deps = &Deps{Yield: pool}
 				}
 				row := func(n, slot uint64, failed bool) map[string]any {
 					r := map[string]any{"signature": sig(n).String(), "slot": slot, "err": nil, "blockTime": 1000}
@@ -78,7 +118,7 @@ func TestEarnMaxScanMintHistory(t *testing.T) {
 				}
 				first := []any{row(2001, 201, false)} // Arrived after the mint snapshot; exclude it.
 				for n := uint64(1001); n < 2000; n++ {
-					first = append(first, row(n, 200, true))
+					first = append(first, row(n, 200, scenario != "known reports"))
 				}
 				second := []any{}
 				for n := uint64(1); n <= 26; n++ {
@@ -143,8 +183,8 @@ func TestEarnMaxScanMintHistory(t *testing.T) {
 					return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(string(raw)))}, nil
 				})
 				t.Cleanup(func() { http.DefaultTransport = oldTransport })
-				scan, err := earnMaxScanVault(context.Background(), cfg)
-				if scenario != "complete" {
+				scan, err := earnMaxScanVault(context.Background(), deps, cfg)
+				if scenario != "complete" && scenario != "known reports" {
 					if err == nil || scan.valueUsd != 0 || len(scan.flows) != 0 {
 						t.Fatalf("incomplete history produced earnings: %+v, %v", scan, err)
 					}

@@ -862,8 +862,8 @@ var earnMaxCaches = func() map[string]*earnMaxVaultCache {
 	return caches
 }()
 
-func earnMaxLoadVault(cfg earnMaxConfig) (EarnMaxVault, error) {
-	scan, have, scanErr := earnMaxCaches[cfg.identity.ID].scans.Get(func(ctx context.Context) (earnMaxScan, error) { return earnMaxScanVault(ctx, cfg) })
+func earnMaxLoadVault(d *Deps, cfg earnMaxConfig) (EarnMaxVault, error) {
+	scan, have, scanErr := earnMaxCaches[cfg.identity.ID].scans.Get(func(ctx context.Context) (earnMaxScan, error) { return earnMaxScanVault(ctx, d, cfg) })
 	if !have {
 		return EarnMaxVault{}, scanErr
 	}
@@ -918,8 +918,24 @@ func earnMaxFetchFlow(ctx context.Context, client *chain.Client, signature solan
 	return flow, nil
 }
 
-func earnMaxScanVault(ctx context.Context, cfg earnMaxConfig) (earnMaxScan, error) {
+func earnMaxScanVault(ctx context.Context, d *Deps, cfg earnMaxConfig) (earnMaxScan, error) {
 	cache := earnMaxCaches[cfg.identity.ID]
+	knownReports := map[string]bool{}
+	if d != nil && d.Yield != nil {
+		reports, err := earnMaxQuery(ctx, d, `SELECT transaction_signature FROM loyal_yield.multiply_operations
+ WHERE route_key=$1 AND action='REPORT_NAV' AND status IN ('confirmed','reconciled') AND transaction_signature IS NOT NULL`,
+			func(rows pgx.Rows) (string, error) {
+				var signature string
+				err := rows.Scan(&signature)
+				return signature, err
+			}, cfg.RouteKey)
+		if err != nil {
+			return earnMaxScan{}, err
+		}
+		for _, signature := range reports {
+			knownReports[signature] = true
+		}
+	}
 	client, err := earnMaxChain()
 	if err != nil {
 		return earnMaxScan{}, err
@@ -949,7 +965,8 @@ func earnMaxScanVault(ctx context.Context, cfg earnMaxConfig) (earnMaxScan, erro
 			return earnMaxScan{}, err
 		}
 		for _, s := range found {
-			if !s.Failed && s.Slot <= mintSlot {
+			// NAV reports pass the LP mint read-only, so they cannot change share supply.
+			if !s.Failed && s.Slot <= mintSlot && !knownReports[s.Signature.String()] {
 				signatures[s.Signature] = true
 			}
 		}
@@ -1119,7 +1136,7 @@ func loadEarnMax(ctx context.Context, d *Deps, req PageRequest) (EarnMaxPage, er
 	run(func() {
 		page.Balances = earnMaxPart(func() (EarnMaxBalances, error) { return earnMaxLoadBalances(ctx, cfg) })
 	})
-	run(func() { page.Vault = earnMaxPart(func() (EarnMaxVault, error) { return earnMaxLoadVault(cfg) }) })
+	run(func() { page.Vault = earnMaxPart(func() (EarnMaxVault, error) { return earnMaxLoadVault(d, cfg) }) })
 	run(func() {
 		page.Apy = earnMaxPart(func() (EarnMaxApy, error) { return earnMaxLoadApy(ctx, cfg, sharePrice) })
 	})
