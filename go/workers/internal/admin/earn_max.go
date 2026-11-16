@@ -327,7 +327,7 @@ func earnMaxSleep(ctx context.Context, d time.Duration) error {
 
 func earnMaxRetry[T any](ctx context.Context, call func() (T, error)) (T, error) {
 	value, err := call()
-	if !errors.Is(err, chain.ErrRateLimited) {
+	if !errors.Is(err, chain.ErrRateLimited) && !errors.Is(err, chain.ErrBehind) {
 		return value, err
 	}
 	if err := earnMaxSleep(ctx, time.Second); err != nil {
