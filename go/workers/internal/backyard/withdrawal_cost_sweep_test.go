@@ -165,6 +165,7 @@ func TestWithdrawalCostDatabaseSweepTimeoutDoesNotStarveLaterWireAndJoins(t *tes
 	})
 	w := newWithdrawalSettlementWorker(d, client, slog.New(slog.NewTextHandler(io.Discard, nil)), rwa)
 	w.batchSize = 1
+	attemptTimeout := w.attemptTimeout
 	w.attemptTimeout = 20 * time.Millisecond
 	w.interval = time.Millisecond
 	start := time.Now()
@@ -172,10 +173,15 @@ func TestWithdrawalCostDatabaseSweepTimeoutDoesNotStarveLaterWireAndJoins(t *tes
 	if time.Since(start) > time.Second {
 		t.Fatal("attempt timeout did not bound settlement")
 	}
+	if w.attemptCursor != ids[0] {
+		t.Fatal("timed-out attempt did not advance the sweep cursor")
+	}
+	// The successful expiry needs the normal deadline for its database transactions.
+	w.attemptTimeout = attemptTimeout
 	w.sweep(ctx)
 	var state string
 	if err := d.pool.QueryRow(ctx, `SELECT state FROM loyal_yield.earn_max_withdrawal_claim_attempts WHERE attempt_id=$1`, ids[1]).Scan(&state); err != nil || state != "released" {
-		t.Fatal("stuck older attempt starved later proven expiry")
+		t.Fatalf("stuck older attempt starved later proven expiry: state=%q err=%v", state, err)
 	}
 	run, cancel := context.WithCancel(ctx)
 	done := make(chan error, 1)
