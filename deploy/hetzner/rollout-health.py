@@ -258,10 +258,9 @@ def journal_failures(unit, cursor, stopping_invocation=None):
 
 def snapshot(family, since, cursor=None, allow_startup=False, stopping_invocation=None, crons_before=None):
     unit = f'loyal-{family}.service'
-    props = command('systemctl', 'show', unit, '--property=ActiveState,SubState,NRestarts,MainPID,InvocationID')
+    props = command('systemctl', 'show', unit, '--property=ActiveState,SubState,NRestarts,MainPID,InvocationID,ExecMainStartTimestampMonotonic')
     state = dict(line.split('=', 1) for line in props.splitlines() if '=' in line)
     require(state.get('ActiveState') == 'active' and state.get('SubState') == 'running', f'{unit} is not running')
-    require(int(state['NRestarts']) == 0, f'{unit} restarted')
     require(int(state['MainPID']) > 0 and bool(state['InvocationID']), 'missing process identity')
     if cursor:
         stopped = stopping_invocation if state['InvocationID'] != stopping_invocation else None
@@ -269,7 +268,10 @@ def snapshot(family, since, cursor=None, allow_startup=False, stopping_invocatio
     raw_cursor = command('journalctl', '-u', unit, '-n', '0', '--show-cursor', '--no-pager')
     current_cursor = re.search(r'^-- cursor: (.+)$', raw_cursor, re.M)
     require(current_cursor is not None, 'journal cursor is unavailable')
-    result = {'family': family, 'at': time.time(), 'invocation': state['InvocationID'], 'cursor': current_cursor[1]}
+    started = int(state['ExecMainStartTimestampMonotonic']) / 1e6
+    require(started > 0, 'missing process start time')
+    result = {'family': family, 'at': time.time(), 'invocation': state['InvocationID'], 'cursor': current_cursor[1],
+              'restarts': int(state['NRestarts']), 'process_age_seconds': time.monotonic() - started}
     if family == 'realtime':
         tag = unit_environment(unit).get('LOYAL_IMAGE_VERSION', '')
         require(re.fullmatch(r'sha-[0-9a-f]{40}', tag) is not None, 'realtime release identity is missing')
@@ -319,6 +321,7 @@ def check_sample(before, current, sha, watch_started, previous=None):
     if previous:
         require(current['invocation'] == previous['invocation'], 'worker exited/restarted during observation')
     same_process = current['invocation'] == before['invocation']
+    require(current['restarts'] == (before['restarts'] if same_process else 0), 'worker restart counter advanced')
     baseline = before.get('failures', {}) if same_process else {}
     require(all(value <= baseline.get(key, 0) for key, value in current.get('failures', {}).items()), 'worker failure counter advanced')
     fresh = current.get('lane_observed_at', current['at']) > watch_started

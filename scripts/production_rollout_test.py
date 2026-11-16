@@ -30,6 +30,7 @@ OLD, NEW = 'a' * 40, 'b' * 40
 
 def sample(release=OLD, invocation='old', at=1000):
     return {'family': 'backyard', 'release': release, 'invocation': invocation,
+            'restarts': 0, 'process_age_seconds': 3600,
             'at': at, 'cursor': 'cursor-before', 'binary_sha256': 'c' * 64,
             'lane_observed_at': at, 'failures': {},
             'vault': {'observed_at': at, 'intent_fingerprint': 'same', 'inflight': 0}}
@@ -167,6 +168,14 @@ class HealthTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'failure counter'):
             health.check_sample(before, current, NEW, 999)
 
+    def test_historical_restarts_allow_stable_process_but_new_restarts_stop_immediately(self):
+        before = dict(sample(NEW), restarts=3)
+        self.assertTrue(health.check_sample(before, dict(before), NEW, 999))
+        self.assertTrue(health.check_sample(before, sample(NEW, 'new'), NEW, 999))
+        for current in (dict(before, restarts=4), dict(sample(NEW, 'new'), restarts=1)):
+            with self.assertRaisesRegex(RuntimeError, 'restart counter'):
+                health.check_sample(before, current, NEW, 999)
+
     def test_failed_nav_at_info_level_is_still_failure(self):
         for event in ({'msg': 'backyard_operation_failed_after_send', 'level': 'INFO'},
                       {'msg': 'backyard_worker_exit', 'level': 'WARN'},
@@ -263,7 +272,7 @@ class HealthTest(unittest.TestCase):
 
     def test_startup_snapshot_keeps_vault_and_journal_guards_and_strict_preflight(self):
         binary = Path(f'/opt/loyal/releases/backyard/{NEW}/loyal-engine')
-        state = 'ActiveState=active\nSubState=running\nNRestarts=0\nMainPID=123\nInvocationID=new'
+        state = 'ActiveState=active\nSubState=running\nNRestarts=3\nMainPID=123\nInvocationID=new\nExecMainStartTimestampMonotonic=1000000'
         for allow, lanes, failed, journal, error in (
             (False, {}, 0, [], 'observations are missing'),
             (True, {}, 0, [], None),
@@ -290,6 +299,7 @@ class HealthTest(unittest.TestCase):
                     else:
                         current = health.snapshot('backyard', 1000, 'cursor', allow_startup=allow, stopping_invocation='new')
                         self.assertEqual(current['lane_observed_at'], 0)
+                        self.assertEqual(current['restarts'], 3)
                         probe.assert_called_once_with('backyard', 1000)
                         journal_probe.assert_called_once_with('loyal-backyard.service', 'cursor', None)
 
@@ -312,6 +322,22 @@ class HealthTest(unittest.TestCase):
 
 
 class PipelineTest(unittest.TestCase):
+    def test_preflight_requires_a_stable_process(self):
+        for age in (-1, 0, 59):
+            with self.subTest(age=age), self.assertRaisesRegex(RuntimeError, 'stable for 60 seconds'):
+                rollout.check_previous('backyard', dict(sample(), process_age_seconds=age), NEW)
+        with patch.object(rollout, 'run', return_value=''):
+            rollout.check_previous('backyard', dict(sample(), restarts=3, process_age_seconds=60), NEW)
+
+    def test_remote_health_failure_preserves_only_its_sanitized_reason(self):
+        error = subprocess.CalledProcessError(1, 'ssh', output='private output\nROLLOUT BLOCKED: loyal-observer.service restarted\nprivate output')
+        with patch.object(rollout, 'run', side_effect=error):
+            with self.assertRaises(RuntimeError) as caught:
+                rollout.ssh('host', 'python3', '/tmp/release/rollout-health.py', 'snapshot', 'observer')
+            self.assertEqual(str(caught.exception), 'ROLLOUT BLOCKED: loyal-observer.service restarted')
+            with self.assertRaises(subprocess.CalledProcessError):
+                rollout.ssh('host', 'python3', '/tmp/another-script.py')
+
     def exercise(self, fail_watch=None, fail_preflight=None, stale=False, fail_activation=None, services=rollout.FAMILIES):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
