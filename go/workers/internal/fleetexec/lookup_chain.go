@@ -16,11 +16,27 @@ func lookupSnapshot(ctx context.Context, c *chain.Client, address string, minSlo
 	if err != nil || minSlot < 0 {
 		return LookupSnapshot{}, errors.New("invalid lookup readback request")
 	}
-	slot, accounts, err := c.Accounts(ctx, []sdk.PublicKey{key, sdk.SysVarSlotHashesPubkey}, rpc.CommitmentFinalized, uint64(minSlot))
+	slot, accounts, err := lookupAccounts(ctx, c, []sdk.PublicKey{key}, minSlot)
 	if err != nil {
 		return LookupSnapshot{}, err
 	}
 	return decodeLookupSnapshot(address, int64(slot), accounts[0], accounts[1])
+}
+
+func lookupAccounts(ctx context.Context, c *chain.Client, keys []sdk.PublicKey, minSlot int64) (uint64, []*chain.Account, error) {
+	keys = append(keys, sdk.SysVarSlotHashesPubkey)
+	for attempt := 0; ; attempt++ {
+		slot, accounts, err := c.Accounts(ctx, keys, rpc.CommitmentFinalized, uint64(minSlot))
+		if err != nil {
+			return 0, nil, err
+		}
+		_, err = decodeLookupSnapshot("", int64(slot), nil, accounts[len(keys)-1])
+		if err == nil || attempt == 1 {
+			return slot, accounts, err
+		}
+		// Refresh the whole bank once; an inconsistent read cannot authorize lookup work.
+		minSlot = int64(slot) + 1
+	}
 }
 
 func decodeLookupSnapshot(address string, slot int64, a, hashes *chain.Account) (LookupSnapshot, error) {
@@ -92,7 +108,7 @@ func lookupCatalogObservations(ctx context.Context, c *chain.Client, addresses [
 		}
 		keys = append(keys, key)
 	}
-	slot, accounts, err := c.Accounts(ctx, append(keys, sdk.SysVarSlotHashesPubkey), rpc.CommitmentFinalized, uint64(minSlot))
+	slot, accounts, err := lookupAccounts(ctx, c, keys, minSlot)
 	if err != nil {
 		return nil, err
 	}

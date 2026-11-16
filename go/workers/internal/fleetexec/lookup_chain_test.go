@@ -7,10 +7,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	sdk "github.com/solana-foundation/solana-go/v2"
 )
 
 // serveLookupBank answers finalized getMultipleAccounts at slot 1000 with an
@@ -34,6 +36,80 @@ func serveLookupBank(t *testing.T, hashes map[string]any) *chain.Client {
 		t.Fatal(err)
 	}
 	return client
+}
+
+func TestLookupReadsRefreshInconsistentBankOnce(t *testing.T) {
+	for _, catalog := range []bool{false, true} {
+		for _, scenario := range []string{"valid", "future-then-valid", "unordered-then-valid", "still-invalid"} {
+			name := "single/" + scenario
+			if catalog {
+				name = "catalog/" + scenario
+			}
+			t.Run(name, func(t *testing.T) {
+				var calls atomic.Int32
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					n := calls.Add(1)
+					var request struct {
+						Method string
+						Params []json.RawMessage
+					}
+					if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.Method != "getMultipleAccounts" || len(request.Params) != 2 {
+						t.Error("unexpected lookup read")
+						http.Error(w, "bad request", 400)
+						return
+					}
+					var options struct {
+						Commitment     string
+						MinContextSlot uint64
+					}
+					if err := json.Unmarshal(request.Params[1], &options); err != nil || options.Commitment != "finalized" || (n == 2 && options.MinContextSlot != 1001) || n > 2 {
+						t.Errorf("unbounded or stale lookup reread: call=%d options=%+v", n, options)
+						http.Error(w, "bad request", 400)
+						return
+					}
+					slot := uint64(1000 + 2*(n-1))
+					data := make([]byte, 88)
+					binary.LittleEndian.PutUint64(data, 2)
+					binary.LittleEndian.PutUint64(data[8:], slot-1)
+					binary.LittleEndian.PutUint64(data[48:], slot-2)
+					if scenario == "still-invalid" || (n == 1 && scenario == "future-then-valid") {
+						binary.LittleEndian.PutUint64(data[8:], slot+1)
+					}
+					if n == 1 && scenario == "unordered-then-valid" {
+						binary.LittleEndian.PutUint64(data[48:], slot-1)
+					}
+					hashes := map[string]any{"owner": sdk.SysVarPubkey.String(), "lamports": 1, "executable": false, "data": []string{base64.StdEncoding.EncodeToString(data), "base64"}}
+					_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 0, "result": map[string]any{"context": map[string]any{"slot": slot}, "value": []any{nil, hashes}}})
+				}))
+				t.Cleanup(server.Close)
+				client, err := chain.New(server.URL, time.Second)
+				if err != nil {
+					t.Fatal(err)
+				}
+				address := readLookupFixture(t).Table
+				var snapshot LookupSnapshot
+				if catalog {
+					var observations []lookupCatalogObservation
+					observations, err = lookupCatalogObservations(t.Context(), client, []string{address}, 0)
+					if len(observations) == 1 {
+						snapshot = observations[0].snapshot
+					}
+				} else {
+					snapshot, err = lookupSnapshot(t.Context(), client, address, 0)
+				}
+				wantCalls := int32(2)
+				if scenario == "valid" {
+					wantCalls = 1
+				}
+				if calls.Load() != wantCalls || (err != nil) != (scenario == "still-invalid") {
+					t.Fatalf("calls=%d want=%d error=%v", calls.Load(), wantCalls, err)
+				}
+				if err == nil && (snapshot.Slot != int64(1000+2*(wantCalls-1)) || len(snapshot.SlotHashes) != 2 || snapshot.SlotHashes[0] != uint64(snapshot.Slot-1)) {
+					t.Fatalf("accepted mixed or incomplete bank: %+v", snapshot)
+				}
+			})
+		}
+	}
 }
 
 func TestLookupSnapshotDecodesOfficialPaddedSlotHashes(t *testing.T) {
