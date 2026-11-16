@@ -11,6 +11,7 @@ import (
 // Facts are the only health signal a family emits. Alerting rules live in
 // Alertmanager; nothing in-process interprets them.
 type Facts struct {
+	jupiterFacts
 	vaultRecovery       *prometheus.GaugeVec
 	vaultValue          *prometheus.GaugeVec
 	vaultShareValue     *prometheus.GaugeVec
@@ -58,6 +59,7 @@ type Facts struct {
 
 func NewFacts(registerer prometheus.Registerer) *Facts {
 	f := &Facts{
+		jupiterFacts: newJupiterFacts(registerer),
 		vaultRecovery: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "loyal_backyard_recovery_required", Help: "Vault management is stopped by its persisted manual-recovery latch.",
 		}, []string{"vault"}),

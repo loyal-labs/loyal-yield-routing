@@ -13,9 +13,11 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/solana-foundation/solana-go/v2"
+	"golang.org/x/sync/singleflight"
 )
 
 const (
@@ -30,6 +32,8 @@ type Client struct {
 	http         *http.Client
 	mu           sync.Mutex
 	retryAfter   time.Time
+	budget       *Budget
+	quotes       singleflight.Group
 }
 
 func NewClient(base, apiKey string, client *http.Client) (*Client, error) {
@@ -38,6 +42,17 @@ func NewClient(base, apiKey string, client *http.Client) (*Client, error) {
 		return nil, errors.New("invalid Jupiter client")
 	}
 	return &Client{base: strings.TrimRight(base, "/"), apiKey: apiKey, http: client}, nil
+}
+
+// SetBudget is called during startup, before the client is shared with workers.
+func (c *Client) SetBudget(budget *Budget) error {
+	if budget == nil || c.apiKey == "" {
+		return errors.New("shared Jupiter budget requires a paid API key")
+	}
+	client := *c.http
+	client.Transport = budget.Transport(client.Transport)
+	c.http, c.budget = &client, budget
+	return nil
 }
 
 type QuoteRequest struct {
@@ -131,7 +146,30 @@ func (c *Client) Quote(ctx context.Context, request QuoteRequest) (Quote, error)
 	if err != nil {
 		return Quote{}, err
 	}
-	raw, err := c.do(httpRequest)
+	var raw json.RawMessage
+	if requestClass(ctx) == "background" {
+		// Only simultaneous identical discovery quotes share work. No quote cache
+		// survives completion, and execution never joins this group.
+		var sent atomic.Bool
+		result := c.quotes.DoChan(httpRequest.URL.String(), func() (any, error) {
+			sent.Store(true)
+			return c.do(httpRequest)
+		})
+		select {
+		case <-ctx.Done():
+			return Quote{}, ctx.Err()
+		case value := <-result:
+			if !sent.Load() && c.budget != nil {
+				c.budget.metrics.JupiterCoalesced()
+			}
+			if value.Err != nil {
+				return Quote{}, value.Err
+			}
+			raw = bytes.Clone(value.Val.(json.RawMessage))
+		}
+	} else {
+		raw, err = c.do(httpRequest)
+	}
 	if err != nil {
 		return Quote{}, err
 	}
@@ -174,8 +212,8 @@ func (c *Client) do(request *http.Request) (json.RawMessage, error) {
 	c.mu.Lock()
 	limited := time.Now().Before(c.retryAfter)
 	c.mu.Unlock()
-	if limited {
-		return nil, &StatusError{Code: http.StatusTooManyRequests}
+	if limited && c.budget == nil {
+		return nil, &DeferredError{Reason: "cooldown"}
 	}
 	if c.apiKey != "" {
 		request.Header.Set("x-api-key", c.apiKey)

@@ -112,6 +112,7 @@ func (e *Engine) Run(ctx context.Context) error {
 }
 
 func (e *Engine) runSelector(ctx context.Context, feed *EconomicFeed) func() {
+	ctx = jupiter.Background(ctx)
 	out := e.out
 	feedCtx, cancelFeed := context.WithCancel(ctx)
 	feedDone := make(chan struct{})

@@ -11,6 +11,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	solana "github.com/solana-foundation/solana-go/v2"
 	"github.com/solana-foundation/solana-go/v2/rpc"
@@ -54,6 +55,7 @@ type RevalidatorConfig struct {
 	CrossMintMaxSlippageBPS  uint16
 	JupiterBuildURL          string
 	JupiterAPIKey            string
+	JupiterBudget            *jupiter.Budget
 	FeeOnlyPayers            []string
 	Metrics                  ExecutionMetrics
 }
@@ -84,6 +86,9 @@ func newRevalidator(store revalidationStore, client *chain.Client, config Revali
 		jupiter, err = NewJupiterBuildClient(config.JupiterBuildURL, config.JupiterAPIKey)
 		if err != nil {
 			return nil, err
+		}
+		if config.JupiterBudget != nil {
+			jupiter.client.Transport = config.JupiterBudget.Transport(jupiter.client.Transport)
 		}
 	}
 	return &Revalidator{store: store, rpc: client, owner: config.Owner, signer: config.DelegatedSigner, leaseTTL: config.LeaseTTL, computeLimit: config.ComputeLimit, crossMintEnabled: config.CrossMintEnabled, crossMintMaxValueLossBPS: config.CrossMintMaxValueLossBPS, crossMintMaxSlippageBPS: config.CrossMintMaxSlippageBPS, jupiter: jupiter, feeOnlyPayers: append([]string(nil), config.FeeOnlyPayers...), metrics: config.Metrics}, nil

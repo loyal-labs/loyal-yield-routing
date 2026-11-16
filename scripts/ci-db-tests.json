@@ -1,4 +1,9 @@
 {
+  "./internal/programs/jupiter": [
+    "TestBudgetSharedPacingAndProtectedCapacity",
+    "TestBudgetCooldownCancellationAndFailure",
+    "TestBudgetSuccessfulExhaustionAndRedirects"
+  ],
   "./internal/earnmax": [
     "TestWithdrawalAttemptDatabaseFeeReservationSurvivesWideningAndRetries",
     "TestWithdrawalCostStatusGenerationVersionsAndUnknown",

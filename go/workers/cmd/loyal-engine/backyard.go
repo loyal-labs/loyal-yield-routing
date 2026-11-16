@@ -28,6 +28,14 @@ func runBackyard(ctx context.Context, owner string, facts *engine.Facts, metrics
 	if err != nil {
 		return err
 	}
+	budget, closeBudget, err := openJupiterBudget(ctx, cfg.DatabaseURL, facts)
+	if err != nil {
+		return err
+	}
+	defer closeBudget()
+	if err := cfg.Jupiter.SetBudget(budget); err != nil {
+		return err
+	}
 	material, err := engine.Credential("BACKYARD_POLICY_KEYPAIR")
 	if err != nil {
 		return err
