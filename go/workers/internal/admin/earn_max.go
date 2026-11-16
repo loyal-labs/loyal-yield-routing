@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/big"
 	"net/http"
 	"net/url"
 	"os"
@@ -206,6 +207,7 @@ type EarnMaxLpFlow struct {
 	BlockTime int64   `json:"blockTime"`
 	IdleDelta float64 `json:"idleDelta"`
 	LpNet     float64 `json:"lpNet"`
+	lpNetRaw  int64
 }
 
 type EarnMaxBorrowRow struct {
@@ -901,11 +903,15 @@ func earnMaxFetchFlow(ctx context.Context, client *chain.Client, signature solan
 			}
 		}
 	}
-	flow := EarnMaxLpFlow{LpNet: float64(lpNet), IdleDelta: float64(idleDelta)}
+	flow := EarnMaxLpFlow{LpNet: float64(lpNet), IdleDelta: float64(idleDelta), lpNetRaw: lpNet}
 	if lpNet != 0 {
-		blockTime, err := earnMaxRetry(ctx, func() (time.Time, error) { return client.BlockTime(ctx, execution.Slot) })
-		if err != nil {
-			return EarnMaxLpFlow{}, fmt.Errorf("Transaction %s is unavailable.", signature)
+		blockTime := execution.BlockTime
+		if blockTime == nil {
+			at, err := earnMaxRetry(ctx, func() (time.Time, error) { return client.BlockTime(ctx, execution.Slot) })
+			if err != nil {
+				return EarnMaxLpFlow{}, fmt.Errorf("Transaction %s is unavailable.", signature)
+			}
+			blockTime = &at
 		}
 		flow.BlockTime = blockTime.Unix()
 	}
@@ -919,8 +925,10 @@ func earnMaxScanVault(ctx context.Context, cfg earnMaxConfig) (earnMaxScan, erro
 		return earnMaxScan{}, err
 	}
 	mintKey := cfg.Accounts.LPMint
+	var mintSlot uint64
 	accounts, err := earnMaxRetry(ctx, func() ([]*chain.Account, error) {
-		_, accounts, err := client.Accounts(ctx, []solana.PublicKey{mintKey}, rpc.CommitmentConfirmed, 0)
+		slot, accounts, err := client.Accounts(ctx, []solana.PublicKey{mintKey}, rpc.CommitmentConfirmed, 0)
+		mintSlot = slot
 		return accounts, err
 	})
 	if err != nil {
@@ -929,46 +937,30 @@ func earnMaxScanVault(ctx context.Context, cfg earnMaxConfig) (earnMaxScan, erro
 	if len(accounts) != 1 || accounts[0] == nil || len(accounts[0].Data) < 82 {
 		return earnMaxScan{}, errors.New("The LP mint is unreadable.")
 	}
-	supply := uint64(0)
-	for i := 7; i >= 0; i-- {
-		supply = supply<<8 | uint64(accounts[0].Data[36+i])
-	}
-
-	largest, err := earnMaxRetry(ctx, func() (*rpc.GetTokenLargestAccountsResult, error) {
-		out, err := rpc.New(earnMaxRPCURL()).GetTokenLargestAccounts(ctx, mintKey, rpc.CommitmentConfirmed)
-		if err != nil {
-			return nil, earnMaxRPCError("getTokenLargestAccounts", err)
-		}
-		return out, nil
-	})
-	if err != nil {
-		return earnMaxScan{}, err
-	}
-	holders := largest.Value
-	var scanned uint64
-	for _, holder := range holders {
-		amount, err := strconv.ParseUint(holder.Amount, 10, 64)
-		if err != nil {
-			return earnMaxScan{}, errors.New("holder_scan_incomplete")
-		}
-		scanned += amount
-	}
-	if scanned != supply || len(holders) >= 20 {
-		return earnMaxScan{}, errors.New("holder_scan_incomplete")
-	}
+	supply := binary.LittleEndian.Uint64(accounts[0].Data[36:44])
+	// Mint history includes burns and closed holder accounts, unlike the largest-account list.
 	signatures := map[solana.Signature]bool{}
-	for _, holder := range holders {
+	var before solana.Signature
+	for {
 		found, err := earnMaxRetry(ctx, func() ([]chain.Signed, error) {
-			return client.History(ctx, holder.Address, 1000, solana.Signature{}, rpc.CommitmentConfirmed, 0)
+			return client.History(ctx, mintKey, 1000, before, rpc.CommitmentConfirmed, mintSlot)
 		})
 		if err != nil {
 			return earnMaxScan{}, err
 		}
 		for _, s := range found {
-			if !s.Failed {
+			if !s.Failed && s.Slot <= mintSlot {
 				signatures[s.Signature] = true
 			}
 		}
+		if len(found) < 1000 {
+			break
+		}
+		next := found[len(found)-1].Signature
+		if next == before {
+			return earnMaxScan{}, errors.New("LP history pagination did not advance.")
+		}
+		before = next
 	}
 	missing := []solana.Signature{}
 	cache.mu.Lock()
@@ -1019,15 +1011,13 @@ func earnMaxScanVault(ctx context.Context, cfg earnMaxConfig) (earnMaxScan, erro
 		return earnMaxScan{}, err
 	}
 
-	sharePrice, err := earnMaxSharePrice(ctx, cfg)
-	if err != nil {
-		return earnMaxScan{}, err
-	}
-	scan := earnMaxScan{computedAt: readsISO(time.Now()), flows: []EarnMaxLpFlow{}, valueUsd: float64(supply) * sharePrice / 1000 / 1e6}
+	scan := earnMaxScan{computedAt: readsISO(time.Now()), flows: []EarnMaxLpFlow{}}
 	cache.mu.Lock()
 	kept := make(map[string]EarnMaxLpFlow, len(signatures))
+	var netSupply big.Int
 	for signature := range signatures {
 		flow := cache.flows[signature.String()]
+		netSupply.Add(&netSupply, big.NewInt(flow.lpNetRaw))
 		kept[signature.String()] = flow
 		if flow.LpNet != 0 {
 			scan.flows = append(scan.flows, flow)
@@ -1035,6 +1025,14 @@ func earnMaxScanVault(ctx context.Context, cfg earnMaxConfig) (earnMaxScan, erro
 	}
 	cache.flows = kept
 	cache.mu.Unlock()
+	if !netSupply.IsUint64() || netSupply.Uint64() != supply {
+		return earnMaxScan{}, errors.New("LP history does not match the current share supply.")
+	}
+	sharePrice, err := earnMaxSharePrice(ctx, cfg)
+	if err != nil {
+		return earnMaxScan{}, err
+	}
+	scan.valueUsd = float64(supply) * sharePrice / 1000 / 1e6
 	return scan, nil
 }
 
