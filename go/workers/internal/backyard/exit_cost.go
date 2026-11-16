@@ -152,6 +152,7 @@ type exitQuoter struct {
 }
 
 func (q *exitQuoter) quote(ctx context.Context, m RouteManifest, slot int64, accounts []ConfirmedAccount, lanes []string, costs exitCosts) exitCosts {
+	ctx = jupiter.Valuation(ctx)
 	q.mu.Lock()
 	if q.attempted == nil {
 		q.attempted = map[string]time.Time{}
@@ -248,7 +249,10 @@ func (e *events) exitQuoteFailed(lane string, err error) {
 func exitQuoteFailureCode(err error) string {
 	var rejected jupiterQuoteRejected
 	var status *jupiter.StatusError
+	var deferred *jupiter.DeferredError
 	switch {
+	case errors.As(err, &deferred):
+		return "jupiter_deferred_" + deferred.Reason
 	case errors.As(err, &rejected):
 		return "jupiter_quote_" + string(rejected)
 	case errors.As(err, &status):

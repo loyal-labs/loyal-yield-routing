@@ -238,6 +238,22 @@ func TestLiveSelectorLadderStopsAfterQuoteWindowBudget(t *testing.T) {
 	}
 }
 
+func TestLiveSelectorDefersWithoutProbingSmallerAmounts(t *testing.T) {
+	m, rpc, client, o, market, policy := ladderLiveObservation(t, .5)
+	requests := 0
+	fixtureHTTP(client).Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		requests++
+		return nil, &jupiter.DeferredError{Reason: "budget"}
+	})
+	observed, quotes, err := collectSelectorQuotes(jupiter.Background(context.Background()), rpc, fixtureView(t, rpc), client, m, o, []LaneEconomics{market}, policy, &pilotCanaryEntryRequest{EquityRaw: 100_000_000})
+	if err != nil || len(quotes) != 0 || requests != 1 || observed[0].EntryBlockedReason == "" {
+		t.Fatal("local admission failure retried the size ladder or admitted a move", err, requests, quotes, observed)
+	}
+	if got := exitQuoteFailureCode(&jupiter.DeferredError{Reason: "cooldown"}); got != "jupiter_deferred_cooldown" {
+		t.Fatal("local cooldown mislabeled as upstream failure", got)
+	}
+}
+
 func TestCanaryQuotedBelowGainCeiling(t *testing.T) {
 	t.Parallel()
 	m, rpc, client, o, market, policy := ladderLiveObservation(t, .5)

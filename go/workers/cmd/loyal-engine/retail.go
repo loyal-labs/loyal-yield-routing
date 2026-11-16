@@ -73,10 +73,8 @@ func loadRetailConfig() (retailConfig, error) {
 		cfg.jupiterBuildURL = "https://api.jup.ag/swap/v2/build"
 	}
 	var err error
-	if cfg.crossMintEnabled {
-		if cfg.jupiterAPIKey, err = engine.Credential("RETAIL_JUPITER_API_KEY"); err != nil {
-			return cfg, err
-		}
+	if cfg.jupiterAPIKey, err = engine.Credential("RETAIL_JUPITER_API_KEY"); err != nil {
+		return cfg, err
 	}
 	if _, err := fleet.NewJupiterBuildClient(cfg.jupiterBuildURL, cfg.jupiterAPIKey); err != nil {
 		return cfg, errors.New("RETAIL_JUPITER_BUILD_URL must be absolute HTTPS without user info")
@@ -306,6 +304,11 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 		return retailError("Yield database", err)
 	}
 	defer yieldPool.Close()
+	jupiterBudget, closeBudget, err := openJupiterBudget(startup, cfg.databaseURL, facts)
+	if err != nil {
+		return err
+	}
+	defer closeBudget()
 	marketPool, err := db.Open(startup, cfg.timescaleURL, 8)
 	if err != nil {
 		return retailError("market database", err)
@@ -374,7 +377,7 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 	if err != nil {
 		return retailError("fleet planner", err)
 	}
-	revalidator, err := fleet.NewRevalidator(cStore, cluster, fleet.RevalidatorConfig{Owner: owner, DelegatedSigner: cConfig.DelegatedSigner, LeaseTTL: cConfig.RevalidationLeaseTTL, ComputeLimit: cConfig.RevalidationComputeLimit, CrossMintEnabled: true, CrossMintMaxValueLossBPS: cfg.crossMintMaxValueLossBPS, CrossMintMaxSlippageBPS: cfg.crossMintMaxSlippageBPS, JupiterBuildURL: cfg.jupiterBuildURL, JupiterAPIKey: cfg.jupiterAPIKey, FeeOnlyPayers: cfg.feeOnlyPublicKeys(), Metrics: facts})
+	revalidator, err := fleet.NewRevalidator(cStore, cluster, fleet.RevalidatorConfig{Owner: owner, DelegatedSigner: cConfig.DelegatedSigner, LeaseTTL: cConfig.RevalidationLeaseTTL, ComputeLimit: cConfig.RevalidationComputeLimit, CrossMintEnabled: true, CrossMintMaxValueLossBPS: cfg.crossMintMaxValueLossBPS, CrossMintMaxSlippageBPS: cfg.crossMintMaxSlippageBPS, JupiterBuildURL: cfg.jupiterBuildURL, JupiterAPIKey: cfg.jupiterAPIKey, JupiterBudget: jupiterBudget, FeeOnlyPayers: cfg.feeOnlyPublicKeys(), Metrics: facts})
 	if err != nil {
 		return retailError("fused fleet preparation", err)
 	}
@@ -389,7 +392,10 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 	if err != nil {
 		return retailError("cross-mint runtime", err)
 	}
-	multiplyQuotes, _ := jupiter.NewClient(jupiter.LiteBase, "", &http.Client{Timeout: 15 * time.Second})
+	multiplyQuotes, _ := jupiter.NewClient(jupiter.KeyedBase, cfg.jupiterAPIKey, &http.Client{Timeout: 15 * time.Second})
+	if err := multiplyQuotes.SetBudget(jupiterBudget); err != nil {
+		return err
+	}
 	multiplyWorker, err := multiply.NewWorker(multiply.WorkerDeps{Store: gStore, Observer: cluster, Executor: gExecutor, Quotes: multiplyQuotes, WorkerID: owner, Chain: cluster, Facts: facts})
 	if err != nil {
 		return retailError("Multiply worker", err)

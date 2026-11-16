@@ -27,10 +27,12 @@ func TestClientSharesRateLimitCooldownWithoutReturningStaleQuotes(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	for range 3 {
+	for i := range 3 {
 		quote, err := client.Quote(context.Background(), QuoteRequest{Amount: 1})
 		var status *StatusError
-		if !errors.As(err, &status) || status.Code != 429 || len(quote.Raw) != 0 {
+		var deferred *DeferredError
+		if len(quote.Raw) != 0 || (i == 0 && (!errors.As(err, &status) || status.Code != 429)) ||
+			(i > 0 && (!errors.As(err, &deferred) || deferred.Reason != "cooldown")) {
 			t.Fatalf("limited quote = %+v, %v", quote, err)
 		}
 	}

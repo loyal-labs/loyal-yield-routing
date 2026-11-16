@@ -35,6 +35,7 @@ jobs:
       EARN_JOY_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/earn_joy_test?sslmode=disable
       EARN_MAX_HEALTH_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/earn_max_health_test?sslmode=disable
       BACKYARD_FOREIGN_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/backyard_foreign_test?sslmode=disable
+      JUPITER_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/jupiter_test?sslmode=disable
       EVM_DEPOSIT_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/evm_deposit_ci_test?sslmode=disable
       BACKYARD_WITHDRAWAL_TEST_DSN: postgres://postgres:postgres@127.0.0.1:5432/vault_cost_test_ci?sslmode=disable
       EARNMAX_WITHDRAWAL_TEST_DSN: postgres://postgres:postgres@127.0.0.1:5432/vault_cost_test_ci?sslmode=disable
@@ -83,7 +84,7 @@ jobs:
         env:
           PGPASSWORD: postgres
         run: |
-          for db in bridge_test earnmax_test backyard_foreign_test evm_deposit_ci_test earn_joy_test earn_max_health_test; do
+          for db in bridge_test earnmax_test backyard_foreign_test jupiter_test evm_deposit_ci_test earn_joy_test earn_max_health_test; do
             psql -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE $db"
           done
           bash scripts/prepare-vault-withdrawal-test-db.sh
