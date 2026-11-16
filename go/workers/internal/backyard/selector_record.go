@@ -11,8 +11,6 @@ import (
 
 func (d *Database) RecordSelectorEvaluation(ctx context.Context, routeKey string, input SelectorInput, confirmedSlot int64) (SelectorResult, error) {
 	evaluationCtx, started := ctx, time.Now()
-	ctx, cancel := context.WithTimeout(ctx, time.Second)
-	defer cancel()
 	var result SelectorResult
 	if !input.Snapshot.MonitorsArmed {
 		return result, staleHold(selectorFeeEvidenceUnavailable)
@@ -21,7 +19,12 @@ func (d *Database) RecordSelectorEvaluation(ctx context.Context, routeKey string
 	if input.Now.After(now) || now.Sub(input.Now) > 5*time.Second || input.Snapshot.Slot <= 0 || confirmedSlot < input.Snapshot.Slot || confirmedSlot-input.Snapshot.Slot > observationLagSlots() {
 		return result, staleHold(selectorEvaluationNotCurrent)
 	}
+	phase := "writer session"
 	err := d.inTx(ctx, func(tx pgx.Tx) (err error) {
+		phase = "statements"
+		// Waiting for the shared writer is bounded by the evaluation, not the SQL budget.
+		ctx, cancel := context.WithTimeout(ctx, time.Second)
+		defer cancel()
 		var raw []byte
 		if err = tx.QueryRow(ctx, `SELECT state FROM loyal_yield.multiply_route_states WHERE route_key=$1 FOR UPDATE`, routeKey).Scan(&raw); err != nil {
 			return err
@@ -87,10 +90,10 @@ func (d *Database) RecordSelectorEvaluation(ctx context.Context, routeKey string
 		if _, err = tx.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state=$2::jsonb,updated_at=clock_timestamp() WHERE route_key=$1`, routeKey, string(stateJSON)); err != nil {
 			return err
 		}
-		return nil
+		return ctx.Err()
 	})
 	if err != nil {
-		return result, fmt.Errorf("selector database write (elapsed %s, evaluation context %v): %w", time.Since(started).Round(time.Millisecond), evaluationCtx.Err(), err)
+		return result, fmt.Errorf("selector database write (%s, elapsed %s, evaluation context %v): %w", phase, time.Since(started).Round(time.Millisecond), evaluationCtx.Err(), err)
 	}
 	return result, nil
 }

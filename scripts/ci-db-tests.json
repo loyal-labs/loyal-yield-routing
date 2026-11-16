@@ -35,6 +35,7 @@
     "TestBridgeOutQuoteIsNotServedWithoutItsRow"
   ],
   "./internal/backyard": [
+    "TestSelectorDatabaseWriterWaitKeepsStatementBudget",
     "TestWithdrawalCostDatabaseIdleRequesterDoesNotStallAdmittedFunding",
     "TestWithdrawalCostDatabaseLoaderUsesActualGenerationAndEscrow",
     "TestWithdrawalCostDatabaseDisclosedFailureAndManualLandingSatisfyProductionConstraint",
