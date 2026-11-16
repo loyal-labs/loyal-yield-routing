@@ -149,6 +149,12 @@ type exitQuoter struct {
 	now       func() time.Time
 	events    *events
 	attempted map[string]time.Time
+	inflight  map[string]*exitQuoteFlight
+}
+
+type exitQuoteFlight struct {
+	done chan struct{}
+	cost *ExitCost
 }
 
 func (q *exitQuoter) quote(ctx context.Context, m RouteManifest, slot int64, accounts []ConfirmedAccount, lanes []string, costs exitCosts) exitCosts {
@@ -156,6 +162,9 @@ func (q *exitQuoter) quote(ctx context.Context, m RouteManifest, slot int64, acc
 	q.mu.Lock()
 	if q.attempted == nil {
 		q.attempted = map[string]time.Time{}
+	}
+	if q.inflight == nil {
+		q.inflight = map[string]*exitQuoteFlight{}
 	}
 	pruneAt := q.now()
 	for key, at := range q.attempted {
@@ -207,11 +216,33 @@ func (q *exitQuoter) quote(ctx context.Context, m RouteManifest, slot int64, acc
 		}
 		key := fmt.Sprintf("%s|%s|%s|%d|%x|%x", m.vault.squads, m.SHA256, lane, basis.heldRaw, basis.mark, basis.usdc)
 		q.mu.Lock()
+		// A concurrent quote may have finished since the initial cache read.
+		if cached := q.cached.candidates(m, slot, now)[lane].Quote; cached != nil && cached.fresh(basis.heldRaw, basis.mark) && cached.scope.usdc == basis.usdc {
+			costs = costs.withQuote(*cached)
+			if !costs.applicable(m, slot, now).quoteDue(basis, time.Time{}, now) {
+				q.mu.Unlock()
+				continue
+			}
+		}
+		if flight := q.inflight[key]; flight != nil {
+			q.mu.Unlock()
+			select {
+			case <-ctx.Done():
+				return costs
+			case <-flight.done:
+				if flight.cost != nil {
+					costs = costs.withQuote(*flight.cost)
+				}
+			}
+			continue
+		}
 		if last := q.attempted[key]; !last.IsZero() && !now.Before(last) && now.Sub(last) < exitQuoteRetryInterval {
 			q.mu.Unlock()
 			continue
 		}
 		q.attempted[key] = now
+		flight := &exitQuoteFlight{done: make(chan struct{})}
+		q.inflight[key] = flight
 		q.mu.Unlock()
 		cost, err := q.price(ctx, basis, slot, now)
 		if err == nil {
@@ -220,15 +251,24 @@ func (q *exitQuoter) quote(ctx context.Context, m RouteManifest, slot int64, acc
 				_, _ = q.record(ctx, cost)
 			}
 		}
-		if err != nil {
+		q.mu.Lock()
+		if err == nil {
+			cachedCost, scope := cost, *cost.scope
+			cachedCost.scope = &scope
+			q.cached = q.cached.withQuote(cachedCost)
+			flight.cost = &cost
+		} else {
 			var deferred *jupiter.DeferredError
 			if errors.As(err, &deferred) && deferred.Reason == "budget" {
-				q.mu.Lock()
 				if q.attempted[key].Equal(now) {
 					delete(q.attempted, key)
 				}
-				q.mu.Unlock()
 			}
+		}
+		delete(q.inflight, key)
+		close(flight.done)
+		q.mu.Unlock()
+		if err != nil {
 			q.events.exitQuoteFailed(lane, err)
 			continue
 		}
@@ -237,11 +277,6 @@ func (q *exitQuoter) quote(ctx context.Context, m RouteManifest, slot int64, acc
 				q.events.exitQuoteOutlier(cost, *costs[lane].Realized)
 			}
 			costs = costs.withQuote(cost)
-			q.mu.Lock()
-			cachedCost, scope := cost, *cost.scope
-			cachedCost.scope = &scope
-			q.cached = q.cached.withQuote(cachedCost)
-			q.mu.Unlock()
 		}
 	}
 	return costs
