@@ -1,6 +1,7 @@
 package backyard
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -20,6 +21,9 @@ func TestSelectorEvaluateFailureMasksSecrets(t *testing.T) {
 		err  error
 		want string
 	}{
+		{"wrapped_timeout", fmt.Errorf("selector database write: %w", context.DeadlineExceeded), "selector_evaluate_timeout"},
+		{"wrapped_admission_hold", fmt.Errorf("selector database write: %w", staleHold(selectorEvaluationNotCurrent)), selectorEvaluationNotCurrent},
+		{"wrapped_query_cancelled", fmt.Errorf("shadow planning state unavailable: %w", &pgconn.PgError{Code: sqlstateQueryCanceled}), "selector_evaluate_query_cancelled"},
 		{"unknown_hold", staleHold("operator note postgresql://backyard:hunter2@10.0.0.7/neon"), "selector_evaluate_unavailable"},
 		{"generic_dsn", errors.New("pq: failed connect to postgresql://backyard:hunter2@10.0.0.7/neon"), "selector_evaluate_unavailable"},
 		{"unknown_sql_class", &pgconn.PgError{Code: "XX000", Message: "crash", Detail: "host=10.0.0.7 password=hunter2"}, "selector_evaluate_unavailable"},

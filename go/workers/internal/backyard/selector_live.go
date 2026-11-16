@@ -323,7 +323,7 @@ func (d *Database) evaluateSelectorObserved(ctx context.Context, rpc *chain.Clie
 	}
 	slot, err := view.slot(ctx)
 	if err != nil {
-		return SelectorResult{}, Observation{}, err
+		return SelectorResult{}, Observation{}, fmt.Errorf("selector current slot unavailable: %w", err)
 	}
 	result, err := d.RecordSelectorEvaluation(ctx, manifest.vault.RouteKey, SelectorInput{Now: time.Now().UTC(), Snapshot: o.Snapshot, Lanes: o.lanes, Markets: enriched, Quotes: quotes, Policy: policy, canaryRequest: request}, slot)
 	return result, o, err
