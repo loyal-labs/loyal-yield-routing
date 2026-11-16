@@ -26,7 +26,14 @@ def run(*args, capture=True, **kwargs):
 
 
 def ssh(host, *args, **kwargs):
-    return run('ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', host, shlex.join(args), **kwargs)
+    try:
+        return run('ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', host, shlex.join(args), **kwargs)
+    except subprocess.CalledProcessError as error:
+        if len(args) > 1 and args[0] == 'python3' and args[1].endswith('/rollout-health.py'):
+            for line in (error.stdout or '').splitlines():
+                if line.startswith('ROLLOUT BLOCKED: '):
+                    raise RuntimeError(line) from None
+        raise
 
 
 def require_head(sha):
@@ -36,6 +43,8 @@ def require_head(sha):
 
 
 def check_previous(family, before, sha, expected_digest=None):
+    if before.get('process_age_seconds', -1) < 60:
+        raise RuntimeError(f'{family}: process must be stable for 60 seconds before deployment')
     previous = before['release']
     if SHA.fullmatch(previous) is None:
         raise RuntimeError(f'{family}: invalid previous release')
