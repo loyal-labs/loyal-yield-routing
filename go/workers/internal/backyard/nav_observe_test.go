@@ -488,6 +488,45 @@ func TestFirstTickValuesUnseededLane(t *testing.T) {
 	}
 }
 
+func TestProductionValuationAllowsPacingAndRespectsCallerDeadline(t *testing.T) {
+	for _, shortDeadline := range []bool{false, true} {
+		t.Run(fmt.Sprintf("caller_deadline_%v", shortDeadline), func(t *testing.T) {
+			manifest, accounts := multiLaneFixture(t, nil)
+			ctx := t.Context()
+			if shortDeadline {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, 20*time.Millisecond)
+				defer cancel()
+			}
+			quoter := &exitQuoter{now: time.Now, price: func(ctx context.Context, b heldExitBasis, slot int64, at time.Time) (ExitCost, error) {
+				// Admission and the HTTP response can together exceed the former two-second batch deadline.
+				timer := time.NewTimer(2200 * time.Millisecond)
+				defer timer.Stop()
+				select {
+				case <-ctx.Done():
+					return ExitCost{}, ctx.Err()
+				case <-timer.C:
+					return exitCostOf(b.st.route.Lane, exitCostQuote, b.heldRaw, b.markValue, b.markValue-b.markValue/1_000, b.mark, slot, at)
+				}
+			}}
+			o, _, err := observeConfirmedRouteSnapshotWithAccounts(ctx, manifest, routeObservationRuntime{
+				state: testVaultState, inputs: targetInputs{ExitCosts: exitCosts{}}, exits: quoter,
+				read: fixtureBatchRuntime(77, accounts), refreshValuation: fixtureRefresh(77, accounts),
+				now: func() time.Time { return time.Unix(kaminoFixtureUnix, 0).UTC() },
+			})
+			if shortDeadline {
+				if ctx.Err() == nil || o.Snapshot.netKnown(time.Now()) {
+					t.Fatal("caller cancellation produced a certified valuation", err)
+				}
+				return
+			}
+			if err != nil || !o.Snapshot.netKnown(time.Now()) || o.Snapshot.StrategyNAVRaw != 31_970_010 {
+				t.Fatalf("paced exit quote did not produce a complete valuation: nav=%d reason=%s err=%v", o.Snapshot.StrategyNAVRaw, o.Snapshot.NAVUnavailable, err)
+			}
+		})
+	}
+}
+
 func TestUnpricedLaneHoldsOnlyItsVault(t *testing.T) {
 	manifest, accounts := multiLaneFixture(t, nil)
 	quoter := &exitQuoter{

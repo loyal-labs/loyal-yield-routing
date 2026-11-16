@@ -221,6 +221,14 @@ func (q *exitQuoter) quote(ctx context.Context, m RouteManifest, slot int64, acc
 			}
 		}
 		if err != nil {
+			var deferred *jupiter.DeferredError
+			if errors.As(err, &deferred) && deferred.Reason == "budget" {
+				q.mu.Lock()
+				if q.attempted[key].Equal(now) {
+					delete(q.attempted, key)
+				}
+				q.mu.Unlock()
+			}
 			q.events.exitQuoteFailed(lane, err)
 			continue
 		}
