@@ -37,6 +37,11 @@ return to the existing sampling loop; they do not retry smaller trade sizes.
 The budget stores cooldown and admission timestamps across process restarts.
 Database failure refuses new HTTP requests instead of bypassing coordination.
 
+Held-position exit-quote batches allow up to eight seconds to finish under the
+shared valuation pacing, while honoring earlier caller deadlines. Urgent risk
+protection still skips quote acquisition. A local budget deferral does not
+start the five-second quote-failure backoff or block the next valuation attempt.
+
 Successful exhaustion and 429 responses persist the later of `Retry-After` and
 `X-Ratelimit-Reset`; missing or expired headers retain the existing five-second
 fallback. Reset frees a slot, not the whole bucket. Existing admitted requests

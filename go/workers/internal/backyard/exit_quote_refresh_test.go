@@ -6,7 +6,28 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 )
+
+func TestDeferredDiscoveryDoesNotDelayHeldPositionValuation(t *testing.T) {
+	m := readyWorkerManifest(t)
+	route, accounts := onreEntryNAVFixture(t, 0, 2_000_000_000)
+	accounts = append(accounts, clockFixture())
+	now, calls := time.Now(), 0
+	q := exitQuoter{now: func() time.Time { return now }, price: func(_ context.Context, b heldExitBasis, slot int64, at time.Time) (ExitCost, error) {
+		calls++
+		if calls == 1 {
+			return ExitCost{}, &jupiter.DeferredError{Reason: "budget"}
+		}
+		return exitCostOf(route.Lane, exitCostQuote, b.heldRaw, b.markValue, b.markValue, b.mark, slot, at)
+	}}
+	q.quote(jupiter.Background(t.Context()), m, 77, accounts, []string{route.Lane}, nil)
+	costs := q.quote(t.Context(), m, 77, accounts, []string{route.Lane}, nil)
+	if calls != 2 || costs[route.Lane].Quote == nil {
+		t.Fatal("local discovery deferral suppressed a fresh held-position quote", calls, costs)
+	}
+}
 
 func TestExitQuoteRefreshMatchingHoldings(t *testing.T) {
 	m := readyWorkerManifest(t)

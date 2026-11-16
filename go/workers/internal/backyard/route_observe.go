@@ -251,7 +251,8 @@ func observeRouteSnapshotOnce(ctx context.Context, manifest RouteManifest, runti
 		urgent = urgent || s.HasPosition && (s.LTVBPS >= hardLTVBPS(s.LiquidationThresholdBPS, s.MaxLTVBPS) || termDebtUnknown(s) || s.DebtTermEndUnix > 0 && s.DebtTermEndUnix <= s.ChainUnix)
 	}
 	if runtime.exits != nil && !urgent {
-		quoteCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		// Both vaults share two valuation requests/second; a held-lane batch must fit that pacing.
+		quoteCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 		runtime.inputs.ExitCosts = runtime.exits.quote(quoteCtx, manifest, slot, accounts, valued, runtime.inputs.ExitCosts)
 		cancel()
 		for i := range views {
