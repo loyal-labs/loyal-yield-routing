@@ -3,12 +3,14 @@ package backyard
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 )
 
 func (d *Database) RecordSelectorEvaluation(ctx context.Context, routeKey string, input SelectorInput, confirmedSlot int64) (SelectorResult, error) {
+	evaluationCtx, started := ctx, time.Now()
 	ctx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
 	var result SelectorResult
@@ -87,7 +89,10 @@ func (d *Database) RecordSelectorEvaluation(ctx context.Context, routeKey string
 		}
 		return nil
 	})
-	return result, err
+	if err != nil {
+		return result, fmt.Errorf("selector database write (elapsed %s, evaluation context %v): %w", time.Since(started).Round(time.Millisecond), evaluationCtx.Err(), err)
+	}
+	return result, nil
 }
 
 func selectorSample(input SelectorInput, previous SelectorResult, history map[string]pilotCanaryEntryReceipt) (SelectorResult, *pilotCanaryEntryReceipt, bool, error) {
