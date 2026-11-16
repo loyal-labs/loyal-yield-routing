@@ -1,6 +1,7 @@
 {
   "./internal/programs/jupiter": [
     "TestBudgetSharedPacingAndProtectedCapacity",
+    "TestBudgetValuationWaitsWithinCallerDeadline",
     "TestBudgetCooldownCancellationAndFailure",
     "TestBudgetSuccessfulExhaustionAndRedirects"
   ],

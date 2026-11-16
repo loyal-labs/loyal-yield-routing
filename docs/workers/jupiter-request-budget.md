@@ -31,8 +31,9 @@ Requests share an eight-per-second ceiling, with independent class limits:
 | Background | 4/second | Selector discovery and leverage candidate pricing |
 
 Unused class capacity is not transferred to scans. Admission is paced, without
-accumulated bursts, and waits at most 1.5 seconds or the caller's earlier
-deadline. Waiters hold no SQL locks and reserve no future slots. Deferred scans
+accumulated bursts, and waits at most 1.5 seconds for execution and background
+work, or eight seconds for valuation. Earlier caller deadlines apply to every
+class. Waiters hold no SQL locks and reserve no future slots. Deferred scans
 return to the existing sampling loop; they do not retry smaller trade sizes.
 The budget stores cooldown and admission timestamps across process restarts.
 Database failure refuses new HTTP requests instead of bypassing coordination.

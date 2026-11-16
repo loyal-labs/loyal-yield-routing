@@ -156,6 +156,55 @@ func TestBudgetSharedPacingAndProtectedCapacity(t *testing.T) {
 	t.Logf("28 simultaneous requests across independent pools: upstream=%v; protected requests admitted; remaining scans deferred", counts)
 }
 
+func TestBudgetValuationWaitsWithinCallerDeadline(t *testing.T) {
+	pool, _ := budgetPools(t)
+	b := newTestBudget(t, pool, prometheus.NewRegistry())
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+	client := &http.Client{Transport: b.Transport(nil)}
+	for _, class := range []string{"background", "valuation", "cancelled valuation"} {
+		if _, err := pool.Exec(t.Context(), `UPDATE loyal_yield.jupiter_request_budget SET request_at=clock_timestamp()+interval '2 seconds'`); err != nil {
+			t.Fatal(err)
+		}
+		deadline := 3 * time.Second
+		if class == "cancelled valuation" {
+			deadline = 25 * time.Millisecond
+		}
+		ctx, cancel := context.WithTimeout(t.Context(), deadline)
+		if class == "background" {
+			ctx = Background(ctx)
+		} else {
+			ctx = Valuation(ctx)
+		}
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, server.URL+"/swap/v1/quote", nil)
+		started := time.Now()
+		response, err := client.Do(req)
+		cancel()
+		if response != nil {
+			response.Body.Close()
+		}
+		switch class {
+		case "background":
+			var deferred *DeferredError
+			if !errors.As(err, &deferred) || deferred.Reason != "budget" || calls.Load() != 0 {
+				t.Fatalf("discovery exceeded its admission window: %v, upstream=%d", err, calls.Load())
+			}
+		case "valuation":
+			if err != nil || calls.Load() != 1 || time.Since(started) < 1800*time.Millisecond {
+				t.Fatalf("valuation failed before caller deadline or bypassed pacing: %v, upstream=%d", err, calls.Load())
+			}
+		case "cancelled valuation":
+			if !errors.Is(err, context.DeadlineExceeded) || calls.Load() != 1 {
+				t.Fatalf("valuation ignored caller deadline: %v, upstream=%d", err, calls.Load())
+			}
+		}
+	}
+}
+
 func TestBudgetCooldownCancellationAndFailure(t *testing.T) {
 	first, second := budgetPools(t)
 	registry := prometheus.NewRegistry()
