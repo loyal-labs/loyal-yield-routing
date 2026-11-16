@@ -221,9 +221,13 @@ jobs:
           PYTHON
           chmod 0555 loyal-*
       - name: Install private network tools
+        timeout-minutes: 5
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends wireguard-tools
+          apt_options=(-o Acquire::Retries=1 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 -o DPkg::Lock::Timeout=30)
+          sudo timeout --kill-after=5s 120s apt-get "${apt_options[@]}" update
+          sudo timeout --kill-after=5s 120s apt-get "${apt_options[@]}" install -y --no-install-recommends wireguard-tools
+          wg --version
+          command -v wg-quick
       - name: Connect the private workers network
         env:
           DEPLOY_HOST: ${{ vars.LOYAL_WORKERS_HOST }}
