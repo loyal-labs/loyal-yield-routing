@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/solana-foundation/solana-go/v2"
 )
 
@@ -22,7 +24,7 @@ func (f earnMaxScanTransport) RoundTrip(r *http.Request) (*http.Response, error)
 
 func TestEarnMaxScanMintHistory(t *testing.T) {
 	for _, vault := range []string{"loyal", "backyard"} {
-		for _, scenario := range []string{"complete", "known reports", "missing deposit", "missing transaction", "stuck pagination"} {
+		for _, scenario := range []string{"complete", "known reports", "lagging history", "missing deposit", "missing transaction", "stuck pagination"} {
 			t.Run(vault+"/"+scenario, func(t *testing.T) {
 				cfg, err := earnMaxConfigFor(vault)
 				if err != nil {
@@ -127,6 +129,7 @@ func TestEarnMaxScanMintHistory(t *testing.T) {
 					}
 				}
 				pages := 0
+				lagged := false
 				oldTransport := http.DefaultTransport
 				http.DefaultTransport = earnMaxScanTransport(func(r *http.Request) (*http.Response, error) {
 					var body any
@@ -158,6 +161,11 @@ func TestEarnMaxScanMintHistory(t *testing.T) {
 							if address != cfg.Accounts.LPMint.String() || opts.MinContextSlot != 200 {
 								t.Error("history must use the mint and its snapshot slot")
 							}
+							if scenario == "lagging history" && !lagged {
+								lagged = true
+								raw, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": req.ID, "error": map[string]any{"code": -32016, "message": "Minimum context slot has not been reached"}})
+								return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(string(raw)))}, nil
+							}
 							pages++
 							if pages == 1 || scenario == "stuck pagination" {
 								result = first
@@ -184,7 +192,7 @@ func TestEarnMaxScanMintHistory(t *testing.T) {
 				})
 				t.Cleanup(func() { http.DefaultTransport = oldTransport })
 				scan, err := earnMaxScanVault(context.Background(), deps, cfg)
-				if scenario != "complete" && scenario != "known reports" {
+				if scenario != "complete" && scenario != "known reports" && scenario != "lagging history" {
 					if err == nil || scan.valueUsd != 0 || len(scan.flows) != 0 {
 						t.Fatalf("incomplete history produced earnings: %+v, %v", scan, err)
 					}
@@ -209,5 +217,34 @@ func TestEarnMaxScanMintHistory(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestEarnMaxReadRetryStops(t *testing.T) {
+	for _, scenario := range []struct {
+		name   string
+		err    error
+		cancel bool
+		calls  int
+	}{{"persistent lag", chain.ErrBehind, false, 2}, {"permanent failure", chain.ErrNotFound, false, 1}, {"cancelled lag", chain.ErrBehind, true, 1}} {
+		t.Run(scenario.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			calls := 0
+			_, err := earnMaxRetry(ctx, func() (int, error) {
+				calls++
+				if scenario.cancel {
+					cancel()
+				}
+				return 0, fmt.Errorf("read: %w", scenario.err)
+			})
+			want := scenario.err
+			if scenario.cancel {
+				want = context.Canceled
+			}
+			if calls != scenario.calls || !errors.Is(err, want) {
+				t.Fatalf("calls=%d err=%v, want calls=%d err=%v", calls, err, scenario.calls, want)
+			}
+		})
 	}
 }
