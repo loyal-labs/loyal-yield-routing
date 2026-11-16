@@ -120,8 +120,12 @@ background_at=CASE WHEN $1='background' THEN $2 ELSE background_at END WHERE sco
 }
 
 func (b *Budget) admit(ctx context.Context, class string) error {
-	// A quote must remain useful to its caller; don't queue it behind seconds of scans.
-	bounded, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
+	limit := 1500 * time.Millisecond
+	if class == "valuation" {
+		// Held-position quotes share the observer's deadline across both vaults.
+		limit = 8 * time.Second
+	}
+	bounded, cancel := context.WithTimeout(ctx, limit)
 	defer cancel()
 	for {
 		if err := bounded.Err(); err != nil {
