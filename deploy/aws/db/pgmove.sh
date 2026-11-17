@@ -22,7 +22,7 @@ clusters: $(for f in "$HERE"/clusters/*.conf; do basename "$f" .conf; done | pas
   hash <c> [table] [--age]     md5 per row, summed per 1M-key bucket; differing buckets hashed a second time
   verify <c> [--reverse]       tables, sequences, hypertables, schema, grants and hash age
   fence <c> [--reverse]        login roles NOLOGIN on the side being left, sessions ended, slots caught up
-  switch <c> [--reverse]       catchup, sequences, subscriptions off, reverse armed, login roles LOGIN on the side taking over
+  switch <c> [--reverse]       catchup, sequences, subscriptions off, the other direction armed or resumed, login roles LOGIN on the side taking over
   reverse <c> [--dry-run]      reverse publication on the target, reverse subscription on the source (copy_data=false)
   retire <c> [--force]         after REVERSE_HOURS: both directions, their slots, the freeze marker and the forward go
   writes <c> save|diff <tag> src|dst   write counters per table
@@ -73,6 +73,10 @@ FROM=src TO=dst
 ((REVERSE)) && FROM=dst TO=src
 
 changes=0 diffs=0 blocks=0 DST_DOWN=0
+# A failed query reads as empty, and an empty answer reads as absent or as equal. q runs in
+# subshells, so it records each failure here and finish and finish_check refuse to pass.
+QFAIL=$(mktemp)
+trap 'rm -f "$QFAIL"' EXIT
 
 changed() { changes=$((changes + 1)); if ((DRY)); then echo "would change: $*"; else echo "changed: $*"; fi; }
 diff_row() { diffs=$((diffs + 1)); echo "DIFF $*"; }
@@ -87,8 +91,12 @@ host_of() { if [[ $1 == src ]]; then echo "$SRC_SSH"; else echo "$DST_SSH"; fi; 
 other() { if [[ $1 == src ]]; then echo dst; else echo src; fi; }
 state() { if ((DRY)); then return 0; fi; mkdir -p "$(dirname "$1")"; printf '%s\n' "$2" >"$1"; }
 
+# Every remote query rides one master connection per host. A new connection per query met the
+# source's sshd MaxStartups early drop on a public box and failed 14 of 159 hash queries.
 on() {
-  if [[ $1 == local ]]; then bash -c "$2"; else ssh -o BatchMode=yes -o ConnectTimeout=15 "$1" "$2"; fi
+  if [[ $1 == local ]]; then bash -c "$2"; return; fi
+  install -d -m 0700 /run/pgmove 2>/dev/null || true
+  ssh -o BatchMode=yes -o ConnectTimeout=15 -o ControlMaster=auto -o ControlPath=/run/pgmove/ssh-%C -o ControlPersist=120 "$1" "$2"
 }
 
 psql_cmd() {
@@ -104,7 +112,11 @@ sql() { on "$(host_of "$1")" "$(psql_cmd "$@")"; }
 q() {
   local side=$1 db=$2 text=$3 extra=${4:-}
   [[ $side == dst && $DST_DOWN == 1 ]] && return 0
-  printf '%s\n' "$text" | sql "$side" ro "$db" "$extra"
+  printf '%s\n' "$text" | sql "$side" ro "$db" "$extra" && return 0
+  local rc=$?
+  # A dry run reads databases and objects that do not exist yet; those failures mean absent.
+  ((DRY)) || echo "$side $db exit $rc" >>"$QFAIL"
+  return $rc
 }
 
 apply() {
@@ -138,12 +150,22 @@ put() {
   printf '%s\n' "$content" | on "$host" "install -d -m 0755 $(printf %q "$(dirname "$path")") && install -m $mode -o $owner -g $owner /dev/stdin $(printf %q "$path")"
 }
 
+query_failures() {
+  local n
+  n=$(grep -c . "$QFAIL" || true)
+  ((n == 0)) && return 0
+  echo "$CMD: $n quer$( ((n == 1)) && echo y || echo ies) failed, so the result above is incomplete; fix the cause printed above and rerun"
+  exit 1
+}
+
 finish() {
+  query_failures
   if ((DRY)); then echo "$CMD: $changes change(s) in the dry run, nothing ran${1:+; $1}"; else echo "$CMD: $changes change(s)${1:+; $1}"; fi
   ((blocks == 0)) || { echo "$CMD: $blocks blocker(s)"; exit 1; }
 }
 
 finish_check() {
+  query_failures
   echo "$diffs DIFF"
   ((diffs == 0)) || exit 1
 }
@@ -279,7 +301,7 @@ ensure_pgconf() {
   ((restart == 0)) || run "$DST_SSH" "systemctl restart postgresql@$PG_MAJOR-$DST_CLUSTER" "postgresql@$PG_MAJOR-$DST_CLUSTER restarted to load them"
 }
 
-ROLE_ROWS="select rolname || '|' || rolsuper || '|' || rolinherit || '|' || rolcreaterole || '|' || rolcreatedb || '|' || rolreplication || '|' || rolbypassrls || '|' || rolconnlimit || '|' || coalesce(rolvaliduntil::text, '-') || '|' || coalesce(md5(rolpassword), '-') from pg_authid where rolname !~ '^pg_' and rolname not in ('postgres', '$REPL_ROLE') order by 1"
+ROLE_ROWS="select rolname || '|' || rolsuper || '|' || rolinherit || '|' || rolcreaterole || '|' || rolcreatedb || '|' || rolreplication || '|' || rolbypassrls || '|' || rolconnlimit || '|' || coalesce(nullif(rolvaliduntil, 'infinity')::text, '-') || '|' || coalesce(md5(rolpassword), '-') from pg_authid where rolname !~ '^pg_' and rolname not in ('postgres', '$REPL_ROLE') order by 1"
 ROLE_ALTER="select format('ALTER ROLE %I WITH %s %s %s %s %s %s CONNECTION LIMIT %s VALID UNTIL %s PASSWORD %s;', rolname, case when rolsuper then 'SUPERUSER' else 'NOSUPERUSER' end, case when rolinherit then 'INHERIT' else 'NOINHERIT' end, case when rolcreaterole then 'CREATEROLE' else 'NOCREATEROLE' end, case when rolcreatedb then 'CREATEDB' else 'NOCREATEDB' end, case when rolreplication then 'REPLICATION' else 'NOREPLICATION' end, case when rolbypassrls then 'BYPASSRLS' else 'NOBYPASSRLS' end, rolconnlimit, coalesce(quote_literal(rolvaliduntil::text), '''infinity'''), coalesce(quote_literal(rolpassword), 'NULL')) from pg_authid where rolname = :'role'"
 MEMBER_ROWS="select distinct r.rolname || '|' || m.rolname || '|' || a.admin_option || '|' || a.inherit_option || '|' || a.set_option from pg_auth_members a join pg_roles r on r.oid = a.roleid join pg_roles m on m.oid = a.member where m.rolname not in ('postgres', '$REPL_ROLE') and m.rolname !~ '^pg_' order by 1"
 SETTING_ROWS="select coalesce(r.rolname, '-') || '|' || coalesce(d.datname, '-') || '|' || c from pg_db_role_setting s left join pg_roles r on r.oid = s.setrole left join pg_database d on d.oid = s.setdatabase cross join unnest(s.setconfig) c where coalesce(r.rolname, '') not in ('postgres', '$REPL_ROLE') order by 1"
@@ -355,17 +377,20 @@ ensure_extensions() {
   done < <(q src "$db" "select e.extname || '|' || e.extversion || '|' || n.nspname from pg_extension e join pg_namespace n on n.oid = e.extnamespace where e.extname <> 'plpgsql' order by 1")
 }
 
+USER_OBJECTS="select (select count(*) from pg_class c join pg_namespace n on n.oid = c.relnamespace where c.relkind in ('r','p','v','m','S') and $NS) + (select count(*) from pg_proc p join pg_namespace n on n.oid = p.pronamespace where $USER_NS and not exists (select 1 from pg_depend e where e.classid = 'pg_proc'::regclass and e.objid = p.oid and e.deptype = 'e'))"
+
 src_dump() {
   printf 'sudo -n -u %q pg_dump -h %q -p %q -d %q %s' "$SRC_OSUSER" "$SRC_SOCKET" "$SRC_PORT" "$1" "$2"
 }
 
 ensure_schema() {
   local db=$1 n dump=$WORK/schema-$1.dump list=$WORK/schema-$1.list
-  n=$(q dst "$db" "select count(*) from pg_class c join pg_namespace n on n.oid = c.relnamespace where c.relkind in ('r','p','v','m','S') and $NS")
+  n=$(q dst "$db" "$USER_OBJECTS")
   [[ -z $n || $n == 0 ]] || return 0
+  [[ $(q src "$db" "$USER_OBJECTS") != 0 ]] || return 0
   local fetch restore
   fetch="$(src_dump "$db" "--schema-only -Fc --no-publications --no-subscriptions --exclude-schema='_timescaledb*' --exclude-schema='timescaledb_*'")"
-  restore="pg_restore -l $dump | grep -v -E ' EXTENSION - | COMMENT - EXTENSION ' >$list && pg_restore -L $list -f - $dump | $(psql_cmd dst rw "$db" --single-transaction) >/dev/null"
+  restore="/usr/lib/postgresql/$PG_MAJOR/bin/pg_restore -l $dump | grep -v -E ' EXTENSION - | COMMENT - EXTENSION ' >$list && /usr/lib/postgresql/$PG_MAJOR/bin/pg_restore -L $list -f - $dump | $(psql_cmd dst rw "$db" --single-transaction) >/dev/null"
   changed "$db: schema restored from the source with owners and grants (pg_dump --schema-only)"
   if ((DRY)); then
     printf '  on %s: %s, stdout to %s on this box\n' "$SRC_SSH" "$fetch" "$dump"
@@ -377,10 +402,29 @@ ensure_schema() {
   on "$DST_SSH" "$restore"
 }
 
+# pg_dump leaves out a NOT NULL constraint's name when it looks like the default one, and the
+# restore then picks a free name in the schema. Where another table already holds that name
+# (trades_* copied from wallet_swaps), the target gets wallet_swaps_id_not_null1, and a later
+# migration that names the constraint fails there. Rename the target's to the source's.
+NN_NAMES="select format('%I.%I', n.nspname, c.relname) || '|' || a.attname || '|' || k.conname from pg_constraint k join pg_class c on c.oid = k.conrelid join pg_namespace n on n.oid = c.relnamespace join pg_attribute a on a.attrelid = k.conrelid and a.attnum = k.conkey[1] where k.contype = 'n' and $NS"
+
+ensure_constraint_names() {
+  local db=$1 table col name sql='' n=0
+  local -A want=()
+  while IFS='|' read -r table col name; do [[ -n $table ]] && want[$table|$col]=$name; done < <(q src "$db" "$NN_NAMES")
+  while IFS='|' read -r table col name; do
+    [[ -n $table && -n ${want[$table|$col]:-} && ${want[$table|$col]} != "$name" ]] || continue
+    sql+="ALTER TABLE $table RENAME CONSTRAINT $(ident "$name") TO $(ident "${want[$table|$col]}");"$'\n'
+    n=$((n + 1))
+  done < <(q dst "$db" "$NN_NAMES")
+  ((n == 0)) || apply dst "$db" "$sql" "dst $db: $n NOT NULL constraint(s) renamed to the source's names"
+}
+
 ensure_hypertables() {
   local db=$1 have table column interval
   has_ext src "$db" || return 0
-  have=$(q dst "$db" "select format('%I.%I', hypertable_schema, hypertable_name) from timescaledb_information.hypertables" 2>/dev/null || true)
+  have=''
+  ! has_ext dst "$db" || have=$(q dst "$db" "select format('%I.%I', hypertable_schema, hypertable_name) from timescaledb_information.hypertables")
   while read -r table column interval; do
     [[ -n $table ]] || continue
     grep -qxF -- "$table" <<<"$have" && continue
@@ -400,6 +444,7 @@ cmd_init() {
     db=$(db_of "$spec")
     ensure_extensions "$db"
     ensure_schema "$db"
+    ensure_constraint_names "$db"
     ensure_hypertables "$db"
   done
   finish
@@ -456,42 +501,61 @@ ensure_repl_role() {
   [[ $res == same ]] || apply "$side" postgres "ALTER ROLE $REPL_ROLE PASSWORD $(lit "$res");" "$side: $REPL_ROLE password set from $SECRETS/repl.password as a SCRAM verifier"
 }
 
+# The source cluster's server runs as an OS user that may have no home (robinx-test has
+# /nonexistent and ProtectHome=true), so its reverse subscription names this file in passfile=.
+src_passfile() { echo "$SECRETS/pgpass"; }
+
 ensure_pgpass() {
   local side=$1 port=$2 host user pw line f
   host=$(host_of "$side")
-  if [[ $side == src ]]; then user=$SRC_OSUSER; else user=$DST_OSUSER; fi
-  f="\$(getent passwd $user | cut -d: -f6)/.pgpass"
+  if [[ $side == src ]]; then user=$SRC_OSUSER f=$(src_passfile); else user=$DST_OSUSER f="\$(getent passwd $user | cut -d: -f6)/.pgpass"; fi
   pw=$(repl_password)
   line="127.0.0.1:$port:*:$REPL_ROLE:$pw"
   if [[ -n $pw ]] && printf '%s\n' "$line" | on "$host" "test -f $f && grep -qxF -f /dev/stdin $f" 2>/dev/null; then return 0; fi
-  changed "$side: $user's .pgpass holds $REPL_ROLE for 127.0.0.1:$port"
-  if ((DRY)); then printf '  on %s: replace the 127.0.0.1:%s line of ~%s/.pgpass with 127.0.0.1:%s:*:%s:***\n' "$host" "$port" "$user" "$port" "$REPL_ROLE"; return 0; fi
-  printf '%s\n' "$line" | on "$host" "f=$f; umask 077; { grep -v '^127\\.0\\.0\\.1:$port:' \$f 2>/dev/null || true; cat; } >\$f.new && chown $user: \$f.new && mv -f \$f.new \$f"
+  changed "$side: $user's passfile holds $REPL_ROLE for 127.0.0.1:$port"
+  if ((DRY)); then printf '  on %s: replace the 127.0.0.1:%s line of %s with 127.0.0.1:%s:*:%s:***\n' "$host" "$port" "$f" "$port" "$REPL_ROLE"; return 0; fi
+  printf '%s\n' "$line" | on "$host" "f=$f; $([[ $side == src ]] && echo "install -d -m 0755 $SECRETS;") umask 077; { grep -v '^127\\.0\\.0\\.1:$port:' \$f 2>/dev/null || true; cat; } >\$f.new && chown $user: \$f.new && mv -f \$f.new \$f"
 }
 
+# One ssh session from the target carries both directions: -L reaches the source socket, and
+# once the reverse is armed -R binds 127.0.0.1:REV_PORT on the source box to the target socket,
+# so the source never holds a key for the target.
 ensure_forward() {
-  local env unit have
+  local env unit have restart=0
+  have=$(on "$DST_SSH" "cat $SECRETS/forward.env" 2>/dev/null || true)
   env=$(printf 'FWD_PORT=%s\nFWD_SOCKET=%s\nFWD_SSH=%s' "$FWD_PORT" "$SRC_SOCKET/.s.PGSQL.$SRC_PORT" "$SRC_SSH")
+  if [[ ${1:-} == rev || $have == *FWD_REV=* ]]; then env+=$(printf '\nFWD_REV="-R 127.0.0.1:%s:%s"' "$REV_PORT" "$DST_SOCKET/.s.PGSQL.$DST_PORT"); fi
   unit=$(cat "$HERE/pg-forward@.service")
-  have=$(on "$DST_SSH" "cat /etc/systemd/system/pg-forward@.service" 2>/dev/null || true)
-  if [[ $have != "$unit" ]]; then
+  if [[ $(on "$DST_SSH" "cat /etc/systemd/system/pg-forward@.service" 2>/dev/null || true) != "$unit" ]]; then
     put "$DST_SSH" /etc/systemd/system/pg-forward@.service 0644 root "$unit" "pg-forward@.service installed"
     run "$DST_SSH" "systemctl daemon-reload" "systemd reloaded"
+    restart=1
   fi
-  have=$(on "$DST_SSH" "cat $SECRETS/forward.env" 2>/dev/null || true)
   if [[ $have != "$env" ]]; then
-    put "$DST_SSH" "$SECRETS/forward.env" 0600 root "$env" "$SECRETS/forward.env: 127.0.0.1:$FWD_PORT to $SRC_SSH:$SRC_SOCKET"
+    put "$DST_SSH" "$SECRETS/forward.env" 0600 root "$env" "$SECRETS/forward.env: 127.0.0.1:$FWD_PORT to $SRC_SSH:$SRC_SOCKET$([[ $env == *FWD_REV=* ]] && echo ", and $SRC_SSH 127.0.0.1:$REV_PORT back to this box")"
+    restart=1
+  fi
+  if ((restart)); then
     run "$DST_SSH" "systemctl enable pg-forward@$CLUSTER && systemctl restart pg-forward@$CLUSTER" "pg-forward@$CLUSTER (re)started"
   elif ! on "$DST_SSH" "systemctl is-active --quiet pg-forward@$CLUSTER" 2>/dev/null; then
     run "$DST_SSH" "systemctl enable --now pg-forward@$CLUSTER" "pg-forward@$CLUSTER started"
   fi
+  forward_wait "$DST_SSH" "$FWD_PORT"
+  [[ $env != *FWD_REV=* ]] || forward_wait "$SRC_SSH" "$REV_PORT"
+}
+
+forward_wait() {
+  ((DRY)) && return 0
+  on "$1" "for i in \$(seq 30); do (exec 3<>/dev/tcp/127.0.0.1/$2) 2>/dev/null && exit 0; sleep 1; done; exit 1" ||
+    die "pg-forward@$CLUSTER: nothing listens on $1 127.0.0.1:$2 after 30 s"
 }
 
 can_connect() {
   local side=$1 port=$2 db=$3 user
-  if [[ $side == src ]]; then user=$SRC_OSUSER; else user=$DST_OSUSER; fi
+  local pass=''
+  if [[ $side == src ]]; then user=$SRC_OSUSER pass=" passfile=$(src_passfile)"; else user=$DST_OSUSER; fi
   ((DRY)) && return 0
-  on "$(host_of "$side")" "sudo -n -u $user psql $(printf %q "host=127.0.0.1 port=$port dbname=$db user=$REPL_ROLE sslmode=disable connect_timeout=10") -XAtqc 'select 1'" >/dev/null 2>&1
+  on "$(host_of "$side")" "sudo -n -u $user psql $(printf %q "host=127.0.0.1 port=$port dbname=$db user=$REPL_ROLE sslmode=disable connect_timeout=10$pass") -XAtqc 'select 1'" >/dev/null 2>&1
 }
 
 ensure_marker() {
@@ -559,7 +623,7 @@ cmd_subscribe() {
       conn=$(q src "$db" "select subconninfo from pg_subscription where subname = $(lit "${shape#upstream=}")")
       local pubs
       pubs=$(q src "$db" "select array_to_string(subpublications, ', ') from pg_subscription where subname = $(lit "${shape#upstream=}")")
-      [[ -n $conn ]] || { blocked "$db: the source has no subscription ${shape#upstream=} to copy"; continue; }
+      [[ -n $conn ]] || { blocked "$db: the source has no subscription ${shape#upstream=} to copy"; break; }
       apply dst "$db" "CREATE SUBSCRIPTION $sub CONNECTION $(lit "$conn") PUBLICATION $pubs WITH (binary = $BINARY, streaming = on, copy_data = true, disable_on_error = false);" \
         "dst $db: subscription $sub to the publisher of ${shape#upstream=} ($pubs), copy_data=true"
       continue
@@ -567,10 +631,10 @@ cmd_subscribe() {
     conn="host=127.0.0.1 port=$FWD_PORT dbname=$db user=$REPL_ROLE application_name=$sub sslmode=disable"
     if ! can_connect dst "$FWD_PORT" "$db"; then
       blocked "the source refuses $REPL_ROLE through the forward; its hba needs 'local $db $REPL_ROLE scram-sha-256' above the peer lines, then a reload"
-      continue
+      break
     fi
     ensure_publication src "$db" "$shape" "$PUB"
-    apply dst "$db" "CREATE SUBSCRIPTION $sub CONNECTION $(lit "$conn") PUBLICATION $PUB WITH (binary = $BINARY, streaming = on, copy_data = true, disable_on_error = false);" \
+    apply dst "$db" "CREATE SUBSCRIPTION $sub CONNECTION $(lit "$conn") PUBLICATION $PUB WITH (binary = $BINARY, streaming = on, copy_data = true, origin = none, disable_on_error = false);" \
       "dst $db: subscription $sub (slot $sub on the source), $SYNC_WORKERS sync workers"
   done
   ((DRY == 0)) || echo "dry run: in a real run each database subscribes only once every table of the one before is in state r"
@@ -683,7 +747,7 @@ select kind || ' ' || name || ' owner ' || pg_get_userbyid(owner) from o
 union all
 select o.kind || ' ' || o.name || ' ' || case when a.grantee = 0 then 'PUBLIC' else pg_get_userbyid(a.grantee) end || ' ' || a.privilege_type || case when a.is_grantable then ' WITH GRANT OPTION' else '' end from o, aclexplode(o.acl) a
 union all
-select 'default-acl ' || pg_get_userbyid(d.defaclrole) || ' ' || coalesce(n.nspname, '*') || ' ' || d.defaclobjtype || ' ' || case when a.grantee = 0 then 'PUBLIC' else pg_get_userbyid(a.grantee) end || ' ' || a.privilege_type
+select 'default-acl ' || pg_get_userbyid(d.defaclrole) || ' ' || coalesce(n.nspname, '*') || ' ' || d.defaclobjtype::text || ' ' || case when a.grantee = 0 then 'PUBLIC' else pg_get_userbyid(a.grantee) end || ' ' || a.privilege_type
 from pg_default_acl d left join pg_namespace n on n.oid = d.defaclnamespace, aclexplode(d.defaclacl) a
 EOF
 }
@@ -775,23 +839,33 @@ hash_meta() {
   q "$FROM" "$1" "select format('%I.%I', n.nspname, c.relname) || '|' || coalesce((select string_agg(quote_ident(a.attname), ',' order by k.o) from pg_index i cross join unnest(i.indkey) with ordinality k(att, o) join pg_attribute a on a.attrelid = i.indrelid and a.attnum = k.att where i.indrelid = c.oid and i.indisprimary), '') || '|' || coalesce((select format_type(a.atttypid, null) from pg_index i join pg_attribute a on a.attrelid = i.indrelid and a.attnum = i.indkey[0] where i.indrelid = c.oid and i.indisprimary), '') || '|' || greatest(1, ceil(greatest(c.reltuples, 0) / $HASH_BUCKET))::bigint from pg_class c join pg_namespace n on n.oid = c.relnamespace where c.relkind = 'r' and $NS order by 1"
 }
 
+# Both sides must answer: an empty side would compare as zero buckets and pass.
+hash_wait() {
+  local rs=0 rd=0
+  wait "$3" || rs=$?
+  wait "$4" || rd=$?
+  ((rs == 0 && rd == 0)) || die "hash: $1 $2: the $( ((rs)) && echo source)$( ((rs && rd)) && echo ' and ')$( ((rd)) && echo target) query failed (exit $rs/$rd); nothing was compared"
+}
+
 hash_table() {
   local db=$1 table=$2 pk=$3 type=$4 nb=$5 bexpr where='' key tmp b n bad s d lo sc ss dc ds
   key=${pk%%,*}
   if is_hypertable "$table"; then
     bexpr="(t.$HT_KEY / $HASH_BUCKET)" where="where t.$HT_TIME >= $(lit "$(ts_cutoff)")"
   elif [[ -z $pk ]]; then
-    bexpr=0
+    bexpr=0::int
   elif [[ $type == smallint || $type == integer || $type == bigint ]]; then
     bexpr="(t.$key / $HASH_BUCKET)"
   else
     bexpr="(abs(hashtext(t.$key::text)::bigint) % $nb)"
   fi
-  sel() { echo "select $bexpr || '|' || count(*) || '|' || sum(('x' || left(md5(t::text), 16))::bit(64)::bigint::numeric) from $table t $1 group by $bexpr order by 1"; }
+  # The planner reads (key / bucket) as one group per row and sorts the whole table, which spilled
+  # past the source's temp_file_limit on 17.9M rows; the real buckets fit a hash table in memory.
+  sel() { echo "set enable_sort = off; select $bexpr || '|' || count(*) || '|' || sum(('x' || left(md5(t::text), 16))::bit(64)::bigint::numeric) from $table t $1 group by $bexpr order by 1"; }
   tmp=$(mktemp -d)
   q src "$db" "$(sel "$where")" >"$tmp/s" & s=$!
   q dst "$db" "$(sel "$where")" >"$tmp/d" & d=$!
-  wait $s && wait $d
+  hash_wait "$db" "$table" $s $d
   bad=$(join -t'|' -a1 -a2 -e- -o 0,1.2,1.3,2.2,2.3 <(sort -t'|' -k1,1 "$tmp/s") <(sort -t'|' -k1,1 "$tmp/d") | awk -F'|' '$2 != $4 || $3 != $5 { print $1 }' | paste -sd, -)
   n=$(wc -l <"$tmp/s" | tr -d ' ')
   if [[ -n $bad ]]; then
@@ -806,7 +880,7 @@ hash_table() {
     fi
     q src "$db" "$(sel "$where")" >"$tmp/s" & s=$!
     q dst "$db" "$(sel "$where")" >"$tmp/d" & d=$!
-    wait $s && wait $d
+    hash_wait "$db" "$table" $s $d
     while IFS='|' read -r b sc ss dc ds; do
       [[ $sc == "$dc" && $ss == "$ds" ]] || diff_row "$db $table bucket $b: src $sc rows, dst $dc rows, sums differ twice $HASH_RECHECK_SECS s apart"
     done < <(join -t'|' -a1 -a2 -e- -o 0,1.2,1.3,2.2,2.3 <(sort -t'|' -k1,1 "$tmp/s") <(sort -t'|' -k1,1 "$tmp/d"))
@@ -941,6 +1015,16 @@ sub_set() {
   if [[ $want == t ]]; then apply "$side" "$db" "ALTER SUBSCRIPTION $sub ENABLE;" "$side $db: $sub enabled"; else apply "$side" "$db" "ALTER SUBSCRIPTION $sub DISABLE;" "$side $db: $sub disabled"; fi
 }
 
+# A resumed direction must skip the rows the other one applied while it was paused, or it sends
+# them back and stops on their keys.
+sub_resume() {
+  local side=$1 db=$2 sub=$3
+  [[ -n $(q "$side" "$db" "select 1 from pg_subscription where subname = '$sub'") ]] || return 0
+  [[ $(q "$side" "$db" "select suborigin from pg_subscription where subname = '$sub'") == none ]] ||
+    apply "$side" "$db" "ALTER SUBSCRIPTION $sub SET (origin = none);" "$side $db: $sub skips rows the other direction applied"
+  sub_set "$side" "$db" "$sub" t
+}
+
 cmd_switch() {
   local role spec db table
   upstream_blockers "the switch"
@@ -953,7 +1037,12 @@ cmd_switch() {
   sync_sequences
   for spec in "${DATABASES[@]}"; do
     db=$(db_of "$spec")
-    if ((REVERSE)); then sub_set src "$db" "$(sub_name rev "$db")" f; else sub_set dst "$db" "$(sub_name fwd "$db")" f; fi
+    if ((REVERSE)); then
+      sub_set src "$db" "$(sub_name rev "$db")" f
+      sub_resume dst "$db" "$(sub_name fwd "$db")"
+    else
+      sub_set dst "$db" "$(sub_name fwd "$db")" f
+    fi
   done
   if ((REVERSE == 0)); then
     for table in ${HYPERTABLES[@]+"${HYPERTABLES[@]}"}; do
@@ -978,22 +1067,26 @@ ensure_dst_hba() {
 arm_reverse() {
   local spec db shape sub conn
   upstream_blockers "reverse replication"
-  [[ -n $REV_PORT ]] || blocked "$CLUSTER.conf sets no REV_PORT, the port of the pg-forward@ on the source box that reaches the target"
+  [[ -n $REV_PORT && -n $FWD_PORT ]] || blocked "$CLUSTER.conf sets no REV_PORT or FWD_PORT; pg-forward@$CLUSTER binds REV_PORT on the source box back to the target"
   ((blocks == 0 || DRY)) || finish
   ensure_repl_password
   ensure_repl_role dst
   ensure_dst_hba
   ensure_pgpass src "$REV_PORT"
+  ensure_forward rev
   for spec in "${DATABASES[@]}"; do
     db=$(db_of "$spec") shape=$(shape_of "$spec") sub=$(sub_name rev "$db")
     identity_blockers dst "$db" "$shape"
     ensure_publication dst "$db" "$shape" "$REV_PUB"
-    [[ -n $(q src "$db" "select 1 from pg_subscription where subname = '$sub'") ]] && continue
-    if ! can_connect src "$REV_PORT" "$db"; then
-      blocked "the source box does not reach the target as $REPL_ROLE on 127.0.0.1:$REV_PORT; start pg-forward@ there first"
+    if [[ -n $(q src "$db" "select 1 from pg_subscription where subname = '$sub'") ]]; then
+      sub_resume src "$db" "$sub"
       continue
     fi
-    conn="host=127.0.0.1 port=$REV_PORT dbname=$db user=$REPL_ROLE application_name=$sub sslmode=disable"
+    if ! can_connect src "$REV_PORT" "$db"; then
+      blocked "the source box does not reach the target as $REPL_ROLE on 127.0.0.1:$REV_PORT through pg-forward@$CLUSTER"
+      continue
+    fi
+    conn="host=127.0.0.1 port=$REV_PORT dbname=$db user=$REPL_ROLE passfile=$(src_passfile) application_name=$sub sslmode=disable"
     apply src "$db" "CREATE SUBSCRIPTION $sub CONNECTION $(lit "$conn") PUBLICATION $REV_PUB WITH (copy_data = false, binary = $BINARY, streaming = on, origin = none, disable_on_error = false);" \
       "src $db: reverse subscription $sub (slot $sub on the target), copy_data=false"
   done

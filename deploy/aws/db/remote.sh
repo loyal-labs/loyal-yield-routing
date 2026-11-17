@@ -13,14 +13,14 @@ conf_box() {
 pgmove_on() {
   local box
   box=$(conf_box "$2")
-  ssh -o BatchMode=yes "$box" "$DEST/pgmove.sh $(printf '%q ' "$@")"
+  ssh -o BatchMode=yes "$box" "sudo -n $DEST/pgmove.sh $(printf '%q ' "$@")"
 }
 
 install_on() {
   local box
   box=$(conf_box "$1")
-  COPYFILE_DISABLE=1 tar -C "$HERE" -cf - pgmove.sh pg-forward@.service clusters |
-    ssh -o BatchMode=yes "$box" "install -d -m 0755 $DEST && tar -C $DEST --no-same-owner -xf - && chown -R root:root $DEST"
+  COPYFILE_DISABLE=1 tar --no-xattrs -C "$HERE" -cf - pgmove.sh pg-forward@.service clusters |
+    ssh -o BatchMode=yes "$box" "sudo -n install -d -m 0755 $DEST && sudo -n tar -C $DEST --no-same-owner -xf - && sudo -n chown -R root:root $DEST"
   echo "remote: $DEST on $box holds pgmove.sh at $(git -C "$HERE" rev-parse --short HEAD 2>/dev/null || echo '?')"
 }
 
