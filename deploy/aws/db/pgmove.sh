@@ -73,6 +73,10 @@ FROM=src TO=dst
 ((REVERSE)) && FROM=dst TO=src
 
 changes=0 diffs=0 blocks=0 DST_DOWN=0
+# A failed query reads as empty, and an empty answer reads as absent or as equal. q runs in
+# subshells, so it records each failure here and finish and finish_check refuse to pass.
+QFAIL=$(mktemp)
+trap 'rm -f "$QFAIL"' EXIT
 
 changed() { changes=$((changes + 1)); if ((DRY)); then echo "would change: $*"; else echo "changed: $*"; fi; }
 diff_row() { diffs=$((diffs + 1)); echo "DIFF $*"; }
@@ -108,7 +112,11 @@ sql() { on "$(host_of "$1")" "$(psql_cmd "$@")"; }
 q() {
   local side=$1 db=$2 text=$3 extra=${4:-}
   [[ $side == dst && $DST_DOWN == 1 ]] && return 0
-  printf '%s\n' "$text" | sql "$side" ro "$db" "$extra"
+  printf '%s\n' "$text" | sql "$side" ro "$db" "$extra" && return 0
+  local rc=$?
+  # A dry run reads databases and objects that do not exist yet; those failures mean absent.
+  ((DRY)) || echo "$side $db exit $rc" >>"$QFAIL"
+  return $rc
 }
 
 apply() {
@@ -142,12 +150,22 @@ put() {
   printf '%s\n' "$content" | on "$host" "install -d -m 0755 $(printf %q "$(dirname "$path")") && install -m $mode -o $owner -g $owner /dev/stdin $(printf %q "$path")"
 }
 
+query_failures() {
+  local n
+  n=$(grep -c . "$QFAIL" || true)
+  ((n == 0)) && return 0
+  echo "$CMD: $n quer$( ((n == 1)) && echo y || echo ies) failed, so the result above is incomplete; fix the cause printed above and rerun"
+  exit 1
+}
+
 finish() {
+  query_failures
   if ((DRY)); then echo "$CMD: $changes change(s) in the dry run, nothing ran${1:+; $1}"; else echo "$CMD: $changes change(s)${1:+; $1}"; fi
   ((blocks == 0)) || { echo "$CMD: $blocks blocker(s)"; exit 1; }
 }
 
 finish_check() {
+  query_failures
   echo "$diffs DIFF"
   ((diffs == 0)) || exit 1
 }
@@ -387,7 +405,8 @@ ensure_schema() {
 ensure_hypertables() {
   local db=$1 have table column interval
   has_ext src "$db" || return 0
-  have=$(q dst "$db" "select format('%I.%I', hypertable_schema, hypertable_name) from timescaledb_information.hypertables" 2>/dev/null || true)
+  have=''
+  ! has_ext dst "$db" || have=$(q dst "$db" "select format('%I.%I', hypertable_schema, hypertable_name) from timescaledb_information.hypertables")
   while read -r table column interval; do
     [[ -n $table ]] || continue
     grep -qxF -- "$table" <<<"$have" && continue
