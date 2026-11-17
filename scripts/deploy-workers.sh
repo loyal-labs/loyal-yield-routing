@@ -311,7 +311,7 @@ if [[ $running != "$sha" || $mode == stopped ]]; then
     assets=$tree/go/workers/cmd/loyal-web/dist/assets
     if [[ -n ${LOYAL_DEPLOY_ARTIFACT_DIR:-} ]]; then
       assets=$build/assets
-      cp -a "$LOYAL_DEPLOY_ARTIFACT_DIR/web-assets" "$assets"
+      cp -a "$artifacts/web-assets" "$assets"
     fi
     scp -q -r "$assets" "$host:$dir/"
     scp -q "$tree/deploy/hetzner/retain-web-assets.sh" "$host:$dir/"

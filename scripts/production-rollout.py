@@ -85,6 +85,36 @@ def rollback(host, stage, family, sha, before):
     summary(f'{family}: previous binary restored and service health verified.')
 
 
+def target_goarch(host):
+    """The target's architecture, decided by deploy-workers.sh's goarch_of."""
+    machine = os.environ.get('LOYAL_DEPLOY_GOARCH') or ssh(host, 'uname', '-m')
+    function = re.search(r'^goarch_of\(\) \{\n.*?^\}$', (ROOT / 'scripts/deploy-workers.sh').read_text(), re.M | re.S)
+    return run('bash', '-c', function.group(0) + '\nhost=$1; goarch_of "$2"; printf %s "$goarch"', 'goarch_of', host, machine)
+
+
+def check_directory(directory, services):
+    manifests = sorted({('workers' if family in FAMILIES[:5] else family) + '-SHA256SUMS' for family in services})
+    run('sha256sum', '-c', *manifests, cwd=directory)
+    for name in {BINARY[family] for family in services}:
+        if not (directory / name).is_file():
+            raise RuntimeError(f'missing verified artifact {name}')
+    return {family: hashlib.sha256((directory / BINARY[family]).read_bytes()).hexdigest() for family in services}
+
+
+def verify_artifacts(services):
+    """Host-free: every architecture present in the artifact is checked and made read-only."""
+    root = os.environ.get('LOYAL_DEPLOY_ARTIFACT_DIR')
+    if not root:
+        raise RuntimeError('LOYAL_DEPLOY_ARTIFACT_DIR must contain this run\'s verified artifacts')
+    root = Path(root)
+    for directory in (root, root / 'arm64'):
+        if directory == root or directory.is_dir():
+            check_directory(directory, services)
+            for binary in directory.glob('loyal-*'):
+                binary.chmod(0o555)
+            summary(f'verified {directory}')
+
+
 def rollout(sha, preflight_only=False, services=FAMILIES):
     if (not isinstance(services, (list, tuple)) or any(not isinstance(family, str) or family not in FAMILIES for family in services)
             or len(set(services)) != len(services)):
@@ -95,18 +125,16 @@ def rollout(sha, preflight_only=False, services=FAMILIES):
     if not services:
         summary('No production services changed. No host access or deployment performed.')
         return
-    artifacts = Path(os.environ.get('LOYAL_DEPLOY_ARTIFACT_DIR', ''))
-    digests = {}
-    if not preflight_only:
-        if not os.environ.get('LOYAL_DEPLOY_ARTIFACT_DIR'):
-            raise RuntimeError('LOYAL_DEPLOY_ARTIFACT_DIR must contain this run\'s verified artifacts')
-        manifests = sorted({('workers' if family in FAMILIES[:5] else family) + '-SHA256SUMS' for family in services})
-        run('sha256sum', '-c', *manifests, cwd=artifacts)
-        for name in {BINARY[family] for family in services}:
-            if not (artifacts / name).is_file():
-                raise RuntimeError(f'missing verified artifact {name}')
-        digests = {family: hashlib.sha256((artifacts / BINARY[family]).read_bytes()).hexdigest() for family in services}
     host = os.environ.get('LOYAL_WORKERS_SSH', 'loyal-workers')
+    artifacts, digests = Path(), {}
+    if not preflight_only:
+        root = os.environ.get('LOYAL_DEPLOY_ARTIFACT_DIR')
+        if not root:
+            raise RuntimeError('LOYAL_DEPLOY_ARTIFACT_DIR must contain this run\'s verified artifacts')
+        goarch = target_goarch(host)
+        artifacts = Path(root) if goarch == 'amd64' else Path(root) / goarch
+        digests = check_directory(artifacts, services)
+        summary(f'{host} is {goarch}: deploying from {artifacts}')
     stage = ssh(host, 'mktemp', '-d', '/tmp/loyal-rollout.XXXXXXXX')
     if not re.fullmatch(r'/tmp/loyal-rollout\.[a-zA-Z0-9]+', stage):
         raise RuntimeError('unexpected host staging directory')
@@ -164,10 +192,17 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('sha')
     parser.add_argument('--preflight-only', action='store_true')
+    parser.add_argument('--verify-artifacts', action='store_true',
+                        help="check every architecture in the artifact without any host access, make its binaries read-only, deploy nothing")
     parser.add_argument('--services-json', default=json.dumps(FAMILIES))
     args = parser.parse_args()
     try:
-        rollout(args.sha, args.preflight_only, json.loads(args.services_json))
+        if args.verify_artifacts:
+            selected = json.loads(args.services_json)
+            if selected:
+                verify_artifacts(selected)
+        else:
+            rollout(args.sha, args.preflight_only, json.loads(args.services_json))
     except Exception as error:
         summary('ROLLOUT FAILED: ' + str(error))
         sys.exit(1)

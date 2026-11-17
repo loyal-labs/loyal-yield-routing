@@ -210,16 +210,7 @@ jobs:
           merge-multiple: true
           path: ${{ runner.temp }}/loyal-release
       - name: Verify the exact artifacts before using production access
-        run: |
-          cd "$LOYAL_DEPLOY_ARTIFACT_DIR"
-          python3 - <<'PYTHON'
-          import json, os, subprocess
-          services = json.loads(os.environ['SERVICES'])
-          workers = {'backyard', 'earn-max', 'retail', 'observer', 'telegram'}
-          manifests = sorted({('workers' if service in workers else service) + '-SHA256SUMS' for service in services})
-          subprocess.run(['sha256sum', '-c', *manifests], check=True)
-          PYTHON
-          chmod 0555 loyal-*
+        run: python3 scripts/production-rollout.py "$GITHUB_SHA" --services-json "$SERVICES" --verify-artifacts
       - name: Install private network tools
         timeout-minutes: 5
         run: |
