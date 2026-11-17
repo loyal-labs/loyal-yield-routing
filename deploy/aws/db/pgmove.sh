@@ -87,8 +87,12 @@ host_of() { if [[ $1 == src ]]; then echo "$SRC_SSH"; else echo "$DST_SSH"; fi; 
 other() { if [[ $1 == src ]]; then echo dst; else echo src; fi; }
 state() { if ((DRY)); then return 0; fi; mkdir -p "$(dirname "$1")"; printf '%s\n' "$2" >"$1"; }
 
+# Every remote query rides one master connection per host. A new connection per query met the
+# source's sshd MaxStartups early drop on a public box and failed one query in about twenty.
 on() {
-  if [[ $1 == local ]]; then bash -c "$2"; else ssh -o BatchMode=yes -o ConnectTimeout=15 "$1" "$2"; fi
+  if [[ $1 == local ]]; then bash -c "$2"; return; fi
+  install -d -m 0700 /run/pgmove 2>/dev/null || true
+  ssh -o BatchMode=yes -o ConnectTimeout=15 -o ControlMaster=auto -o ControlPath=/run/pgmove/ssh-%C -o ControlPersist=120 "$1" "$2"
 }
 
 psql_cmd() {
