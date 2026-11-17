@@ -815,7 +815,7 @@ hash_table() {
   if is_hypertable "$table"; then
     bexpr="(t.$HT_KEY / $HASH_BUCKET)" where="where t.$HT_TIME >= $(lit "$(ts_cutoff)")"
   elif [[ -z $pk ]]; then
-    bexpr=0
+    bexpr=0::int
   elif [[ $type == smallint || $type == integer || $type == bigint ]]; then
     bexpr="(t.$key / $HASH_BUCKET)"
   else
