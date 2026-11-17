@@ -569,7 +569,7 @@ cmd_subscribe() {
       conn=$(q src "$db" "select subconninfo from pg_subscription where subname = $(lit "${shape#upstream=}")")
       local pubs
       pubs=$(q src "$db" "select array_to_string(subpublications, ', ') from pg_subscription where subname = $(lit "${shape#upstream=}")")
-      [[ -n $conn ]] || { blocked "$db: the source has no subscription ${shape#upstream=} to copy"; continue; }
+      [[ -n $conn ]] || { blocked "$db: the source has no subscription ${shape#upstream=} to copy"; break; }
       apply dst "$db" "CREATE SUBSCRIPTION $sub CONNECTION $(lit "$conn") PUBLICATION $pubs WITH (binary = $BINARY, streaming = on, copy_data = true, disable_on_error = false);" \
         "dst $db: subscription $sub to the publisher of ${shape#upstream=} ($pubs), copy_data=true"
       continue
@@ -577,7 +577,7 @@ cmd_subscribe() {
     conn="host=127.0.0.1 port=$FWD_PORT dbname=$db user=$REPL_ROLE application_name=$sub sslmode=disable"
     if ! can_connect dst "$FWD_PORT" "$db"; then
       blocked "the source refuses $REPL_ROLE through the forward; its hba needs 'local $db $REPL_ROLE scram-sha-256' above the peer lines, then a reload"
-      continue
+      break
     fi
     ensure_publication src "$db" "$shape" "$PUB"
     apply dst "$db" "CREATE SUBSCRIPTION $sub CONNECTION $(lit "$conn") PUBLICATION $PUB WITH (binary = $BINARY, streaming = on, copy_data = true, disable_on_error = false);" \
