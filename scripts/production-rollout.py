@@ -92,22 +92,27 @@ def target_goarch(host):
     return run('bash', '-c', function.group(0) + '\nhost=$1; goarch_of "$2"; printf %s "$goarch"', 'goarch_of', host, machine)
 
 
-def verify_artifacts(host, services):
+def check_directory(directory, services):
+    manifests = sorted({('workers' if family in FAMILIES[:5] else family) + '-SHA256SUMS' for family in services})
+    run('sha256sum', '-c', *manifests, cwd=directory)
+    for name in {BINARY[family] for family in services}:
+        if not (directory / name).is_file():
+            raise RuntimeError(f'missing verified artifact {name}')
+    return {family: hashlib.sha256((directory / BINARY[family]).read_bytes()).hexdigest() for family in services}
+
+
+def verify_artifacts(services):
+    """Host-free: every architecture present in the artifact is checked and made read-only."""
     root = os.environ.get('LOYAL_DEPLOY_ARTIFACT_DIR')
     if not root:
         raise RuntimeError('LOYAL_DEPLOY_ARTIFACT_DIR must contain this run\'s verified artifacts')
-    artifacts = Path(root)
-    goarch = target_goarch(host)
-    if goarch != 'amd64':
-        artifacts = artifacts / goarch
-    manifests = sorted({('workers' if family in FAMILIES[:5] else family) + '-SHA256SUMS' for family in services})
-    run('sha256sum', '-c', *manifests, cwd=artifacts)
-    for name in {BINARY[family] for family in services}:
-        if not (artifacts / name).is_file():
-            raise RuntimeError(f'missing verified artifact {name}')
-    digests = {family: hashlib.sha256((artifacts / BINARY[family]).read_bytes()).hexdigest() for family in services}
-    summary(f'{host} is {goarch}: verified {", ".join(manifests)} in {artifacts}')
-    return artifacts, digests
+    root = Path(root)
+    for directory in (root, root / 'arm64'):
+        if directory == root or directory.is_dir():
+            check_directory(directory, services)
+            for binary in directory.glob('loyal-*'):
+                binary.chmod(0o555)
+            summary(f'verified {directory}')
 
 
 def rollout(sha, preflight_only=False, services=FAMILIES):
@@ -123,7 +128,13 @@ def rollout(sha, preflight_only=False, services=FAMILIES):
     host = os.environ.get('LOYAL_WORKERS_SSH', 'loyal-workers')
     artifacts, digests = Path(), {}
     if not preflight_only:
-        artifacts, digests = verify_artifacts(host, services)
+        root = os.environ.get('LOYAL_DEPLOY_ARTIFACT_DIR')
+        if not root:
+            raise RuntimeError('LOYAL_DEPLOY_ARTIFACT_DIR must contain this run\'s verified artifacts')
+        goarch = target_goarch(host)
+        artifacts = Path(root) if goarch == 'amd64' else Path(root) / goarch
+        digests = check_directory(artifacts, services)
+        summary(f'{host} is {goarch}: deploying from {artifacts}')
     stage = ssh(host, 'mktemp', '-d', '/tmp/loyal-rollout.XXXXXXXX')
     if not re.fullmatch(r'/tmp/loyal-rollout\.[a-zA-Z0-9]+', stage):
         raise RuntimeError('unexpected host staging directory')
@@ -182,16 +193,14 @@ if __name__ == '__main__':
     parser.add_argument('sha')
     parser.add_argument('--preflight-only', action='store_true')
     parser.add_argument('--verify-artifacts', action='store_true',
-                        help="check the target architecture's manifests, make its binaries read-only, deploy nothing")
+                        help="check every architecture in the artifact without any host access, make its binaries read-only, deploy nothing")
     parser.add_argument('--services-json', default=json.dumps(FAMILIES))
     args = parser.parse_args()
     try:
         if args.verify_artifacts:
             selected = json.loads(args.services_json)
             if selected:
-                directory, _ = verify_artifacts(os.environ.get('LOYAL_WORKERS_SSH', 'loyal-workers'), selected)
-                for binary in directory.glob('loyal-*'):
-                    binary.chmod(0o555)
+                verify_artifacts(selected)
         else:
             rollout(args.sha, args.preflight_only, json.loads(args.services_json))
     except Exception as error:

@@ -120,8 +120,8 @@ without asking it. With `LOYAL_DEPLOY_ARTIFACT_DIR` set, an arm64 host takes
 its binaries from `$LOYAL_DEPLOY_ARTIFACT_DIR/arm64/`, which the CI artifacts
 carry beside the amd64 ones at the root.
 `scripts/production-rollout.py` follows the same rule through this script's
-`goarch_of`: it checks that directory's `*-SHA256SUMS` manifests and copies
-from it. The arm64 web, admin and stats artifacts are
+`goarch_of`: the workflow checks the manifests of every architecture present
+before any host access, and the rollout copies from the target's directory. The arm64 web, admin and stats artifacts are
 `production-<service>-arm64-<sha>` and realtime's is
 `production-realtime-arm64-<sha>`, each with its files under `arm64/`.
 
