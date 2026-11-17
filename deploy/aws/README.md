@@ -17,3 +17,31 @@ Conf fields, all required, none with a default: `PROFILE` (or `AWS_PROFILE`), `R
 ## host-diff.sh
 
 `deploy/aws/host-diff.sh <old-alias> <new-alias>` is read-only on both hosts (one `bash -s` over ssh each, nothing written). It prints only differing lines and ends `<n> difference(s)`: package versions with the architecture suffix ignored, `/etc/systemd/system` unit files by name and sha256, and the names (never contents) of what sits under the `/etc` trees the services read, drop-ins included. The default scopes are in the script header and can be replaced with `HOST_DIFF_PKGS`, `HOST_DIFF_UNITS`, `HOST_DIFF_TREES`, `HOST_DIFF_EXCLUDE` and `HOST_DIFF_SSH_OPTS`.
+
+## backup.sh
+
+`deploy/aws/backup.sh <box> [--dry-run]` creates the pgBackRest backup storage for a database box from `deploy/aws/boxes/<box>.conf` and converges on rerun. A second run prints `<box>: 0 change(s)`. Boxes: `robinx-main`, `loyal-main`. The conf's `BACKUP_BUCKET` names the bucket and must carry the account id; `ACCOUNT` must be set and match the profile.
+
+Per box it ensures, each found again by name: the bucket in the box's account and region (all four public-access blocks on, SSE-S3 default encryption, versioning on, bucket-owner-enforced ownership, a bucket policy statement `DenyInsecureTransport`, and a lifecycle rule `pgbackrest-housekeeping` that expires noncurrent versions after 30 days and aborts incomplete multipart uploads after 7); the IAM role `<box>-pgbackrest` trusted by `ec2.amazonaws.com` whose one inline policy `pgbackrest-s3` allows `s3:ListBucket` on the bucket and `s3:GetObject`, `s3:PutObject`, `s3:DeleteObject` on its objects; the instance profile `<box>-pgbackrest` holding that role; and the profile associated with the instance found by its Name tag. Policy statements and lifecycle rules with other ids are kept. Extra inline or managed policies on the role and a different profile on the instance are a `warning:` line, not a change. It never deletes a bucket, object, role or policy and sets no object lock or retention. Reads need a live session; a dry run without one says so and lists every step as missing.
+
+Buckets: `robinx-pgbackrest-227949368511` (account `main`) and `loyal-pgbackrest-026852303320` (account `loyal`), both us-east-1. A box's role reaches only its own bucket.
+
+Repo stanza for a cluster on the box, in the pgBackRest config. The options other than the repo lines are the Hetzner `wen/deploy/postgres/pgbackrest.conf.example` ones. Credentials come from the instance role (`repo1-s3-key-type=auto`), so no key is written anywhere. Give each cluster its own `repo1-path`, and keep the cipher pass in `PGBACKREST_REPO1_CIPHER_PASS` as the Hetzner setup does. No stanza exists yet; `stanza-create` runs once the cluster does.
+
+```ini
+[global]
+repo1-type=s3
+repo1-path=/robinx
+repo1-s3-bucket=robinx-pgbackrest-227949368511
+repo1-s3-endpoint=s3.us-east-1.amazonaws.com
+repo1-s3-region=us-east-1
+repo1-s3-key-type=auto
+repo1-cipher-type=aes-256-cbc
+repo1-retention-full-type=time
+repo1-retention-full=14
+process-max=2
+compress-type=zst
+compress-level=3
+start-fast=y
+archive-async=y
+```
