@@ -23,11 +23,16 @@ concurrency:
 jobs:
   build:
     if: inputs.services != '[]'
-    runs-on: ubuntu-24.04
+    # The amd64 leg keeps its name, checks and artifact. The arm64 leg builds the
+    # same release natively on an arm64 runner and seals it under arm64/ in
+    # production-<service>-arm64-<sha>; the rollout picks by the target's architecture.
+    name: ${{ matrix.arch == 'amd64' && format('build ({0})', matrix.service) || format('build ({0}, {1})', matrix.service, matrix.arch) }}
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
     strategy:
       fail-fast: false
       matrix:
         service: ${{ fromJSON(inputs.services) }}
+        arch: [amd64, arm64]
     env:
       WORKERS_V2_PACKAGES: ${{ toJSON(fromJSON(inputs.packages)[matrix.service]) }}
       BRIDGE_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/bridge_test?sslmode=disable
@@ -81,6 +86,7 @@ jobs:
           go-version-file: go/workers/go.mod
           cache-dependency-path: go/workers/go.sum
       - name: Create disposable databases for the selected Go dependencies
+        if: matrix.arch == 'amd64'
         env:
           PGPASSWORD: postgres
         run: |
@@ -91,14 +97,14 @@ jobs:
       - name: install web
         run: cd web && bun install --frozen-lockfile
       - name: assets survive releases and startup recovers without reload loops
-        if: matrix.service == 'web'
+        if: matrix.arch == 'amd64' && matrix.service == 'web'
         timeout-minutes: 2
         run: |
           sh scripts/web/verify-retained-assets.sh
           browser_path="$(command -v google-chrome)"
           CHROMIUM_PATH="$browser_path" node scripts/web/verify-startup-recovery.mjs
       - name: every page has a route
-        if: matrix.service != 'stats'
+        if: matrix.arch == 'amd64' && matrix.service != 'stats'
         env:
           SERVICE: ${{ matrix.service }}
         run: |
@@ -116,23 +122,24 @@ jobs:
           fi
           sh scripts/web/build.sh "${SERVICE/web/loyal}"
       - name: web API types match the Go routes
-        if: matrix.service == 'web'
+        if: matrix.arch == 'amd64' && matrix.service == 'web'
         run: bun scripts/web/openapi-types.ts --check
       - name: mobile client paths have server routes
-        if: matrix.service == 'web'
+        if: matrix.arch == 'amd64' && matrix.service == 'web'
         run: bun scripts/web/routes-census.ts --check
       - name: admin view props match the Go loaders
-        if: matrix.service == 'admin'
+        if: matrix.arch == 'amd64' && matrix.service == 'admin'
         working-directory: web/apps/admin
         run: bun run typecheck
       - name: stats page types
-        if: matrix.service == 'stats'
+        if: matrix.arch == 'amd64' && matrix.service == 'stats'
         working-directory: web/apps/dashboard
         run: bun run typecheck:vite
       - name: Go headers and locale redirects match loyal-app
-        if: matrix.service == 'web'
+        if: matrix.arch == 'amd64' && matrix.service == 'web'
         run: bun scripts/web/parity.ts
       - name: go
+        if: matrix.arch == 'amd64'
         working-directory: go/workers
         run: |
           mapfile -t packages < <(python3 -c 'import json,os; print("\n".join(json.loads(os.environ["WORKERS_V2_PACKAGES"])))')
@@ -144,9 +151,16 @@ jobs:
         if: github.event_name != 'pull_request'
         env:
           SERVICE: ${{ matrix.service }}
+          ARCH: ${{ matrix.arch }}
         run: |
-          if [ "$SERVICE" = web ]; then cp -a go/workers/cmd/loyal-web/dist/assets bin/web-assets; fi
-          cd bin
+          out=bin
+          if [ "$ARCH" = arm64 ]; then
+            out=bin/arm64
+            mkdir -p "$out"
+            mv "bin/loyal-$SERVICE" "$out/"
+          fi
+          if [ "$SERVICE" = web ]; then cp -a go/workers/cmd/loyal-web/dist/assets "$out/web-assets"; fi
+          cd "$out"
           sha256sum "loyal-$SERVICE" > "$SERVICE-SHA256SUMS"
           if [ "$SERVICE" = web ]; then
             find web-assets -type f -print0 | sort -z | xargs -0 sha256sum >> web-SHA256SUMS
@@ -154,7 +168,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: github.event_name != 'pull_request'
         with:
-          name: production-${{ matrix.service }}-${{ github.sha }}
+          name: production-${{ matrix.service }}${{ matrix.arch == 'arm64' && '-arm64' || '' }}-${{ github.sha }}
           overwrite: true
           path: bin/
           if-no-files-found: error

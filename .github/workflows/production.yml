@@ -209,17 +209,6 @@ jobs:
           pattern: production-*-${{ github.sha }}
           merge-multiple: true
           path: ${{ runner.temp }}/loyal-release
-      - name: Verify the exact artifacts before using production access
-        run: |
-          cd "$LOYAL_DEPLOY_ARTIFACT_DIR"
-          python3 - <<'PYTHON'
-          import json, os, subprocess
-          services = json.loads(os.environ['SERVICES'])
-          workers = {'backyard', 'earn-max', 'retail', 'observer', 'telegram'}
-          manifests = sorted({('workers' if service in workers else service) + '-SHA256SUMS' for service in services})
-          subprocess.run(['sha256sum', '-c', *manifests], check=True)
-          PYTHON
-          chmod 0555 loyal-*
       - name: Install private network tools
         timeout-minutes: 5
         run: |
@@ -253,6 +242,8 @@ jobs:
           eval "$(ssh-agent -s)" >/dev/null
           printf '%s\n' "$DEPLOY_KEY" | ssh-add - >/dev/null 2>&1
           printf 'SSH_AUTH_SOCK=%s\nSSH_AGENT_PID=%s\n' "$SSH_AUTH_SOCK" "$SSH_AGENT_PID" >> "$GITHUB_ENV"
+      - name: Verify the exact artifacts for the host's architecture
+        run: python3 scripts/production-rollout.py "$GITHUB_SHA" --services-json "$SERVICES" --verify-artifacts
       - name: Preflight, deploy and observe each service
         run: python3 scripts/production-rollout.py "$GITHUB_SHA" --services-json "$SERVICES"
       - name: Remove deployment access

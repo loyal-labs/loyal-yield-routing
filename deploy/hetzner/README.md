@@ -119,6 +119,11 @@ must agree with the host, and is how a `LOYAL_DEPLOY_DRY_RUN` names the target
 without asking it. With `LOYAL_DEPLOY_ARTIFACT_DIR` set, an arm64 host takes
 its binaries from `$LOYAL_DEPLOY_ARTIFACT_DIR/arm64/`, which the CI artifacts
 carry beside the amd64 ones at the root.
+`scripts/production-rollout.py` follows the same rule through this script's
+`goarch_of`: it checks that directory's `*-SHA256SUMS` manifests and copies
+from it. The arm64 web, admin and stats artifacts are
+`production-<service>-arm64-<sha>` and realtime's is
+`production-realtime-arm64-<sha>`, each with its files under `arm64/`.
 
 Engine: it builds `make release` from a `git archive` snapshot of the commit
 in a fresh `~/.loyal/deploy-build.*` dir, uploads the binary and
