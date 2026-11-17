@@ -402,6 +402,24 @@ ensure_schema() {
   on "$DST_SSH" "$restore"
 }
 
+# pg_dump leaves out a NOT NULL constraint's name when it looks like the default one, and the
+# restore then picks a free name in the schema. Where another table already holds that name
+# (trades_* copied from wallet_swaps), the target gets wallet_swaps_id_not_null1, and a later
+# migration that names the constraint fails there. Rename the target's to the source's.
+NN_NAMES="select format('%I.%I', n.nspname, c.relname) || '|' || a.attname || '|' || k.conname from pg_constraint k join pg_class c on c.oid = k.conrelid join pg_namespace n on n.oid = c.relnamespace join pg_attribute a on a.attrelid = k.conrelid and a.attnum = k.conkey[1] where k.contype = 'n' and $NS"
+
+ensure_constraint_names() {
+  local db=$1 table col name sql='' n=0
+  local -A want=()
+  while IFS='|' read -r table col name; do [[ -n $table ]] && want[$table|$col]=$name; done < <(q src "$db" "$NN_NAMES")
+  while IFS='|' read -r table col name; do
+    [[ -n $table && -n ${want[$table|$col]:-} && ${want[$table|$col]} != "$name" ]] || continue
+    sql+="ALTER TABLE $table RENAME CONSTRAINT $(ident "$name") TO $(ident "${want[$table|$col]}");"$'\n'
+    n=$((n + 1))
+  done < <(q dst "$db" "$NN_NAMES")
+  ((n == 0)) || apply dst "$db" "$sql" "dst $db: $n NOT NULL constraint(s) renamed to the source's names"
+}
+
 ensure_hypertables() {
   local db=$1 have table column interval
   has_ext src "$db" || return 0
@@ -426,6 +444,7 @@ cmd_init() {
     db=$(db_of "$spec")
     ensure_extensions "$db"
     ensure_schema "$db"
+    ensure_constraint_names "$db"
     ensure_hypertables "$db"
   done
   finish
