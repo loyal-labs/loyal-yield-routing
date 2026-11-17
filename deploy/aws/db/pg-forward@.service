@@ -1,0 +1,15 @@
+# One ssh -L forward per pgmove cluster: 127.0.0.1:FWD_PORT on this box reaches the source
+# cluster's unix socket on FWD_SSH. pgmove.sh subscribe writes /etc/pgmove/%i/forward.env.
+[Unit]
+Description=pgmove forward for %i to its source Postgres socket
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+EnvironmentFile=/etc/pgmove/%i/forward.env
+ExecStart=/usr/bin/ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o StreamLocalBindUnlink=yes -L 127.0.0.1:${FWD_PORT}:${FWD_SOCKET} ${FWD_SSH}
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
