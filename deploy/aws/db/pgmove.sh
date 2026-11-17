@@ -488,6 +488,13 @@ ensure_forward() {
   elif ! on "$DST_SSH" "systemctl is-active --quiet pg-forward@$CLUSTER" 2>/dev/null; then
     run "$DST_SSH" "systemctl enable --now pg-forward@$CLUSTER" "pg-forward@$CLUSTER started"
   fi
+  forward_wait "$DST_SSH" "$FWD_PORT"
+}
+
+forward_wait() {
+  ((DRY)) && return 0
+  on "$1" "for i in \$(seq 30); do (exec 3<>/dev/tcp/127.0.0.1/$2) 2>/dev/null && exit 0; sleep 1; done; exit 1" ||
+    die "pg-forward@$CLUSTER on $1 does not listen on 127.0.0.1:$2 after 30 s"
 }
 
 can_connect() {
