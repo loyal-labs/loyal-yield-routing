@@ -479,28 +479,33 @@ ensure_pgpass() {
 # once the reverse is armed -R binds 127.0.0.1:REV_PORT on the source box to the target socket,
 # so the source never holds a key for the target.
 ensure_forward() {
-  local env unit have
+  local env unit have restart=0
+  have=$(on "$DST_SSH" "cat $SECRETS/forward.env" 2>/dev/null || true)
   env=$(printf 'FWD_PORT=%s\nFWD_SOCKET=%s\nFWD_SSH=%s' "$FWD_PORT" "$SRC_SOCKET/.s.PGSQL.$SRC_PORT" "$SRC_SSH")
+  if [[ ${1:-} == rev || $have == *FWD_REV=* ]]; then env+=$(printf '\nFWD_REV="-R 127.0.0.1:%s:%s"' "$REV_PORT" "$DST_SOCKET/.s.PGSQL.$DST_PORT"); fi
   unit=$(cat "$HERE/pg-forward@.service")
-  have=$(on "$DST_SSH" "cat /etc/systemd/system/pg-forward@.service" 2>/dev/null || true)
-  if [[ $have != "$unit" ]]; then
+  if [[ $(on "$DST_SSH" "cat /etc/systemd/system/pg-forward@.service" 2>/dev/null || true) != "$unit" ]]; then
     put "$DST_SSH" /etc/systemd/system/pg-forward@.service 0644 root "$unit" "pg-forward@.service installed"
     run "$DST_SSH" "systemctl daemon-reload" "systemd reloaded"
+    restart=1
   fi
-  have=$(on "$DST_SSH" "cat $SECRETS/forward.env" 2>/dev/null || true)
   if [[ $have != "$env" ]]; then
-    put "$DST_SSH" "$SECRETS/forward.env" 0600 root "$env" "$SECRETS/forward.env: 127.0.0.1:$FWD_PORT to $SRC_SSH:$SRC_SOCKET"
+    put "$DST_SSH" "$SECRETS/forward.env" 0600 root "$env" "$SECRETS/forward.env: 127.0.0.1:$FWD_PORT to $SRC_SSH:$SRC_SOCKET$([[ $env == *FWD_REV=* ]] && echo ", and $SRC_SSH 127.0.0.1:$REV_PORT back to this box")"
+    restart=1
+  fi
+  if ((restart)); then
     run "$DST_SSH" "systemctl enable pg-forward@$CLUSTER && systemctl restart pg-forward@$CLUSTER" "pg-forward@$CLUSTER (re)started"
   elif ! on "$DST_SSH" "systemctl is-active --quiet pg-forward@$CLUSTER" 2>/dev/null; then
     run "$DST_SSH" "systemctl enable --now pg-forward@$CLUSTER" "pg-forward@$CLUSTER started"
   fi
   forward_wait "$DST_SSH" "$FWD_PORT"
+  [[ $env != *FWD_REV=* ]] || forward_wait "$SRC_SSH" "$REV_PORT"
 }
 
 forward_wait() {
   ((DRY)) && return 0
   on "$1" "for i in \$(seq 30); do (exec 3<>/dev/tcp/127.0.0.1/$2) 2>/dev/null && exit 0; sleep 1; done; exit 1" ||
-    die "pg-forward@$CLUSTER on $1 does not listen on 127.0.0.1:$2 after 30 s"
+    die "pg-forward@$CLUSTER: nothing listens on $1 127.0.0.1:$2 after 30 s"
 }
 
 can_connect() {
@@ -995,19 +1000,20 @@ ensure_dst_hba() {
 arm_reverse() {
   local spec db shape sub conn
   upstream_blockers "reverse replication"
-  [[ -n $REV_PORT ]] || blocked "$CLUSTER.conf sets no REV_PORT, the port of the pg-forward@ on the source box that reaches the target"
+  [[ -n $REV_PORT && -n $FWD_PORT ]] || blocked "$CLUSTER.conf sets no REV_PORT or FWD_PORT; pg-forward@$CLUSTER binds REV_PORT on the source box back to the target"
   ((blocks == 0 || DRY)) || finish
   ensure_repl_password
   ensure_repl_role dst
   ensure_dst_hba
   ensure_pgpass src "$REV_PORT"
+  ensure_forward rev
   for spec in "${DATABASES[@]}"; do
     db=$(db_of "$spec") shape=$(shape_of "$spec") sub=$(sub_name rev "$db")
     identity_blockers dst "$db" "$shape"
     ensure_publication dst "$db" "$shape" "$REV_PUB"
     [[ -n $(q src "$db" "select 1 from pg_subscription where subname = '$sub'") ]] && continue
     if ! can_connect src "$REV_PORT" "$db"; then
-      blocked "the source box does not reach the target as $REPL_ROLE on 127.0.0.1:$REV_PORT; start pg-forward@ there first"
+      blocked "the source box does not reach the target as $REPL_ROLE on 127.0.0.1:$REV_PORT through pg-forward@$CLUSTER"
       continue
     fi
     conn="host=127.0.0.1 port=$REV_PORT dbname=$db user=$REPL_ROLE passfile=$(src_passfile) application_name=$sub sslmode=disable"
