@@ -88,7 +88,7 @@ other() { if [[ $1 == src ]]; then echo dst; else echo src; fi; }
 state() { if ((DRY)); then return 0; fi; mkdir -p "$(dirname "$1")"; printf '%s\n' "$2" >"$1"; }
 
 # Every remote query rides one master connection per host. A new connection per query met the
-# source's sshd MaxStartups early drop on a public box and failed one query in about twenty.
+# source's sshd MaxStartups early drop on a public box and failed 14 of 159 hash queries.
 on() {
   if [[ $1 == local ]]; then bash -c "$2"; return; fi
   install -d -m 0700 /run/pgmove 2>/dev/null || true
