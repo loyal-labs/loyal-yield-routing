@@ -11,9 +11,23 @@ permissions:
 
 jobs:
   image:
-    runs-on: ubuntu-latest
+    # amd64 keeps the tag and artifact names the host rollout already reads;
+    # arm64 adds -arm64 to the tag and puts the binary under arm64/.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+            suffix: ''
+            dir: release
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            suffix: '-arm64'
+            dir: release/arm64
+    runs-on: ${{ matrix.runner }}
     env:
-      IMAGE: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-${{ github.sha }}
+      IMAGE: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-${{ github.sha }}${{ matrix.suffix }}
       PUBLISH: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' }}
     steps:
       - uses: actions/checkout@v4
@@ -30,16 +44,16 @@ jobs:
         with:
           context: .
           file: Dockerfile.light-workers
-          platforms: linux/amd64
+          platforms: linux/${{ matrix.arch }}
           push: ${{ env.PUBLISH == 'true' }}
           load: ${{ env.PUBLISH != 'true' }}
           tags: ${{ env.IMAGE }}
           build-args: LOYAL_IMAGE_VERSION=sha-${{ github.sha }}
           labels: org.opencontainers.image.revision=${{ github.sha }}
-          cache-from: type=gha,scope=realtime-image
-          cache-to: ${{ github.event_name == 'push' && 'type=gha,scope=realtime-image,mode=max' || '' }}
+          cache-from: type=gha,scope=realtime-image${{ matrix.suffix }}
+          cache-to: ${{ github.event_name == 'push' && format('type=gha,scope=realtime-image{0},mode=max', matrix.suffix) || '' }}
       - if: env.PUBLISH == 'true'
-        run: docker pull --platform linux/amd64 "$IMAGE"
+        run: docker pull --platform linux/${{ matrix.arch }} "$IMAGE"
       - name: Probe the realtime binary
         run: |
           docker image inspect "$IMAGE" | jq -e '.[0].Config.Cmd == ["/usr/local/bin/loyal-yield-realtime"]' >/dev/null
@@ -47,17 +61,20 @@ jobs:
             --entrypoint sh "$IMAGE" -c 'test -x /usr/local/bin/loyal-yield-realtime'
       - name: Extract the verified realtime binary
         if: env.PUBLISH == 'true'
+        env:
+          ARCH: ${{ matrix.arch }}
+          DIR: ${{ matrix.dir }}
         run: |
-          mkdir release
-          container=$(docker create "$IMAGE")
+          mkdir -p "$DIR"
+          container=$(docker create --platform "linux/$ARCH" "$IMAGE")
           trap 'docker rm "$container" >/dev/null' EXIT
-          docker cp "$container:/usr/local/bin/loyal-yield-realtime" release/
-          cd release
+          docker cp "$container:/usr/local/bin/loyal-yield-realtime" "$DIR/"
+          cd "$DIR"
           sha256sum loyal-yield-realtime > realtime-SHA256SUMS
       - uses: actions/upload-artifact@v4
         if: env.PUBLISH == 'true'
         with:
-          name: production-realtime-${{ github.sha }}
+          name: production-realtime${{ matrix.suffix }}-${{ github.sha }}
           overwrite: true
           path: release/
           if-no-files-found: error
