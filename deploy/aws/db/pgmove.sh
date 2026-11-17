@@ -821,7 +821,9 @@ hash_table() {
   else
     bexpr="(abs(hashtext(t.$key::text)::bigint) % $nb)"
   fi
-  sel() { echo "select $bexpr || '|' || count(*) || '|' || sum(('x' || left(md5(t::text), 16))::bit(64)::bigint::numeric) from $table t $1 group by $bexpr order by 1"; }
+  # The planner reads (key / bucket) as one group per row and sorts the whole table, which spilled
+  # past the source's temp_file_limit on 17.9M rows; the real buckets fit a hash table in memory.
+  sel() { echo "set enable_sort = off; select $bexpr || '|' || count(*) || '|' || sum(('x' || left(md5(t::text), 16))::bit(64)::bigint::numeric) from $table t $1 group by $bexpr order by 1"; }
   tmp=$(mktemp -d)
   q src "$db" "$(sel "$where")" >"$tmp/s" & s=$!
   q dst "$db" "$(sel "$where")" >"$tmp/d" & d=$!
