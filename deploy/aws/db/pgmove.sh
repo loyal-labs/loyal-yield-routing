@@ -797,6 +797,14 @@ hash_meta() {
   q "$FROM" "$1" "select format('%I.%I', n.nspname, c.relname) || '|' || coalesce((select string_agg(quote_ident(a.attname), ',' order by k.o) from pg_index i cross join unnest(i.indkey) with ordinality k(att, o) join pg_attribute a on a.attrelid = i.indrelid and a.attnum = k.att where i.indrelid = c.oid and i.indisprimary), '') || '|' || coalesce((select format_type(a.atttypid, null) from pg_index i join pg_attribute a on a.attrelid = i.indrelid and a.attnum = i.indkey[0] where i.indrelid = c.oid and i.indisprimary), '') || '|' || greatest(1, ceil(greatest(c.reltuples, 0) / $HASH_BUCKET))::bigint from pg_class c join pg_namespace n on n.oid = c.relnamespace where c.relkind = 'r' and $NS order by 1"
 }
 
+# Both sides must answer: an empty side would compare as zero buckets and pass.
+hash_wait() {
+  local rs=0 rd=0
+  wait "$3" || rs=$?
+  wait "$4" || rd=$?
+  ((rs == 0 && rd == 0)) || die "hash: $1 $2: the $( ((rs)) && echo source)$( ((rs && rd)) && echo ' and ')$( ((rd)) && echo target) query failed (exit $rs/$rd); nothing was compared"
+}
+
 hash_table() {
   local db=$1 table=$2 pk=$3 type=$4 nb=$5 bexpr where='' key tmp b n bad s d lo sc ss dc ds
   key=${pk%%,*}
@@ -813,7 +821,7 @@ hash_table() {
   tmp=$(mktemp -d)
   q src "$db" "$(sel "$where")" >"$tmp/s" & s=$!
   q dst "$db" "$(sel "$where")" >"$tmp/d" & d=$!
-  wait $s && wait $d
+  hash_wait "$db" "$table" $s $d
   bad=$(join -t'|' -a1 -a2 -e- -o 0,1.2,1.3,2.2,2.3 <(sort -t'|' -k1,1 "$tmp/s") <(sort -t'|' -k1,1 "$tmp/d") | awk -F'|' '$2 != $4 || $3 != $5 { print $1 }' | paste -sd, -)
   n=$(wc -l <"$tmp/s" | tr -d ' ')
   if [[ -n $bad ]]; then
@@ -828,7 +836,7 @@ hash_table() {
     fi
     q src "$db" "$(sel "$where")" >"$tmp/s" & s=$!
     q dst "$db" "$(sel "$where")" >"$tmp/d" & d=$!
-    wait $s && wait $d
+    hash_wait "$db" "$table" $s $d
     while IFS='|' read -r b sc ss dc ds; do
       [[ $sc == "$dc" && $ss == "$ds" ]] || diff_row "$db $table bucket $b: src $sc rows, dst $dc rows, sums differ twice $HASH_RECHECK_SECS s apart"
     done < <(join -t'|' -a1 -a2 -e- -o 0,1.2,1.3,2.2,2.3 <(sort -t'|' -k1,1 "$tmp/s") <(sort -t'|' -k1,1 "$tmp/d"))
