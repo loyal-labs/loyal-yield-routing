@@ -22,7 +22,7 @@ clusters: $(for f in "$HERE"/clusters/*.conf; do basename "$f" .conf; done | pas
   hash <c> [table] [--age]     md5 per row, summed per 1M-key bucket; differing buckets hashed a second time
   verify <c> [--reverse]       tables, sequences, hypertables, schema, grants and hash age
   fence <c> [--reverse]        login roles NOLOGIN on the side being left, sessions ended, slots caught up
-  switch <c> [--reverse]       catchup, sequences, subscriptions off, reverse armed, login roles LOGIN on the side taking over
+  switch <c> [--reverse]       catchup, sequences, subscriptions off, the other direction armed or resumed, login roles LOGIN on the side taking over
   reverse <c> [--dry-run]      reverse publication on the target, reverse subscription on the source (copy_data=false)
   retire <c> [--force]         after REVERSE_HOURS: both directions, their slots, the freeze marker and the forward go
   writes <c> save|diff <tag> src|dst   write counters per table
@@ -592,7 +592,7 @@ cmd_subscribe() {
       break
     fi
     ensure_publication src "$db" "$shape" "$PUB"
-    apply dst "$db" "CREATE SUBSCRIPTION $sub CONNECTION $(lit "$conn") PUBLICATION $PUB WITH (binary = $BINARY, streaming = on, copy_data = true, disable_on_error = false);" \
+    apply dst "$db" "CREATE SUBSCRIPTION $sub CONNECTION $(lit "$conn") PUBLICATION $PUB WITH (binary = $BINARY, streaming = on, copy_data = true, origin = none, disable_on_error = false);" \
       "dst $db: subscription $sub (slot $sub on the source), $SYNC_WORKERS sync workers"
   done
   ((DRY == 0)) || echo "dry run: in a real run each database subscribes only once every table of the one before is in state r"
@@ -963,6 +963,16 @@ sub_set() {
   if [[ $want == t ]]; then apply "$side" "$db" "ALTER SUBSCRIPTION $sub ENABLE;" "$side $db: $sub enabled"; else apply "$side" "$db" "ALTER SUBSCRIPTION $sub DISABLE;" "$side $db: $sub disabled"; fi
 }
 
+# A resumed direction must skip the rows the other one applied while it was paused, or it sends
+# them back and stops on their keys.
+sub_resume() {
+  local side=$1 db=$2 sub=$3
+  [[ -n $(q "$side" "$db" "select 1 from pg_subscription where subname = '$sub'") ]] || return 0
+  [[ $(q "$side" "$db" "select suborigin from pg_subscription where subname = '$sub'") == none ]] ||
+    apply "$side" "$db" "ALTER SUBSCRIPTION $sub SET (origin = none);" "$side $db: $sub skips rows the other direction applied"
+  sub_set "$side" "$db" "$sub" t
+}
+
 cmd_switch() {
   local role spec db table
   upstream_blockers "the switch"
@@ -975,7 +985,12 @@ cmd_switch() {
   sync_sequences
   for spec in "${DATABASES[@]}"; do
     db=$(db_of "$spec")
-    if ((REVERSE)); then sub_set src "$db" "$(sub_name rev "$db")" f; else sub_set dst "$db" "$(sub_name fwd "$db")" f; fi
+    if ((REVERSE)); then
+      sub_set src "$db" "$(sub_name rev "$db")" f
+      sub_resume dst "$db" "$(sub_name fwd "$db")"
+    else
+      sub_set dst "$db" "$(sub_name fwd "$db")" f
+    fi
   done
   if ((REVERSE == 0)); then
     for table in ${HYPERTABLES[@]+"${HYPERTABLES[@]}"}; do
@@ -1011,7 +1026,10 @@ arm_reverse() {
     db=$(db_of "$spec") shape=$(shape_of "$spec") sub=$(sub_name rev "$db")
     identity_blockers dst "$db" "$shape"
     ensure_publication dst "$db" "$shape" "$REV_PUB"
-    [[ -n $(q src "$db" "select 1 from pg_subscription where subname = '$sub'") ]] && continue
+    if [[ -n $(q src "$db" "select 1 from pg_subscription where subname = '$sub'") ]]; then
+      sub_resume src "$db" "$sub"
+      continue
+    fi
     if ! can_connect src "$REV_PORT" "$db"; then
       blocked "the source box does not reach the target as $REPL_ROLE on 127.0.0.1:$REV_PORT through pg-forward@$CLUSTER"
       continue
