@@ -459,19 +459,25 @@ ensure_repl_role() {
   [[ $res == same ]] || apply "$side" postgres "ALTER ROLE $REPL_ROLE PASSWORD $(lit "$res");" "$side: $REPL_ROLE password set from $SECRETS/repl.password as a SCRAM verifier"
 }
 
+# The source cluster's server runs as an OS user that may have no home (robinx-test has
+# /nonexistent and ProtectHome=true), so its reverse subscription names this file in passfile=.
+src_passfile() { echo "$SECRETS/pgpass"; }
+
 ensure_pgpass() {
   local side=$1 port=$2 host user pw line f
   host=$(host_of "$side")
-  if [[ $side == src ]]; then user=$SRC_OSUSER; else user=$DST_OSUSER; fi
-  f="\$(getent passwd $user | cut -d: -f6)/.pgpass"
+  if [[ $side == src ]]; then user=$SRC_OSUSER f=$(src_passfile); else user=$DST_OSUSER f="\$(getent passwd $user | cut -d: -f6)/.pgpass"; fi
   pw=$(repl_password)
   line="127.0.0.1:$port:*:$REPL_ROLE:$pw"
   if [[ -n $pw ]] && printf '%s\n' "$line" | on "$host" "test -f $f && grep -qxF -f /dev/stdin $f" 2>/dev/null; then return 0; fi
-  changed "$side: $user's .pgpass holds $REPL_ROLE for 127.0.0.1:$port"
-  if ((DRY)); then printf '  on %s: replace the 127.0.0.1:%s line of ~%s/.pgpass with 127.0.0.1:%s:*:%s:***\n' "$host" "$port" "$user" "$port" "$REPL_ROLE"; return 0; fi
-  printf '%s\n' "$line" | on "$host" "f=$f; umask 077; { grep -v '^127\\.0\\.0\\.1:$port:' \$f 2>/dev/null || true; cat; } >\$f.new && chown $user: \$f.new && mv -f \$f.new \$f"
+  changed "$side: $user's passfile holds $REPL_ROLE for 127.0.0.1:$port"
+  if ((DRY)); then printf '  on %s: replace the 127.0.0.1:%s line of %s with 127.0.0.1:%s:*:%s:***\n' "$host" "$port" "$f" "$port" "$REPL_ROLE"; return 0; fi
+  printf '%s\n' "$line" | on "$host" "f=$f; $([[ $side == src ]] && echo "install -d -m 0755 $SECRETS;") umask 077; { grep -v '^127\\.0\\.0\\.1:$port:' \$f 2>/dev/null || true; cat; } >\$f.new && chown $user: \$f.new && mv -f \$f.new \$f"
 }
 
+# One ssh session from the target carries both directions: -L reaches the source socket, and
+# once the reverse is armed -R binds 127.0.0.1:REV_PORT on the source box to the target socket,
+# so the source never holds a key for the target.
 ensure_forward() {
   local env unit have
   env=$(printf 'FWD_PORT=%s\nFWD_SOCKET=%s\nFWD_SSH=%s' "$FWD_PORT" "$SRC_SOCKET/.s.PGSQL.$SRC_PORT" "$SRC_SSH")
@@ -499,9 +505,10 @@ forward_wait() {
 
 can_connect() {
   local side=$1 port=$2 db=$3 user
-  if [[ $side == src ]]; then user=$SRC_OSUSER; else user=$DST_OSUSER; fi
+  local pass=''
+  if [[ $side == src ]]; then user=$SRC_OSUSER pass=" passfile=$(src_passfile)"; else user=$DST_OSUSER; fi
   ((DRY)) && return 0
-  on "$(host_of "$side")" "sudo -n -u $user psql $(printf %q "host=127.0.0.1 port=$port dbname=$db user=$REPL_ROLE sslmode=disable connect_timeout=10") -XAtqc 'select 1'" >/dev/null 2>&1
+  on "$(host_of "$side")" "sudo -n -u $user psql $(printf %q "host=127.0.0.1 port=$port dbname=$db user=$REPL_ROLE sslmode=disable connect_timeout=10$pass") -XAtqc 'select 1'" >/dev/null 2>&1
 }
 
 ensure_marker() {
@@ -1003,7 +1010,7 @@ arm_reverse() {
       blocked "the source box does not reach the target as $REPL_ROLE on 127.0.0.1:$REV_PORT; start pg-forward@ there first"
       continue
     fi
-    conn="host=127.0.0.1 port=$REV_PORT dbname=$db user=$REPL_ROLE application_name=$sub sslmode=disable"
+    conn="host=127.0.0.1 port=$REV_PORT dbname=$db user=$REPL_ROLE passfile=$(src_passfile) application_name=$sub sslmode=disable"
     apply src "$db" "CREATE SUBSCRIPTION $sub CONNECTION $(lit "$conn") PUBLICATION $REV_PUB WITH (copy_data = false, binary = $BINARY, streaming = on, origin = none, disable_on_error = false);" \
       "src $db: reverse subscription $sub (slot $sub on the target), copy_data=false"
   done
