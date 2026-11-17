@@ -368,7 +368,7 @@ ensure_schema() {
   [[ $(q src "$db" "$USER_OBJECTS") != 0 ]] || return 0
   local fetch restore
   fetch="$(src_dump "$db" "--schema-only -Fc --no-publications --no-subscriptions --exclude-schema='_timescaledb*' --exclude-schema='timescaledb_*'")"
-  restore="pg_restore -l $dump | grep -v -E ' EXTENSION - | COMMENT - EXTENSION ' >$list && pg_restore -L $list -f - $dump | $(psql_cmd dst rw "$db" --single-transaction) >/dev/null"
+  restore="/usr/lib/postgresql/$PG_MAJOR/bin/pg_restore -l $dump | grep -v -E ' EXTENSION - | COMMENT - EXTENSION ' >$list && /usr/lib/postgresql/$PG_MAJOR/bin/pg_restore -L $list -f - $dump | $(psql_cmd dst rw "$db" --single-transaction) >/dev/null"
   changed "$db: schema restored from the source with owners and grants (pg_dump --schema-only)"
   if ((DRY)); then
     printf '  on %s: %s, stdout to %s on this box\n' "$SRC_SSH" "$fetch" "$dump"
