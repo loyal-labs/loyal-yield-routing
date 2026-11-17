@@ -212,6 +212,8 @@ packages_step() {
   put 0644 /etc/default/prometheus-node-exporter <<<'ARGS="--web.listen-address=127.0.0.1:9100 --collector.systemd --collector.systemd.unit-include=(loyal|xstock)-.+\.service --collector.systemd.enable-restarts-metrics --collector.textfile.directory=/var/lib/prometheus/node-exporter"'
 
   apt_any curl git jq rsync nftables iptables wireguard-tools sqlite3 apt-transport-https fio openssl wget
+  apt_pin libc6=2.39-0ubuntu8.12 libc-bin=2.39-0ubuntu8.12
+  apt_pin postgresql-client-16=16.15-0ubuntu0.24.04.1
   apt_pin \
     postgresql-common=293.pgdg24.04+1 postgresql-client-common=293.pgdg24.04+1 \
     libpq5="$PG_VER" postgresql-client-18="$PG_VER"
