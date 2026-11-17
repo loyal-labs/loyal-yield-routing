@@ -147,15 +147,21 @@ jobs:
         run: |
           mkdir -p bin
           mapfile -t binaries < <(python3 -c 'import json,os; print("\n".join(sorted({"loyal-engine" if x in ("backyard", "earn-max", "retail") else "loyal-"+x for x in json.loads(os.environ["SERVICES"])})))')
-          for binary in "${binaries[@]}"; do
-            stamp=engine.Release
-            if [ "$binary" = loyal-telegram ]; then stamp=webserve.stamp; fi
-            CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
-              -ldflags "-s -w -X github.com/loyal-labs/loyal-yield-routing/go/workers/internal/$stamp=sha-$GITHUB_SHA" \
-              -o "bin/$binary" "./cmd/$binary"
+          # amd64 sits at the artifact root; deploy-workers.sh picks another
+          # architecture's binaries from a directory named for it.
+          for goarch in amd64 arm64; do
+            out=bin
+            if [ "$goarch" != amd64 ]; then out=bin/$goarch; fi
+            mkdir -p "$out"
+            for binary in "${binaries[@]}"; do
+              stamp=engine.Release
+              if [ "$binary" = loyal-telegram ]; then stamp=webserve.stamp; fi
+              CGO_ENABLED=0 GOOS=linux GOARCH=$goarch go build -trimpath \
+                -ldflags "-s -w -X github.com/loyal-labs/loyal-yield-routing/go/workers/internal/$stamp=sha-$GITHUB_SHA" \
+                -o "$out/$binary" "./cmd/$binary"
+            done
+            (cd "$out" && sha256sum "${binaries[@]}" > workers-SHA256SUMS)
           done
-          cd bin
-          sha256sum "${binaries[@]}" > workers-SHA256SUMS
       - uses: actions/upload-artifact@v4
         if: github.event_name != 'pull_request'
         with:
@@ -169,7 +175,18 @@ jobs:
     if: inputs.engine
     # This job only builds and probes a local CI image. No registry credentials,
     # publishing, production environment or deployment permission is granted.
-    runs-on: ubuntu-24.04
+    # Each architecture builds and probes natively on its own runner.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+            suffix: ''
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            suffix: '-arm64'
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -185,8 +202,8 @@ jobs:
           path: |
             image-go-build
             image-go-mod
-          key: workers-image-go-${{ hashFiles('go/workers/go.sum') }}-${{ github.sha }}
-          restore-keys: workers-image-go-${{ hashFiles('go/workers/go.sum') }}-
+          key: workers-image-go${{ matrix.suffix }}-${{ hashFiles('go/workers/go.sum') }}-${{ github.sha }}
+          restore-keys: workers-image-go${{ matrix.suffix }}-${{ hashFiles('go/workers/go.sum') }}-
       - name: Restore and save the image's Go caches
         if: github.event_name == 'push'
         uses: actions/cache@v4
@@ -194,8 +211,8 @@ jobs:
           path: |
             image-go-build
             image-go-mod
-          key: workers-image-go-${{ hashFiles('go/workers/go.sum') }}-${{ github.sha }}
-          restore-keys: workers-image-go-${{ hashFiles('go/workers/go.sum') }}-
+          key: workers-image-go${{ matrix.suffix }}-${{ hashFiles('go/workers/go.sum') }}-${{ github.sha }}
+          restore-keys: workers-image-go${{ matrix.suffix }}-${{ hashFiles('go/workers/go.sum') }}-
       - name: Mount the Go caches into the build
         uses: reproducible-containers/buildkit-cache-dance@v3.4.0
         with:
@@ -210,13 +227,13 @@ jobs:
         with:
           context: .
           file: go/workers/Dockerfile
-          platforms: linux/amd64
+          platforms: linux/${{ matrix.arch }}
           build-args: LOYAL_IMAGE_VERSION=sha-${{ github.sha }}
           tags: loyal-workers-v2:verification
           push: false
           load: true
-          cache-from: type=gha,scope=workers-v2-image
-          cache-to: type=gha,mode=min,scope=workers-v2-image
+          cache-from: type=gha,scope=workers-v2-image${{ matrix.suffix }}
+          cache-to: type=gha,mode=min,scope=workers-v2-image${{ matrix.suffix }}
       - name: Probe all Go roles with network and writers unavailable
         run: |
           for role in loyal-engine loyal-observer loyal-evidence; do

@@ -41,6 +41,15 @@ build_web_release() {
 }
 
 host=${LOYAL_WORKERS_SSH:-loyal-workers}
+# The release architecture is the target's: LOYAL_DEPLOY_GOARCH, else what the
+# host says its machine is.
+goarch_of() {
+  case $1 in
+    x86_64 | amd64) goarch=amd64 ;;
+    aarch64 | arm64) goarch=arm64 ;;
+    *) echo "$host reports machine '$1'; set LOYAL_DEPLOY_GOARCH=amd64 or arm64" >&2; exit 1 ;;
+  esac
+}
 unit=loyal-$family
 dropin=/etc/systemd/system/$unit.service.d/40-verified-release.conf
 releases=/opt/loyal/releases/$family
@@ -131,7 +140,14 @@ if [[ $web_family == yes && ${LOYAL_DEPLOY_DRY_RUN:-} == 1 ]]; then
   trap 'git worktree remove --force "$build/src" >/dev/null 2>&1 || true; rm -rf "$build"' EXIT
   git worktree add --detach --quiet "$build/src" "$sha"
   (cd "$build/src/web" && bun install --frozen-lockfile >/dev/null)
-  build_web_release amd64
+  if [[ -n ${LOYAL_DEPLOY_GOARCH:-} ]]; then
+    goarch_of "$LOYAL_DEPLOY_GOARCH"
+  else
+    machine=$(ssh -o BatchMode=yes -o ConnectTimeout=10 "$host" uname -m) ||
+      { echo "Cannot ask $host for its architecture; set LOYAL_DEPLOY_GOARCH=amd64 or arm64" >&2; exit 1; }
+    goarch_of "$machine"
+  fi
+  build_web_release "$goarch"
   sum=$(shasum -a 256 "$binary" | cut -d' ' -f1)
   echo "built $binary_name sha256 $sum"
   found=$(LC_ALL=C strings "$binary" 2>/dev/null | grep -a -m1 -o ".\{0,40\}$sha.\{0,40\}" || true)
@@ -140,7 +156,7 @@ if [[ $web_family == yes && ${LOYAL_DEPLOY_DRY_RUN:-} == 1 ]]; then
   else
     echo "no release string in the binary: the -X main.stamp linker stamp (server lane) must land first; the real deploy refuses a binary without $sha" >&2
   fi
-  echo "dry run ok: stopping before any ssh to $host"
+  echo "dry run ok: stopping before any change on $host"
   exit 0
 fi
 
@@ -160,11 +176,15 @@ if [[ $uid != 0 ]]; then
   echo "$host logs in as uid $uid; the deploy needs root" >&2
   exit 1
 fi
-case $arch in
-  x86_64) goarch=amd64 ;;
-  aarch64) goarch=arm64 ;;
-  *) echo "unsupported host architecture $arch" >&2; exit 1 ;;
-esac
+goarch_of "$arch"
+if [[ -n ${LOYAL_DEPLOY_GOARCH:-} ]]; then
+  want=$goarch
+  goarch_of "$LOYAL_DEPLOY_GOARCH"
+  if [[ $goarch != "$want" ]]; then
+    echo "LOYAL_DEPLOY_GOARCH=$LOYAL_DEPLOY_GOARCH but $host is $arch" >&2
+    exit 1
+  fi
+fi
 running=$(sed -n "s|^ExecStart=$releases/\([0-9a-f]\{40\}\)/$binary_name\$|\1|p" <<<"$facts")
 if [[ ${#running} -ne 40 ]]; then
   echo "cannot read the running release from $host:$dropin" >&2
@@ -257,9 +277,10 @@ fi
 
 if [[ $running != "$sha" || $mode == stopped ]]; then
   if [[ -n ${LOYAL_DEPLOY_ARTIFACT_DIR:-} ]]; then
-    [[ $goarch == amd64 ]] || { echo "CI artifacts require an amd64 host" >&2; exit 1; }
-    binary=$LOYAL_DEPLOY_ARTIFACT_DIR/$binary_name
-    [[ -f $binary ]] || { echo "missing verified artifact $binary_name" >&2; exit 1; }
+    artifacts=$LOYAL_DEPLOY_ARTIFACT_DIR
+    [[ $goarch == amd64 ]] || artifacts=$artifacts/$goarch
+    binary=$artifacts/$binary_name
+    [[ -f $binary ]] || { echo "missing verified $goarch artifact $binary_name" >&2; exit 1; }
     LC_ALL=C grep -qa "$sha" "$binary" || { echo "artifact does not carry $sha" >&2; exit 1; }
     sum=$(shasum -a 256 "$binary" | cut -d' ' -f1)
     echo "using verified $binary_name $sha sha256 $sum"

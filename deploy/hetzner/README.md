@@ -113,6 +113,13 @@ them first, then rerun with `--migrations-applied`. It has two steps, the
 engine and then the rules; a target that already runs (and is active) gets
 only the rules step, so rerunning a deploy retries a failed rules install.
 
+The release architecture is the host's: `uname -m` over that alias
+(`x86_64` is amd64, `aarch64` is arm64). `LOYAL_DEPLOY_GOARCH=amd64|arm64`
+must agree with the host, and is how a `LOYAL_DEPLOY_DRY_RUN` names the target
+without asking it. With `LOYAL_DEPLOY_ARTIFACT_DIR` set, an arm64 host takes
+its binaries from `$LOYAL_DEPLOY_ARTIFACT_DIR/arm64/`, which the CI artifacts
+carry beside the amd64 ones at the root.
+
 Engine: it builds `make release` from a `git archive` snapshot of the commit
 in a fresh `~/.loyal/deploy-build.*` dir, uploads the binary and
 `activate.sh` from that snapshot to `/opt/loyal/releases/<family>/<sha>/`,
@@ -250,6 +257,8 @@ those binaries, the cloud firewall must keep port 10000 closed.
 ### Extract and install a binary
 
 ```sh
+# The host's architecture is `uname -m`: x86_64 is linux/amd64 and the plain
+# tag; aarch64 is linux/arm64 and the tag with `-arm64` after the commit.
 IMG=ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-<commit>
 docker pull --platform linux/amd64 "$IMG"
 docker image inspect --format '{{index .RepoDigests 0}}' "$IMG"   # record the digest
@@ -662,7 +671,7 @@ Values are never echoed. The deploy always sets `NEXT_PUBLIC_GIT_COMMIT_HASH=<sh
 git worktree add --detach /tmp/loyal-web-install <sha>
 cd /tmp/loyal-web-install/web && bun install --frozen-lockfile && cd ..
 op run --env-file=.env.1password -- env \
-  GOOS=linux GOARCH=amd64 CGO_ENABLED=0 GOFLAGS=-ldflags=-X=main.stamp=<sha> \
+  GOOS=linux GOARCH=<amd64|arm64> CGO_ENABLED=0 GOFLAGS=-ldflags=-X=main.stamp=<sha> \
   sh scripts/web/build.sh /tmp/loyal-web-bin
 grep -qa <sha> /tmp/loyal-web-bin   # the binary must carry the sha
 cd - >/dev/null   # leave the worktree before removing it
