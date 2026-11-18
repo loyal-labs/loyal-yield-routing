@@ -5,6 +5,8 @@ set -uo pipefail
 
 DIR=$(cd "$(dirname "$0")/.." && pwd)
 DB=$DIR/db
+# S4_OLD and S4_NEW point the steps at stub hosts; the handback deletes on NEW, so they count only with S4_TEST set.
+if [[ -n ${S4_OLD:-}${S4_NEW:-} && -z ${S4_TEST:-} ]]; then echo "s4-loyal: S4_OLD and S4_NEW are for stubs; set S4_TEST=1 to use them" >&2; exit 2; fi
 OLD=${S4_OLD:-loyal-workers}
 NEW=${S4_NEW:-loyal-main}
 ART=/Users/user/loyal/artifacts
@@ -93,10 +95,16 @@ ci_key_line() {
   printf '%s\n' "$line"
 }
 ci_key_count() { new "grep -cE '$CI_KEY_RE' /root/.ssh/authorized_keys || true"; }
+# Idempotent: one line already there that is the one on $OLD counts as installed; none is appended; any other state fails.
 ci_key_install() {
-  local line n
+  local line n have
   line=$(ci_key_line) || return 1
   n=$(ci_key_count) || return 1
+  if [[ $n == 1 ]]; then
+    have=$(new "grep -E '$CI_KEY_RE' /root/.ssh/authorized_keys") || return 1
+    [[ $have == "$line" ]]
+    return
+  fi
   [[ $n == 0 ]] || return 1
   printf '%s\n' "$line" | new "f=/root/.ssh/authorized_keys; [ -z \"\$(tail -c1 \$f)\" ] || echo >>\$f; cat >>\$f" || return 1
   [[ $(ci_key_count) == 1 ]]
