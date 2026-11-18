@@ -190,14 +190,20 @@ record_boot() {
 }
 
 # ran_before <old|src> <units>: those of the units record_boot found running there. With no running
-# list (a freeze by a tool older than it, or none recorded) every unit named, as such a freeze left them.
+# list, a freeze stopped there before recording one (an older tool) or never stopped anything: the
+# units enabled there now, after restore_boot, as boot state and run state match outside a freeze.
 ran_before() {
   local side=$1 have u
   have=$(on "$BOX" "if test -e $STATE/boot-$side.active; then echo yes; grep -v '^#' $STATE/boot-$side.active | paste -sd' ' -; else echo no; fi") || die "$BOX did not answer for $STATE/boot-$side.active"
   if [[ ${have%%$'\n'*} != yes ]]; then
     [[ $have == no ]] || die "$BOX answered '$have' for $STATE/boot-$side.active"
-    echo "$side: no running list in $STATE/boot-$side.active; every configured unit starts" >&2
-    echo "$2"
+    echo "$side: no running list in $STATE/boot-$side.active; the units enabled there start" >&2
+    if [[ $side == old ]]; then
+      on "$CUT_OLD" "for u in $2; do [ \"\$(systemctl show -p UnitFileState --value \$u)\" != enabled ] || printf '%s ' \$u; done" || die "$CUT_OLD did not answer for its enabled units"
+    else
+      on_src "for u in $2; do [ \"\$(systemctl show -p UnitFileState --value \$u)\" != enabled ] || printf '%s ' \$u; done" || die "the source did not answer for its enabled units"
+    fi
+    echo
     return 0
   fi
   have=${have#yes}
