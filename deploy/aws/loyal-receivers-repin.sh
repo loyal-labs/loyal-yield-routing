@@ -45,7 +45,7 @@ OBS=/opt/loyal-observer-monitor/observer-monitor/push/private-tls/transport.py
 changed() { echo "changed: $*"; }
 keep() { [ -e "$1.pre-repin" ] || cp -p "$1" "$1.pre-repin"; }
 
-if ! openssl x509 -in $E/monitor-server.pem -noout -ext subjectAltName 2>/dev/null | grep -q 'IP Address:127\.0\.0\.1'; then
+if ! openssl x509 -in $E/monitor-server.pem -noout -ext subjectAltName 2>/dev/null | grep 'IP Address:127\.0\.0\.1' >/dev/null; then
   t=$(mktemp -d -p /dev/shm)
   trap 'shred -u "$t"/ca.key 2>/dev/null || true; rm -r "$t"' EXIT
   umask 077

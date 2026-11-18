@@ -56,7 +56,7 @@ if [[ $mode == delta ]]; then
   exit 0
 fi
 
-if [[ $mode == final ]] && as_root "$OLD" docker ps -q --filter "name=^${CONTAINER}$" | grep -q .; then
+if [[ $mode == final ]] && as_root "$OLD" docker ps -q --filter "name=^${CONTAINER}$" | grep . >/dev/null; then
   echo "refusing: $CONTAINER is running on $OLD; stop it first (the S4 window does)" >&2
   exit 1
 fi

@@ -64,11 +64,11 @@ fi
 
 for s in "$@"; do
   dir=$(dirname "$s")
-  if ! getfacl -p "$dir" 2>/dev/null | grep -qx "user:$user:--x"; then
+  if ! getfacl -p "$dir" 2>/dev/null | grep -x "user:$user:--x" >/dev/null; then
     setfacl -m "u:$user:--x" "$dir"
     changed "$dir: $user may traverse"
   fi
-  if ! getfacl -p "$s" 2>/dev/null | grep -qx "user:$user:rw-"; then
+  if ! getfacl -p "$s" 2>/dev/null | grep -x "user:$user:rw-" >/dev/null; then
     setfacl -m "u:$user:rw" "$s"
     changed "$s: $user may connect"
   fi

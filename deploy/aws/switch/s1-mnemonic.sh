@@ -334,7 +334,7 @@ new_static() {
   check binary new "
     f=\$(file -b /usr/local/bin/mnemonic)
     case \$f in *'ELF 64-bit'*aarch64*) ;; *) echo \"\$f\"; exit 1;; esac
-    /usr/local/bin/mnemonic 2>&1 | grep -q '^usage: mnemonic' || { echo 'does not run'; exit 1; }
+    /usr/local/bin/mnemonic 2>&1 | grep '^usage: mnemonic' >/dev/null || { echo 'does not run'; exit 1; }
     echo \"aarch64, runs, sha256 \$(sha256sum /usr/local/bin/mnemonic | cut -c1-16)\""
   check units-verify new "sudo -n systemd-analyze verify mnemonic.service cloudflared-mnemonic.service 2>&1 && echo 'verify rc=0'"
   check slice new "
@@ -480,7 +480,7 @@ cmd_switch() {
 start_new_units() { # the units are started, never enabled: a power-on of the box cannot start a store
   # shellcheck disable=SC2016
   new 'for u in mnemonic cloudflared-mnemonic; do sudo -n systemctl disable $u >/dev/null 2>&1 || true; systemctl is-enabled -q $u 2>/dev/null && { echo "$u is still enabled at boot"; exit 1; }; done
-    sudo -n systemctl start mnemonic && for i in $(seq 1 60); do ss -ltn | grep -q ":8742 " && exit 0; sleep 1; done; echo "mnemonic is not listening on 8742"; exit 1' ||
+    sudo -n systemctl start mnemonic && for i in $(seq 1 60); do ss -ltn | grep ":8742 " >/dev/null && exit 0; sleep 1; done; echo "mnemonic is not listening on 8742"; exit 1' ||
     die "new mnemonic did not come up; run $0 back --go"
   new 'sudo -n systemctl start cloudflared-mnemonic' || die "new cloudflared did not start; run $0 back --go"
 }
