@@ -269,8 +269,12 @@ cd /
 ts=$(date -u +%Y%m%dT%H%M%SZ) n=0
 changed() { n=$((n + 1)); echo "changed: $*"; }
 pq() { local db=$1; shift; sudo -n -u postgres psql -d "$db" -XAtq -v ON_ERROR_STOP=1 "$@"; }
+# A check query that fails stops the script: inside [[ $(...) ]] it would read as "not done yet".
+ask() { pq "$1" -c "$2" || { echo "source: $1: this check failed, so nothing after it ran: $2" >&2; exit 1; }; }
 ensure() { # ensure <db> <query that answers t once done> <statement> <message>
-  [[ $(pq "$1" -c "$2") == t ]] && return 0
+  local have
+  have=$(ask "$1" "$2") || exit 1
+  [[ $have == t ]] && return 0
   printf '%s\n' "$3" | pq "$1" >/dev/null
   changed "$4"
 }
@@ -314,7 +318,8 @@ EOF
     fi
     printf 'db=%q shape=%q identity=%q create=%q\n' "$db" "$shape" "$(no_identity_sql "$shape")" "$q"
     cat <<'EOF'
-if [[ $(pq "$db" -c "select exists (select 1 from pg_publication where pubname = '$pub')") != t ]]; then
+have=$(ask "$db" "select exists (select 1 from pg_publication where pubname = '$pub')") || exit 1
+if [[ $have != t ]]; then
   bad=$(pq "$db" -c "$identity")
   [[ -z $bad ]] || { echo "source: $db: $bad; UPDATE and DELETE on it would fail under a publication, so none was made" >&2; exit 1; }
   stmt=$(pq "$db" -c "$create")
