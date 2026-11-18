@@ -1466,7 +1466,7 @@ cmd_reverse() {
 # Logical replication carries no DDL. The app makes trades_YYYYMMDD days ahead on whichever side
 # takes writes, and the publisher's FOR ALL TABLES publication lists it at once. The subscriber
 # stops on a row for a table it lacks, and skips the rows of a table it has but does not carry.
-LEAVES_SQL="select format('%I.%I', n.nspname, c.relname) || '|' || format('%I.%I', pn.nspname, p.relname) || '|' || c.relkind || '|' || pg_get_userbyid(c.relowner) || '|' || pg_get_expr(c.relpartbound, c.oid) from pg_class c join pg_namespace n on n.oid = c.relnamespace join pg_inherits i on i.inhrelid = c.oid join pg_class p on p.oid = i.inhparent join pg_namespace pn on pn.oid = p.relnamespace where c.relispartition and p.relkind = 'p' and $NS order by 1"
+LEAVES_SQL="select format('%I.%I', n.nspname, c.relname) || '|' || format('%I.%I', pn.nspname, p.relname) || '|' || c.relkind::text || '|' || pg_get_userbyid(c.relowner) || '|' || pg_get_expr(c.relpartbound, c.oid) from pg_class c join pg_namespace n on n.oid = c.relnamespace join pg_inherits i on i.inhrelid = c.oid join pg_class p on p.oid = i.inhparent join pg_namespace pn on pn.oid = p.relnamespace where c.relispartition and p.relkind = 'p' and $NS order by 1"
 pub_tables_sql() { echo "select format('%I.%I', schemaname, tablename) from pg_publication_tables where pubname = $(lit "$1") order by 1"; }
 sub_tables_sql() { echo "select format('%I.%I', n.nspname, c.relname) from pg_subscription_rel r join pg_subscription s on s.oid = r.srsubid join pg_class c on c.oid = r.srrelid join pg_namespace n on n.oid = c.relnamespace where s.subname = $(lit "$1") order by 1"; }
 only_in() { comm -23 <(grep . <<<"$1" | sort -u) <(grep . <<<"$2" | sort -u); }
