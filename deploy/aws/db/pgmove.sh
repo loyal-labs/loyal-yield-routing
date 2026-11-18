@@ -1729,6 +1729,13 @@ cmd_preflight() {
     if [[ ! $lag =~ ^-?[0-9]+$ ]]; then diff_row "$db: no slot $sub on the source"
     elif ((lag >= MAX_LAG_BYTES)); then diff_row "$db: slot $sub is $lag bytes behind (limit $MAX_LAG_BYTES)"
     else echo "preflight: $db: slot $sub $lag bytes behind"; fi
+    # A reverse slot left inactive keeps every byte of the target's WAL since it stopped, and the
+    # source's first reverse row waits for all of it to be decoded (about 2 min for 4 GB on test).
+    s=$(sub_name rev "$db")
+    lag=$(q dst "$db" "select pg_wal_lsn_diff(pg_current_wal_lsn(), confirmed_flush_lsn)::bigint from pg_replication_slots where slot_name = '$s'")
+    if [[ -z $lag ]]; then echo "preflight: $db: no reverse slot $s on the target yet; reverse creates it at the current LSN"
+    elif [[ ! $lag =~ ^-?[0-9]+$ ]] || ((lag >= MAX_LAG_BYTES)); then diff_row "$db: reverse slot $s on the target is ${lag:-?} bytes behind (limit $MAX_LAG_BYTES); run reverse $CLUSTER to arm it, then wait"
+    else echo "preflight: $db: reverse slot $s $lag bytes behind"; fi
   done
   check_tables
   check_schema
