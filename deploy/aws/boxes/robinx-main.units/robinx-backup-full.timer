@@ -1,0 +1,11 @@
+[Unit]
+Description=RobinX weekly full PostgreSQL backup (stanza robinx)
+
+[Timer]
+OnCalendar=Sun *-*-* 03:00:00 UTC
+Persistent=true
+RandomizedDelaySec=15m
+Unit=robinx-backup@full.service
+
+[Install]
+WantedBy=timers.target

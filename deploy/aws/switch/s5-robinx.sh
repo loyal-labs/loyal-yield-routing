@@ -19,6 +19,7 @@ SETTINGS="'max_connections','superuser_reserved_connections','shared_buffers','e
 'max_parallel_workers_per_gather','max_parallel_maintenance_workers','effective_io_concurrency','maintenance_io_concurrency',
 'temp_file_limit','idle_in_transaction_session_timeout','wal_compression','wal_buffers','max_wal_size','min_wal_size',
 'checkpoint_timeout','track_io_timing','track_wal_io_timing','pg_stat_statements.track','shared_preload_libraries'"
+UNITS_TSV=${S5_UNITS_TSV:-$HOME/loyal/artifacts/aws-migration-2026-11-17/units.tsv}
 SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=30)
 
 usage() {
@@ -27,7 +28,8 @@ usage: $0 preflight
 preflight  Read-only. Runs every check even after one fails, prints one line per check as ok, BLOCKER or PARKED and ends
            "<n> ok, <m> blocker, <k> parked". Exit 0 only when no check is a BLOCKER. PARKED is an owner call or a known gap
            that does not stop the subscribe. Env: S5_BUILD (the arm64 build tree, else the binaries are compared by release
-           sha), S5_FREEZE_HOURS (${FREEZE_HOURS}), PGMOVE_AGENT (${AGENT}), WEN (${WEN}).
+           sha), S5_FREEZE_HOURS (${FREEZE_HOURS}), PGMOVE_AGENT (${AGENT}), WEN (${WEN}),
+           S5_UNITS_TSV (${UNITS_TSV}).
 EOF
   exit 2
 }
@@ -253,6 +255,58 @@ c_slots() {
   [[ " $stop " == *" robinx@8080 "* && " $stop " == *" robinx@8081 "* && $svc == *robinx@LIVE_SLOT* ]]
 }
 
+# not_moved <unit>: the reason a robinx-main row of units.tsv is in no CUT_* list on purpose.
+not_moved() {
+  case $1 in
+    robinx-parsers-captune.service | robinx-lockwatch.service) echo "owner call Nov 18, not moved; stopped on robinx-prod at freeze, runbook 1.2" ;;
+  esac
+}
+
+# unit_off <state line> <unit> <boot states>: loaded, inactive or failed, and boot state in the regex.
+unit_off() { grep -qxE "$2 loaded (inactive|failed) $3" <<<"$1"; }
+
+# Every unit named in robinx.conf's CUT_* lists exists on robinx-main, disabled and inactive (a timer's oneshot may be
+# static), and every robinx-main row of units.tsv with fate move is in a list, a cluster pgmove moves, mnemonic (S1) or
+# not_moved above. The production backup timer and its service come with backup.sh at runbook step 1.7: PARKED.
+c_units_cover() {
+  local timers oneshots engines svcs stops u states line row base cl aws old unit covered bad='' park='' n=0 boot
+  timers=$(conf CUT_TIMERS) oneshots=$(conf CUT_ONESHOTS) engines=$(conf CUT_ENGINES) svcs=$(conf CUT_SERVICES) stops=$(conf CUT_STOP)
+  svcs=${svcs//LIVE_SLOT/8080}
+  [[ -f $UNITS_TSV ]] || { echo "no $UNITS_TSV"; return 1; }
+  states=$(new "for u in $timers $oneshots $engines $svcs $stops; do echo \"\$u \$(systemctl show -p LoadState --value \$u) \$(systemctl show -p ActiveState --value \$u) \$(systemctl show -p UnitFileState --value \$u)\"; done") || { echo "robinx-main did not answer for its units"; return 1; }
+  for u in $timers $oneshots $engines $svcs $stops; do
+    n=$((n + 1))
+    boot='(disabled|masked)'
+    [[ " $oneshots " != *" $u "* ]] || boot='(static|disabled|masked)'
+    line=$(grep "^$u " <<<"$states" | head -1)
+    if [[ $u == robinx-backup-full.timer || $u == robinx-backup@full.service ]] && [[ $line == "$u not-found "* ]]; then
+      park+="$u (not on robinx-main until backup.sh robinx-main at runbook step 1.7) "
+    elif [[ " $stops " == *" $u "* && " $svcs " != *" $u "* ]] && grep -qxE "$u (not-found inactive ?|loaded (inactive|failed) (static|disabled|masked))" <<<"$line"; then
+      :
+    elif ! unit_off "$line" "$u" "$boot"; then
+      bad+="${line:-$u no state} "
+    fi
+  done
+  covered=" $timers $oneshots $engines $svcs ${svcs//8080/8081} $stops "
+  while IFS=$'\t' read -r row old _ _ aws; do
+    for unit in ${row//|/ }; do
+      base=${unit%.service}
+      if [[ $covered == *" $unit "* || $covered == *" $base "* ]]; then continue; fi
+      if [[ -n $(not_moved "$unit") ]]; then continue; fi
+      [[ $old != mem ]] || continue
+      if [[ $aws == postgresql@18-*.service ]]; then
+        cl=${aws#postgresql@18-}
+        cl=${cl%.service}
+        grep -qxE "DST_CLUSTER=['\"]?${cl}['\"]?" "$DB"/clusters/*.conf && continue
+      fi
+      bad+="$unit is moved by no CUT_* list, cluster conf or S1 "
+    done
+  done < <(awk -F'\t' '$3 == "robinx-main" && $4 == "move"' "$UNITS_TSV")
+  [[ -z $bad ]] || { echo "${bad% } ${park% }"; return 1; }
+  echo "$n listed units checked on robinx-main, every robinx-main row of units.tsv accounted for; not moved on purpose: robinx-parsers-captune and robinx-lockwatch (owner call, runbook 1.2)"
+  [[ -z $park ]] || { echo "${park% }"; return 3; }
+}
+
 preflight() {
   CONFIG_OUT=$(BUILD=${S5_BUILD:-} WEN=$WEN bash "$DIR/robinx-main-config.sh" check 2>&1)
   TARGET_TABLES=$(dstq "select count(*) from pg_class where relkind in ('r','p') and relnamespace = 'public'::regnamespace" 2>/dev/null || echo 0)
@@ -271,6 +325,7 @@ preflight() {
   check secrets c_secrets
   check units-robinx c_units_robinx
   check units-mnemonic c_units_mnemonic
+  check units-cover c_units_cover
   check login c_login
   check recovery-dir c_recovery
   check repoint c_repoint

@@ -1,0 +1,22 @@
+[Unit]
+Description=RobinX off-host PostgreSQL %i backup (stanza robinx, S3)
+Requires=postgresql@18-production.service
+After=postgresql@18-production.service
+
+[Service]
+Type=oneshot
+User=postgres
+Group=postgres
+ExecStart=/usr/bin/pgbackrest --stanza=robinx --type=%i backup
+MemoryMax=4G
+CPUQuota=200%
+CPUWeight=10
+IOWeight=10
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+TimeoutStartSec=12h
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
