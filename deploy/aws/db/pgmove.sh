@@ -263,7 +263,7 @@ apply() {
     printf '  on %s %s: %s\n' "$(host_of "$side")" "$db" "$(printf '%s' "$text" | mask | tr '\n' ' ')"
     return 0
   fi
-  printf '%s\n' "$text" | sql "$side" rw "$db" >/dev/null || query_failed "$side $db: $*: the statement failed"
+  printf '%s\n' "$text" | sql "$side" rw "$db" >/dev/null || query_failed "$side $db: $*: the statement failed${apply_hint:+; $apply_hint}"
 }
 
 run() {
@@ -703,23 +703,46 @@ ANY_ROWS="select count(*) from pg_class c join pg_namespace n on n.oid = c.relna
 # The source migrates after the target's restore. Until the target holds a subscription or a row,
 # what the source made since is added here; once it does, the schema is the subscription's.
 catch_up_schema() {
-  local db=$1 subs rows tmp kind what adds=() b0=$blocks
+  local db=$1 subs rows tmp kind what adds=() b0=$blocks c0=$changes
   local flags="--schema-only --no-publications --no-subscriptions --exclude-schema='_timescaledb*' --exclude-schema='timescaledb_*'"
+  local apply_hint="$db: the schema catch-up failed and rolled back, so none of it was applied; run pgmove.sh schema $CLUSTER to see the difference, fix it on the target by hand and rerun $CMD $CLUSTER"
   subs=$(q dst "$db" "select count(*) from pg_subscription s join pg_database d on d.oid = s.subdbid where d.datname = current_database()")
+  [[ $subs == 0 ]] || return 0
   rows=$(q dst "$db" "$ANY_ROWS")
-  [[ $subs == 0 && $rows == 0 ]] || return 0
+  [[ $rows == 0 ]] || return 0
   tmp=$(mktemp -d)
   dump src "$db" "$flags" >"$tmp/src.sql"
   dump dst "$db" "$flags" >"$tmp/dst.sql"
-  schema_diff "$tmp/src.sql" "$tmp/dst.sql" "$tmp/add.sql" >"$tmp/out" || die "init: $db: the dump comparator failed, so the schemas were not compared"
+  schema_diff "$tmp/src.sql" "$tmp/dst.sql" "$tmp/add.sql" >"$tmp/out" || die "$CMD: $db: the dump comparator failed, so the schemas were not compared"
   while read -r kind what; do
-    case $kind in A) adds+=("$what") ;; B) blocked "$db schema: $what; the target has no subscription and no rows, so it can be restored afresh by hand" ;; esac
+    case $kind in
+      A) adds+=("$what") ;;
+      P) echo "$CMD: $db: $what is a new partition of a table the target has; sync_partitions makes it below" ;;
+      B) if [[ $what == *"only on the target;"* ]]; then blocked "$db schema: $what"; else blocked "$db schema: $what; the target has no subscription and no rows, so it can be restored afresh by hand"; fi ;;
+    esac
   done <"$tmp/out"
   if ((blocks == b0 && ${#adds[@]})); then
     printf -v what '%s, ' "${adds[@]}"
     apply dst "$db" "BEGIN; SET LOCAL check_function_bodies = false; SELECT pg_catalog.set_config('search_path', '', true);
 $(<"$tmp/add.sql")
 COMMIT;" "$db: ${#adds[@]} schema object(s) the source made after the target's restore: ${what%, }"
+  fi
+  apply_hint=''
+  # A dry run makes nothing, so the partitions of a table it would add are not there to read.
+  if ((blocks == b0 && DRY && ${#adds[@]})); then
+    echo "$CMD: $db: the dry run skips sync_partitions, which reads partitions of tables the adds make; the real run makes them"
+  elif ((blocks == b0)); then
+    sync_partitions src dst "$db" "$(sub_name fwd "$db")" "$PUB"
+  fi
+  # The adds cover the cases they know; this check covers the rest, so a stale target never passes.
+  if ((blocks == b0 && changes > c0 && DRY == 0)); then
+    flags="--schema-only --no-owner --no-privileges --no-publications --no-subscriptions --exclude-schema='_timescaledb*' --exclude-schema='timescaledb_*'"
+    dump src "$db" "$flags" >"$tmp/src.sql"
+    dump dst "$db" "$flags" >"$tmp/dst.sql"
+    schema_diff "$tmp/src.sql" "$tmp/dst.sql" --left >"$tmp/out" || die "$CMD: $db: the dump comparator failed, so the catch-up was not checked"
+    while read -r kind what; do
+      [[ $kind != B ]] || blocked "$db schema: $what; the adds above are committed"
+    done <"$tmp/out"
   fi
   rm -rf "$tmp"
 }
@@ -1008,10 +1031,17 @@ cmd_subscribe() {
     [[ $wal == logical ]] || blocked "source wal_level=$wal; a slot needs logical (owner-gated restart)"
     [[ $keep != -1 ]] || blocked "source max_slot_wal_keep_size=-1; set it to half the free space and reload first"
     identity_blockers src "$db" "$shape"
-    ensure_schema "$db"
   done
   ((blocks == 0 || DRY)) || finish
   ensure_marker
+  # After the marker, so the source's migrations refuse from the dump the catch-up compares on.
+  for spec in "${DATABASES[@]}"; do
+    db=$(db_of "$spec") shape=$(shape_of "$spec")
+    [[ $shape == upstream=* ]] && continue
+    ensure_extensions "$db"
+    ensure_schema "$db"
+  done
+  ((blocks == 0 || DRY)) || finish "no publication, slot or subscription was made; the source's freeze marker${FREEZE_MARKER:+ $FREEZE_MARKER} stays, so its migrations refuse: fix the target and rerun subscribe, or lift the marker with retire $CLUSTER --force"
   if via_forward; then
     ensure_repl_role src
   elif [[ -n $FWD_PORT ]]; then
