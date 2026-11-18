@@ -167,21 +167,48 @@ src_writers_off() {
   done
 }
 
-# record_boot <old|src>: before freeze first disables anything there, the units enabled there, kept
-# in $STATE/boot-<side> on BOX. A rerun keeps the first record, which saw them before any disable.
+# record_boot <old|src>: before freeze first disables anything there, the units running there, kept
+# in $STATE/boot-<side>.active, then the units enabled there, in $STATE/boot-<side> on BOX. A rerun
+# keeps the first record, which saw them before any disable; boot-<side> is written last, so it
+# stands only beside its running list.
 record_boot() {
-  local side=$1 have list
+  local side=$1 have list ran
   have=$(on "$BOX" "test -e $STATE/boot-$side && echo yes || echo no") || die "$BOX did not answer for $STATE/boot-$side"
   [[ $have == yes ]] && { echo "$side: boot record $STATE/boot-$side kept from the first freeze"; return 0; }
   [[ $have == no ]] || die "$BOX answered '$have' for $STATE/boot-$side"
   if [[ $side == old ]]; then
     list=$(on "$CUT_OLD" "for u in $ALL $STOPS; do [ \"\$(systemctl show -p UnitFileState --value \$u)\" != enabled ] || echo \$u; done") || die "$CUT_OLD did not answer for its enabled units"
+    ran=$(on "$CUT_OLD" "for u in $ALL; do case \"\$(systemctl show -p ActiveState --value \$u)\" in active|activating|reloading) echo \$u ;; esac; done") || die "$CUT_OLD did not answer for its running units"
   else
     list=$(on_src "for u in $SRCSTOPS; do [ \"\$(systemctl show -p UnitFileState --value \$u)\" != enabled ] || echo \$u; done") || die "the source did not answer for its enabled units"
+    ran=$(on_src "for u in $SRCTIMERS; do case \"\$(systemctl show -p ActiveState --value \$u)\" in active|activating|reloading) echo \$u ;; esac; done") || die "the source did not answer for its running units"
   fi
-  list=$(sort -u <<<"$list" | awk 'NF' | paste -sd' ' -)
+  list=$(sort -u <<<"$list" | awk 'NF' | paste -sd' ' -) ran=$(sort -u <<<"$ran" | awk 'NF' | paste -sd' ' -)
+  printf '# running on %s before freeze, %s\n%s\n' "$side" "$(date -u +%FT%TZ)" "$ran" | on "$BOX" "mkdir -p $STATE && cat >$STATE/boot-$side.active.new && mv -f $STATE/boot-$side.active.new $STATE/boot-$side.active && sync $STATE" || die "cannot write $STATE/boot-$side.active on $BOX"
   printf '# enabled on %s before freeze, %s\n%s\n' "$side" "$(date -u +%FT%TZ)" "$list" | on "$BOX" "mkdir -p $STATE && cat >$STATE/boot-$side.new && mv -f $STATE/boot-$side.new $STATE/boot-$side && sync $STATE" || die "cannot write $STATE/boot-$side on $BOX"
-  echo "$side: enabled before freeze: ${list:-none}; recorded in $STATE/boot-$side"
+  echo "$side: enabled before freeze: ${list:-none}; running: ${ran:-none}; recorded in $STATE/boot-$side and $STATE/boot-$side.active"
+}
+
+# ran_before <old|src> <units>: those of the units record_boot found running there. With no running
+# list, a freeze stopped there before recording one (an older tool) or never stopped anything: the
+# units enabled there now, after restore_boot, as boot state and run state match outside a freeze.
+ran_before() {
+  local side=$1 have u
+  have=$(on "$BOX" "if test -e $STATE/boot-$side.active; then echo yes; grep -v '^#' $STATE/boot-$side.active | paste -sd' ' -; else echo no; fi") || die "$BOX did not answer for $STATE/boot-$side.active"
+  if [[ ${have%%$'\n'*} != yes ]]; then
+    [[ $have == no ]] || die "$BOX answered '$have' for $STATE/boot-$side.active"
+    echo "$side: no running list in $STATE/boot-$side.active; the units enabled there start" >&2
+    if [[ $side == old ]]; then
+      on "$CUT_OLD" "for u in $2; do [ \"\$(systemctl show -p UnitFileState --value \$u)\" != enabled ] || printf '%s ' \$u; done" || die "$CUT_OLD did not answer for its enabled units"
+    else
+      on_src "for u in $2; do [ \"\$(systemctl show -p UnitFileState --value \$u)\" != enabled ] || printf '%s ' \$u; done" || die "the source did not answer for its enabled units"
+    fi
+    echo
+    return 0
+  fi
+  have=${have#yes}
+  for u in $2; do [[ " ${have//$'\n'/ } " != *" $u "* ]] || printf '%s ' "$u"; done
+  echo
 }
 
 # restore_boot <old|src>: enables again exactly what record_boot found enabled there.
@@ -201,12 +228,15 @@ halt_src_writers() {
   src_writers_off || die "a superuser writer on the source still runs or starts at boot"
 }
 
-# The source's own timers again, once it is the primary, enabled as freeze found them.
+# The source's own timers again, once it is the primary, enabled and running as freeze found them.
 start_src_timers() {
+  local ran
   [[ -n $SRCTIMERS ]] || return 0
   restore_boot src
-  on_src "systemctl start $SRCTIMERS" || die "source: starting $SRCTIMERS failed"
-  echo "source: started $SRCTIMERS"
+  ran=$(ran_before src "$SRCTIMERS")
+  [[ -n ${ran// /} ]] || { echo "source: none of $SRCTIMERS ran before freeze; none started"; return 0; }
+  on_src "systemctl start $ran" || die "source: starting $ran failed"
+  echo "source: started $ran"
 }
 
 # start_healthy <host> <enable|start> <unit>...: enable makes the unit start at boot as well, for
@@ -226,14 +256,15 @@ start_healthy() {
   done
 }
 
-# start_timers <host> <enable|start>
+# start_timers <host> <enable|start> [timer...]: the timers named, or every CUT_TIMERS one.
 start_timers() {
   local timers
-  timers=$TIMERS
-  [[ -z $timers ]] || { on "$1" "$([[ $2 == enable ]] && echo "systemctl enable $timers && ")systemctl start $timers" || die "$1: starting $timers failed"; echo "$1: started$([[ $2 == enable ]] && echo ' and enabled') $timers"; }
+  timers=${*:3}
+  (($# > 2)) || timers=$TIMERS
+  [[ -z ${timers// /} ]] || { on "$1" "$([[ $2 == enable ]] && echo "systemctl enable $timers && ")systemctl start $timers" || die "$1: starting $timers failed"; echo "$1: started$([[ $2 == enable ]] && echo ' and enabled') $timers"; }
 }
 
-drop_boot() { on "$BOX" "rm -f $STATE/boot-old $STATE/boot-src && sync $STATE" || die "cannot remove the boot records on $BOX"; }
+drop_boot() { on "$BOX" "rm -f $STATE/boot-old $STATE/boot-src $STATE/boot-old.active $STATE/boot-src.active && sync $STATE" || die "cannot remove the boot records on $BOX"; }
 
 health() {
   local host=$1 u path bad=0
@@ -307,6 +338,10 @@ cmd_freeze() {
   tp=$(target_primary) || die "$BOX did not answer for its stamps"
   [[ $tp == no ]] || die "the switch has run and no rollback since; freeze is for the source side, rerun switch instead"
   on "$BOX" "rm -f $STATE/freeze-ok" || die "cannot remove $STATE/freeze-ok on $BOX"
+  # freeze hashes under the fence, and pgmove runs one hash at a time: one already running would make
+  # it refuse after the writers stopped.
+  on "$BOX" "test ! -e $STATE/hash.lock || perl -MFcntl=:flock -e 'open(my \$f, \">>\", \$ARGV[0]) or exit 2; flock(\$f, LOCK_EX | LOCK_NB) or exit 1' $STATE/hash.lock" ||
+    die "a pgmove hash is running on $BOX ($(on "$BOX" "cat $STATE/hash-run 2>/dev/null" || true)); nothing was stopped: wait for it to end, or stop it, then rerun freeze"
   mkdir -p "$CUTOVER_PROOF"
   out=$CUTOVER_PROOF/freeze-verify-$(date -u +%Y%m%dT%H%MZ).txt
   timed install "$HERE/remote.sh" install "$CLUSTER" || die "install failed"
@@ -328,6 +363,23 @@ cmd_freeze() {
   report_times
 }
 
+# The way back to CUT_OLD: enabled and running there, and on the source, exactly as freeze found them.
+back_on_old() {
+  local ran
+  timed boot restore_boot old || die "the units on $CUT_OLD were not enabled again"
+  ran=$(ran_before old "$ALL") || die "the units that ran on $CUT_OLD before freeze are not known"
+  # shellcheck disable=SC2046
+  timed start start_healthy "$CUT_OLD" start $(only_of "$ran" "$SERVICES") || die "the writers did not start healthy on $CUT_OLD"
+  # shellcheck disable=SC2046
+  timed start-timers start_timers "$CUT_OLD" start $(only_of "$ran" "$TIMERS") || die "the timers did not start on $CUT_OLD"
+  # shellcheck disable=SC2046
+  timed start-engines start_healthy "$CUT_OLD" start $(only_of "$ran" "$ENGINES") || die "the engines did not start healthy on $CUT_OLD"
+  timed start-source start_src_timers || die "the source's timers did not start"
+}
+
+# only_of <list> <units>: the units, in their order, that the list holds.
+only_of() { local u; for u in $2; do [[ " $1 " != *" $u "* ]] || printf '%s ' "$u"; done; }
+
 cmd_abort() {
   local tp
   tp=$(target_primary) || die "$BOX did not answer for its stamps"
@@ -335,11 +387,7 @@ cmd_abort() {
   on "$BOX" "rm -f $STATE/freeze-ok" || die "cannot remove $STATE/freeze-ok on $BOX"
   writers_off "$CUT_NEW" || die "a writer on $CUT_NEW runs or starts at boot; nothing starts on $CUT_OLD while it does"
   timed thaw pg thaw || die "thaw failed; the source roles may still be NOLOGIN"
-  timed boot restore_boot old || die "the units on $CUT_OLD were not enabled again"
-  timed start start_healthy "$CUT_OLD" start "${CUT_SERVICES[@]}" || die "the writers did not start healthy on $CUT_OLD"
-  timed start-timers start_timers "$CUT_OLD" start || die "the timers did not start on $CUT_OLD"
-  timed start-engines start_healthy "$CUT_OLD" start ${CUT_ENGINES[@]+"${CUT_ENGINES[@]}"} || die "the engines did not start healthy on $CUT_OLD"
-  timed start-source start_src_timers || die "the source's timers did not start"
+  back_on_old
   drop_boot
   report_times
 }
@@ -414,11 +462,7 @@ cmd_rollback() {
   # source role gets LOGIN: a refusal or a failed probe leaves the target the primary, reopened here.
   ((CUT_ROLLBACK_VERIFY)) || verify=--no-verify
   timed switch pg switch --reverse $verify || rollback_failed "switch --reverse failed, or its verify refused (DIFF lines above) or could not probe (probe failed above)"
-  timed boot restore_boot old || die "the units on $CUT_OLD were not enabled again"
-  timed start start_healthy "$CUT_OLD" start "${CUT_SERVICES[@]}" || die "the writers did not start healthy on $CUT_OLD"
-  timed start-timers start_timers "$CUT_OLD" start || die "the timers did not start on $CUT_OLD"
-  timed start-engines start_healthy "$CUT_OLD" start ${CUT_ENGINES[@]+"${CUT_ENGINES[@]}"} || die "the engines did not start healthy on $CUT_OLD"
-  timed start-source start_src_timers || die "the source's timers did not start"
+  back_on_old
   drop_boot
   report_times
 }

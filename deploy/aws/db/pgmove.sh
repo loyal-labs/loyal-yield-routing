@@ -99,7 +99,10 @@ done
 # `source` prints and remote.sh source runs from an operator machine.
 case $SRC_VIA in
   ssh) ;;
-  forward) for v in FWD_SSH FWD_TARGET FWD_PORT; do [[ -n ${!v} ]] || { echo "pgmove: SRC_VIA=forward needs $v in $CLUSTER.conf" >&2; exit 2; }; done ;;
+  forward)
+    for v in FWD_SSH FWD_TARGET FWD_PORT; do [[ -n ${!v} ]] || { echo "pgmove: SRC_VIA=forward needs $v in $CLUSTER.conf" >&2; exit 2; }; done
+    # fence makes each kept role read-only on both sides, and srcexec has no step for that on the source.
+    [[ -z ${FENCE_KEEP[*]+x} ]] || { echo "pgmove: FENCE_KEEP needs SRC_VIA=ssh in $CLUSTER.conf" >&2; exit 2; } ;;
   *) echo "pgmove: SRC_VIA=$SRC_VIA (ssh or forward)" >&2; exit 2 ;;
 esac
 
@@ -123,7 +126,10 @@ end_masters() {
   for h in "${SRC_SSH:-local}" "${DST_SSH:-local}"; do [[ $h == local ]] || ssh -o ControlPath="$SSH_CTL" -O exit "$h" >/dev/null 2>&1 || :; done
 }
 RUN_ID=''
-trap 'rc=$?; [[ -z $RUN_ID ]] || echo "$CMD: run $RUN_ID ended rc=$rc"; rm -f "$QFAIL"; end_masters; ((REOPEN == 0)) || reopen_target $rc' EXIT
+# REV_FENCED: a switch --reverse that stops now leaves the target the primary with its roles NOLOGIN.
+REV_FENCED=0
+rev_fenced_hint() { ((REV_FENCED == 0 || $1 == 0 || $1 == 3)) || echo "pgmove: switch --reverse refused; the target stays the primary with no LOGIN and no source role got LOGIN: run thaw $CLUSTER --reverse to reopen the target (cutover.sh rollback runs it)" >&2; }
+trap 'rc=$?; [[ -z $RUN_ID ]] || echo "$CMD: run $RUN_ID ended rc=$rc"; rm -f "$QFAIL"; end_masters; ((REOPEN == 0)) || reopen_target $rc; rev_fenced_hint $rc' EXIT
 # PROBE names the reverse verify, so a query that fails there never reads as a difference.
 PROBE=0
 query_stopped() {
@@ -138,7 +144,13 @@ trap 'exit 1' USR2
 [[ $(trap -p USR1) == *stopped* && $(trap -p USR2) == *"exit 1"* ]] || { echo "pgmove: the caller ignores SIGUSR1 or SIGUSR2, so a failed query could not stop this run; run it from a shell that does not ignore them" >&2; exit 2; }
 
 changed() { changes=$((changes + 1)); if ((DRY)); then echo "would change: $*"; else echo "changed: $*"; fi; }
-diff_row() { if ((DRIFT_ONLY)); then echo "drift $*"; else diffs=$((diffs + 1)); echo "DIFF $*"; fi; }
+diff_row() {
+  if ((DRIFT_ONLY)); then echo "drift $*"; return 0; fi
+  diffs=$((diffs + 1))
+  # A hash DIFF voids the last pass at once: a run that stops after it never reaches its end.
+  if [[ $CMD == hash ]] && ((AGE == 0 && DRY == 0)); then rm -f "$WORK/hash-ok" "$WORK/hash-sig"; fi
+  echo "DIFF $*"
+}
 blocked() { blocks=$((blocks + 1)); echo "blocked: $*"; }
 # need <verb> <args>: a root step on the source in SRC_VIA=forward. The box names it; srcexec on the
 # operator machine checks each word and builds the SQL, so the box never decides what runs as root there.
@@ -165,7 +177,7 @@ state() {
 on() {
   if [[ $1 == local ]]; then bash -c "$2"; return; fi
   install -d -m 0700 /run/pgmove 2>/dev/null || true
-  ssh -o BatchMode=yes -o ConnectTimeout=15 -o ControlMaster=auto -o ControlPath="$SSH_CTL" -o ControlPersist=120 "$1" "$2" 8>&-
+  ssh -o BatchMode=yes -o ConnectTimeout=15 -o ControlMaster=auto -o ControlPath="$SSH_CTL" -o ControlPersist=120 "$1" "$2" 8>&- 9>&-
 }
 
 psql_cmd() {
@@ -1021,11 +1033,15 @@ cmd_subscribe() {
   finish
 }
 
+# retain_edge: the oldest UTC day retention keeps on both sides. drop_chunks(older_than => TS_RETAIN_DAYS)
+# drops a chunk only once its end is that old, and the hypertables' day chunks end at UTC midnight.
+retain_edge() { echo "(date_trunc('day', now() at time zone 'UTC') - interval '$TS_RETAIN_DAYS days')::date"; }
+
 ts_cutoff() {
   local f=$WORK/backfill/cutoff
   if [[ -s $f ]]; then cat "$f"; return 0; fi
   local c
-  c=$(q src "$HT_DB" "select (date_trunc('day', now() at time zone 'UTC') - interval '$TS_RETAIN_DAYS days')::date")
+  c=$(q src "$HT_DB" "select $(retain_edge)")
   state "$f" "$c"
   echo "$c"
 }
@@ -1374,6 +1390,9 @@ HASH_BUSY="select (select count(*) from pg_stat_activity where datname = current
 # sig_line <prefix> [file]: the one signature line that starts with the prefix.
 sig_line() { awk -v p="$1" 'index($0, p) == 1' "${2:--}"; }
 
+# hash_lock: an exclusive flock on fd 9, held until this run's last copy of fd 9 closes; no ssh master gets one.
+hash_lock() { perl -MFcntl=:flock -e 'open(my $f, ">&=", 9) or exit 2; flock($f, LOCK_EX | LOCK_NB) or exit 1'; }
+
 # hash_quiet <db>: 0 once no session on either side may hold writes its counters do not show yet.
 hash_quiet() {
   local db=$1 end busy
@@ -1412,6 +1431,16 @@ cmd_hash() {
   echo "hash: run $RUN_ID started $(date -u +%FT%TZ): $CLUSTER${only:+ $only}$( ((MOVED)) && echo ' --moved')$( ((AGE)) && echo ' --age')"
   if ((AGE)); then hash_age; finish_check; return 0; fi
   [[ -z $only ]] || ((MOVED == 0)) || die "hash: --moved hashes every table it cannot skip; it takes no table"
+  if ((DRY == 0)); then
+    # One hash at a time per cluster: an older run ending after a newer one would put its pass over
+    # the newer run's, or its stale pass over the newer run's DIFF.
+    mkdir -p "$WORK" || die "cannot make $WORK"
+    exec 9>>"$WORK/hash.lock" || die "cannot open $WORK/hash.lock"
+    hash_lock || die "hash: run $(cat "$WORK/hash-run" 2>/dev/null || echo '?') holds $WORK/hash.lock; wait for it to end, or stop it, then rerun"
+    state "$WORK/hash-run" "$RUN_ID pid $$"
+    # A full run's pass is the only thing that may stand after it: one that stops for any reason leaves none.
+    [[ -n $only ]] || rm -f "$WORK/hash-ok"
+  fi
   HASH_NOW=''
   for spec in "${DATABASES[@]}"; do
     db=$(db_of "$spec")
@@ -1439,8 +1468,6 @@ cmd_hash() {
     state "$WORK/hash-bounds" "$HASH_BOUNDS"
     state "$WORK/hash-sig" "$HASH_NOW"
     state "$WORK/hash-ok" "$start"
-  elif ((diffs && DRY == 0)); then
-    rm -f "$WORK/hash-ok" "$WORK/hash-sig"
   fi
   finish_check
 }
@@ -1527,12 +1554,12 @@ check_tables() {
 
 # The reverse catchup carries only hypertable rows above the switch's floor, and the tail check reads
 # only rows above the last hash bound: an UPDATE or DELETE below it on the target during its tenure
-# would pass both. So the reverse hashes every hypertable row a retention job on either side cannot
-# have dropped yet (newer than TS_RETAIN_DAYS less a day, and not before the backfill cutoff).
+# would pass both. So the reverse hashes every hypertable row from the backfill cutoff, or from
+# retain_edge once retention has moved past it: no retention job on either side has dropped those.
 hash_hypertables() {
   local table since
   for table in ${HYPERTABLES[@]+"${HYPERTABLES[@]}"}; do
-    since=$(q dst "$HT_DB" "select greatest($(lit "$(ts_cutoff)")::timestamptz, date_trunc('day', now()) - interval '$((TS_RETAIN_DAYS - 1)) days')")
+    since=$(q dst "$HT_DB" "select greatest($(lit "$(ts_cutoff)")::date, $(retain_edge))::timestamp at time zone 'UTC'")
     [[ -n $since ]] || die "hash: $table: the target answered no lower time bound"
     hash_table "$HT_DB" "$table" "$HT_KEY" bigint 1 "$since"
   done
@@ -1669,30 +1696,30 @@ slot_wait() {
 
 is_super() { [[ $(q "$1" postgres "select rolsuper from pg_roles where rolname = $(lit "$2")") == t ]]; }
 
-# A kept role logs in through the fence, so it must not be able to write an application table: not
-# by a table or column grant, not through any role it may SET ROLE to (INHERIT FALSE included), not
-# through a SECURITY DEFINER function whose owner can write. fence and switch both run this, so a
-# grant made after the fence still blocks the switch.
-keep_writers() {
-  local k spec db w l
+# A kept role logs in through the fence, so it gets no transaction that can write on either side,
+# whatever it holds: its sessions start read-only in every moved database, and a role setting in one
+# database outranks the role's own and the database's. Inspecting what it may write missed views and
+# definer chains and flagged read-only definers. A superuser is not a kept role: any superuser keeps
+# its LOGIN, and superuser writers are stopped and checked, not fenced.
+keep_readonly() {
+  local k spec db side set=0
   for k in ${FENCE_KEEP[@]+"${FENCE_KEEP[@]}"}; do
     [[ -n $(q "$FROM" postgres "select 1 from pg_roles where rolname = $(lit "$k")") ]] || continue
-    if is_super "$FROM" "$k"; then blocked "$FROM: $k is in FENCE_KEEP and is a superuser; FENCE_KEEP holds read-only roles only"; continue; fi
-    l=$(lit "$k")
-    for spec in "${DATABASES[@]}"; do
-      db=$(db_of "$spec")
-      w=$(q "$FROM" "$db" "with r as (select oid, rolname, rolsuper from pg_roles where pg_has_role($l, oid, 'MEMBER')),
-        t as (select c.oid, format('%I.%I', n.nspname, c.relname) as name from pg_class c join pg_namespace n on n.oid = c.relnamespace where c.relkind in ('r', 'p') and $NS),
-        w as (select 'as superuser ' || r.rolname as how from r where r.rolsuper
-          union all select t.name || case when r.rolname = $l then '' else ' as ' || r.rolname end from r cross join t
-            where has_table_privilege(r.oid, t.oid, 'INSERT, UPDATE, DELETE, TRUNCATE') or has_any_column_privilege(r.oid, t.oid, 'INSERT, UPDATE')
-          union all select 'through SECURITY DEFINER ' || p.oid::regprocedure::text || ' owned by ' || pg_get_userbyid(p.proowner) from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-            where p.prosecdef and $NS and not exists (select 1 from pg_depend e where e.classid = 'pg_proc'::regclass and e.objid = p.oid and e.deptype = 'e')
-              and exists (select 1 from r where has_function_privilege(r.oid, p.oid, 'EXECUTE'))
-              and exists (select 1 from t where has_table_privilege(p.proowner, t.oid, 'INSERT, UPDATE, DELETE, TRUNCATE') or has_any_column_privilege(p.proowner, t.oid, 'INSERT, UPDATE')))
-        select count(*) || ' way(s), first ' || coalesce(min(how), '-') from w")
-      [[ $w == 0\ * ]] || blocked "$FROM $db: $k is in FENCE_KEEP and can write: $w; FENCE_KEEP holds read-only roles only, so revoke its writes or let fence take its LOGIN"
+    if is_super "$FROM" "$k"; then echo "$CMD: $k is in FENCE_KEEP and is a superuser on $FROM: the superuser rule covers it, not FENCE_KEEP"; continue; fi
+    set=0
+    for side in "$FROM" "$TO"; do
+      [[ -n $(q "$side" postgres "select 1 from pg_roles where rolname = $(lit "$k")") ]] || continue
+      for spec in "${DATABASES[@]}"; do
+        db=$(db_of "$spec")
+        [[ -z $(q "$side" postgres "select 1 from pg_db_role_setting s join pg_roles r on r.oid = s.setrole join pg_database d on d.oid = s.setdatabase where r.rolname = $(lit "$k") and d.datname = $(lit "$db") and 'default_transaction_read_only=on' = any (s.setconfig)") ]] || continue
+        apply "$side" postgres "ALTER ROLE $(ident "$k") IN DATABASE $(ident "$db") SET default_transaction_read_only = on;" "$side: $k read-only in $db"
+        [[ $side != "$FROM" ]] || set=1
+      done
     done
+    # Sessions begun before the setting keep their own default.
+    if ((set)); then
+      if ((DRY)); then changed "$FROM: the sessions of $k end, to come back read-only"; else apply "$FROM" postgres "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = $(lit "$k");" "$FROM: the sessions of $k ended, to come back read-only"; fi
+    fi
   done
 }
 
@@ -1732,7 +1759,6 @@ cmd_fence() {
   fenced=$(fenced_file)
   upstream_blockers fencing
   ((blocks == 0)) || finish
-  keep_writers
   if ((REVERSE)); then
     # Every step that can fail on the source runs while the target still takes writes. The pass after
     # the NOLOGIN below catches a partition made in between.
@@ -1751,6 +1777,7 @@ cmd_fence() {
   # A rerun after switch --reverse passed its stamp fences a target that is no longer the primary: that one stays fenced.
   if ((DRY == 0 && REVERSE)) && target_primary; then REOPEN=1; fi
   ((DRY)) || [[ -s $(fence_id) ]] || state "$(fence_id)" "$(date +%s)-$$"
+  keep_readonly
   roles=$(login_roles)
   for role in $roles; do
     kept "$role" && continue
@@ -1888,6 +1915,7 @@ cmd_switch() {
   local role spec db table roles n fence sub can
   fence=fence
   ((REVERSE == 0)) || fence='fence --reverse'
+  if ((REVERSE && DRY == 0)) && target_primary && [[ -e $(fence_ok) || -e $(fenced_file) ]]; then REV_FENCED=1; fi
   upstream_blockers "the switch"
   roles=$(login_roles)
   for role in $roles; do
@@ -1907,7 +1935,6 @@ cmd_switch() {
     if ((DRY)); then echo "dry run: no $WORK/passwords-ok yet; remote.sh run switch runs passwords first"; else blocked "no $WORK/passwords-ok; run deploy/aws/db/remote.sh run passwords $CLUSTER"; fi
   fi
   if ((DRY == 0)) && [[ ! -s $(fence_id) ]]; then blocked "no $(fence_id): run $fence"; fi
-  keep_writers
   ((blocks == 0)) || finish
   catchup_tables
   sync_sequences
@@ -1958,11 +1985,12 @@ cmd_switch() {
     verify_checks
     query_failures
     PROBE=0
-    ((diffs == 0)) || { echo "$diffs DIFF"; die "switch --reverse: the source differs from the target in the $diffs DIFF line(s) above; no source role got LOGIN, so the target stays the primary; thaw $CLUSTER --reverse gives it back its LOGIN (cutover.sh rollback runs it)"; }
+    ((diffs == 0)) || { echo "$diffs DIFF"; die "switch --reverse: the source differs from the target in the $diffs DIFF line(s) above"; }
     echo "switch: verify --reverse 0 DIFF; the source gets LOGIN"
   fi
   # From the first grant on, TO may take writes: recovery treats it as primary, FROM's fence is over.
   # A rerun keeps the stamp of the switch it finishes: cutover.sh binds its later stamps to that value.
+  REV_FENCED=0
   if ((DRY == 0)); then
     if ((REVERSE)); then unfence fwd; target_primary && switch_stamp reversed switched; else unfence rev; target_primary || switch_stamp switched reversed; fi
   fi
