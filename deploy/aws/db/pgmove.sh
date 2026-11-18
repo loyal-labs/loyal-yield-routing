@@ -1156,7 +1156,14 @@ def blocks(path):
     flush()
     return {k: "\n".join(sorted(v)) for k, v in out.items() if not k.startswith(("EXTENSION ", "COMMENT -.EXTENSION "))}
 a, b = blocks(sys.argv[1]), blocks(sys.argv[2])
-bare = lambda t: re.sub(r"[()\s]", "", t)
+# Only whitespace outside literals, quoted names and dollar-quoted bodies is ignored: parentheses carry precedence.
+lit = re.compile(r"'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\"|\$([A-Za-z_0-9]*)\$.*?\$\1\$", re.S)
+def bare(t):
+    out, pos = [], 0
+    for m in lit.finditer(t):
+        out += [re.sub(r"\s", "", t[pos:m.start()]), m.group(0)]
+        pos = m.end()
+    return "".join(out) + re.sub(r"\s", "", t[pos:])
 for k in sorted(a.keys() | b.keys()):
     x, y = a.get(k), b.get(k)
     if x == y or (x is not None and y is not None and bare(x) == bare(y)):
