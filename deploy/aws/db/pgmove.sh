@@ -26,6 +26,8 @@ clusters: $(for f in "$HERE"/clusters/*.conf; do basename "$f" .conf; done | pas
   grants <c>                   role, membership, setting, owner and ACL rows on both sides
   schema <c>                   pg_dump --schema-only of both sides, object by object
   hash <c> [table] [--age]     md5 per row, summed per 1M-key bucket; differing buckets hashed a second time; hypertables up to the target's max key
+  hash <c> --moved             the same, skipping each plain table whose write counters and file nodes on both sides are those the last
+                               0-DIFF full hash read before it; needs every other session idle HASH_IDLE_SECS and no prepared transaction
   verify <c> [--reverse]       tables, sequences, hypertables, schema, grants, hash age and the hypertable rows above the hash bound
   preflight <c>                read-only: tables in state r, lag, verify, the reverse, fence and switch dry runs, marker, volume guard
   fence <c> [--reverse]        login roles NOLOGIN on the side being left, sessions ended, slots caught up
@@ -49,7 +51,7 @@ CLUSTER=${2:-}
 case " $SUBCOMMANDS " in *" $CMD "*) ;; *) usage ;; esac
 [[ -f $HERE/clusters/$CLUSTER.conf ]] || { echo "pgmove: no cluster $CLUSTER ($HERE/clusters/$CLUSTER.conf)" >&2; usage; }
 shift 2
-DRY=0 REVERSE=0 FORCE=0 AGE=0
+DRY=0 REVERSE=0 FORCE=0 AGE=0 MOVED=0
 ARGS=()
 for a in "$@"; do
   case $a in
@@ -57,6 +59,7 @@ for a in "$@"; do
     --reverse) REVERSE=1 ;;
     --force) FORCE=1 ;;
     --age) AGE=1 ;;
+    --moved) MOVED=1 ;;
     -*) usage ;;
     *) ARGS+=("$a") ;;
   esac
@@ -75,6 +78,8 @@ FWD_USER=pgmove-fwd FWD_SSH='' FWD_PORT='' REV_PORT='' REV_HOST=127.0.0.1 FREEZE
 # DST_VOLUME: the mount the target's data directory lives on; init makes postgresql@ refuse to start without it.
 MIGRATE_MARKER='' DST_VOLUME='' MAX_LAG_BYTES=16777216 MAX_UPSTREAM_LAG_SECS=120 MAX_CATCHUP_ROWS=200000
 PROBE_SECS=30 LAG_WAIT_SECS=600 HASH_BUCKET=1000000 HASH_RECHECK_SECS=60 HASH_MAX_AGE_HOURS=24 EXACT_COUNT_BYTES=268435456
+# hash --moved: a backend flushes its table counters at exit, or within PGSTAT_IDLE_INTERVAL (10 s) of going idle.
+HASH_IDLE_SECS=12 HASH_SETTLE_SECS=30
 # shellcheck source=/dev/null
 source "$HERE/clusters/$CLUSTER.conf"
 for v in SRC_SSH SRC_SOCKET SRC_PORT SRC_OSUSER LOCALE_PROVIDER LOCALE; do
@@ -109,6 +114,8 @@ end_masters() { [[ ${SRC_SSH:-local} == local || ${SRC_VIA:-} == forward ]] || s
 trap 'rm -f "$QFAIL"; end_masters' EXIT
 trap 'echo "pgmove: $CMD stopped: a query failed (printed above), so nothing after it ran" >&2; exit 1' USR1
 trap 'exit 1' USR2
+# bash cannot trap a signal its caller ignored, and then a failed query would not stop the run.
+[[ $(trap -p USR1) == *stopped* && $(trap -p USR2) == *"exit 1"* ]] || { echo "pgmove: the caller ignores SIGUSR1 or SIGUSR2, so a failed query could not stop this run; run it from a shell that does not ignore them" >&2; exit 2; }
 
 changed() { changes=$((changes + 1)); if ((DRY)); then echo "would change: $*"; else echo "changed: $*"; fi; }
 diff_row() { diffs=$((diffs + 1)); echo "DIFF $*"; }
@@ -1149,7 +1156,14 @@ def blocks(path):
     flush()
     return {k: "\n".join(sorted(v)) for k, v in out.items() if not k.startswith(("EXTENSION ", "COMMENT -.EXTENSION "))}
 a, b = blocks(sys.argv[1]), blocks(sys.argv[2])
-bare = lambda t: re.sub(r"[()\s]", "", t)
+# Only whitespace outside literals, quoted names and dollar-quoted bodies is ignored: parentheses carry precedence.
+lit = re.compile(r"'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\"|\$([A-Za-z_0-9]*)\$.*?\$\1\$", re.S)
+def bare(t):
+    out, pos = [], 0
+    for m in lit.finditer(t):
+        out += [re.sub(r"\s", "", t[pos:m.start()]), m.group(0)]
+        pos = m.end()
+    return "".join(out) + re.sub(r"\s", "", t[pos:])
 for k in sorted(a.keys() | b.keys()):
     x, y = a.get(k), b.get(k)
     if x == y or (x is not None and y is not None and bare(x) == bare(y)):
@@ -1256,7 +1270,14 @@ hash_table() {
     if [[ $bexpr == "(t.$key / $HASH_BUCKET)" || $bexpr == "(t.$HT_KEY / $HASH_BUCKET)" ]]; then
       local col=${bexpr#(t.} ranges=
       col=${col%% *}
-      for lo in ${bad//,/ }; do ranges="$ranges${ranges:+ or }(t.$col > $(((lo - 1) * HASH_BUCKET)) and t.$col < $(((lo + 1) * HASH_BUCKET)))"; done
+      # At the ends of bigint the bound would wrap in bash; there the bucket has no bound on that side.
+      local edge=$((9223372036854775807 / HASH_BUCKET)) r
+      for lo in ${bad//,/ }; do
+        r=true
+        ((lo - 1 < -edge)) || r="$r and t.$col > $(((lo - 1) * HASH_BUCKET))"
+        ((lo + 1 > edge)) || r="$r and t.$col < $(((lo + 1) * HASH_BUCKET))"
+        ranges="$ranges${ranges:+ or }($r)"
+      done
       where="${where:-where true} and ($ranges)"
     fi
     where="${where:-where true} and $bexpr in ($bad)"
@@ -1294,27 +1315,90 @@ check_tail() {
 hash_age() {
   local f=$WORK/hash-ok age
   if [[ ! -s $f ]]; then diff_row "hash: no 0-DIFF full hash recorded in $f"; return 0; fi
-  age=$(( ($(date +%s) - $(cat "$f")) / 3600 ))
+  age=$(( ($(date +%s) - $(awk '{ print $1 }' "$f")) / 3600 ))
   if ((age >= HASH_MAX_AGE_HOURS)); then diff_row "hash: the last 0-DIFF full hash is ${age} h old (limit $HASH_MAX_AGE_HOURS h)"; else echo "hash: last 0-DIFF full hash ${age} h ago"; fi
 }
 
+# One line per plain table: its and its descendants' n_tup_ins+upd+del and oid:filenode (TRUNCATE and
+# rewrites take a new file node). The # line changes on a restart, a stats reset (pg_stat_reset_single_table_counters
+# stamps the database's) or the reset a crash makes (pg_stat_wal's).
+HASH_SIG="with recursive d(root, rel) as (select c.oid, c.oid from pg_class c join pg_namespace n on n.oid = c.relnamespace where c.relkind = 'r' and $NS union all select d.root, i.inhrelid from d join pg_inherits i on i.inhparent = d.rel)
+select '#|' || pg_postmaster_start_time() || '|' || coalesce((select stats_reset::text from pg_stat_database where datname = current_database()), '-') || '|' || coalesce((select stats_reset::text from pg_stat_wal), '-') || '|' || current_setting('track_counts')
+union all (select format('%I.%I', n.nspname, c.relname) || '|' || sum(coalesce(s.n_tup_ins, 0) + coalesce(s.n_tup_upd, 0) + coalesce(s.n_tup_del, 0)) || '|' || string_agg(r.oid || ':' || coalesce(pg_relation_filenode(r.oid)::text, '-'), ',' order by r.oid)
+  from d join pg_class c on c.oid = d.root join pg_namespace n on n.oid = c.relnamespace join pg_class r on r.oid = d.rel left join pg_stat_all_tables s on s.relid = d.rel group by n.nspname, c.relname order by n.nspname, c.relname)"
+# A session that is not idle may hold committed writes its counters do not show yet; a prepared
+# transaction commits rows no session holds. Replication workers and the Timescale scheduler write no user table here.
+HASH_BUSY="select (select count(*) from pg_stat_activity where datname = current_database() and pid <> pg_backend_pid()
+  and backend_type not in ('walsender', 'autovacuum worker', 'logical replication apply worker', 'logical replication tablesync worker', 'logical replication parallel worker', 'TimescaleDB Background Worker Scheduler')
+  and not (state is not distinct from 'idle' and state_change < now() - make_interval(secs => $HASH_IDLE_SECS))) + (select count(*) from pg_prepared_xacts where database = current_database())"
+
+# sig_line <prefix> [file]: the one signature line that starts with the prefix.
+sig_line() { awk -v p="$1" 'index($0, p) == 1' "${2:--}"; }
+
+# hash_quiet <db>: 0 once no session on either side may hold writes its counters do not show yet.
+hash_quiet() {
+  local db=$1 end busy
+  end=$(($(date +%s) + HASH_SETTLE_SECS))
+  while :; do
+    busy=$(($(q src "$db" "$HASH_BUSY") + $(q dst "$db" "$HASH_BUSY")))
+    ((busy)) || break
+    if (($(date +%s) >= end)); then
+      echo "hash: $db: $busy session(s) not idle for $HASH_IDLE_SECS s, or prepared transaction(s), after $HASH_SETTLE_SECS s; every table hashed"
+      return 1
+    fi
+    sleep 2
+  done
+}
+
+# hash_same_run <db>: 0 if neither side restarted, reset its statistics or stopped counting since the full hash.
+hash_same_run() {
+  local db=$1 side now
+  [[ -s $WORK/hash-sig ]] || { echo "hash: $db: no $WORK/hash-sig from a 0-DIFF full hash; every table hashed"; return 1; }
+  for side in src dst; do
+    now=$(sig_line "$side $db #|" <<<"$HASH_NOW")
+    if [[ $now != *'|on' || $now != "$(sig_line "$side $db #|" "$WORK/hash-sig")" ]]; then
+      echo "hash: $db: the $side restarted, reset its statistics or does not track counts since the last full hash; every table hashed"
+      return 1
+    fi
+  done
+}
+
 cmd_hash() {
-  local only=${ARGS[0]:-} spec db table pk type nb start
-  start=$(date +%s)
+  local only=${ARGS[0]:-} spec db table pk type nb start skip side a b
+  # The fence this hash began under, if one had finished: switch takes only a hash whose fence is
+  # still the current one, never a time compared to the fence's.
+  start="$(date +%s) $(cat "$WORK/fence-ok" 2>/dev/null || echo -)"
   if ((AGE)); then hash_age; finish_check; return 0; fi
+  [[ -z $only ]] || ((MOVED == 0)) || die "hash: --moved hashes every table it cannot skip; it takes no table"
+  HASH_NOW=''
   for spec in "${DATABASES[@]}"; do
     db=$(db_of "$spec")
+    skip=0
+    if ((MOVED)) && hash_quiet "$db"; then skip=1; fi
+    # Read before any row of this db is: a write the hash does not see moves a counter after this.
+    for side in src dst; do
+      HASH_NOW+=$(q "$side" "$db" "$HASH_SIG" | sed "s/^/$side $db /")$'\n'
+    done
+    if ((skip)) && ! hash_same_run "$db"; then skip=0; fi
     while IFS='|' read -r table pk type nb; do
       [[ -n $table && ( -z $only || $only == "$table" ) ]] || continue
+      if ((skip)) && ! is_hypertable "$table"; then
+        a=$(sig_line "src $db $table|" <<<"$HASH_NOW") b=$(sig_line "dst $db $table|" <<<"$HASH_NOW")
+        if [[ -n $a && -n $b && $a == "$(sig_line "src $db $table|" "$WORK/hash-sig")" && $b == "$(sig_line "dst $db $table|" "$WORK/hash-sig")" ]]; then
+          echo "hash: $db $table unchanged on both sides since the last full hash (write counters and file nodes); not reread"
+          continue
+        fi
+      fi
       hash_table "$db" "$table" "$pk" "$type" "$nb"
     done < <(hash_meta "$db")
   done
   if [[ -z $only && $diffs == 0 ]]; then
     query_failures
     state "$WORK/hash-bounds" "$HASH_BOUNDS"
+    state "$WORK/hash-sig" "$HASH_NOW"
     state "$WORK/hash-ok" "$start"
   elif ((diffs && DRY == 0)); then
-    rm -f "$WORK/hash-ok"
+    rm -f "$WORK/hash-ok" "$WORK/hash-sig"
   fi
   finish_check
 }
@@ -1443,30 +1527,56 @@ end_sessions() {
 
 fence_ok() { if ((REVERSE)); then echo "$WORK/fence-ok.rev"; else echo "$WORK/fence-ok"; fi; }
 fenced_file() { if ((REVERSE)); then echo "$WORK/fenced.rev"; else echo "$WORK/fenced"; fi; }
+# One id per continuous fence of a side: made by the first fence, kept by its reruns, gone once that
+# side may log in again. fence-ok, hash-ok and drained-<sub> name it.
+fence_id() { if ((REVERSE)); then echo "$WORK/fence-id.rev"; else echo "$WORK/fence-id"; fi; }
+# unfence <rev|fwd>: that side's fence ends, so nothing recorded under it holds any more.
+unfence() {
+  local x='' spec
+  [[ $1 == rev ]] && x=.rev
+  ((DRY)) && return 0
+  for spec in "${DATABASES[@]}"; do rm -f "$WORK/drained-$(sub_name "$1" "$(db_of "$spec")")"; done
+  rm -f "$WORK/fence-ok$x" "$WORK/fence-id$x"
+}
 
 # Every change on FROM has reached TO: the slot of each database confirmed FROM's current LSN. A
-# subscription already off was waited on by the switch that turned it off.
+# subscription already off counts only if a switch waited on it and turned it off under this fence.
 from_slots() {
   local spec db sub
   for spec in "${DATABASES[@]}"; do
     db=$(db_of "$spec")
     if ((REVERSE)); then sub=$(sub_name rev "$db"); else sub=$(sub_name fwd "$db"); fi
     if [[ $(q "$TO" "$db" "select subenabled from pg_subscription where subname = $(lit "$sub")") == f ]]; then
-      echo "$CMD: $TO $db: $sub is disabled, so its slot is not waited on"
+      if [[ -s $(fence_id) && $(cat "$WORK/drained-$sub" 2>/dev/null) == "$(cat "$(fence_id)")" ]]; then
+        echo "$CMD: $TO $db: $sub was drained and turned off under fence $(cat "$(fence_id)")"
+      else
+        blocked "$TO $db: $sub is disabled and no switch drained it under this fence, so rows on $FROM may not have reached $TO; enable it, let it catch up, and rerun"
+      fi
       continue
     fi
     slot_wait "$FROM" "$sub" "$db"
   done
 }
 
-# Before the reverse direction carries the last rows back, every table it carries is in state r.
+# Before the reverse direction carries the last rows back, it carries every table the target
+# publishes, each in state r. A table sync a refresh just started is waited on, up to LAG_WAIT_SECS.
 reverse_ready() {
-  local spec db counts total
+  local spec db sub counts total missing deadline=$((SECONDS + LAG_WAIT_SECS)) left
   for spec in "${DATABASES[@]}"; do
-    db=$(db_of "$spec")
-    [[ -n $(q src "$db" "select 1 from pg_subscription where subname = $(lit "$(sub_name rev "$db")")") ]] || { blocked "src $db: no reverse subscription $(sub_name rev "$db")"; continue; }
-    IFS='|' read -r counts total <<<"$(ready_count src "$db" "$(sub_name rev "$db")")"
-    [[ $counts == 0 ]] || blocked "src $db: $counts of $total tables of $(sub_name rev "$db") not in state r"
+    db=$(db_of "$spec") sub=$(sub_name rev "$db")
+    [[ -n $(q src "$db" "select 1 from pg_subscription where subname = $(lit "$sub")") ]] || { blocked "src $db: no reverse subscription $sub"; continue; }
+    while :; do
+      IFS='|' read -r counts total <<<"$(ready_count src "$db" "$sub")"
+      missing=$(only_in "$(q dst "$db" "$(pub_tables_sql "$REV_PUB")")" "$(q src "$db" "$(sub_tables_sql "$sub")")" | awk 'NF { n++ } END { print n + 0 }')
+      [[ $counts == 0 && $missing == 0 ]] && break
+      left=$((deadline - SECONDS))
+      if ((DRY || left <= 0)); then
+        blocked "src $db: $counts of $total tables of $sub not in state r, $missing table(s) of $REV_PUB on dst not in it$( ((DRY)) || echo " after $LAG_WAIT_SECS s")"
+        break
+      fi
+      echo "$CMD: src $db: $counts of $total tables of $sub not in state r, $missing not in it; waiting (${left} s left)"
+      sleep 2
+    done
   done
 }
 
@@ -1502,6 +1612,7 @@ cmd_fence() {
   upstream_blockers fencing
   ((blocks == 0)) || finish
   ((DRY)) || rm -f "$(fence_ok)"
+  ((DRY)) || [[ -s $(fence_id) ]] || state "$(fence_id)" "$(date +%s)-$$"
   roles=$(login_roles)
   for role in $roles; do
     kept "$role" && continue
@@ -1512,8 +1623,9 @@ cmd_fence() {
       continue
     fi
     if [[ $can != f ]]; then
-      apply "$FROM" postgres "SET lock_timeout = '2s'; ALTER ROLE $(ident "$role") NOLOGIN;" "$FROM: $role NOLOGIN"
+      # The journal first: a run killed after the ALTER commits still lets thaw give the LOGIN back.
       ((DRY)) || { [[ -e $fenced ]] && grep -qxF -- "$role" "$fenced"; } || echo "$role" >>"$fenced"
+      apply "$FROM" postgres "SET lock_timeout = '2s'; ALTER ROLE $(ident "$role") NOLOGIN;" "$FROM: $role NOLOGIN"
     fi
     end_sessions "$FROM" "$role"
   done
@@ -1525,29 +1637,33 @@ cmd_fence() {
   fi
   from_slots
   query_failures
-  ((blocks || DRY)) || state "$(fence_ok)" "$(date +%s)"
+  ((blocks || DRY)) || state "$(fence_ok)" "$(cat "$(fence_id)")"
   finish
 }
 
 # The way back from a fence that no switch followed. Nothing on the target has been anyone's
 # primary, so the source takes over again as it was; after a switch only the reverse path is safe.
+# The target may hold writes the source lacks: a switch reached its first LOGIN grant on the target
+# and no switch --reverse has reached its first on the source since. Each restamps its file.
+target_primary() { [[ -s $WORK/switched ]] && ! { [[ -s $WORK/reversed ]] && (($(cat "$WORK/reversed") > $(cat "$WORK/switched"))); }; }
+# switched and reversed order the switches: each is written above the other, even in one second.
+switch_stamp() { local t o; t=$(date +%s) o=$(cat "$WORK/$2" 2>/dev/null || echo 0); ((t > o)) || t=$((o + 1)); state "$WORK/$1" "$t"; }
+
 cmd_thaw() {
   local role roles spec db fenced=$WORK/fenced
   ((REVERSE == 0)) || die "thaw: undoes a forward fence only; after a switch, fence --reverse and switch --reverse roll back"
-  # Each switch restamps its file, so the later of the two says which side took writes last.
-  if [[ -s $WORK/switched ]] && ! { [[ -s $WORK/reversed ]] && (($(cat "$WORK/reversed") >= $(cat "$WORK/switched"))); }; then
-    die "thaw: $WORK/switched is newer than any switch --reverse, so the target may hold writes the source lacks; roll back with fence --reverse and switch --reverse"
-  fi
-  ((DRY)) || rm -f "$WORK/fence-ok"
+  target_primary && die "thaw: $WORK/switched is newer than any switch --reverse, so the target may hold writes the source lacks; roll back with fence --reverse and switch --reverse"
+  unfence fwd
   roles=$(login_roles)
-  # A switch that stopped part way may have granted LOGIN on the target; nobody logs in there again.
+  # Nobody logs in on the target again, and no session of a run stopped part way survives there.
   for role in $roles; do
     kept "$role" && continue
     is_super dst "$role" && continue
-    [[ $(q dst postgres "select rolcanlogin from pg_roles where rolname = $(lit "$role")") == t ]] || continue
-    apply dst postgres "SET lock_timeout = '2s'; ALTER ROLE $(ident "$role") NOLOGIN;" "dst: $role NOLOGIN again"
+    [[ $(q dst postgres "select rolcanlogin from pg_roles where rolname = $(lit "$role")") != t ]] ||
+      apply dst postgres "SET lock_timeout = '2s'; ALTER ROLE $(ident "$role") NOLOGIN;" "dst: $role NOLOGIN again"
     end_sessions dst "$role"
   done
+  for spec in "${DATABASES[@]}"; do unschedule_timescale "$(db_of "$spec")"; done
   for spec in "${DATABASES[@]}"; do sub_set dst "$(db_of "$spec")" "$(sub_name fwd "$(db_of "$spec")")" t; done
   for role in $roles; do
     kept "$role" && continue
@@ -1592,15 +1708,19 @@ sub_resume() {
 
 # A slot a subscription can resume from: present, not lost, with a confirmed position. Resuming
 # onto a missing one would let a new slot start past commits nobody carried.
+# slot_ok <side> <db> <slot> <what> [warn]: warn prints the reason and leaves the run unblocked.
 slot_ok() {
-  local side=$1 db=$2 slot=$3 st
+  local side=$1 db=$2 slot=$3 st why=''
   st=$(q "$side" "$db" "select coalesce(wal_status, '-') || '|' || coalesce(confirmed_flush_lsn::text, '-') from pg_replication_slots where slot_name = $(lit "$slot")")
-  if [[ -z $st ]]; then blocked "$side $db: no slot $slot; $4 has nothing to resume from"; return 1; fi
-  if [[ $st == lost\|* || $st == *\|- ]]; then blocked "$side $db: slot $slot is $st (wal_status|confirmed_flush_lsn); $4 cannot resume from it"; return 1; fi
+  if [[ -z $st ]]; then why="$side $db: no slot $slot; $4 has nothing to resume from"
+  elif [[ $st == lost\|* || $st == *\|- ]]; then why="$side $db: slot $slot is $st (wal_status|confirmed_flush_lsn); $4 cannot resume from it"; fi
+  [[ -n $why ]] || return 0
+  if [[ ${5:-} == warn ]]; then echo "$CMD: WARNING $why; it stays off, and another switch needs a new one (init, subscribe)"; else blocked "$why"; fi
+  return 1
 }
 
 cmd_switch() {
-  local role spec db table roles n fence
+  local role spec db table roles n fence sub can
   fence=fence
   ((REVERSE == 0)) || fence='fence --reverse'
   upstream_blockers "the switch"
@@ -1614,32 +1734,44 @@ cmd_switch() {
   if ((DRY == 0)) && [[ ! -s $(fence_ok) ]]; then blocked "no $(fence_ok): $fence has not finished since it last started; run $fence"; fi
   # Under the fence the source is still, so one full hash begun after it covers every row; the
   # live hash before it and verify's tail cannot see an update to an old row.
-  if ((DRY == 0 && REVERSE == 0)) && [[ -s $(fence_ok) ]] && ! { [[ -s $WORK/hash-ok ]] && (($(cat "$WORK/hash-ok") >= $(cat "$(fence_ok)"))); }; then
-    blocked "no 0-DIFF full hash begun after the fence ($(fence_ok)); run hash $CLUSTER"
+  if ((DRY == 0 && REVERSE == 0)) && [[ -s $(fence_ok) ]] && [[ $(cut -s -d' ' -f2- "$WORK/hash-ok" 2>/dev/null) != "$(cat "$(fence_ok)")" ]]; then
+    blocked "no 0-DIFF full hash begun after fence $(cat "$(fence_ok)") finished; run hash $CLUSTER"
   fi
   # The target's roles were made without passwords; passwords copies the source's verifiers.
   if via_forward && ((REVERSE == 0)) && [[ ! -s $WORK/passwords-ok ]]; then
     if ((DRY)); then echo "dry run: no $WORK/passwords-ok yet; remote.sh run switch runs passwords first"; else blocked "no $WORK/passwords-ok; run deploy/aws/db/remote.sh run passwords $CLUSTER"; fi
   fi
+  if ((DRY == 0)) && [[ ! -s $(fence_id) ]]; then blocked "no $(fence_id): run $fence"; fi
   ((blocks == 0)) || finish
   catchup_tables
   sync_sequences
   needs_first "the subscriptions change once the source holds the target's last rows and sequence values"
-  ((REVERSE == 0)) || reverse_ready
+  if ((REVERSE)); then
+    for spec in "${DATABASES[@]}"; do sync_partitions dst src "$(db_of "$spec")" "$(sub_name rev "$(db_of "$spec")")" "$REV_PUB"; done
+    needs_first "the reverse is checked once the source has the target's partitions"
+    reverse_ready
+  fi
   ((blocks == 0)) || finish
   # Every row FROM took before the fence is on TO before its subscription stops.
   from_slots
+  ((blocks == 0)) || finish
   for spec in "${DATABASES[@]}"; do
     db=$(db_of "$spec")
-    if ((REVERSE)); then
-      sub_set src "$db" "$(sub_name rev "$db")" f
-      slot_ok src "$db" "$(sub_name fwd "$db")" "the forward subscription" || continue
+    if ((REVERSE)); then sub=$(sub_name rev "$db"); else sub=$(sub_name fwd "$db"); fi
+    ((DRY)) || state "$WORK/drained-$sub" "$(cat "$(fence_id)")"
+    if ((REVERSE)); then sub_set src "$db" "$sub" f; else sub_set dst "$db" "$sub" f; fi
+  done
+  if ((REVERSE)); then
+    # One direction at a time: the forward resumes once the source's root steps turned the reverse off.
+    needs_first "the forward resumes once the reverse is off"
+    for spec in "${DATABASES[@]}"; do
+      db=$(db_of "$spec")
+      # A lost forward slot costs the next attempt a new forward, not this rollback its LOGIN.
+      if ! slot_ok src "$db" "$(sub_name fwd "$db")" "the forward subscription" warn; then continue; fi
       sub_resume dst "$db" "$(sub_name fwd "$db")"
       sync_partitions src dst "$db" "$(sub_name fwd "$db")" "$PUB"
-    else
-      sub_set dst "$db" "$(sub_name fwd "$db")" f
-    fi
-  done
+    done
+  fi
   if ((REVERSE == 0)); then
     for table in ${HYPERTABLES[@]+"${HYPERTABLES[@]}"}; do
       [[ -s $(ht_state "$table")/event_floor.rev ]] || state "$(ht_state "$table")/event_floor.rev" "$(q dst "$HT_DB" "select coalesce(max($HT_KEY), 0) from $table")"
@@ -1651,17 +1783,28 @@ cmd_switch() {
   fi
   # No role logs in on TO before every step above has run, the source's root steps included.
   needs_first "roles on $TO get LOGIN once the steps above have run"
+  query_failures
   ((blocks == 0)) || finish
+  # From the first grant on, TO may take writes: recovery treats it as primary, FROM's fence is over.
+  if ((DRY == 0)); then
+    if ((REVERSE)); then unfence fwd; switch_stamp reversed switched; else unfence rev; switch_stamp switched reversed; fi
+  fi
   # A superuser on either side keeps the LOGIN it has there: the switch grants nothing a superuser holds.
   for role in $roles; do
     if is_super src "$role" || is_super dst "$role"; then echo "$CMD: $role is a superuser; its LOGIN on $TO stays as it is"; continue; fi
-    [[ $(q "$TO" postgres "select rolcanlogin from pg_roles where rolname = $(lit "$role")") == t ]] && continue
+    can=$(q "$TO" postgres "select rolcanlogin from pg_roles where rolname = $(lit "$role")")
+    # A role made on FROM since the last switch has nothing on TO to give LOGIN back to.
+    [[ -n $can ]] || { echo "$CMD: $role is not on $TO; it was made on $FROM, so it gets no LOGIN here"; continue; }
+    [[ $can == t ]] && continue
+    if ((REVERSE)) && ! src_by_admin "$TO" && ! { [[ -e $WORK/fenced ]] && grep -qxF -- "$role" "$WORK/fenced"; }; then
+      echo "$CMD: $role is NOLOGIN on $TO but fence did not make it so; left as it is"
+      continue
+    fi
     if src_by_admin "$TO"; then need login "$role"; else apply "$TO" postgres "ALTER ROLE $(ident "$role") LOGIN;" "$TO: $role LOGIN"; fi
   done
   needs_first
   query_failures
   ((blocks == 0)) || finish
-  if ((REVERSE)); then state "$WORK/reversed" "$(date +%s)"; else state "$WORK/switched" "$(date +%s)"; fi
   finish
 }
 
@@ -1768,10 +1911,10 @@ sync_partitions() {
       blocked "$to $db: $t holds rows that differ from $from's; REFRESH with copy_data=false would leave them behind, so reconcile it by hand under the fence"
   done <<<"$missing"
   ((blocks == b0)) || return 0
-  if ((rows && empty)); then blocked "$to $db: $sub lacks $rows table(s) holding rows and $empty empty one(s); one REFRESH takes one copy_data, so this needs a hand decision: $(paste -sd' ' <<<"$missing")"; return 0; fi
+  if ((rows && empty)); then blocked "$to $db: $sub lacks $rows table(s) holding rows and $empty empty one(s); one REFRESH takes one copy_data, so this needs a hand decision: $(paste -sd' ' - <<<"$missing")"; return 0; fi
   if ((rows)); then copy=false; else copy=true; fi
   if src_by_admin "$to"; then need refresh "$db" "$copy"; return 0; fi
-  apply "$to" "$db" "ALTER SUBSCRIPTION $sub REFRESH PUBLICATION WITH (copy_data = $copy);" "$to $db: $sub refreshed for $(paste -sd' ' <<<"$missing") (copy_data=$copy)"
+  apply "$to" "$db" "ALTER SUBSCRIPTION $sub REFRESH PUBLICATION WITH (copy_data = $copy);" "$to $db: $sub refreshed for $(paste -sd' ' - <<<"$missing") (copy_data=$copy)"
 }
 
 cmd_partitions() {
@@ -1824,7 +1967,7 @@ drop_pub() {
 
 cmd_retire() {
   local stamp=$WORK/switched age spec db
-  [[ -s $WORK/reversed ]] && stamp=$WORK/reversed
+  [[ -s $WORK/reversed ]] && (($(cat "$WORK/reversed") > $(cat "$WORK/switched" 2>/dev/null || echo 0))) && stamp=$WORK/reversed
   if [[ -s $stamp ]]; then
     age=$(($(date +%s) - $(cat "$stamp")))
     ((age >= REVERSE_HOURS * 3600 || FORCE)) || die "retire: $((age / 3600)) h since $(basename "$stamp"), the window is $REVERSE_HOURS h (--force overrides)"
@@ -1914,8 +2057,9 @@ EOS
         ok_db "$a"
         local v called
         read -r v called <<<"$c"
-        [[ $b =~ ^[A-Za-z0-9_.\"]+$ && $v =~ ^-?[0-9]+$ && ($called == t || $called == f) ]] || die "srcexec: setval $b $c has an unexpected shape"
-        printf 'pq %q -c %q >/dev/null; changed %q\n' "$a" "SELECT setval($(lit "$b")::regclass, $v, $([[ $called == t ]] && echo true || echo false))" "src $a: $b at $v (is_called $called) as on the target"
+        # is_called as sync_sequences reads it: SEQ_ROWS concatenates the boolean, which spells it true or false.
+        [[ $b =~ ^[A-Za-z0-9_.\"]+$ && $v =~ ^-?[0-9]+$ && ($called == true || $called == false) ]] || die "srcexec: setval $b $c has an unexpected shape"
+        printf 'pq %q -c %q >/dev/null; changed %q\n' "$a" "SELECT setval($(lit "$b")::regclass, $v, $called)" "src $a: $b at $v (is_called $called) as on the target"
         ;;
       revsub)
         ok_db "$a"
@@ -2064,6 +2208,16 @@ ensure_timescale() {
 }
 
 # The switch schedules a target job where the source's same job is scheduled.
+# thaw: no target job runs while the source is primary again; a switch that stopped part way may have scheduled them.
+unschedule_timescale() {
+  local db=$1 id proc table every sched config
+  has_ext dst "$db" || return 0
+  while IFS='|' read -r id proc table every sched config; do
+    [[ -n $id && $sched == t ]] || continue
+    apply dst "$db" "SELECT alter_job($id, scheduled => false);" "$db: job $id $proc on $table unscheduled again"
+  done < <(q dst "$db" "$TS_JOBS")
+}
+
 schedule_timescale() {
   local db=$1 id proc table every sched config want
   has_ext src "$db" || return 0
