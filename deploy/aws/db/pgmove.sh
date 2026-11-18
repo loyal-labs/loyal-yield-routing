@@ -663,12 +663,27 @@ cmd_init() {
     db=$(db_of "$spec")
     ensure_extensions "$db"
     ensure_schema "$db"
+    ensure_database_acl "$db"
     ensure_constraint_names "$db"
     ensure_hypertables "$db"
     ensure_timescale "$db"
   done
   ensure_volume_guard
   finish
+}
+
+# CREATE DATABASE leaves PUBLIC its CONNECT and TEMPORARY; a source that revoked them, or granted
+# CONNECT to named roles, gets the same rows here. The owner's own rows are left as they are.
+DB_ACL_ROWS="select case when a.grantee = 0 then 'PUBLIC' else format('%I', pg_get_userbyid(a.grantee)) end || '|' || a.privilege_type || '|' || a.is_grantable from pg_database d, aclexplode(coalesce(d.datacl, acldefault('d', d.datdba))) a where d.datname = current_database() and a.grantee <> d.datdba"
+
+ensure_database_acl() {
+  local db=$1 want have who priv opt sql=''
+  want=$(q src "$db" "$DB_ACL_ROWS" | sort) || return 0
+  have=$(q dst "$db" "$DB_ACL_ROWS" | sort) || return 0
+  [[ $want == "$have" ]] && return 0
+  while IFS='|' read -r who priv opt; do [[ -z $who ]] || sql+="REVOKE ALL ON DATABASE $(printf '"%s"' "${db//\"/\"\"}") FROM $who CASCADE;"$'\n'; done <<<"$have"
+  while IFS='|' read -r who priv opt; do [[ -z $who ]] || sql+="GRANT $priv ON DATABASE $(printf '"%s"' "${db//\"/\"\"}") TO $who$([[ $opt == t ]] && echo ' WITH GRANT OPTION');"$'\n'; done <<<"$want"
+  apply dst "$db" "$sql" "$db: database privileges as on the source ($(grep -c . <<<"$want") row(s))"
 }
 
 scram() {
