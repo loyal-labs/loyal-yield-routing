@@ -13,3 +13,5 @@
 ^etc /etc/systemd/system/postgresql@18-main[.]service[.]d/volume[.]conf: only on old$	owned-by-postgres-lane	cluster unit drop-in, deploy/aws/db
 ^etc /etc/postgresql/18/main/pg_hba[.]conf[.]pgmove-[0-9TZ]+: only on old$	clutter	pgmove backup copy on db-primary
 ^unit pg-forward@[.]service: only on new	owned-by-postgres-lane	pg-forward@loyal, deploy/aws/db
+^etc /etc/pgbackrest/conf[.]d(/cipher[.]conf)?: only on new$	owned-by-postgres-lane	repo cipher for the S3 stanza, written on the box by deploy/aws/backup.sh
+^etc /etc/systemd/system/postgresql@18-main[.]service[.]d/pgmove-volume[.]conf: only on new$	owned-by-postgres-lane	mount guard drop-in written by pgmove init, deploy/aws/db
