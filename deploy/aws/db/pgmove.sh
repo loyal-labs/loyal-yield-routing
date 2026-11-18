@@ -53,7 +53,7 @@ done
 
 PG_MAJOR=18
 SRC_SSH='' SRC_SOCKET='' SRC_PORT='' SRC_OSUSER=''
-DST_SSH=local DST_CLUSTER=main DST_PORT=5432 DST_SOCKET=/var/run/postgresql DST_OSUSER=postgres
+DST_SSH=local DST_CLUSTER=main DST_DATA='' DST_PORT=5432 DST_SOCKET=/var/run/postgresql DST_OSUSER=postgres
 ENCODING=UTF8 LOCALE_PROVIDER='' LOCALE=''
 DATABASES=()
 HYPERTABLES=() HT_DB='' HT_TIME=observed_at HT_KEY=event_id TS_RETAIN_DAYS=62 CATCHUP_MARGIN=10000
@@ -278,8 +278,10 @@ ensure_cluster() {
   local port extra=
   port=$(on "$DST_SSH" "pg_lsclusters -h 2>/dev/null | awk '\$1 == \"$PG_MAJOR\" && \$2 == \"$DST_CLUSTER\" { print \$3 }'" 2>/dev/null || true)
   [[ $LOCALE_PROVIDER == builtin ]] && extra=" --builtin-locale=$LOCALE"
+  local data=''
+  [[ -z $DST_DATA ]] || data=" -d $DST_DATA"
   if [[ -z $port ]]; then
-    run "$DST_SSH" "pg_createcluster $PG_MAJOR $DST_CLUSTER --port $DST_PORT --encoding $ENCODING --locale $LOCALE -- --locale-provider=$LOCALE_PROVIDER$extra && systemctl enable --now postgresql@$PG_MAJOR-$DST_CLUSTER" \
+    run "$DST_SSH" "pg_createcluster $PG_MAJOR $DST_CLUSTER$data --port $DST_PORT --encoding $ENCODING --locale $LOCALE -- --locale-provider=$LOCALE_PROVIDER$extra && systemctl enable --now postgresql@$PG_MAJOR-$DST_CLUSTER" \
       "cluster $PG_MAJOR/$DST_CLUSTER on port $DST_PORT, $ENCODING, $LOCALE_PROVIDER $LOCALE"
   elif [[ $port != "$DST_PORT" ]]; then
     die "target cluster $PG_MAJOR/$DST_CLUSTER listens on $port, $CLUSTER.conf says $DST_PORT"
