@@ -1534,7 +1534,10 @@ cmd_fence() {
 cmd_thaw() {
   local role roles spec db fenced=$WORK/fenced
   ((REVERSE == 0)) || die "thaw: undoes a forward fence only; after a switch, fence --reverse and switch --reverse roll back"
-  [[ ! -s $WORK/switched ]] || die "thaw: $WORK/switched is stamped, so the target may hold writes the source lacks; roll back with fence --reverse and switch --reverse"
+  # Each switch restamps its file, so the later of the two says which side took writes last.
+  if [[ -s $WORK/switched ]] && ! { [[ -s $WORK/reversed ]] && (($(cat "$WORK/reversed") >= $(cat "$WORK/switched"))); }; then
+    die "thaw: $WORK/switched is newer than any switch --reverse, so the target may hold writes the source lacks; roll back with fence --reverse and switch --reverse"
+  fi
   ((DRY)) || rm -f "$WORK/fence-ok"
   roles=$(login_roles)
   # A switch that stopped part way may have granted LOGIN on the target; nobody logs in there again.
@@ -1658,7 +1661,7 @@ cmd_switch() {
   needs_first
   query_failures
   ((blocks == 0)) || finish
-  if ((REVERSE)); then [[ -s $WORK/reversed ]] || state "$WORK/reversed" "$(date +%s)"; else [[ -s $WORK/switched ]] || state "$WORK/switched" "$(date +%s)"; fi
+  if ((REVERSE)); then state "$WORK/reversed" "$(date +%s)"; else state "$WORK/switched" "$(date +%s)"; fi
   finish
 }
 
