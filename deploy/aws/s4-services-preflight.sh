@@ -36,8 +36,8 @@ for u in loyal-clickstack loyal-clickstack-relay; do
   echo "pin $u ${pin:-none}"
 done
 for id in $want_cs $want_relay; do
-  blob=/var/lib/containerd/io.containerd.content.v1.content/blobs/sha256/${id#sha256:}
-  arch=$(python3 -I -c 'import json,sys;print(json.load(open(sys.argv[1])).get("architecture","?"))' "$blob" 2>/dev/null || echo missing)
+  # the id is the single-platform manifest digest; its config blob names the architecture
+  arch=$(python3 -I -c 'import json,sys;d="/var/lib/containerd/io.containerd.content.v1.content/blobs/sha256/";m=json.load(open(d+sys.argv[1]));print(json.load(open(d+m["config"]["digest"][7:])).get("architecture","?"))' "${id#sha256:}" 2>/dev/null || echo missing)
   echo "image $id $arch"
 done
 echo "enabled $(systemctl list-unit-files 'loyal-*' --state=enabled --no-legend | wc -l)"
@@ -141,11 +141,15 @@ trap 'rm -r "$tmp"' EXIT
 for f in w d; do grep -q 'difference(s)$' "$tmp/$f" || { report FAIL host-diff "host-diff.sh produced no summary for $f: $(head -1 "$tmp/$f")"; unclassified=1000; }; done
 grep -v 'difference(s)$' "$tmp/w" | sort >"$tmp/w.l"
 grep -v 'difference(s)$' "$tmp/d" | sort >"$tmp/d.l"
+grep 'only on new' "$tmp/w.l" >"$tmp/w.new" || true
+grep 'only on new' "$tmp/d.l" >"$tmp/d.new" || true
 while IFS= read -r line; do
   [[ -n $line ]] || continue
-  if grep -q -F -x "$line" <(grep 'only on new' "$tmp/w.l") && ! grep -q -F -x "$line" <(grep 'only on new' "$tmp/d.l") ||
-    grep -q -F -x "$line" <(grep 'only on new' "$tmp/d.l") && ! grep -q -F -x "$line" <(grep 'only on new' "$tmp/w.l"); then
-    union=$((union + 1)) # loyal-main holds the other old box's file
+  in_w=0 in_d=0
+  grep -q -F -x -- "$line" "$tmp/w.new" && in_w=1
+  grep -q -F -x -- "$line" "$tmp/d.new" && in_d=1
+  if ((in_w != in_d)); then
+    union=$((union + 1)) # only on new against one old box, so the other old box holds it
     continue
   fi
   hit=0
