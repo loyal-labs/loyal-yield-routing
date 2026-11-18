@@ -147,19 +147,23 @@ admin_cmd() {
 
 # src_run <cluster> <need lines>: the root script srcexec builds here from the box's need lines,
 # run on the source through PGMOVE_SRC_ADMIN. Catchup rows go box to source over a pipe.
+# forward_loop calls it in an OR-list, where errexit is off: each step returns 1 itself.
 src_run() {
-  local c=$1 needs=$2 admin script t f
-  admin=$(admin_cmd)
+  local c=$1 needs=$2 admin script t f moved rc=0
+  admin=$(admin_cmd) || return 1
   while read -r _ _ t f; do
-    script=$(printf 'need: catchin %s %s\n' "$t" "$f" | bash "$HERE/pgmove.sh" srcexec "$c")
-    echo "remote: catchup $t above $f, target to source: +$(box_pgmove catchout "$c" "$t" "$f" | "$admin" "bash -c $(printf %q "$script")") rows"
-  done < <(grep '^need: catchup ' <<<"$needs" || true)
+    script=$(printf 'need: catchin %s %s\n' "$t" "$f" | bash "$HERE/pgmove.sh" srcexec "$c") || { echo "remote: srcexec catchin $t $f failed" >&2; return 1; }
+    moved=$(box_pgmove catchout "$c" "$t" "$f" | "$admin" "bash -c $(printf %q "$script")") || { echo "remote: catchup $t above $f failed" >&2; return 1; }
+    [[ $moved =~ ^[0-9]+$ ]] || { echo "remote: catchup $t above $f answered '$moved', not a row count" >&2; return 1; }
+    echo "remote: catchup $t above $f, target to source: +$moved rows"
+  done < <(awk '/^need: catchup /' <<<"$needs")
   if grep -q '^need: revsub ' <<<"$needs"; then
     PGMOVE_REV_PW=$(ssh -o BatchMode=yes "$(conf_box "$c")" "sudo -n cat /etc/pgmove/$c/repl.password") || die "cannot read the replication password on the box"
     export PGMOVE_REV_PW
   fi
-  printf '%s\n' "$needs" | bash "$HERE/pgmove.sh" srcexec "$c" | "$admin" "bash -s"
+  printf '%s\n' "$needs" | bash "$HERE/pgmove.sh" srcexec "$c" | "$admin" "bash -s" || rc=1
   unset PGMOVE_REV_PW
+  return "$rc"
 }
 
 # The box step prints need: lines and exits 3 when root on the source must act; this runs them and
@@ -171,13 +175,16 @@ forward_loop() {
     passwords_on "$c" || return
   fi
   out=$(mktemp)
-  for round in 1 2 3 4; do
+  # Four rounds of source steps, each followed by the box step again: the last run is never one
+  # whose needs ran unchecked.
+  for round in 1 2 3 4 5; do
     set +e
     box_pgmove "$@" | tee "$out"
     rc=${PIPESTATUS[0]}
     set -e
     ((rc == 3)) || break
-    needs=$(grep '^need: ' "$out" || true)
+    ((round < 5)) || { rm -f "$out"; die "$1 still asks for source steps after 4 rounds; stopping"; }
+    needs=$(awk '/^need: /' "$out")
     [[ -n $needs ]] || die "$1 exited 3 with no need: lines"
     [[ $needs != "$prev" ]] || die "$1 asked for the same source steps after they ran; stopping"
     prev=$needs

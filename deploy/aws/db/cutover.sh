@@ -7,8 +7,9 @@ usage() {
   cat >&2 <<EOF
 usage: $0 <cluster> <step>
   preflight          installs pgmove on the target box; pgmove preflight at 0 DIFF; target units present and stopped
-  freeze             stops the writers on CUT_OLD, fences the source roles, catches up, syncs sequences, verify at 0 DIFF
-  switch             subscriptions off, reverse armed, target roles LOGIN, CUT_SERVICES started on CUT_NEW
+  freeze             stops the writers on CUT_OLD, fences the source roles, catches up, syncs sequences, verify and a full hash at 0 DIFF
+  abort              after freeze, before switch: thaw (source roles LOGIN again, the forward on), writers back on CUT_OLD
+  switch             only after a freeze that passed: subscriptions off, reverse armed, target roles LOGIN, CUT_SERVICES started on CUT_NEW
   verify             health on CUT_NEW, writes land on the target, the source took none outside the reverse subscription
   unfreeze           verify, then timers and engines on CUT_NEW; units enabled on CUT_NEW and disabled on CUT_OLD
   rollback           before unfreeze: the writers go back to CUT_OLD, every target write carried back by the reverse subscription
@@ -60,6 +61,8 @@ now() { perl -MTime::HiRes=time -e 'printf "%.1f", time'; }
 pg() { local sub=$1; shift; "$HERE/remote.sh" run "$sub" "$CLUSTER" "$@"; }
 stamped() { [[ $(on "$BOX" "test -e $STATE/$1 && echo yes || echo no") == yes ]]; }
 
+# A step runs in an OR-list here, where bash turns errexit off for everything it calls: every
+# command in a step function carries its own || die or || return 1.
 timed() {
   local label=$1 t rc=0
   shift
@@ -88,25 +91,35 @@ stop_writers() {
   local host=$1 u timers oneshots
   timers=$TIMERS oneshots=$ONESHOTS
   if [[ -n $timers ]]; then
-    on "$host" "systemctl stop $timers"
+    on "$host" "systemctl stop $timers" || die "$host: stopping $timers failed"
     echo "$host: stopped timers $timers"
   fi
   if [[ -n $oneshots ]]; then
-    on "$host" "for i in \$(seq 300); do systemctl is-active $oneshots | grep -qvxE 'inactive|failed' || exit 0; sleep 1; done; echo 'a timer run is still running after 300s' >&2; exit 1"
+    on "$host" "for i in \$(seq 300); do systemctl is-active $oneshots | grep -qvxE 'inactive|failed' || exit 0; sleep 1; done; echo 'a timer run is still running after 300s' >&2; exit 1" || die "$host: a timer run of $oneshots did not end"
   fi
   for u in $ENGINES; do
-    on "$host" "systemctl stop $u; [ \"\$(systemctl show -p Result --value $u)\" = success ] || { echo '$u did not stop cleanly' >&2; exit 1; }"
+    on "$host" "systemctl stop $u; [ \"\$(systemctl show -p Result --value $u)\" = success ] || { echo '$u did not stop cleanly' >&2; exit 1; }" || die "$host: $u did not stop cleanly"
     echo "$host: stopped $u cleanly"
   done
-  on "$host" "systemctl stop $SERVICES $STOPS"
+  on "$host" "systemctl stop $SERVICES $STOPS" || die "$host: stopping $SERVICES $STOPS failed"
   echo "$host: stopped $SERVICES $STOPS"
   writers_stopped "$host" || die "a writer is still active on $host"
 }
 
+# One "unit LoadState ActiveState" line per configured unit, each loaded and inactive or failed. A
+# CUT_STOP unit may be absent from a host; an absent writer is a typo, not a stopped writer.
 writers_stopped() {
-  local states
-  states=$(on "$1" "systemctl is-active $ENGINES $SERVICES $STOPS $ONESHOTS $TIMERS || true")
-  [[ -n $states ]] && ! grep -qvxE 'inactive|failed' <<<"$states"
+  local states u want=0
+  states=$(on "$1" "for u in $ENGINES $SERVICES $STOPS $ONESHOTS $TIMERS; do echo \"\$u \$(systemctl show -p LoadState --value \$u) \$(systemctl show -p ActiveState --value \$u)\"; done") || { echo "cutover: $1 did not answer for its units" >&2; return 1; }
+  for u in $ENGINES $SERVICES $STOPS $ONESHOTS $TIMERS; do
+    want=$((want + 1))
+    if [[ " $STOPS " == *" $u "* ]]; then
+      grep -qxE "$u (loaded (inactive|failed)|not-found inactive)" <<<"$states" || { echo "cutover: $1 $u: $(grep "^$u " <<<"$states" || echo 'no state')" >&2; return 1; }
+    else
+      grep -qxE "$u loaded (inactive|failed)" <<<"$states" || { echo "cutover: $1 $u: $(grep "^$u " <<<"$states" || echo 'no state')" >&2; return 1; }
+    fi
+  done
+  [[ $(grep -c . <<<"$states") == "$want" ]] || { echo "cutover: $1 answered $(grep -c . <<<"$states") unit lines for $want units" >&2; return 1; }
 }
 
 start_healthy() {
@@ -119,14 +132,14 @@ start_healthy() {
       echo "$host: $u active (no health path in $CLUSTER.conf)"
       continue
     fi
-    on "$host" "systemctl start $u; for i in \$(seq 90); do systemctl is-active --quiet $u && curl -fsS -o /dev/null --max-time 2 http://127.0.0.1:$path && { echo \"$host: $u active, $path answers after \${i}s\"; exit 0; }; sleep 1; done; echo '$u: not healthy after 90s' >&2; exit 1"
+    on "$host" "systemctl start $u; for i in \$(seq 90); do systemctl is-active --quiet $u && curl -fsS -o /dev/null --max-time 2 http://127.0.0.1:$path && { echo \"$host: $u active, $path answers after \${i}s\"; exit 0; }; sleep 1; done; echo '$u: not healthy after 90s' >&2; exit 1" || die "$host: $u not healthy after start"
   done
 }
 
 start_timers() {
   local timers
   timers=$TIMERS
-  [[ -z $timers ]] || { on "$1" "systemctl start $timers"; echo "$1: started $timers"; }
+  [[ -z $timers ]] || { on "$1" "systemctl start $timers" || die "$1: starting $timers failed"; echo "$1: started $timers"; }
 }
 
 health() {
@@ -160,10 +173,20 @@ units_ready() {
 
 writes_total() { sed -n 's/^writes: .* total \([0-9]*\) since .*/\1/p' <<<"$1"; }
 
+# pg_counted <tag> <side>: pgmove writes diff, which exits 0 only once it read every counter and
+# prints its "total" line; anything else is no answer, never zero writes.
+pg_counted() {
+  local out
+  out=$(pg writes diff "$1" "$2") || { echo "verify: FAIL writes diff $1 $2 did not answer (exit $?); writes cannot be compared" >&2; return 1; }
+  [[ -n $(writes_total "$out") ]] || { echo "verify: FAIL writes diff $1 $2 printed no total; writes cannot be compared" >&2; return 1; }
+  printf '%s\n' "$out"
+}
+
 source_outside_reverse() {
   local src dst
-  src=$(pg writes diff freeze src || true)
-  dst=$(pg writes diff switch dst || true)
+  # The target first, then the source once the reverse slot carried everything the target took.
+  dst=$(pg_counted switch dst) || return 1
+  src=$(pg_counted freeze src) || return 1
   printf '%s\n%s\n' "$src" "$dst" | sed -n 's/^writes: /  /p'
   grep -q 'counters reset' <<<"$src$dst" && { echo "verify: FAIL counters reset on one side; writes cannot be compared"; return 1; }
   awk '$1 == "DIFF" && $2 == "dst" { d[$3 " " $4] = $5 } $1 == "DIFF" && $2 == "src" { s[$3 " " $4] = $5 }
@@ -175,44 +198,59 @@ cmd_preflight() {
   local out
   mkdir -p "$CUTOVER_PROOF"
   out=$CUTOVER_PROOF/preflight-verify-$(date -u +%Y%m%dT%H%MZ).txt
-  timed install "$HERE/remote.sh" install "$CLUSTER"
+  timed install "$HERE/remote.sh" install "$CLUSTER" || die "install failed"
   # pgmove preflight: tables in state r, lag, verify, the reverse, fence and switch dry runs, marker, volume.
   timed preflight pg preflight >"$out" || { cat "$out"; die "pgmove preflight failed; full output $out"; }
   echo "preflight: $(tail -1 "$out"); full output $out"
-  timed units units_ready
-  timed writes-save pg writes save preflight src
-  timed ssh-roundtrip on "$CUT_OLD" true
+  timed units units_ready || die "the units on $CUT_NEW are not ready"
+  timed writes-save pg writes save preflight src || die "writes save failed"
+  timed ssh-roundtrip on "$CUT_OLD" true || die "$CUT_OLD did not answer"
   report_times
 }
 
 cmd_freeze() {
   local out
   stamped switched && die "the switch has run; freeze is for the source side, rerun switch instead"
+  on "$BOX" "rm -f $STATE/freeze-ok" || die "cannot remove $STATE/freeze-ok on $BOX"
   mkdir -p "$CUTOVER_PROOF"
   out=$CUTOVER_PROOF/freeze-verify-$(date -u +%Y%m%dT%H%MZ).txt
-  timed install "$HERE/remote.sh" install "$CLUSTER"
-  timed stop stop_writers "$CUT_OLD"
-  timed fence pg fence
-  timed catchup pg catchup
-  timed sequences pg sequences
-  timed writes-save pg writes save freeze src
-  timed verify pg verify >"$out" || { cat "$out"; die "the target differs from the source at the freeze point ($out); rerun freeze"; }
+  timed install "$HERE/remote.sh" install "$CLUSTER" || die "install failed"
+  timed stop stop_writers "$CUT_OLD" || die "the writers did not stop"
+  timed fence pg fence || die "fence failed; rerun freeze, or abort"
+  timed catchup pg catchup || die "catchup failed"
+  timed sequences pg sequences || die "sequences failed"
+  timed writes-save pg writes save freeze src || die "writes save failed"
+  timed verify pg verify >"$out" || { cat "$out"; die "the target differs from the source at the freeze point ($out); rerun freeze, or abort"; }
   echo "verify: $(tail -1 "$out") at the freeze point; $out"
+  # Under the fence one full hash covers every row, the old ones verify's tail does not read.
+  timed hash pg hash >>"$out" || { tail -20 "$out"; die "the full hash under the fence differs ($out); rerun freeze, or abort"; }
+  on "$BOX" "touch $STATE/freeze-ok" || die "cannot stamp $STATE/freeze-ok on $BOX"
+  report_times
+}
+
+cmd_abort() {
+  stamped switched && die "the switch has run; rollback is the way back"
+  on "$BOX" "rm -f $STATE/freeze-ok" || die "cannot remove $STATE/freeze-ok on $BOX"
+  timed thaw pg thaw || die "thaw failed; the source roles may still be NOLOGIN"
+  timed start start_healthy "$CUT_OLD" "${CUT_SERVICES[@]}" || die "the writers did not start healthy on $CUT_OLD"
+  timed start-timers start_timers "$CUT_OLD" || die "the timers did not start on $CUT_OLD"
+  timed start-engines start_healthy "$CUT_OLD" ${CUT_ENGINES[@]+"${CUT_ENGINES[@]}"} || die "the engines did not start healthy on $CUT_OLD"
   report_times
 }
 
 cmd_switch() {
+  stamped freeze-ok || die "no $STATE/freeze-ok on $BOX: freeze has not passed since it last started; run freeze"
   writers_stopped "$CUT_OLD" || die "writers run on $CUT_OLD; run freeze first"
-  timed switch pg switch
-  stamped writes/switch-dst-ok || { timed writes-save pg writes save switch dst && on "$BOX" "touch $STATE/writes/switch-dst-ok"; }
-  timed start start_healthy "$CUT_NEW" "${CUT_SERVICES[@]}"
+  timed switch pg switch || die "pg switch failed"
+  stamped writes/switch-dst-ok || { timed writes-save pg writes save switch dst && on "$BOX" "touch $STATE/writes/switch-dst-ok"; } || die "writes save switch dst failed"
+  timed start start_healthy "$CUT_NEW" "${CUT_SERVICES[@]}" || die "the writers did not start healthy on $CUT_NEW"
   report_times
 }
 
 cmd_verify() {
   local out bad=0
   timed health health "$CUT_NEW" "${CUT_SERVICES[@]}" || bad=1
-  out=$(pg writes diff switch dst || true)
+  out=$(pg_counted switch dst) || out=''
   if [[ -z $(writes_total "$out") || $(writes_total "$out") == 0 ]] || grep -q 'counters reset' <<<"$out"; then
     echo "verify: FAIL no write has landed on the target since switch, or its counters cannot be read"
     bad=1
@@ -229,40 +267,44 @@ cmd_unfreeze() {
   local all
   stamped switched || die "the switch has not run"
   cmd_verify
-  on "$BOX" "touch $STATE/unfrozen && sync $STATE"
+  on "$BOX" "touch $STATE/unfrozen && sync $STATE" || die "cannot stamp $STATE/unfrozen on $BOX"
   echo "unfreeze: $STATE/unfrozen on $BOX; plain rollback now refuses, rollback --reverse remains until retire"
-  timed start-timers start_timers "$CUT_NEW"
-  timed start-engines start_healthy "$CUT_NEW" ${CUT_ENGINES[@]+"${CUT_ENGINES[@]}"}
+  timed start-timers start_timers "$CUT_NEW" || die "the timers did not start on $CUT_NEW"
+  timed start-engines start_healthy "$CUT_NEW" ${CUT_ENGINES[@]+"${CUT_ENGINES[@]}"} || die "the engines did not start healthy on $CUT_NEW"
   all=$ALL
-  on "$CUT_NEW" "systemctl enable $all" && echo "$CUT_NEW: enabled $all"
-  on "$CUT_OLD" "systemctl disable $all" && echo "$CUT_OLD: disabled $all"
+  on "$CUT_NEW" "systemctl enable $all" || die "$CUT_NEW: enabling $all failed"
+  echo "$CUT_NEW: enabled $all"
+  on "$CUT_OLD" "systemctl disable $all" || die "$CUT_OLD: disabling $all failed"
+  echo "$CUT_OLD: disabled $all"
   sleep 60
-  timed health health "$CUT_NEW" ${CUT_ENGINES[@]+"${CUT_ENGINES[@]}"} "${CUT_SERVICES[@]}"
+  timed health health "$CUT_NEW" ${CUT_ENGINES[@]+"${CUT_ENGINES[@]}"} "${CUT_SERVICES[@]}" || die "health failed on $CUT_NEW"
   report_times
 }
 
 cmd_rollback() {
   local all
-  stamped switched || die "the switch has not run; nothing to roll back (start the writers on $CUT_OLD if freeze stopped them)"
+  stamped switched || die "the switch has not run; nothing to roll back (after a freeze, abort thaws the source and restarts the writers on $CUT_OLD)"
   stamped retired && die "retire has run; the reverse subscription is gone"
   if stamped unfrozen && [[ ${1:-} != --reverse ]]; then
     die "unfreeze has run, so the engines wrote to the target. 'rollback --reverse' carries those writes back over the reverse subscription"
   fi
-  timed stop stop_writers "$CUT_NEW"
-  timed fence pg fence --reverse
-  timed switch pg switch --reverse
-  timed start start_healthy "$CUT_OLD" "${CUT_SERVICES[@]}"
-  timed start-timers start_timers "$CUT_OLD"
-  timed start-engines start_healthy "$CUT_OLD" ${CUT_ENGINES[@]+"${CUT_ENGINES[@]}"}
+  timed stop stop_writers "$CUT_NEW" || die "the writers did not stop on $CUT_NEW"
+  timed fence pg fence --reverse || die "fence --reverse failed"
+  timed switch pg switch --reverse || die "switch --reverse failed"
+  timed start start_healthy "$CUT_OLD" "${CUT_SERVICES[@]}" || die "the writers did not start healthy on $CUT_OLD"
+  timed start-timers start_timers "$CUT_OLD" || die "the timers did not start on $CUT_OLD"
+  timed start-engines start_healthy "$CUT_OLD" ${CUT_ENGINES[@]+"${CUT_ENGINES[@]}"} || die "the engines did not start healthy on $CUT_OLD"
   all=$ALL
-  on "$CUT_OLD" "systemctl enable $all" && echo "$CUT_OLD: enabled $all"
-  on "$CUT_NEW" "systemctl disable $all" && echo "$CUT_NEW: disabled $all"
+  on "$CUT_OLD" "systemctl enable $all" || die "$CUT_OLD: enabling $all failed"
+  echo "$CUT_OLD: enabled $all"
+  on "$CUT_NEW" "systemctl disable $all" || die "$CUT_NEW: disabling $all failed"
+  echo "$CUT_NEW: disabled $all"
   report_times
 }
 
 cmd_retire() {
-  timed retire pg retire
-  on "$BOX" "touch $STATE/retired"
+  timed retire pg retire || die "retire failed"
+  on "$BOX" "touch $STATE/retired" || die "cannot stamp $STATE/retired on $BOX"
   echo "retire: $STATE/retired on $BOX; rollback refuses from here"
   report_times
 }
@@ -279,7 +321,7 @@ cmd_status() {
 }
 
 case $STEP in
-  preflight | freeze | switch | verify | unfreeze | retire | status) "cmd_$STEP" ;;
+  preflight | freeze | abort | switch | verify | unfreeze | retire | status) "cmd_$STEP" ;;
   rollback) cmd_rollback "${3:-}" ;;
   *) usage ;;
 esac

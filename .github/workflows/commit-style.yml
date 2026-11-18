@@ -30,6 +30,10 @@ jobs:
         working-directory: .
         run: scripts/ci-no-silent-revert.sh "origin/$PR_BASE_REF" "$PR_HEAD_SHA"
 
+      - name: Check the database move tool stops on a failed query
+        working-directory: .
+        run: scripts/ci-pgmove-fail-closed.sh
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
