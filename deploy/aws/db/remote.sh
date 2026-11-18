@@ -10,10 +10,12 @@ conf_box() {
   bash -c 'BOX=; source "$1"; echo "$BOX"' _ "$HERE/clusters/$1.conf"
 }
 
+# The target holds no key for the source's root: the source side of each run rides the operator's
+# forwarded agent, for the length of the run.
 pgmove_on() {
   local box
   box=$(conf_box "$2")
-  ssh -o BatchMode=yes "$box" "sudo -n $DEST/pgmove.sh $(printf '%q ' "$@")"
+  ssh -A -o BatchMode=yes "$box" "sudo -n --preserve-env=SSH_AUTH_SOCK $DEST/pgmove.sh $(printf '%q ' "$@")"
 }
 
 install_on() {
