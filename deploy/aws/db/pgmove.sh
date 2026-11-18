@@ -56,7 +56,7 @@ done
 
 PG_MAJOR=18
 SRC_SSH='' SRC_SOCKET='' SRC_PORT='' SRC_OSUSER=''
-DST_SSH=local DST_CLUSTER=main DST_DATA='' DST_PORT=5432 DST_SOCKET=/var/run/postgresql DST_OSUSER=postgres
+DST_SSH=local DST_CLUSTER=main DST_DATA='' DST_CONF_FROM='' DST_CONF_SKIP=() DST_PORT=5432 DST_SOCKET=/var/run/postgresql DST_OSUSER=postgres
 ENCODING=UTF8 LOCALE_PROVIDER='' LOCALE=''
 DATABASES=()
 HYPERTABLES=() HT_DB='' HT_TIME=observed_at HT_KEY=event_id TS_RETAIN_DAYS=62 CATCHUP_MARGIN=10000
@@ -421,8 +421,22 @@ ensure_cluster() {
   fi
 }
 
+# DST_CONF_FROM: a conf.d the target takes as its own, such as the old host's production files
+# staged on the box. pgmove's zz-pgmove*.conf and the names in DST_CONF_SKIP are never taken.
+# Whatever else sits in conf.d, check_pgconf fails init unless pgmove's settings are the ones live.
 ensure_pgconf() {
-  local dir=/etc/postgresql/$PG_MAJOR/$DST_CLUSTER/conf.d want have restart=0
+  local dir=/etc/postgresql/$PG_MAJOR/$DST_CLUSTER/conf.d want have restart=0 f names
+  if [[ -n $DST_CONF_FROM ]]; then
+    names=$(on "$DST_SSH" "cd $(printf %q "$DST_CONF_FROM") && ls -1 -- *.conf") || die "cannot list $DST_CONF_FROM/*.conf on the box"
+    for f in $names; do
+      [[ $f == zz-pgmove*.conf || " ${DST_CONF_SKIP[*]-} " == *" $f "* ]] && continue
+      want=$(on "$DST_SSH" "cat $(printf %q "$DST_CONF_FROM/$f")") || die "cannot read $DST_CONF_FROM/$f"
+      have=$(on "$DST_SSH" "cat $dir/$f" 2>/dev/null || true)
+      [[ $have == "$want" ]] && continue
+      put "$DST_SSH" "$dir/$f" 0640 postgres "$want" "$dir/$f: taken from $DST_CONF_FROM"
+      restart=1
+    done
+  fi
   want=$(pgconf_want)
   have=$(on "$DST_SSH" "cat $dir/zz-pgmove.conf" 2>/dev/null || true)
   if [[ $have != "$want" ]]; then
@@ -435,6 +449,28 @@ ensure_pgconf() {
     restart=1
   fi
   ((restart == 0)) || run "$DST_SSH" "systemctl restart postgresql@$PG_MAJOR-$DST_CLUSTER" "postgresql@$PG_MAJOR-$DST_CLUSTER restarted to load them"
+  check_pgconf "$dir"
+}
+
+# Every name pgmove's two files set must be live from that file, with no restart pending. A file
+# sorting after them, postgresql.auto.conf or a missing library would otherwise win in silence.
+check_pgconf() {
+  local dir=$1 f n text names='' expect='' rows bad=0 total=0
+  ((DRY)) && return 0
+  for f in zz-pgmove.conf zz-pgmove-archive.conf; do
+    text=$(on "$DST_SSH" "cat $dir/$f") || die "check_pgconf: cannot read $dir/$f"
+    while read -r n; do
+      names+="${names:+, }$(lit "$n")" expect+="$n=$dir/$f f"$'\n' total=$((total + 1))
+    done < <(sed -nE 's/^[[:space:]]*([a-z_.]+)[[:space:]]*=.*/\1/p' <<<"$text")
+  done
+  ((total)) || die "check_pgconf: read no settings from $dir/zz-pgmove*.conf"
+  rows=$(q dst postgres "select name || '=' || coalesce(sourcefile, source) || ' ' || pending_restart from pg_settings where name in ($names) order by 1") || die "check_pgconf: cannot read pg_settings on the target"
+  while IFS= read -r n; do [[ -z $n ]] || grep -qxF -- "$n" <<<"$rows" || bad=$((bad + 1)); done <<<"$expect"
+  if ((bad)); then
+    printf '%s\n' "$rows" | sed 's/^/  live: /' >&2
+    die "check_pgconf: $bad of $total settings in $dir/zz-pgmove*.conf are not the live ones; a later conf.d file, ALTER SYSTEM, a missing library or a pending restart wins"
+  fi
+  echo "pgconf: $total settings live from $dir/zz-pgmove*.conf, none pending a restart"
 }
 
 # pg_authid is superuser-only. Through the forward the source reads as REPL_ROLE, so roles come
