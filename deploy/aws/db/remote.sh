@@ -10,12 +10,14 @@ conf_box() {
   bash -c 'BOX=; source "$1"; echo "$BOX"' _ "$HERE/clusters/$1.conf"
 }
 
-# The target holds no key for the source's root: the source side of each run rides the operator's
-# forwarded agent, for the length of the run.
+# The target holds no key for the source's root: the source side of each run rides an agent that
+# holds only that key (ssh-agent -a <socket>, then ssh-add the key), named in PGMOVE_AGENT and
+# forwarded for the length of the run.
 pgmove_on() {
   local box
+  [[ -S ${PGMOVE_AGENT:-} ]] || { echo "remote: PGMOVE_AGENT must name the socket of an agent holding the source key" >&2; exit 2; }
   box=$(conf_box "$2")
-  ssh -A -o BatchMode=yes "$box" "sudo -n --preserve-env=SSH_AUTH_SOCK $DEST/pgmove.sh $(printf '%q ' "$@")"
+  ssh -o ForwardAgent="$PGMOVE_AGENT" -o BatchMode=yes "$box" "sudo -n --preserve-env=SSH_AUTH_SOCK $DEST/pgmove.sh $(printf '%q ' "$@")"
 }
 
 install_on() {
