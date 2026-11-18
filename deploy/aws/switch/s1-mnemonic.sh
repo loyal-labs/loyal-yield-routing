@@ -73,7 +73,7 @@ owner_state() { # prints the owner marker of the old box ("aws <epoch>" or nothi
 client_config_state() { # prints old, new or a note; fails when the client config does not name the store being moved
   local line
   [[ -f $CLIENT_CONFIG ]] || { echo "no client config at $CLIENT_CONFIG (S1_CLIENT_CONFIG)"; return 1; }
-  line=$(grep -m1 '^server *=' "$CLIENT_CONFIG" || true)
+  line=$(grep -m1 '^[[:space:]]*server[[:space:]]*=' "$CLIENT_CONFIG" || true)
   case $line in
     *"quic://$OLD_ADDR:8741"*) echo "$CLIENT_CONFIG names the old store $OLD_ADDR; switch --go points it at $NEW_ADDR" ;;
     *"quic://$NEW_ADDR:8741"*) echo "note: $CLIENT_CONFIG already names the new store $NEW_ADDR" ;;
@@ -86,13 +86,13 @@ point_client() { # point_client ADDR: rewrite the one server line, keep the firs
   [[ -f $CLIENT_CONFIG ]] || return 1
   [[ -e $CLIENT_CONFIG.pre-s1 ]] || cp -p "$CLIENT_CONFIG" "$CLIENT_CONFIG.pre-s1" || return 1
   tmp=$(mktemp) || return 1
-  awk -v s="server = \"quic://$addr:8741\"" '!d && /^server *=/ {print s; d=1; next} {print}' "$CLIENT_CONFIG" >"$tmp" || { rm -f "$tmp"; return 1; }
+  awk -v s="server = \"quic://$addr:8741\"" '!d && /^[ \t]*server[ \t]*=/ {print s; d=1; next} {print}' "$CLIENT_CONFIG" >"$tmp" || { rm -f "$tmp"; return 1; }
   grep -q "^server = \"quic://$addr:8741\"" "$tmp" || { rm -f "$tmp"; return 1; }
   cat "$tmp" >"$CLIENT_CONFIG" || { rm -f "$tmp"; return 1; }
   rm -f "$tmp"
 }
 
-client_fix_line() { echo "sed -i.bak -E 's#^server *=.*#server = \"quic://$1:8741\"#' '$CLIENT_CONFIG'"; }
+client_fix_line() { echo "sed -i.bak -E 's#^[[:space:]]*server[[:space:]]*=.*#server = \"quic://$1:8741\"#' '$CLIENT_CONFIG'"; }
 
 repoint_client() { # repoint_client ADDR: never fails the caller's switch; sets CLIENT_FIX_RC
   local addr=$1
@@ -286,7 +286,7 @@ search_check() { # search_check ADDR | search_check --config: the second form us
   if [[ $addr == --config ]]; then
     awk '/^\[\[sources\]\]/{exit} {print}' "$CLIENT_CONFIG" >"$cfg"
   else
-    awk '/^\[\[sources\]\]/{exit} {print}' "$CLIENT_CONFIG" | sed -E "s#^server *=.*#server = \"quic://$addr:8741\"#" >"$cfg"
+    awk '/^\[\[sources\]\]/{exit} {print}' "$CLIENT_CONFIG" | sed -E "s#^[[:space:]]*server[[:space:]]*=.*#server = \"quic://$addr:8741\"#" >"$cfg"
   fi
   local rc=0
   python3 -I - "$MNEMONIC_CLI" "$cfg" <<'PY' || rc=$?
