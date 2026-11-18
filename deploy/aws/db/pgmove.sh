@@ -28,7 +28,9 @@ clusters: $(for f in "$HERE"/clusters/*.conf; do basename "$f" .conf; done | pas
   hash <c> [table] [--age]     md5 per row, summed per 1M-key bucket; differing buckets hashed a second time; hypertables up to the target's max key
   hash <c> --moved             the same, skipping each plain table whose write counters and file nodes on both sides are those the last
                                0-DIFF full hash read before it; needs every other session idle HASH_IDLE_SECS and no prepared transaction
-  verify <c> [--reverse]       tables, sequences, hypertables, schema, grants, hash age and the hypertable rows above the hash bound
+  verify <c> [--reverse]       tables, sequences, hypertables, schema, grants, hash age and the hypertable rows above the hash bound;
+                               --reverse reads the target as the side of record, skips the forward hash's age and prints grant
+                               rows as drift, not DIFF: a role made on the target in its tenure has no source twin
   preflight <c>                read-only: tables in state r, lag, verify, the reverse, fence and switch dry runs, marker, volume guard
   fence <c> [--reverse]        login roles NOLOGIN on the side being left, sessions ended, slots caught up
   thaw <c> [--dry-run]         before a switch: undo fence; LOGIN back to the source roles fence took it from, the forward on
@@ -104,7 +106,7 @@ SECRETS=/etc/pgmove/$CLUSTER
 FROM=src TO=dst
 ((REVERSE)) && FROM=dst TO=src
 
-changes=0 diffs=0 blocks=0 needs=0 DST_DOWN=0 REOPEN=0
+changes=0 diffs=0 DRIFT_ONLY=0 blocks=0 needs=0 DST_DOWN=0 REOPEN=0
 # A failed query reads as empty, and an empty answer reads as absent or as equal. q usually runs in
 # a subshell, where its exit status is easy to lose, so a failed query stops this whole run: q
 # records it here and signals the top shell, whose trap exits 1 before the next command runs.
@@ -119,7 +121,7 @@ trap 'exit 1' USR2
 [[ $(trap -p USR1) == *stopped* && $(trap -p USR2) == *"exit 1"* ]] || { echo "pgmove: the caller ignores SIGUSR1 or SIGUSR2, so a failed query could not stop this run; run it from a shell that does not ignore them" >&2; exit 2; }
 
 changed() { changes=$((changes + 1)); if ((DRY)); then echo "would change: $*"; else echo "changed: $*"; fi; }
-diff_row() { diffs=$((diffs + 1)); echo "DIFF $*"; }
+diff_row() { if ((DRIFT_ONLY)); then echo "drift $*"; else diffs=$((diffs + 1)); echo "DIFF $*"; fi; }
 blocked() { blocks=$((blocks + 1)); echo "blocked: $*"; }
 # need <verb> <args>: a root step on the source in SRC_VIA=forward. The box names it; srcexec on the
 # operator machine checks each word and builds the SQL, so the box never decides what runs as root there.
@@ -1491,8 +1493,8 @@ check_tables() {
 cmd_verify() {
   check_tables
   check_schema
-  check_grants
-  hash_age
+  DRIFT_ONLY=$REVERSE check_grants
+  ((REVERSE)) || hash_age
   check_tail
   finish_check
 }
@@ -1961,13 +1963,26 @@ cmd_reverse() {
 # stops on a row for a table it lacks, and skips the rows of a table it has but does not carry.
 # leaf|parent|relkind|owner|bound|partition key, parents before their partitions.
 LEAVES_SQL="select format('%I.%I', n.nspname, c.relname) || '|' || format('%I.%I', pn.nspname, p.relname) || '|' || c.relkind::text || '|' || pg_get_userbyid(c.relowner) || '|' || pg_get_expr(c.relpartbound, c.oid) || '|' || case when c.relkind = 'p' then pg_get_partkeydef(c.oid) else '-' end from pg_class c join pg_namespace n on n.oid = c.relnamespace join pg_inherits i on i.inhrelid = c.oid join pg_class p on p.oid = i.inhparent join pg_namespace pn on pn.oid = p.relnamespace where c.relispartition and p.relkind = 'p' and $NS order by (select count(*) from pg_partition_ancestors(c.oid)), 1"
+# leaf_grants <side> <db> <leaf>: role:PRIVILEGE[*] for each grant on the leaf beyond its owner's, * for WITH GRANT OPTION.
+leaf_grants() { q "$1" "$2" "select case when a.grantee = 0 then 'PUBLIC' else pg_get_userbyid(a.grantee) end || ':' || a.privilege_type || case when a.is_grantable then '*' else '' end from pg_class c, aclexplode(c.relacl) a where c.oid = to_regclass($(lit "$3")) and a.grantee <> c.relowner order by 1"; }
+# grant_sql <leaf> <role:PRIV[*],...>: the GRANT statements; srcexec checked each word first.
+grant_sql() {
+  local g r p o=''
+  for g in ${2//,/ }; do
+    [[ $g != - ]] || continue
+    r=${g%%:*} p=${g#*:} o=''
+    [[ $p != *\* ]] || { p=${p%\*}; o=' WITH GRANT OPTION'; }
+    [[ $r == PUBLIC ]] || r="\"$r\""
+    printf 'GRANT %s ON %s TO %s%s; ' "$p" "$1" "$r" "$o"
+  done
+}
 pub_tables_sql() { echo "select format('%I.%I', schemaname, tablename) from pg_publication_tables where pubname = $(lit "$1") order by 1"; }
 sub_tables_sql() { echo "select format('%I.%I', n.nspname, c.relname) from pg_subscription_rel r join pg_subscription s on s.oid = r.srsubid join pg_class c on c.oid = r.srrelid join pg_namespace n on n.oid = c.relnamespace where s.subname = $(lit "$1") order by 1"; }
 only_in() { comm -23 <(grep . <<<"$1" | sort -u) <(grep . <<<"$2" | sort -u); }
 
 # sync_partitions <publisher side> <subscriber side> <db> <subscription> <publication>
 sync_partitions() {
-  local from=$1 to=$2 db=$3 sub=$4 pub=$5 theirs ours leaf parent kind owner bound key have x p2 k2 b2 pown by made=0 owners='' missing t e copy='' rows=0 empty=0 b0=$blocks
+  local from=$1 to=$2 db=$3 sub=$4 pub=$5 theirs ours leaf parent kind owner bound key have x p2 k2 b2 pown by g grants made=0 owners='' missing t e copy='' rows=0 empty=0 b0=$blocks
   theirs=$(q "$from" "$db" "$LEAVES_SQL") || die "partitions: $from $db: reading partitions failed"
   ours=$(q "$to" "$db" "$LEAVES_SQL") || die "partitions: $to $db: reading partitions failed"
   while IFS='|' read -r leaf parent kind owner bound key; do
@@ -1993,10 +2008,16 @@ sync_partitions() {
     made=$((made + 1))
     by=''
     [[ $kind == r ]] || by=" PARTITION BY $key"
-    if src_by_admin "$to"; then need partition "$db" "$leaf" "$parent" "$owner" "${key// /}" "$bound"; continue; fi
+    # Default ACLs grant what they grant; a grant made on the leaf itself on the publisher is made here too.
+    grants=''
+    for g in $(leaf_grants "$from" "$db" "$leaf"); do
+      if [[ ${g%%:*} == PUBLIC || -n $(q "$to" postgres "select 1 from pg_roles where rolname = $(lit "${g%%:*}")") ]]; then grants+="${grants:+,}$g"
+      else echo "partitions: $to $db: ${g%%:*} holds ${g#*:} on $leaf on $from and is not a role here; not granted"; fi
+    done
+    if src_by_admin "$to"; then need partition "$db" "$leaf" "$parent" "$owner" "${key// /}" "${grants:--}" "$bound"; continue; fi
     # As the app does (wen server/internal/store/trades_hot.go), as the publisher's owner so its default ACLs apply.
-    apply "$to" "$db" "BEGIN; SET LOCAL lock_timeout = '10s'; SET LOCAL ROLE $(ident "$owner"); CREATE TABLE $leaf (LIKE $parent INCLUDING ALL)$by; ALTER TABLE $parent ATTACH PARTITION $leaf $bound; COMMIT;" \
-      "$to $db: partition $leaf of $parent $bound${by:+,$by}, owner $owner, as on $from"
+    apply "$to" "$db" "BEGIN; SET LOCAL lock_timeout = '10s'; SET LOCAL ROLE $(ident "$owner"); CREATE TABLE $leaf (LIKE $parent INCLUDING ALL)$by; ALTER TABLE $parent ATTACH PARTITION $leaf $bound; $(grant_sql "$leaf" "${grants:--}")COMMIT;" \
+      "$to $db: partition $leaf of $parent $bound${by:+,$by}, owner $owner${grants:+, grants $grants}, as on $from"
   done <<<"$theirs"
   t=$(q "$to" "$db" "select count(*) from pg_subscription where subname = $(lit "$sub")") || die "partitions: $to $db: reading $sub failed"
   [[ $t == 1 ]] || return 0
@@ -2223,17 +2244,18 @@ EOS
         ;;
       partition)
         ok_db "$a"
-        local p o key by='' bound id_re='^[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*$' bound_re="^FOR VALUES FROM \('[-0-9: +.]+'\) TO \('[-0-9: +.]+'\)$"
+        local p o key g gs by='' bound id_re='^[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*$' bound_re="^FOR VALUES FROM \('[-0-9: +.]+'\) TO \('[-0-9: +.]+'\)$"
         # key: the partition key of a partitioned leaf with its spaces taken out, or - for a plain one.
-        read -r p o key bound <<<"$c"
-        [[ $b =~ $id_re && $p =~ $id_re && $o =~ ^[A-Za-z0-9_]+$ && $bound =~ $bound_re && $key =~ ^(-|(RANGE|LIST)\([a-z_][a-z0-9_]*(,[a-z_][a-z0-9_]*)*\))$ ]] || die "srcexec: partition $b of $p ($o, $key, $bound) has an unexpected shape"
+        read -r p o key g bound <<<"$c"
+        gs='(PUBLIC|[a-z_][a-z0-9_]*):(SELECT|INSERT|UPDATE|DELETE|TRUNCATE|REFERENCES|TRIGGER|MAINTAIN)\*?'
+        [[ $b =~ $id_re && $p =~ $id_re && $o =~ ^[A-Za-z0-9_]+$ && $bound =~ $bound_re && $key =~ ^(-|(RANGE|LIST)\([a-z_][a-z0-9_]*(,[a-z_][a-z0-9_]*)*\))$ && $g =~ ^(-|$gs(,$gs)*)$ ]] || die "srcexec: partition $b of $p ($o, $key, $g, $bound) has an unexpected shape"
         [[ $key == - ]] || by=" PARTITION BY $key"
-        printf 'db=%q leaf=%q parent=%q owner=%q bound=%q by=%q\n' "$a" "$b" "$p" "$o" "$bound" "$by"
+        printf 'db=%q leaf=%q parent=%q owner=%q bound=%q by=%q grants=%q\n' "$a" "$b" "$p" "$o" "$bound" "$by" "$(grant_sql "$b" "$g")"
         cat <<'EOS'
 [[ $(pq "$db" -c "select relkind from pg_class where oid = to_regclass('$parent')") == p ]] || { echo "srcexec: $parent is not a partitioned table in $db" >&2; exit 1; }
 if [[ $(pq "$db" -c "select to_regclass('$leaf') is null") == t ]]; then
-  pq "$db" -c "BEGIN" -c "SET LOCAL lock_timeout = '10s'" -c "SET LOCAL ROLE \"$owner\"" -c "CREATE TABLE $leaf (LIKE $parent INCLUDING ALL)$by" -c "ALTER TABLE $parent ATTACH PARTITION $leaf $bound" -c "COMMIT" >/dev/null
-  changed "src $db: partition $leaf of $parent $bound$by, owner $owner, as on the target"
+  pq "$db" -c "BEGIN" -c "SET LOCAL lock_timeout = '10s'" -c "SET LOCAL ROLE \"$owner\"" -c "CREATE TABLE $leaf (LIKE $parent INCLUDING ALL)$by" -c "ALTER TABLE $parent ATTACH PARTITION $leaf $bound" -c "${grants:-select 1}" -c "COMMIT" >/dev/null
+  changed "src $db: partition $leaf of $parent $bound$by, owner $owner${grants:+ with its grants}, as on the target"
 fi
 EOS
         ;;

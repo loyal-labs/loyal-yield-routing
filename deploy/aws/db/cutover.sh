@@ -376,7 +376,7 @@ cmd_rollback() {
   if ((CUT_ROLLBACK_VERIFY)); then
     mkdir -p "$CUTOVER_PROOF"
     out=$CUTOVER_PROOF/rollback-verify-$(date -u +%Y%m%dT%H%MZ).txt
-    timed verify pg verify >"$out" || { tail -40 "$out"; die "the source is the primary, its writers on $CUT_OLD still stopped, and it differs from the target ($out): repair, then rerun rollback; CUT_ROLLBACK_VERIFY=0 in $CLUSTER.conf starts them without this check"; }
+    timed verify pg verify --reverse >"$out" || { tail -40 "$out"; die "the source is the primary, its writers on $CUT_OLD still stopped, and it differs from the target ($out): repair, then rerun rollback; CUT_ROLLBACK_VERIFY=0 in $CLUSTER.conf starts them without this check"; }
     echo "verify: $(grep ' DIFF$' "$out" | tail -1) after switch --reverse; $out"
   fi
   timed start start_healthy "$CUT_OLD" "${CUT_SERVICES[@]}" || die "the writers did not start healthy on $CUT_OLD"
