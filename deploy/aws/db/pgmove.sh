@@ -32,6 +32,7 @@ clusters: $(for f in "$HERE"/clusters/*.conf; do basename "$f" .conf; done | pas
   preflight <c>                read-only: tables in state r, lag, verify, the reverse, fence and switch dry runs, marker, volume guard
   fence <c> [--reverse]        login roles NOLOGIN on the side being left, sessions ended, slots caught up
   thaw <c> [--dry-run]         before a switch: undo fence; LOGIN back to the source roles fence took it from, the forward on
+  thaw <c> --reverse           after a rollback stopped before switch --reverse finished: LOGIN back on the target, the reverse on
   switch <c> [--reverse]       catchup, sequences, subscriptions off, the other direction armed or resumed, login roles LOGIN on the side taking over
   reverse <c> [--dry-run]      reverse publication on the target, reverse subscription on the source (copy_data=false)
   partitions <c> [--dry-run]   each direction: the publisher's partitions the subscriber lacks, then REFRESH PUBLICATION; drops nothing
@@ -103,7 +104,7 @@ SECRETS=/etc/pgmove/$CLUSTER
 FROM=src TO=dst
 ((REVERSE)) && FROM=dst TO=src
 
-changes=0 diffs=0 blocks=0 needs=0 DST_DOWN=0
+changes=0 diffs=0 blocks=0 needs=0 DST_DOWN=0 REOPEN=0
 # A failed query reads as empty, and an empty answer reads as absent or as equal. q usually runs in
 # a subshell, where its exit status is easy to lose, so a failed query stops this whole run: q
 # records it here and signals the top shell, whose trap exits 1 before the next command runs.
@@ -111,7 +112,7 @@ QFAIL=$(mktemp)
 PGMOVE_PID=$$
 # The master to a root login on the source ends with the run, not ControlPersist seconds later.
 end_masters() { [[ ${SRC_SSH:-local} == local || ${SRC_VIA:-} == forward ]] || ssh -o ControlPath=/run/pgmove/ssh-%C -O exit "$SRC_SSH" >/dev/null 2>&1 || :; }
-trap 'rm -f "$QFAIL"; end_masters' EXIT
+trap 'rc=$?; rm -f "$QFAIL"; end_masters; ((REOPEN == 0)) || reopen_target $rc' EXIT
 trap 'echo "pgmove: $CMD stopped: a query failed (printed above), so nothing after it ran" >&2; exit 1' USR1
 trap 'exit 1' USR2
 # bash cannot trap a signal its caller ignored, and then a failed query would not stop the run.
@@ -134,14 +135,18 @@ shape_of() { echo "${1#*:}"; }
 via_forward() { [[ $SRC_VIA == forward ]]; }
 host_of() { if [[ $1 == src ]] && ! via_forward; then echo "$SRC_SSH"; else echo "$DST_SSH"; fi; }
 other() { if [[ $1 == src ]]; then echo dst; else echo src; fi; }
-state() { if ((DRY)); then return 0; fi; mkdir -p "$(dirname "$1")"; printf '%s\n' "$2" >"$1"; }
+# A stamp is replaced whole: a run stopped mid-write leaves the old one, never an empty file.
+state() {
+  if ((DRY)); then return 0; fi
+  if ! { mkdir -p "$(dirname "$1")" && printf '%s\n' "$2" >"$1.new" && mv -f "$1.new" "$1"; }; then die "cannot write $1"; fi
+}
 
 # Every remote query rides one master connection per host. A new connection per query met the
 # source's sshd MaxStartups early drop on a public box and failed 14 of 159 hash queries.
 on() {
   if [[ $1 == local ]]; then bash -c "$2"; return; fi
   install -d -m 0700 /run/pgmove 2>/dev/null || true
-  ssh -o BatchMode=yes -o ConnectTimeout=15 -o ControlMaster=auto -o ControlPath=/run/pgmove/ssh-%C -o ControlPersist=120 "$1" "$2"
+  ssh -o BatchMode=yes -o ConnectTimeout=15 -o ControlMaster=auto -o ControlPath=/run/pgmove/ssh-%C -o ControlPersist=120 "$1" "$2" 8>&-
 }
 
 psql_cmd() {
@@ -461,7 +466,7 @@ cmd_probe() {
     elif [[ $feed == neon && $outside == 0 ]]; then
       line=neon-fed
     elif [[ $feed == upstream && $outside == 0 ]]; then
-      line=upstream-fed
+      line='upstream-fed'
     elif [[ $feed == none ]]; then
       line=static
     else
@@ -721,7 +726,7 @@ cmd_init() {
 
 # CREATE DATABASE leaves PUBLIC its CONNECT and TEMPORARY; a source that revoked them, or granted
 # CONNECT to named roles, gets the same rows here. The owner's own rows are left as they are.
-DB_ACL_ROWS="select case when a.grantee = 0 then 'PUBLIC' else format('%I', pg_get_userbyid(a.grantee)) end || '|' || a.privilege_type || '|' || a.is_grantable from pg_database d, aclexplode(coalesce(d.datacl, acldefault('d', d.datdba))) a where d.datname = current_database() and a.grantee <> d.datdba"
+DB_ACL_ROWS="select case when a.grantee = 0 then 'PUBLIC' else format('%I', pg_get_userbyid(a.grantee)) end || '|' || a.privilege_type || '|' || case when a.is_grantable then 't' else 'f' end from pg_database d, aclexplode(coalesce(d.datacl, acldefault('d', d.datdba))) a where d.datname = current_database() and a.grantee <> d.datdba"
 
 ensure_database_acl() {
   local db=$1 want have who priv opt sql=''
@@ -1315,6 +1320,7 @@ check_tail() {
 hash_age() {
   local f=$WORK/hash-ok age
   if [[ ! -s $f ]]; then diff_row "hash: no 0-DIFF full hash recorded in $f"; return 0; fi
+  if [[ -z $(cut -s -d' ' -f2 "$f") ]]; then diff_row "hash: $f is in the one-field form from before the fence field, which no switch takes; run hash $CLUSTER"; return 0; fi
   age=$(( ($(date +%s) - $(awk '{ print $1 }' "$f")) / 3600 ))
   if ((age >= HASH_MAX_AGE_HOURS)); then diff_row "hash: the last 0-DIFF full hash is ${age} h old (limit $HASH_MAX_AGE_HOURS h)"; else echo "hash: last 0-DIFF full hash ${age} h ago"; fi
 }
@@ -1606,12 +1612,74 @@ slot_wait() {
 
 is_super() { [[ $(q "$1" postgres "select rolsuper from pg_roles where rolname = $(lit "$2")") == t ]]; }
 
+# A kept role logs in through the fence, so it must not be able to write an application table.
+keep_writers() {
+  local k spec db w
+  for k in ${FENCE_KEEP[@]+"${FENCE_KEEP[@]}"}; do
+    [[ -n $(q "$FROM" postgres "select 1 from pg_roles where rolname = $(lit "$k")") ]] || continue
+    if is_super "$FROM" "$k"; then blocked "$FROM: $k is in FENCE_KEEP and is a superuser; FENCE_KEEP holds read-only roles only"; continue; fi
+    for spec in "${DATABASES[@]}"; do
+      db=$(db_of "$spec")
+      w=$(q "$FROM" "$db" "select count(*) || ' table(s), first ' || coalesce(min(format('%I.%I', n.nspname, c.relname)), '-') from pg_class c join pg_namespace n on n.oid = c.relnamespace where c.relkind in ('r', 'p') and $NS and has_table_privilege($(lit "$k"), c.oid, 'INSERT, UPDATE, DELETE, TRUNCATE')")
+      [[ $w == 0\ * ]] || blocked "$FROM $db: $k is in FENCE_KEEP and can write $w; FENCE_KEEP holds read-only roles only, so revoke its writes or let fence take its LOGIN"
+    done
+  done
+}
+
+# The Timescale scheduler runs jobs as their owner, through any fence; scheduled jobs on a side
+# whose timescaledb.max_background_workers is above 0 write there.
+ts_running() {
+  local side=$1 spec db n
+  for spec in "${DATABASES[@]}"; do
+    db=$(db_of "$spec")
+    has_ext "$side" "$db" || continue
+    n=$(q "$side" "$db" "select case when coalesce(nullif(current_setting('timescaledb.max_background_workers', true), ''), '0')::int > 0 then (select count(*) from timescaledb_information.jobs where job_id >= 1000 and scheduled) else 0 end")
+    ((n == 0)) || echo "$db $n"
+  done
+}
+
+# REOPEN is set once fence --reverse may have taken LOGIN on the target, the primary since the switch:
+# a run that stops after that gives it back, so a rollback that cannot finish leaves the target writable.
+login_back() { printf 'ALTER ROLE %s LOGIN;\n' "$(ident "$1")" | sql dst rw postgres >/dev/null || return 1; }
+reopen_target() {
+  local rc=$1 f=$WORK/fenced.rev role n=0 bad=0
+  ((REOPEN && rc != 0)) && [[ ${BASHPID:-$$} == "$PGMOVE_PID" && -s $f ]] || return 0
+  while IFS= read -r role; do
+    [[ -z $role ]] && continue
+    if login_back "$role"; then n=$((n + 1)); else bad=1; fi
+  done <"$f"
+  if ((bad)); then
+    echo "pgmove: fence --reverse stopped after taking LOGIN on the target and could not give all of it back; the target is fenced: run thaw $CLUSTER --reverse" >&2
+    return 0
+  fi
+  unfence rev
+  rm -f "$f"
+  echo "pgmove: fence --reverse stopped after taking LOGIN on the target; LOGIN given back to $n role(s) there, so the target takes writes again" >&2
+}
+
 cmd_fence() {
-  local role can roles fenced spec
+  local role can roles fenced spec ts
   fenced=$(fenced_file)
   upstream_blockers fencing
   ((blocks == 0)) || finish
+  keep_writers
+  if ((REVERSE)); then
+    # Every step that can fail on the source runs while the target still takes writes. The pass after
+    # the NOLOGIN below catches a partition made in between.
+    for spec in "${DATABASES[@]}"; do sync_partitions dst src "$(db_of "$spec")" "$(sub_name rev "$(db_of "$spec")")" "$REV_PUB"; done
+    needs_first "the target keeps its LOGIN until the source has its partitions"
+    reverse_ready
+    ((blocks == 0)) || finish "the target keeps its LOGIN"
+    # Its jobs run as their owner through the fence; thaw --reverse and the next switch schedule them again.
+    for spec in "${DATABASES[@]}"; do unschedule_timescale "$(db_of "$spec")"; done
+  else
+    ts=$(ts_running src)
+    [[ -z $ts ]] || blocked "src: scheduled Timescale jobs run there and write through the fence (database and jobs: $ts); unschedule them, or set timescaledb.max_background_workers = 0 there"
+  fi
+  ((blocks == 0)) || finish
   ((DRY)) || rm -f "$(fence_ok)"
+  # A rerun after switch --reverse passed its stamp fences a target that is no longer the primary: that one stays fenced.
+  if ((DRY == 0 && REVERSE)) && target_primary; then REOPEN=1; fi
   ((DRY)) || [[ -s $(fence_id) ]] || state "$(fence_id)" "$(date +%s)-$$"
   roles=$(login_roles)
   for role in $roles; do
@@ -1649,9 +1717,35 @@ target_primary() { [[ -s $WORK/switched ]] && ! { [[ -s $WORK/reversed ]] && (($
 # switched and reversed order the switches: each is written above the other, even in one second.
 switch_stamp() { local t o; t=$(date +%s) o=$(cat "$WORK/$2" 2>/dev/null || echo 0); ((t > o)) || t=$((o + 1)); state "$WORK/$1" "$t"; }
 
+# The way back from a fence --reverse that no switch --reverse finished: the target stays the
+# primary. No source role has LOGIN yet, since switch --reverse grants it only after its stamp.
+thaw_reverse() {
+  local role roles spec db fenced=$WORK/fenced.rev
+  target_primary || die "thaw --reverse: no switch since the last switch --reverse, so the source is the primary and the target has nothing to take back"
+  if [[ -s $fenced ]]; then
+    roles=$(awk 'NF' "$fenced" | sort -u)
+    for role in $roles; do
+      kept "$role" && continue
+      is_super dst "$role" && continue
+      [[ $(q dst postgres "select rolcanlogin from pg_roles where rolname = $(lit "$role")") == f ]] || continue
+      apply dst postgres "ALTER ROLE $(ident "$role") LOGIN;" "dst: $role LOGIN again"
+    done
+  fi
+  # A switch --reverse that stopped part way may have turned the reverse off and the forward on.
+  for spec in "${DATABASES[@]}"; do
+    db=$(db_of "$spec")
+    sub_set dst "$db" "$(sub_name fwd "$db")" f
+    slot_ok dst "$db" "$(sub_name rev "$db")" "the reverse subscription" warn && sub_resume src "$db" "$(sub_name rev "$db")"
+    schedule_timescale "$db"
+  done
+  query_failures
+  ((DRY || blocks || needs)) || { unfence rev; rm -f "$fenced"; }
+  finish "the target takes writes again"
+}
+
 cmd_thaw() {
   local role roles spec db fenced=$WORK/fenced
-  ((REVERSE == 0)) || die "thaw: undoes a forward fence only; after a switch, fence --reverse and switch --reverse roll back"
+  if ((REVERSE)); then thaw_reverse; return 0; fi
   target_primary && die "thaw: $WORK/switched is newer than any switch --reverse, so the target may hold writes the source lacks; roll back with fence --reverse and switch --reverse"
   unfence fwd
   roles=$(login_roles)
@@ -1786,8 +1880,9 @@ cmd_switch() {
   query_failures
   ((blocks == 0)) || finish
   # From the first grant on, TO may take writes: recovery treats it as primary, FROM's fence is over.
+  # A rerun keeps the stamp of the switch it finishes: cutover.sh binds its later stamps to that value.
   if ((DRY == 0)); then
-    if ((REVERSE)); then unfence fwd; switch_stamp reversed switched; else unfence rev; switch_stamp switched reversed; fi
+    if ((REVERSE)); then unfence fwd; target_primary && switch_stamp reversed switched; else unfence rev; target_primary || switch_stamp switched reversed; fi
   fi
   # A superuser on either side keeps the LOGIN it has there: the switch grants nothing a superuser holds.
   for role in $roles; do
@@ -1864,25 +1959,44 @@ cmd_reverse() {
 # Logical replication carries no DDL. The app makes trades_YYYYMMDD days ahead on whichever side
 # takes writes, and the publisher's FOR ALL TABLES publication lists it at once. The subscriber
 # stops on a row for a table it lacks, and skips the rows of a table it has but does not carry.
-LEAVES_SQL="select format('%I.%I', n.nspname, c.relname) || '|' || format('%I.%I', pn.nspname, p.relname) || '|' || c.relkind::text || '|' || pg_get_userbyid(c.relowner) || '|' || pg_get_expr(c.relpartbound, c.oid) from pg_class c join pg_namespace n on n.oid = c.relnamespace join pg_inherits i on i.inhrelid = c.oid join pg_class p on p.oid = i.inhparent join pg_namespace pn on pn.oid = p.relnamespace where c.relispartition and p.relkind = 'p' and $NS order by 1"
+# leaf|parent|relkind|owner|bound|partition key, parents before their partitions.
+LEAVES_SQL="select format('%I.%I', n.nspname, c.relname) || '|' || format('%I.%I', pn.nspname, p.relname) || '|' || c.relkind::text || '|' || pg_get_userbyid(c.relowner) || '|' || pg_get_expr(c.relpartbound, c.oid) || '|' || case when c.relkind = 'p' then pg_get_partkeydef(c.oid) else '-' end from pg_class c join pg_namespace n on n.oid = c.relnamespace join pg_inherits i on i.inhrelid = c.oid join pg_class p on p.oid = i.inhparent join pg_namespace pn on pn.oid = p.relnamespace where c.relispartition and p.relkind = 'p' and $NS order by (select count(*) from pg_partition_ancestors(c.oid)), 1"
 pub_tables_sql() { echo "select format('%I.%I', schemaname, tablename) from pg_publication_tables where pubname = $(lit "$1") order by 1"; }
 sub_tables_sql() { echo "select format('%I.%I', n.nspname, c.relname) from pg_subscription_rel r join pg_subscription s on s.oid = r.srsubid join pg_class c on c.oid = r.srrelid join pg_namespace n on n.oid = c.relnamespace where s.subname = $(lit "$1") order by 1"; }
 only_in() { comm -23 <(grep . <<<"$1" | sort -u) <(grep . <<<"$2" | sort -u); }
 
 # sync_partitions <publisher side> <subscriber side> <db> <subscription> <publication>
 sync_partitions() {
-  local from=$1 to=$2 db=$3 sub=$4 pub=$5 theirs ours leaf parent kind owner bound made=0 missing t e copy='' rows=0 empty=0 b0=$blocks
+  local from=$1 to=$2 db=$3 sub=$4 pub=$5 theirs ours leaf parent kind owner bound key have x p2 k2 b2 pown by made=0 owners='' missing t e copy='' rows=0 empty=0 b0=$blocks
   theirs=$(q "$from" "$db" "$LEAVES_SQL") || die "partitions: $from $db: reading partitions failed"
-  ours=$(q "$to" "$db" "$LEAVES_SQL" | cut -d'|' -f1) || die "partitions: $to $db: reading partitions failed"
-  while IFS='|' read -r leaf parent kind owner bound; do
+  ours=$(q "$to" "$db" "$LEAVES_SQL") || die "partitions: $to $db: reading partitions failed"
+  while IFS='|' read -r leaf parent kind owner bound key; do
     [[ -n $leaf ]] || continue
-    grep -qxF -- "$leaf" <<<"$ours" && continue
-    if [[ $kind != r ]]; then blocked "$to $db: $leaf is partitioned itself (relkind $kind); partitions makes leaf tables only"; continue; fi
+    have=$(awk -F'|' -v l="$leaf" '$1 == l' <<<"$ours")
+    if [[ -n $have ]]; then
+      IFS='|' read -r x p2 k2 x b2 x <<<"$have"
+      [[ $p2 == "$parent" && $k2 == "$kind" && $b2 == "$bound" ]] ||
+        blocked "$to $db: $leaf is a partition of $p2 $b2 (relkind $k2) here and of $parent $bound (relkind $kind) on $from, so the rows $from sends it would not land; reconcile it by hand"
+      continue
+    fi
+    if [[ $kind != r && $kind != p ]]; then blocked "$to $db: $leaf has relkind $kind; partitions makes tables and partitioned tables only"; continue; fi
+    # Parents come first, so a parent made above is in owners before the catalog has it (dry run, root steps).
+    pown=$(awk -F'|' -v l="$parent" '$1 == l { print $2 }' <<<"$owners")
+    [[ -n $pown ]] || pown=$(q "$to" "$db" "select pg_get_userbyid(relowner) from pg_class where oid = to_regclass($(lit "$parent")) and relkind = 'p'")
+    [[ -n $pown ]] || { blocked "$to $db: $leaf belongs under $parent, which is not a partitioned table here"; continue; }
+    # A role made on the publisher after the switch has nothing here to own the table.
+    if [[ -z $(q "$to" postgres "select 1 from pg_roles where rolname = $(lit "$owner")") ]]; then
+      echo "partitions: $to $db: $owner, the owner of $leaf on $from, is not a role here; $leaf is made as $pown, the owner of $parent here"
+      owner=$pown
+    fi
+    owners+="$leaf|$owner"$'\n'
     made=$((made + 1))
-    if src_by_admin "$to"; then need partition "$db" "$leaf" "$parent" "$owner" "$bound"; continue; fi
+    by=''
+    [[ $kind == r ]] || by=" PARTITION BY $key"
+    if src_by_admin "$to"; then need partition "$db" "$leaf" "$parent" "$owner" "${key// /}" "$bound"; continue; fi
     # As the app does (wen server/internal/store/trades_hot.go), as the publisher's owner so its default ACLs apply.
-    apply "$to" "$db" "BEGIN; SET LOCAL lock_timeout = '10s'; SET LOCAL ROLE $(ident "$owner"); CREATE TABLE $leaf (LIKE $parent INCLUDING ALL); ALTER TABLE $parent ATTACH PARTITION $leaf $bound; COMMIT;" \
-      "$to $db: partition $leaf of $parent $bound, owner $owner, as on $from"
+    apply "$to" "$db" "BEGIN; SET LOCAL lock_timeout = '10s'; SET LOCAL ROLE $(ident "$owner"); CREATE TABLE $leaf (LIKE $parent INCLUDING ALL)$by; ALTER TABLE $parent ATTACH PARTITION $leaf $bound; COMMIT;" \
+      "$to $db: partition $leaf of $parent $bound${by:+,$by}, owner $owner, as on $from"
   done <<<"$theirs"
   t=$(q "$to" "$db" "select count(*) from pg_subscription where subname = $(lit "$sub")") || die "partitions: $to $db: reading $sub failed"
   [[ $t == 1 ]] || return 0
@@ -2109,15 +2223,17 @@ EOS
         ;;
       partition)
         ok_db "$a"
-        local p o bound id_re='^[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*$' bound_re="^FOR VALUES FROM \('[-0-9: +.]+'\) TO \('[-0-9: +.]+'\)$"
-        read -r p o bound <<<"$c"
-        [[ $b =~ $id_re && $p =~ $id_re && $o =~ ^[A-Za-z0-9_]+$ && $bound =~ $bound_re ]] || die "srcexec: partition $b of $p ($o, $bound) has an unexpected shape"
-        printf 'db=%q leaf=%q parent=%q owner=%q bound=%q\n' "$a" "$b" "$p" "$o" "$bound"
+        local p o key by='' bound id_re='^[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*$' bound_re="^FOR VALUES FROM \('[-0-9: +.]+'\) TO \('[-0-9: +.]+'\)$"
+        # key: the partition key of a partitioned leaf with its spaces taken out, or - for a plain one.
+        read -r p o key bound <<<"$c"
+        [[ $b =~ $id_re && $p =~ $id_re && $o =~ ^[A-Za-z0-9_]+$ && $bound =~ $bound_re && $key =~ ^(-|(RANGE|LIST)\([a-z_][a-z0-9_]*(,[a-z_][a-z0-9_]*)*\))$ ]] || die "srcexec: partition $b of $p ($o, $key, $bound) has an unexpected shape"
+        [[ $key == - ]] || by=" PARTITION BY $key"
+        printf 'db=%q leaf=%q parent=%q owner=%q bound=%q by=%q\n' "$a" "$b" "$p" "$o" "$bound" "$by"
         cat <<'EOS'
 [[ $(pq "$db" -c "select relkind from pg_class where oid = to_regclass('$parent')") == p ]] || { echo "srcexec: $parent is not a partitioned table in $db" >&2; exit 1; }
 if [[ $(pq "$db" -c "select to_regclass('$leaf') is null") == t ]]; then
-  pq "$db" -c "BEGIN" -c "SET LOCAL lock_timeout = '10s'" -c "SET LOCAL ROLE \"$owner\"" -c "CREATE TABLE $leaf (LIKE $parent INCLUDING ALL)" -c "ALTER TABLE $parent ATTACH PARTITION $leaf $bound" -c "COMMIT" >/dev/null
-  changed "src $db: partition $leaf of $parent $bound, owner $owner, as on the target"
+  pq "$db" -c "BEGIN" -c "SET LOCAL lock_timeout = '10s'" -c "SET LOCAL ROLE \"$owner\"" -c "CREATE TABLE $leaf (LIKE $parent INCLUDING ALL)$by" -c "ALTER TABLE $parent ATTACH PARTITION $leaf $bound" -c "COMMIT" >/dev/null
+  changed "src $db: partition $leaf of $parent $bound$by, owner $owner, as on the target"
 fi
 EOS
         ;;
@@ -2183,7 +2299,7 @@ cmd_passwords() {
 # TimescaleDB policies are rows in its catalog, which neither pg_dump --schema-only nor a
 # subscription carries. init copies compression settings and the policy jobs, unscheduled; the
 # switch schedules the target's where the source's run.
-TS_JOBS="select j.job_id || '|' || j.proc_name || '|' || format('%I.%I', j.hypertable_schema, j.hypertable_name) || '|' || j.schedule_interval || '|' || j.scheduled || '|' || coalesce((j.config - 'hypertable_id' - 'mat_hypertable_id')::text, '{}') from timescaledb_information.jobs j where j.job_id >= 1000 order by 1"
+TS_JOBS="select j.job_id || '|' || j.proc_name || '|' || format('%I.%I', j.hypertable_schema, j.hypertable_name) || '|' || j.schedule_interval || '|' || case when j.scheduled then 't' else 'f' end || '|' || coalesce((j.config - 'hypertable_id' - 'mat_hypertable_id')::text, '{}') from timescaledb_information.jobs j where j.job_id >= 1000 order by 1"
 
 ensure_timescale() {
   local db=$1 have line id proc table every sched config add seg ord t c
@@ -2369,5 +2485,13 @@ cmd_writes() {
 if ((DRY)) && [[ $CMD == init ]] && ! echo 'select 1' | sql dst ro postgres >/dev/null 2>&1; then
   DST_DOWN=1
   echo "dry run: the target ($DST_SSH, $DST_SOCKET:$DST_PORT) does not answer from $(hostname -s); init would make it, so its state reads as absent"
+fi
+# remote.sh install holds this lock exclusively while a copy lands, so no run of any copy reads a
+# half-written script or a stamp another copy wrote mid-install. ssh masters get no copy of it;
+# srcexec runs on the operator machine.
+if [[ $CMD != srcexec ]] && command -v flock >/dev/null; then
+  mkdir -p "${WORK%/*}" || die "cannot make ${WORK%/*}"
+  exec 8>>"${WORK%/*}/.run.lock" || die "cannot open ${WORK%/*}/.run.lock"
+  flock -s -w 120 8 || die "remote.sh install has held ${WORK%/*}/.run.lock for 120 s; rerun once it ends"
 fi
 "cmd_$CMD"
