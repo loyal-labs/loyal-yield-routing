@@ -20,6 +20,9 @@ ITEMIZE=0
 COPY_MIB_S=${S1_COPY_MIB_S:-26}
 LIST_MAX=${S1_LIST_MAX:-200}
 SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=30)
+DAEMON_LABEL=${S1_DAEMON_LABEL:-com.mnemonic.push}
+PUSH_LOG=${S1_PUSH_LOG:-$HOME/.mnemonic/push.log}
+DAEMON_WAIT=${S1_DAEMON_WAIT:-30}
 
 usage() {
   cat >&2 <<EOF
@@ -61,8 +64,7 @@ old() { ssh "${SSH_OPTS[@]}" "root@$OLD_ADDR" "$@"; }
 new() { ssh "${SSH_OPTS[@]}" "$NEW_HOST" "$@"; }
 
 owner_state() { # prints the owner marker of the old box ("aws <epoch>" or nothing); fails when the old box cannot be read
-  # shellcheck disable=SC2016
-  old "cat $OWNER_FILE 2>/dev/null || true"
+  old "if [ -e $OWNER_FILE ]; then cat $OWNER_FILE; fi"
 }
 
 client_config_state() { # prints old, new or a note; fails when the client config does not name the store being moved
@@ -104,6 +106,87 @@ repoint_client() { # repoint_client ADDR: never fails the caller's switch; sets 
     fi
   fi
   echo "client config $CLIENT_CONFIG now names $addr (first copy $CLIENT_CONFIG.pre-s1)"
+  if ! restart_daemon "$addr"; then
+    echo "the resident push daemon $DAEMON_LABEL did not prove it reaches $addr: ingestion may be stopped. Check $PUSH_LOG, then: launchctl kickstart -k gui/$(id -u)/$DAEMON_LABEL"
+    CLIENT_FIX_RC=$EXIT_CLIENT
+    return
+  fi
+  echo "open 'mnemonic mcp' sessions (editors, agents) keep the old address: restart them"
+}
+
+daemon_domain() { echo "gui/$(id -u)/$DAEMON_LABEL"; }
+
+daemon_print() { launchctl print "$(daemon_domain)" 2>/dev/null; }
+
+daemon_pid() { awk '$1 == "pid" && $2 == "=" {print $3; exit}'; }
+
+daemon_config() { awk '/^[ \t]*arguments = \{/ {a=1; next} a && /^[ \t]*\}/ {a=0} a {n++; if (p) {print $1; exit} p = ($1 == "--config")}'; }
+
+# The daemon read its config once at start, so a rewritten file does nothing until it is restarted. The old store is stopped
+# on every path that gets here, so a dial that does not fail can only have reached the store this call moved to.
+restart_daemon() { # restart_daemon ADDR
+  local addr=$1 st before after off waited=0 cfg errs
+  if ! st=$(daemon_print); then
+    echo "no $DAEMON_LABEL daemon is loaded for this user: nothing to restart (a hand-started 'mnemonic push --watch' must be restarted by hand)"
+    return 0
+  fi
+  cfg=$(daemon_config <<<"$st")
+  [[ $cfg == "$CLIENT_CONFIG" ]] || { echo "the daemon reads ${cfg:-no config path}, not $CLIENT_CONFIG: restarting it would not move it to $addr"; return 1; }
+  before=$(daemon_pid <<<"$st")
+  off=$(wc -c <"$PUSH_LOG" 2>/dev/null | tr -d ' ') || off=0
+  launchctl kickstart -k "$(daemon_domain)" || { echo "launchctl kickstart failed"; return 1; }
+  while ((waited < DAEMON_WAIT)); do
+    after=$(daemon_print | daemon_pid) || after=
+    [[ -n $after && $after != "$before" ]] && break
+    sleep 1
+    waited=$((waited + 1))
+  done
+  [[ -n ${after:-} && $after != "$before" ]] || { echo "the daemon did not restart within ${DAEMON_WAIT}s (pid ${before:-none} before)"; return 1; }
+  waited=0
+  while ((waited < DAEMON_WAIT)); do
+    sleep 1
+    waited=$((waited + 1))
+    errs=$(tail -c +"$((${off:-0} + 1))" "$PUSH_LOG" 2>/dev/null | grep '^push:' | head -1) || errs=
+    [[ -z $errs ]] || { echo "daemon pid $after reports: $errs"; return 1; }
+  done
+  [[ $(daemon_print | daemon_pid) == "$after" ]] || { echo "the daemon pid changed again within ${DAEMON_WAIT}s (a crash loop)"; return 1; }
+  echo "daemon $DAEMON_LABEL restarted (pid ${before:-none} to $after), reads $addr from $CLIENT_CONFIG, no push error in ${DAEMON_WAIT}s"
+}
+
+daemon_check() { # the resident push daemon must read the config this script rewrites, or restarting it moves nothing
+  local st cfg
+  if ! st=$(daemon_print); then echo "note: no $DAEMON_LABEL daemon loaded for this user; nothing to restart after the client config moves"; return 0; fi
+  cfg=$(daemon_config <<<"$st")
+  [[ $cfg == "$CLIENT_CONFIG" ]] || { echo "$DAEMON_LABEL reads ${cfg:-no config path}, not $CLIENT_CONFIG (S1_CLIENT_CONFIG): the rewrite would not move it"; return 1; }
+  echo "$DAEMON_LABEL pid $(daemon_pid <<<"$st") reads $CLIENT_CONFIG; switch --go and back --go restart it and read its log for a push error"
+}
+
+# Every mnemonic client config this Mac shows: the default folders, the --config path of each launch agent and of each MCP client
+# file that names mnemonic. Only server lines are printed, never keys. Other configs are listed and left alone: the one-line rewrite
+# is for $CLIENT_CONFIG.
+client_configs_found() {
+  python3 -I - "$CLIENT_CONFIG" "$OLD_ADDR" "$NEW_ADDR" <<'PY'
+import glob, os, re, sys
+chosen, old, new = sys.argv[1:4]
+home = os.path.expanduser("~")
+cand = set(glob.glob(home + "/.mnemonic/*.toml") + glob.glob(home + "/.config/mnemonic/*.toml"))
+files = glob.glob(home + "/Library/LaunchAgents/*.plist") + [home + "/.claude.json", home + "/.codex/config.toml", home + "/.cursor/mcp.json", home + "/.mcp.json"]
+for f in files:
+    try:
+        t = open(f, errors="replace").read()
+    except OSError:
+        continue
+    if "mnemonic" not in t:
+        continue
+    for m in re.finditer(r"--config[\s\"',=<>/a-z]*?(~?/[^\"'\s,<\]]+\.toml)", t):
+        cand.add(os.path.expanduser(m.group(1)))
+others = sorted(c for c in cand if os.path.abspath(c) != os.path.abspath(chosen) and os.path.isfile(c))
+print("%d mnemonic config(s) found besides %s" % (len(others), chosen))
+for c in others:
+    line = next((l.strip() for l in open(c, errors="replace") if l.startswith("server")), "no server line")
+    hit = old in line or new in line
+    print("  %s: %s%s" % (c, line, "  <- will NOT be rewritten: point it by hand" if hit else ""))
+PY
 }
 
 FAILS=0
@@ -140,7 +223,20 @@ rsync_run() {
   return "$rc"
 }
 
-stat_of() { grep -m1 "^$1" "$2" | sed -E 's/[^:]*: *([0-9,]+).*/\1/' | tr -d ,; }
+# stat_of NAME FILE: the number rsync printed for NAME; fails when the line is absent or not a number, so a missing statistic is never zero
+stat_of() {
+  local v
+  v=$(grep -m1 "^$1" "$2" | sed -E 's/[^:]*: *([0-9,]+).*/\1/' | tr -d ,) || return 1
+  [[ $v =~ ^[0-9]+$ ]] || return 1
+  echo "$v"
+}
+
+# rsync_stats FILE: sets ST_FILES, ST_DEL and ST_BYTES from an rsync --stats output; fails when any of the three is absent
+rsync_stats() {
+  ST_BYTES=$(stat_of 'Total transferred file size' "$1") || return 1
+  ST_FILES=$(stat_of 'Number of regular files transferred' "$1") || return 1
+  ST_DEL=$(stat_of 'Number of deleted files' "$1") || return 1
+}
 
 delta_bytes() {
   local dir=$1 out
@@ -150,8 +246,14 @@ delta_bytes() {
     rm -f "$out"
     return 1
   fi
-  echo "files $(stat_of 'Number of regular files transferred' "$out"), deleted $(stat_of 'Number of deleted files' "$out"), bytes $(stat_of 'Total transferred file size' "$out")" >&2
-  stat_of 'Total transferred file size' "$out"
+  if ! rsync_stats "$out"; then
+    echo "rsync printed no usable statistics, so the delta cannot be measured:" >&2
+    tail -5 "$out" >&2
+    rm -f "$out"
+    return 1
+  fi
+  echo "files $ST_FILES, deleted $ST_DEL, bytes $ST_BYTES" >&2
+  echo "$ST_BYTES"
   rm -f "$out"
 }
 
@@ -286,6 +388,8 @@ owner_clear() {
 old_live() {
   check owner-marker owner_clear
   check client-config client_config_state
+  check client-daemon daemon_check
+  check client-other-configs client_configs_found
   check old-units-active old "
     for u in mnemonic cloudflared-mnemonic; do s=\$(systemctl is-active \$u || true); [ \"\$s\" = active ] || { echo \"\$u is \$s\"; exit 1; }; done
     echo 'both active'"
@@ -377,10 +481,13 @@ cmd_resume() {
   st=$(owner_state) || rc=$?
   ((rc == 0)) || die "resume: the old box does not answer, so ownership cannot be read; nothing was started"
   [[ $st == aws* ]] || die "resume: the owner marker on $OLD_ADDR says '${st:-Hetzner}', not AWS; nothing was started. Use switch --go for a first move"
-  old_must_be_idle "resume refused"
+  local why
+  why=$(old_stopped_disabled) || die "resume refused: $why. AWS is not started; the old box could bring its store back at a boot"
   new true 2>/dev/null || die "resume: $NEW_HOST does not answer"
   start_new_units resume
   switch_check
+  repoint_client "$NEW_ADDR"
+  return "$CLIENT_FIX_RC"
 }
 
 switch_check() {
@@ -396,11 +503,26 @@ switch_check() {
   echo "switch done: a search answers from $NEW_ADDR and the share hostname answers"
 }
 
-old_running() { # prints the old units that are running; status 2 when the old box does not answer
+old_units_state() { # prints "unit active enabled" per old unit; fails when the old box does not answer or a unit gives no state
   local st
   # shellcheck disable=SC2016
-  st=$(old 'for u in mnemonic cloudflared-mnemonic; do echo "$u $(systemctl is-active $u)"; done') || return 2
-  awk '$2 == "active" || $2 == "activating" || $2 == "reloading" {print $1}' <<<"$st"
+  st=$(old 'for u in mnemonic cloudflared-mnemonic; do echo "$u $(systemctl is-active $u) $(systemctl is-enabled $u)"; done') || return 1
+  [[ $(awk 'NF == 3' <<<"$st" | wc -l) -eq 2 ]] || return 1
+  echo "$st"
+}
+
+old_running() { # prints the old units that are running; status 2 when the old box does not answer
+  local st
+  st=$(old_units_state) || return 2
+  awk '$2 == "active" || $2 == "activating" || $2 == "reloading" || $2 == "deactivating" {print $1}' <<<"$st"
+}
+
+old_stopped_disabled() { # fails unless both old units are positively inactive and disabled: an enabled unit starts at the next boot of the old box
+  local st bad
+  st=$(old_units_state) || { echo "the old box does not answer or gave no unit state"; return 1; }
+  bad=$(awk '!(($2 == "inactive" || $2 == "failed") && ($3 == "disabled" || $3 == "masked")) {printf "%s is %s and %s; ", $1, $2, $3}' <<<"$st")
+  [[ -z $bad ]] || { echo "${bad}run on $OLD_ADDR: systemctl disable --now mnemonic cloudflared-mnemonic"; return 1; }
+  echo "both old units inactive and disabled"
 }
 
 old_must_be_idle() { # old_must_be_idle <what refuses>
@@ -422,8 +544,9 @@ sync_back_dry() {
   total=$(grep -cE '^([<>ch.][a-zA-Z.+?]{10}|\*deleting) ' "$out" || true)
   { grep -E '^([<>ch.][a-zA-Z.+?]{10}|\*deleting) ' "$out" || true; } | head -n "$LIST_MAX" | sed 's/^/  /' || true
   ((total <= LIST_MAX)) || echo "  ... $((total - LIST_MAX)) more (S1_LIST_MAX=$LIST_MAX)"
-  n=$(stat_of 'Total transferred file size' "$out")
-  echo "dry run: $total path(s) listed, files $(stat_of 'Number of regular files transferred' "$out"), deleted $(stat_of 'Number of deleted files' "$out"), bytes $n ($((n / 1048576)) MiB). Nothing was copied or stopped."
+  rsync_stats "$out" || { rm -f "$out"; die "sync-back dry run: rsync printed no usable statistics"; }
+  n=$ST_BYTES
+  echo "dry run: $total path(s) listed, files $ST_FILES, deleted $ST_DEL, bytes $n ($((n / 1048576)) MiB). Nothing was copied or stopped."
   rm -f "$out"
 }
 
@@ -445,18 +568,41 @@ new_proven_down() { # the AWS API says the new instance is stopped or terminated
 }
 
 left_behind() { # prints "BYTES DELETED" the copy back would carry from the new store to the old one; fails when it cannot be measured
-  local out b d
+  local out
   out=$(mktemp)
   VANISH_OK=1
-  if ! rsync_run reverse dry "$out"; then rm -f "$out"; return 1; fi
-  b=$(stat_of 'Total transferred file size' "$out")
-  d=$(stat_of 'Number of deleted files' "$out")
+  if ! rsync_run reverse dry "$out" || ! rsync_stats "$out"; then rm -f "$out"; return 1; fi
   rm -f "$out"
-  echo "${b:-0} ${d:-0}"
+  echo "$ST_BYTES $ST_DEL"
+}
+
+# back_gate OWNER: the answer to "what does the old store lack", for the caller's flags. Prints why it refuses and fails; prints a
+# STALE STORE ACCEPTED line and succeeds when --accept-stale-store covers it. A measure that failed or could not be read refuses.
+back_gate() { # back_gate ACCEPT(0|1)
+  local accept=$1 left why
+  if left=$(left_behind); then
+    [[ $left != "0 0" ]] || return 0
+    why="the new store holds $((${left% *} / 1048576)) MiB (${left% *} bytes) and ${left#* } deletion(s) the old store lacks"
+    ((accept)) || { echo "$why"; return 1; }
+    echo "STALE STORE ACCEPTED: $why; they stay on $NEW_HOST:$STORE"
+  else
+    why="what the old store lacks could not be measured"
+    ((accept)) || { echo "$why"; return 1; }
+    echo "STALE STORE ACCEPTED: $why"
+  fi
+}
+
+# keep_new_serving WHY: a refusal after the new units were stopped puts the new side back, because it holds the writes
+keep_new_serving() {
+  local why=$1
+  if new 'sudo -n systemctl start mnemonic && sudo -n systemctl start cloudflared-mnemonic' && search_check "$NEW_ADDR" >/dev/null 2>&1; then
+    die "$why. The old side was not started. The new units were started again (not enabled) and the new store answers a search, so no side is down"
+  fi
+  die "$why. The old side was not started and the new units could NOT be restarted: both sides are down and $NEW_HOST holds the writes. Run: $0 resume --go"
 }
 
 cmd_back() {
-  local sync=0 dry=0 go=0 risk=0 accept=0 arg out new_up=1 why owner rc=0 left
+  local sync=0 dry=0 go=0 risk=0 accept=0 arg out new_up=1 why owner rc=0 gate
   for arg in "$@"; do
     case $arg in
       --go) go=1 ;;
@@ -477,21 +623,16 @@ cmd_back() {
   ((rc == 0)) || die "the old box does not answer, so back cannot start it or read who owns the store; nothing was changed"
   ((sync == 0)) || old_must_be_idle "sync-back refused, nothing was changed"
   if new true 2>/dev/null; then
+    if [[ -n $owner && $sync == 0 && $accept == 0 ]]; then
+      why=$(back_gate 0) || die "$why. Nothing was stopped. Rerun with --sync-back to copy them over the old store, or --accept-stale-store to start the old store without them"
+    fi
     echo "stop and disable new"
     # shellcheck disable=SC2016
     new 'sudo -n systemctl disable --now cloudflared-mnemonic; a=$?; sudo -n systemctl disable --now mnemonic; b=$?; [ $a -eq 0 ] && [ $b -eq 0 ]' ||
-      die "could not stop the new units; the old units were not started, so two stores cannot run"
+      keep_new_serving "could not stop the new units"
     if [[ -n $owner && $sync == 0 ]]; then
-      if left=$(left_behind); then
-        if [[ $left != "0 0" ]]; then
-          why="the new store holds $((${left% *} / 1048576)) MiB (${left% *} bytes) and ${left#* } deletion(s) the old store lacks"
-          ((accept)) || die "$why. The new units are stopped and the old side was not started. Rerun with --sync-back to copy them over the old store, or --accept-stale-store to start the old store without them"
-          echo "STALE STORE ACCEPTED: $why; they stay on $NEW_HOST:$STORE"
-        fi
-      else
-        ((accept)) || die "AWS took the store ($owner) and what the old store lacks could not be measured. The new units are stopped and the old side was not started. Rerun with --sync-back, or --accept-stale-store"
-        echo "STALE STORE ACCEPTED: what the old store lacks could not be measured"
-      fi
+      gate=$(back_gate "$accept") || keep_new_serving "$gate (writes may have landed since the check). Rerun with --sync-back to copy them over the old store, or --accept-stale-store to start the old store without them"
+      [[ -z $gate ]] || echo "$gate"
     fi
   else
     new_up=0
@@ -515,11 +656,11 @@ cmd_back() {
   if ((sync)); then
     echo "copy new store over old"
     out=$(mktemp)
-    rsync_run reverse live "$out" || { cat "$out"; die "reverse rsync failed; old units not started"; }
+    rsync_run reverse live "$out" || { cat "$out"; keep_new_serving "reverse rsync failed"; }
     grep -E 'Number of regular files transferred|Total transferred file size' "$out"
     rm -f "$out"
   fi
-  old "rm -f $OWNER_FILE" || die "could not clear the owner marker on $OLD_ADDR; the old units were not started"
+  old "rm -f $OWNER_FILE" || { if ((new_up)); then keep_new_serving "could not clear the owner marker on $OLD_ADDR"; fi; die "could not clear the owner marker on $OLD_ADDR; the old units were not started"; }
   echo "start old"
   old 'systemctl enable --now mnemonic && systemctl enable --now cloudflared-mnemonic && systemctl is-active mnemonic cloudflared-mnemonic'
   check old-search search_check "$OLD_ADDR" || die "old box does not answer a search"
