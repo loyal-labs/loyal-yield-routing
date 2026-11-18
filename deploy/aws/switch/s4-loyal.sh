@@ -5,6 +5,8 @@ set -uo pipefail
 
 DIR=$(cd "$(dirname "$0")/.." && pwd)
 DB=$DIR/db
+# S4_OLD and S4_NEW point the steps at stub hosts; the handback deletes on NEW, so they count only with S4_TEST set.
+if [[ -n ${S4_OLD:-}${S4_NEW:-} && -z ${S4_TEST:-} ]]; then echo "s4-loyal: S4_OLD and S4_NEW are for stubs; set S4_TEST=1 to use them" >&2; exit 2; fi
 OLD=${S4_OLD:-loyal-workers}
 NEW=${S4_NEW:-loyal-main}
 ART=/Users/user/loyal/artifacts
@@ -93,10 +95,16 @@ ci_key_line() {
   printf '%s\n' "$line"
 }
 ci_key_count() { new "grep -cE '$CI_KEY_RE' /root/.ssh/authorized_keys || true"; }
+# Idempotent: one line already there that is the one on $OLD counts as installed; none is appended; any other state fails.
 ci_key_install() {
-  local line n
+  local line n have
   line=$(ci_key_line) || return 1
   n=$(ci_key_count) || return 1
+  if [[ $n == 1 ]]; then
+    have=$(new "grep -E '$CI_KEY_RE' /root/.ssh/authorized_keys") || return 1
+    [[ $have == "$line" ]]
+    return
+  fi
   [[ $n == 0 ]] || return 1
   printf '%s\n' "$line" | new "f=/root/.ssh/authorized_keys; [ -z \"\$(tail -c1 \$f)\" ] || echo >>\$f; cat >>\$f" || return 1
   [[ $(ci_key_count) == 1 ]]
@@ -138,9 +146,9 @@ handback() {
 
 # The app database credentials of every unit on the box (the loyal_yield_prod ones go straight to Postgres on 5432, the
 # rest through PgBouncer on 6432), as the units load them: LoadCredentialEncrypted ID:path, decrypted
-# with --name=ID. Only postgres URLs at host 127.0.0.1 count. Prints "<unit>/<id> <user> <db> <port>" and never a password.
+# with --name=ID; a JSON envelope (loyal-realtime) is read for the postgres URLs among its values. Only postgres URLs at host 127.0.0.1 count. Prints "<unit>/<id> <user> <db> <port>" and never a password.
 CREDS_PY='
-import os, re, subprocess, sys, urllib.parse as up
+import json, os, re, subprocess, sys, urllib.parse as up
 for u in sys.argv[1].split():
     cat = subprocess.run(["systemctl", "cat", u + ".service"], capture_output=True, text=True).stdout
     for cid, path in re.findall(r"^LoadCredentialEncrypted=([^:\s]+):(\S+)$", cat, re.M):
@@ -148,18 +156,26 @@ for u in sys.argv[1].split():
         if r.returncode:
             print(u + "/" + cid, "DECRYPT-FAILED - -")
             continue
-        p = up.urlsplit(r.stdout.strip())
-        if p.scheme not in ("postgres", "postgresql") or p.hostname != "127.0.0.1":
-            continue
-        user, db = up.unquote(p.username or "-"), p.path.lstrip("/") or "-"
-        print(u + "/" + cid, user, db, p.port)
-        if os.environ.get("CRED_EXEC"):
-            mode = up.parse_qs(p.query).get("sslmode", ["require"])[0]
-            env = dict(os.environ, PGPASSWORD=up.unquote(p.password or ""), PGSSLMODE=mode, PGCONNECT_TIMEOUT="10")
-            c = subprocess.run(["psql", "-XAtq", "-h", "127.0.0.1", "-p", str(p.port), "-U", user, "-d", db, "-c", "select current_user"],
-                               env=env, capture_output=True, text=True)
-            err = (c.stderr.strip().splitlines() or ["no error text"])[-1]
-            print("  login ok" if c.returncode == 0 and c.stdout.strip() == user else "  login FAILED: " + err)
+        raw, cands = r.stdout.strip(), None
+        if raw.startswith("{"):
+            try:
+                cands = [(cid + ":" + k, v) for k, v in json.loads(raw)["values"].items() if isinstance(v, str)]
+            except (ValueError, KeyError, AttributeError):
+                print(u + "/" + cid, "ENVELOPE-FAILED - -")
+                continue
+        for name, url in cands or [(cid, raw)]:
+            p = up.urlsplit(url)
+            if p.scheme not in ("postgres", "postgresql") or p.hostname != "127.0.0.1":
+                continue
+            user, db = up.unquote(p.username or "-"), p.path.lstrip("/") or "-"
+            print(u + "/" + name, user, db, p.port)
+            if os.environ.get("CRED_EXEC"):
+                mode = up.parse_qs(p.query).get("sslmode", ["require"])[0]
+                env = dict(os.environ, PGPASSWORD=up.unquote(p.password or ""), PGSSLMODE=mode, PGCONNECT_TIMEOUT="10")
+                c = subprocess.run(["psql", "-XAtq", "-h", "127.0.0.1", "-p", str(p.port), "-U", user, "-d", db, "-c", "select current_user"],
+                                   env=env, capture_output=True, text=True)
+                err = (c.stderr.strip().splitlines() or ["no error text"])[-1]
+                print("  login ok" if c.returncode == 0 and c.stdout.strip() == user else "  login FAILED: " + err)
 '
 APPS="loyal-web loyal-admin loyal-stats loyal-telegram loyal-observer loyal-realtime loyal-retail loyal-backyard loyal-earn-max loyal-squads-watch-receiver loyal-observer-private-receiver"
 
@@ -168,6 +184,7 @@ dbcheck() {
   out=$(new "systemctl is-active loyal-pgbouncer >/dev/null && ss -Hltn 'sport = :6432' | grep -q . && cd /tmp && CRED_EXEC=1 python3 -I -c $(printf '%q' "$CREDS_PY") $(printf '%q' "$APPS")") ||
     fail "$NEW: PgBouncer is not up on 6432, or the credentials did not read"
   echo "$out"
+  grep -q '^loyal-realtime/' <<<"$out" || fail "loyal-realtime: no database login was tested; its realtime-envelope holds no postgres URL at 127.0.0.1"
   n=$(grep -c '^  login ok$' <<<"$out")
   bad=$(grep -cE 'FAILED' <<<"$out")
   via=$(grep -cE '^[^ ]+ [^ ]+ [^ ]+ 6432$' <<<"$out")

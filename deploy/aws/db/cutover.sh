@@ -205,6 +205,7 @@ record_boot() {
   [[ $have == yes ]] && { echo "$side: boot record $STATE/boot-$side kept from the first freeze"; return 0; }
   [[ $have == no ]] || die "$BOX answered '$have' for $STATE/boot-$side"
   if [[ $side == old ]]; then
+    on "$BOX" "rm -f $STATE/back-on-old && sync $STATE" || die "cannot remove $STATE/back-on-old on $BOX"
     list=$(on "$CUT_OLD" "for u in $OLD_ALL $STOPS; do [ \"\$(systemctl show -p UnitFileState --value \$u)\" != enabled ] || echo \$u; done") || die "$CUT_OLD did not answer for its enabled units"
     ran=$(on "$CUT_OLD" "for u in $OLD_ALL; do case \"\$(systemctl show -p ActiveState --value \$u)\" in active|activating|reloading) echo \$u ;; esac; done") || die "$CUT_OLD did not answer for its running units"
   else
@@ -217,13 +218,19 @@ record_boot() {
   echo "$side: enabled before freeze: ${list:-none}; running: ${ran:-none}; recorded in $STATE/boot-$side and $STATE/boot-$side.active"
 }
 
-# ran_before <old|src> <units>: those of the units record_boot found running there. With no running
-# list, a freeze stopped there before recording one (an older tool) or never stopped anything: the
-# units enabled there now, after restore_boot, as boot state and run state match outside a freeze.
+# ran_before <old|src> <units>: those of the units record_boot found running there; a recorded empty list
+# starts none. With no record, a freeze stopped there before recording one (an older tool) or never stopped
+# anything: the units enabled there now, after restore_boot, as boot state and run state match outside a
+# freeze. With no record but back-on-old (drop_boot's stamp), the way back already finished: none start.
 ran_before() {
   local side=$1 have u
-  have=$(on "$BOX" "if test -e $STATE/boot-$side.active; then echo yes; grep -v '^#' $STATE/boot-$side.active | paste -sd' ' -; else echo no; fi") || die "$BOX did not answer for $STATE/boot-$side.active"
+  have=$(on "$BOX" "if test -e $STATE/boot-$side.active; then echo yes; grep -v '^#' $STATE/boot-$side.active | paste -sd' ' -; elif test -e $STATE/back-on-old; then echo finished; else echo no; fi") || die "$BOX did not answer for $STATE/boot-$side.active"
   if [[ ${have%%$'\n'*} != yes ]]; then
+    if [[ $have == finished ]]; then
+      echo "$side: the way back to $CUT_OLD already finished ($STATE/back-on-old); none started" >&2
+      echo
+      return 0
+    fi
     [[ $have == no ]] || die "$BOX answered '$have' for $STATE/boot-$side.active"
     echo "$side: no running list in $STATE/boot-$side.active; the units enabled there start" >&2
     if [[ $side == old ]]; then
@@ -285,12 +292,13 @@ start_healthy() {
   done
 }
 
-# start_timers <host> <enable|start> [timer...]: the timers named, or every CUT_TIMERS one.
+# start_timers <host> <enable|start> <timer>...: the timers named and no others; none named starts nothing.
 start_timers() {
   local timers
   timers=${*:3}
-  (($# > 2)) || timers=$TIMERS
-  [[ -z ${timers// /} ]] || { on "$1" "$([[ $2 == enable ]] && echo "systemctl enable $timers && ")systemctl start $timers" || die "$1: starting $timers failed"; echo "$1: started$([[ $2 == enable ]] && echo ' and enabled') $timers"; }
+  [[ -n ${timers// /} ]] || { echo "$1: no timers to start"; return 0; }
+  on "$1" "$([[ $2 == enable ]] && echo "systemctl enable $timers && ")systemctl start $timers" || die "$1: starting $timers failed"
+  echo "$1: started$([[ $2 == enable ]] && echo ' and enabled') $timers"
 }
 
 # hook <name> <command>: a CUT_* hook, run on this machine from this directory, killed after
@@ -301,9 +309,25 @@ hook() {
   [[ -n $2 ]] || return 0
   timed "$1" bounded "$2"
 }
-bounded() { (cd "$HERE" && exec perl -e 'alarm shift; exec @ARGV or exit 127' "$CUT_HOOK_SECONDS" bash -c "$1"); }
+# The hook runs in a process group of its own, which is killed whole when CUT_HOOK_SECONDS pass or when this script is gone
+# (a copy the hook started never outlives either). Its stdin is /dev/null: a group in the background cannot read the terminal.
+# shellcheck disable=SC2016 # perl source
+HOOK_PERL='
+use POSIX ":sys_wait_h";
+setpgrp(0, 0);
+my ($limit, $parent) = (shift, getppid);
+my $pid = fork;
+defined $pid or exit 126;
+if (!$pid) { exec @ARGV; exit 127 }
+my $end = time + $limit;
+while (1) {
+  if (waitpid($pid, WNOHANG) == $pid) { exit($? & 127 ? 128 + ($? & 127) : $? >> 8) }
+  kill "KILL", -$$ if time >= $end || getppid != $parent;
+  select(undef, undef, undef, 0.2);
+}'
+bounded() { (cd "$HERE" && exec perl -e "$HOOK_PERL" "$CUT_HOOK_SECONDS" bash -c "$1" </dev/null); }
 
-drop_boot() { on "$BOX" "rm -f $STATE/boot-old $STATE/boot-src $STATE/boot-old.active $STATE/boot-src.active && sync $STATE" || die "cannot remove the boot records on $BOX"; }
+drop_boot() { on "$BOX" "touch $STATE/back-on-old && sync $STATE && rm -f $STATE/boot-old $STATE/boot-src $STATE/boot-old.active $STATE/boot-src.active && sync $STATE" || die "cannot remove the boot records on $BOX"; }
 
 health() {
   local host=$1 u path bad=0
@@ -476,7 +500,8 @@ cmd_unfreeze() {
   writers_off "$CUT_OLD" || die "a writer on $CUT_OLD runs or starts at boot; the timers and engines stay off on $CUT_NEW"
   src_writers_off || die "a writer on the source runs or starts at boot; the timers and engines stay off on $CUT_NEW"
   hook dbcheck "$CUT_DBCHECK" || die "CUT_DBCHECK failed on $CUT_NEW; the timers and engines stay off"
-  timed start-timers start_timers "$CUT_NEW" enable || die "the timers did not start on $CUT_NEW"
+  # shellcheck disable=SC2086
+  timed start-timers start_timers "$CUT_NEW" enable $TIMERS || die "the timers did not start on $CUT_NEW"
   timed start-engines start_healthy "$CUT_NEW" enable ${CUT_ENGINES[@]+"${CUT_ENGINES[@]}"} || die "the engines did not start healthy on $CUT_NEW"
   sleep 60
   timed health health "$CUT_NEW" ${CUT_ENGINES[@]+"${CUT_ENGINES[@]}"} "${CUT_SERVICES[@]}" || die "health failed on $CUT_NEW"
@@ -493,7 +518,8 @@ rollback_failed() {
   timed thaw-reverse pg thaw --reverse || die "$1, and thaw --reverse failed: the target may still be fenced; rerun rollback, or run 'thaw $CLUSTER --reverse'"
   start_new || die "$1; the target takes writes again but the writers did not start healthy on $CUT_NEW"
   if this_tenure unfrozen; then
-    timed restart-timers start_timers "$CUT_NEW" enable || die "$1; the timers did not start on $CUT_NEW"
+    # shellcheck disable=SC2086
+    timed restart-timers start_timers "$CUT_NEW" enable $TIMERS || die "$1; the timers did not start on $CUT_NEW"
     timed restart-engines start_healthy "$CUT_NEW" enable ${CUT_ENGINES[@]+"${CUT_ENGINES[@]}"} || die "$1; the engines did not start healthy on $CUT_NEW"
   fi
   report_times

@@ -22,7 +22,9 @@ case $mode in apply | state) ;; *) echo "usage: $0 apply|state" >&2; exit 2 ;; e
 if [[ $mode == state ]]; then
   # shellcheck source=/dev/null
   source "$DIR/../hetzner/db/remote.sh"
-  active=$(box 'systemctl is-active loyal-observer-private-receiver loyal-squads-watch-receiver loyal-squads-watch-tick.timer | grep -c "^active"' || true)
+  active=$(box 'systemctl is-active loyal-observer-private-receiver loyal-squads-watch-receiver loyal-squads-watch-tick.timer | grep -c "^active" || true') ||
+    { echo "state: the old receivers' state could not be read on loyal-db-primary; nothing copied" >&2; exit 1; }
+  [[ $active =~ ^[0-9]+$ ]] || { echo "state: the old receivers' is-active read answered '$active', not a count; nothing copied" >&2; exit 1; }
   for d in loyal-observer-monitor loyal-squads-watch; do
     box "tar -C /var/lib/$d -cf - --numeric-owner ." |
       ssh -o BatchMode=yes "$BOX" "sudo -n bash -c 'install -d -m 0700 -o root -g root /var/lib/$d && tar -C /var/lib/$d -xpf - --same-owner --numeric-owner'"
