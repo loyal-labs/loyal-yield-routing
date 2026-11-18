@@ -40,22 +40,11 @@ Per box it ensures, each found again by name: the bucket in the box's account an
 
 Buckets: `robinx-pgbackrest-227949368511` (account `main`) and `loyal-pgbackrest-026852303320` (account `loyal`), both us-east-1. A box's role reaches only its own bucket.
 
-Repo stanza for a cluster on the box, in the pgBackRest config. The options other than the repo lines are the Hetzner `wen/deploy/postgres/pgbackrest.conf.example` ones. Credentials come from the instance role (`repo1-s3-key-type=auto`), so no key is written anywhere. Give each cluster its own `repo1-path`, and keep the cipher pass in `PGBACKREST_REPO1_CIPHER_PASS` as the Hetzner setup does. No stanza exists yet; `stanza-create` runs once the cluster does.
+### Stanzas on the box
 
-```ini
-[global]
-repo1-type=s3
-repo1-path=/robinx
-repo1-s3-bucket=robinx-pgbackrest-227949368511
-repo1-s3-endpoint=s3.us-east-1.amazonaws.com
-repo1-s3-region=us-east-1
-repo1-s3-key-type=auto
-repo1-cipher-type=aes-256-cbc
-repo1-retention-full-type=time
-repo1-retention-full=14
-process-max=2
-compress-type=zst
-compress-level=3
-start-fast=y
-archive-async=y
-```
+`backup.sh <box> [--dry-run] [--full]` then goes on over ssh (`BOX_SSH`) for a conf that lists `STANZAS` (`name|repo1-path|cluster|port|data dir|socket dir`; robinX production on robinx-main is one more line, shown in the conf). Per box it ensures `/etc/pgbackrest/pgbackrest.conf` (S3 repo, `repo1-s3-key-type=auto` so the instance role signs and no key is on disk, one `[stanza]` block each with its own `repo1-path`), a cipher passphrase generated on the box once into `/etc/pgbackrest/conf.d/cipher.conf` (root:postgres 0640, never printed, never copied), `stanza-create`, `archive_command` of the cluster in its `conf.d/zz-pgmove-archive.conf` applied by `systemctl reload`, `pgbackrest check`, and the backup unit files installed and left disabled. A cluster whose `archive_mode` is off or pending a restart is reported and its `archive_command` left alone; Postgres is never restarted. `--full` starts the first full when no full is listed, as the transient unit `pgbackrest-first-full-<stanza>` (Nice 10, CPUQuota 200%, IOWeight 10, a read cap on the data volume, MemoryMax 4G) through `/usr/local/sbin/pgbackrest-lagged-full`, which saves `pg_stat_subscription` lag to `/var/log/pgbackrest/<stanza>.full.lag-{before,during,after}.txt`. Done is `pgbackrest --stanza=<stanza> info` listing the full with a stop timestamp.
+
+Retention mirrors the old boxes: loyal-main keeps two fulls and seven diffs (loyal-db-primary), robinx-main keeps fulls 14 days and diffs 7 (Hetzner robinX and parsers). The roles hold no `s3:DeleteObjectVersion` and no `s3:AbortMultipartUpload`. pgBackRest expiry deletes with `DeleteObject`, which on this versioned bucket leaves a delete marker and keeps the old version; the lifecycle rule removes noncurrent versions after 30 days, so retention expiry frees no space for 30 days and no role can remove a version sooner. Incomplete multipart uploads are cleaned by the lifecycle rule after 7 days. The lifecycle rule has no expired-delete-marker clause, so lone delete markers may linger (unproven).
+
+Backup units: loyal-main's `loyal-db-backup@.service`, `-full.timer` (Sun 03:00 UTC) and `-diff.timer` (Mon to Sat 03:00 UTC) come from `loyal-main-config.sh` and are only verified disabled. robinx-main's `robinx-parsers-backup@.service` and `robinx-parsers-backup-full.timer` (Sun 09:00 UTC) are in `boxes/robinx-main.units/`. Both timers stay disabled and switch with their box. `loyal-main-config.sh` copies the Hetzner `/etc/pgbackrest/pgbackrest.conf` (SFTP repo, old cipher pass) to the same path on loyal-main, so a rerun of it overwrites the file `backup.sh` owns; run `backup.sh loyal-main` after it.
+

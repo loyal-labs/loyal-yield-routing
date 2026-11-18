@@ -1,7 +1,5 @@
 # Neon to loyal-db-primary: replica and cutover
 
-The `cutover.sh` on this page is the Neon one, `deploy/hetzner/db/cutover.sh` as of c063a59d2 (`git show c063a59d2:deploy/hetzner/db/cutover.sh`). a9507153f moved its path to `deploy/aws/db/cutover.sh`, which is the AWS switch and has none of these subcommands.
-
 Rehearsed, not executed. The freeze needs the owner's go in `gates.md`. `cutover.sh preflight` ran green on Nov 5.
 
 ## What runs today

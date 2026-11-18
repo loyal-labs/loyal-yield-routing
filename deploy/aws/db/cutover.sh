@@ -6,7 +6,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 usage() {
   cat >&2 <<EOF
 usage: $0 <cluster> <step>
-  preflight          installs pgmove on the target box; pgmove preflight at 0 DIFF; target units present and stopped
+  preflight          installs pgmove on the target box; 0-DIFF hash under 24 h, 0 schema and grant DIFF, target units present and stopped
   freeze             stops the writers on CUT_OLD, fences the source roles, catches up, syncs sequences, verify at 0 DIFF
   switch             subscriptions off, reverse armed, target roles LOGIN, CUT_SERVICES started on CUT_NEW
   verify             health on CUT_NEW, writes land on the target, the source took none outside the reverse subscription
@@ -24,15 +24,9 @@ CLUSTER=${1:-}
 STEP=${2:-}
 [[ -n $CLUSTER && -n $STEP && -f $HERE/clusters/$CLUSTER.conf ]] || usage
 die() { echo "cutover: $*" >&2; exit 1; }
-# The AWS boxes log in as ubuntu; every command runs as root through sudo -n, and root@ hosts run it as is.
-on() {
-  local host=$1 cmd
-  shift
-  cmd="$*"
-  if [[ $host == root@* ]]; then ssh -o BatchMode=yes -o ConnectTimeout=15 "$host" "$cmd"; else ssh -o BatchMode=yes -o ConnectTimeout=15 "$host" "sudo -n bash -c $(printf %q "$cmd")"; fi
-}
+on() { ssh -o BatchMode=yes -o ConnectTimeout=15 "$@"; }
 CUT_OLD='' CUT_NEW='' BOX=''
-CUT_TIMERS=() CUT_ONESHOTS=() CUT_ENGINES=() CUT_SERVICES=() CUT_HEALTH=() CUT_STOP=()
+CUT_TIMERS=() CUT_ONESHOTS=() CUT_ENGINES=() CUT_SERVICES=() CUT_HEALTH=()
 # shellcheck source=/dev/null
 source "$HERE/clusters/$CLUSTER.conf"
 [[ -n $CUT_OLD && -n $CUT_NEW && -n $BOX ]] || { echo "cutover: $CLUSTER.conf sets no CUT_OLD, CUT_NEW or BOX; $CLUSTER has no writers to move" >&2; exit 2; }
@@ -47,9 +41,6 @@ TIMERS=${CUT_TIMERS[*]+"${CUT_TIMERS[*]}"}
 ONESHOTS=${CUT_ONESHOTS[*]+"${CUT_ONESHOTS[*]}"}
 ENGINES=${CUT_ENGINES[*]+"${CUT_ENGINES[*]}"}
 SERVICES=${CUT_SERVICES[*]+"${CUT_SERVICES[*]}"}
-# CUT_STOP: units stopped and checked with the writers on both hosts and never started, such as the
-# robinX slot that is not live, which a deploy may have left running.
-STOPS=${CUT_STOP[*]+"${CUT_STOP[*]}"}
 ALL="$TIMERS $ENGINES $SERVICES"
 [[ -n $SERVICES ]] || { echo "cutover: $CLUSTER.conf lists no CUT_SERVICES" >&2; exit 2; }
 CUTOVER_PROOF=${CUTOVER_PROOF:-/Users/user/loyal/artifacts/orchestrate/aws-migration/proof/cutover-$CLUSTER}
@@ -98,14 +89,14 @@ stop_writers() {
     on "$host" "systemctl stop $u; [ \"\$(systemctl show -p Result --value $u)\" = success ] || { echo '$u did not stop cleanly' >&2; exit 1; }"
     echo "$host: stopped $u cleanly"
   done
-  on "$host" "systemctl stop $SERVICES $STOPS"
-  echo "$host: stopped $SERVICES $STOPS"
+  on "$host" "systemctl stop $SERVICES"
+  echo "$host: stopped $SERVICES"
   writers_stopped "$host" || die "a writer is still active on $host"
 }
 
 writers_stopped() {
   local states
-  states=$(on "$1" "systemctl is-active $ENGINES $SERVICES $STOPS $ONESHOTS $TIMERS || true")
+  states=$(on "$1" "systemctl is-active $ENGINES $SERVICES $ONESHOTS $TIMERS || true")
   [[ -n $states ]] && ! grep -qvxE 'inactive|failed' <<<"$states"
 }
 
@@ -151,9 +142,6 @@ units_ready() {
     if ! on "$CUT_NEW" "systemctl cat $u >/dev/null 2>&1"; then echo "preflight: $CUT_NEW has no unit $u"; bad=1; continue; fi
     if on "$CUT_NEW" "systemctl is-active --quiet $u"; then echo "preflight: $CUT_NEW runs $u before the switch"; bad=1; fi
   done
-  for u in $STOPS; do
-    if on "$CUT_NEW" "systemctl is-active --quiet $u"; then echo "preflight: $CUT_NEW runs $u, which the switch never starts"; bad=1; fi
-  done
   ((bad == 0)) && echo "preflight: $CUT_NEW has every unit of $CLUSTER.conf, all stopped"
   return $bad
 }
@@ -176,10 +164,12 @@ cmd_preflight() {
   mkdir -p "$CUTOVER_PROOF"
   out=$CUTOVER_PROOF/preflight-verify-$(date -u +%Y%m%dT%H%MZ).txt
   timed install "$HERE/remote.sh" install "$CLUSTER"
-  # pgmove preflight: tables in state r, lag, verify, the reverse, fence and switch dry runs, marker, volume.
-  timed preflight pg preflight >"$out" || { cat "$out"; die "pgmove preflight failed; full output $out"; }
-  echo "preflight: $(tail -1 "$out"); full output $out"
+  timed hash-age pg hash --age
+  timed schema pg schema
+  timed grants pg grants
   timed units units_ready
+  timed verify pg verify >"$out" || true
+  echo "verify: $(tail -1 "$out") while the source takes writes; full output $out"
   timed writes-save pg writes save preflight src
   timed ssh-roundtrip on "$CUT_OLD" true
   report_times
@@ -273,7 +263,6 @@ cmd_status() {
     if stamped "$s"; then echo "status: $s"; else echo "status: not $s"; fi
   done
   all=$ALL
-  all="$all $STOPS"
   echo "status: $CUT_OLD $(on "$CUT_OLD" "systemctl is-active $all" | paste -sd' ' - || true)"
   echo "status: $CUT_NEW $(on "$CUT_NEW" "systemctl is-active $all" | paste -sd' ' - || true)"
 }
