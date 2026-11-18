@@ -13,6 +13,11 @@ AGENT=${PGMOVE_AGENT:-/tmp/pgmove-agent.sock}
 UNITS_TSV=${S4_UNITS_TSV:-$ART/aws-migration-2026-11-17/units.tsv}
 TUNNEL_SEALED=/etc/credstore.encrypted/cloudflared/loyal-workers.json
 TUNNEL_PLAIN=/etc/cloudflared/loyal-workers.json
+CADDY_DATA=/var/lib/caddy/.local/share/caddy
+CERT_DIR=$CADDY_DATA/certificates/acme-v02.api.letsencrypt.org-directory/realtime.askloyal.com
+OLD_IP=5.161.121.229
+NEW_IP=100.57.84.125
+APPLY="BOX_PUBKEY=~/.ssh/id_ed25519.pub deploy/aws/box.sh loyal-main"
 SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=30)
 
 usage() {
@@ -21,8 +26,8 @@ usage: $0 preflight|handover|handback|dbcheck
 preflight  Read-only. Runs s4-services-preflight.sh, pgmove preflight loyal, cutover.sh loyal preflight and the S4 checks,
            one line per check as ok, BLOCKER or PARKED, then "<n> ok, <m> blocker, <k> parked". Exit 0 only with 0 blockers.
 handover   CUT_HANDOVER, in freeze once the old units are proven stopped: the ClickStack final copy, the receivers' state
-           copy, then the tunnel credential placed on $NEW. Fails closed; cutover.sh bounds it.
-handback   CUT_HANDBACK, in abort and rollback once $NEW is stopped: removes the placed tunnel credential.
+           copy, Caddy's realtime.askloyal.com certificate, then the tunnel credential placed on $NEW. Fails closed; cutover.sh bounds it.
+handback   CUT_HANDBACK, in abort and rollback once $NEW is stopped: removes the placed tunnel credential and the copied certificate.
 dbcheck    CUT_DBCHECK, before any app starts: each app database credential on $NEW logs in through 127.0.0.1:6432.
 Env: PGMOVE_SRC_ADMIN (runs its one argument as root on loyal-db-primary), PGMOVE_AGENT, S4_UNITS_TSV.
 EOF
@@ -35,6 +40,11 @@ old() { ssh "${SSH_OPTS[@]}" "$OLD" "sudo -n bash -c $(printf '%q' "$*")"; }
 new() { ssh "${SSH_OPTS[@]}" "$NEW" "sudo -n bash -c $(printf '%q' "$*")"; }
 newsh() { ssh "${SSH_OPTS[@]}" "$NEW" 'sudo -n bash -s'; }
 src() { "$SRC_ADMIN" "$*"; }
+b64() { base64 | tr -d '\n'; }
+j64() { python3 -I -c 'import base64, json, sys; print(base64.b64encode(json.dumps(json.load(sys.stdin)).encode()).decode())'; }
+# bcopy <send|recv> <params json>: the box-copy.py command to run as root on a host, its code carried in the command.
+# shellcheck disable=SC2016 # expanded on the remote host
+bcopy() { printf 'python3 -I -c "$(echo %s | base64 -d)" %s %s' "$(b64 <"$DIR/box-copy.py")" "$1" "$(j64 <<<"$2")"; }
 conf() { bash -c 'source "$1"; eval "echo \"\${$2[*]}\""' _ "$DB/clusters/loyal.conf" "$1"; }
 fail() { echo "s4-loyal: $*" >&2; exit 1; }
 
@@ -47,26 +57,51 @@ stopped() {
   ((n == $#)) || { echo "$where: not all stopped: $(grep -vE ' (inactive|failed)$' <<<"$out" | paste -sd' ' -)" >&2; return 1; }
 }
 
+# caddy_cert_copy: the realtime.askloyal.com certificate, its key and its metadata, from the stopped Caddy on $OLD into the same
+# path on $NEW (owner caddy, 0600; the five directories above it are made caddy's too), through one pipe: nothing lands on this
+# machine. The ACME account and the sslip name's certificate stay: $NEW's Caddy makes its own for the sslip name on start.
+caddy_cert_copy() {
+  local d spec='{"entries":[' out rc
+  for d in /var/lib/caddy/.local /var/lib/caddy/.local/share $CADDY_DATA $CADDY_DATA/certificates "$(dirname "$CERT_DIR")"; do
+    spec+="{\"k\":\"dir\",\"dst\":\"$d\",\"mode\":\"0700\",\"own\":\"caddy:caddy\"},"
+  done
+  spec+="{\"src\":\"$CERT_DIR\"}]}"
+  # shellcheck disable=SC2029 # the commands are built here on purpose
+  out=$(set -o pipefail; ssh "${SSH_OPTS[@]}" "$OLD" "sudo -n $(bcopy send "$spec")" | ssh "${SSH_OPTS[@]}" "$NEW" "sudo -n $(bcopy recv '{}')")
+  rc=$?
+  echo "caddy: ${out//$'\n'/$'\ncaddy: '}"
+  ((rc == 0)) || return 1
+  new "d=$CERT_DIR; for f in crt key json; do test -s \$d/realtime.askloyal.com.\$f || exit 1; done
+    [ \"\$(stat -c %U:%a \$d/realtime.askloyal.com.key)\" = caddy:600 ] &&
+    [ \"\$(openssl x509 -in \$d/realtime.askloyal.com.crt -noout -pubkey)\" = \"\$(openssl pkey -in \$d/realtime.askloyal.com.key -pubout)\" ] &&
+    runuser -u caddy -- test -r \$d/realtime.askloyal.com.key" || return 1
+  [[ $(old "sha256sum <$CERT_DIR/realtime.askloyal.com.crt") == "$(new "sha256sum <$CERT_DIR/realtime.askloyal.com.crt")" ]]
+}
+
 handover() {
   local out
-  stopped old loyal-clickstack loyal-clickstack-relay cloudflared || fail "$OLD: ClickStack or cloudflared runs; nothing copied"
+  stopped old loyal-clickstack loyal-clickstack-relay cloudflared caddy wg-quick@loyal-ci || fail "$OLD: ClickStack, cloudflared, Caddy or the loyal-ci tunnel runs; nothing copied"
   stopped src loyal-observer-private-receiver loyal-squads-watch-receiver loyal-squads-watch-tick.timer loyal-squads-watch-tick.service loyal-observer-push-check.timer ||
     fail "loyal-db-primary: a receiver runs; nothing copied"
-  stopped new loyal-clickstack loyal-clickstack-relay loyal-observer-private-receiver loyal-squads-watch-receiver cloudflared ||
+  stopped new loyal-clickstack loyal-clickstack-relay loyal-observer-private-receiver loyal-squads-watch-receiver cloudflared caddy wg-quick@loyal-ci ||
     fail "$NEW: a unit that takes the copies runs; nothing copied"
   bash "$DIR/loyal-clickstack-copy.sh" final || fail "ClickStack final copy failed"
   out=$(bash "$DIR/loyal-receivers-repin.sh" state) || fail "receiver state copy failed: $out"
   echo "$out"
   grep -qx 'final copy: the old receivers and tick timer are stopped' <<<"$out" || fail "the receiver state copy was not final"
+  caddy_cert_copy || fail "the realtime certificate was not copied to $NEW"
+  echo "$NEW: realtime.askloyal.com certificate placed at $CERT_DIR"
   new "test -s $TUNNEL_SEALED && umask 077 && systemd-creds decrypt --name=loyal-workers.json $TUNNEL_SEALED $TUNNEL_PLAIN.new && chmod 0600 $TUNNEL_PLAIN.new && mv -f $TUNNEL_PLAIN.new $TUNNEL_PLAIN && sync /etc/cloudflared" ||
     fail "the tunnel credential was not placed on $NEW"
   echo "$NEW: tunnel credential placed at $TUNNEL_PLAIN"
 }
 
 handback() {
-  stopped new cloudflared || fail "cloudflared runs on $NEW; the credential stays"
+  stopped new cloudflared caddy wg-quick@loyal-ci || fail "cloudflared, Caddy or the loyal-ci tunnel runs on $NEW; the credential and the certificate stay"
   new "rm -f $TUNNEL_PLAIN $TUNNEL_PLAIN.new && sync /etc/cloudflared && test ! -e $TUNNEL_PLAIN" || fail "the tunnel credential is still on $NEW"
   echo "$NEW: tunnel credential removed"
+  new "rm -rf $CERT_DIR && sync $CADDY_DATA && test ! -e $CERT_DIR" || fail "the realtime certificate is still on $NEW"
+  echo "$NEW: realtime.askloyal.com certificate removed"
 }
 
 # The app database credentials of every unit on the box (the loyal_yield_prod ones go straight to Postgres on 5432, the
@@ -154,7 +189,7 @@ c_cutover() {
 c_units() {
   local want listed u miss='' states bad
   want=$(awk -F'\t' '$3 == "loyal-main" && $4 == "move" { print $1 }' "$UNITS_TSV" | sed 's/\.service$//') || return 1
-  [[ $(wc -l <<<"$want") -eq 28 ]] || { echo "units.tsv lists $(wc -l <<<"$want") loyal-main rows, not 28"; return 1; }
+  [[ $(wc -l <<<"$want") -eq 29 ]] || { echo "units.tsv lists $(wc -l <<<"$want") loyal-main rows, not 29"; return 1; }
   listed=" $(conf CUT_TIMERS) $(conf CUT_ENGINES) $(conf CUT_SERVICES) $(conf CUT_FIRST) "
   for u in $want; do
     [[ $u == postgresql@18-main || $listed == *" $u "* ]] || miss+=" $u"
@@ -163,7 +198,7 @@ c_units() {
   states=$(new "for u in $listed $(conf CUT_ONESHOTS); do echo \$u \$(systemctl show -p LoadState --value \$u) \$(systemctl show -p ActiveState --value \$u) \$(systemctl show -p UnitFileState --value \$u); done") || { echo "$NEW did not answer"; return 1; }
   bad=$(grep -vE '^[^ ]+ loaded inactive (disabled|static)$' <<<"$states")
   [[ -z $bad ]] || { echo "on $NEW: $bad"; return 1; }
-  echo "27 of 28 rows in loyal.conf (postgresql@18-main moves by pgmove), plus loyal-squads-watch-firewall; $(wc -l <<<"$states") units loaded, inactive and disabled or static on $NEW"
+  echo "28 of 29 rows in loyal.conf (postgresql@18-main moves by pgmove), plus loyal-squads-watch-firewall and wg-quick@loyal-ci; $(wc -l <<<"$states") units loaded, inactive and disabled or static on $NEW"
 }
 
 # The sides freeze records: abort and rollback restore exactly these.
@@ -268,35 +303,132 @@ c_tunnel() {
     grep -qx "decrypts $t" <<<"$out" && grep -qx 'unit disabled inactive' <<<"$out" && [[ $(head -1 <<<"$oldt") == "$t" ]]
 }
 
-# The public routes that do not go through the tunnel: Caddy on loyal-workers serves realtime.askloyal.com (proxy to
-# 127.0.0.1:10000) by DNS A and ACME HTTP. After switch loyal-realtime runs on loyal-main, which takes only tcp 22.
-c_public() {
-  local dns ing
-  dns=$(dig +short realtime.askloyal.com A | paste -sd' ' -)
-  ing=$(grep -c '^INGRESS' "$DIR/boxes/loyal-main.conf")
-  echo "realtime.askloyal.com A ${dns:-none}; loyal-main.conf INGRESS lines: $ing; loyal-main caddy $(new 'systemctl is-enabled caddy 2>&1') (not in units.tsv)"
-  [[ $ing -gt 0 && $dns == *100.57.84.125* ]]
+# shellcheck disable=SC2016 # expanded on loyal-main
+new_ip() { new 't=$(curl -fsS -m 5 -X PUT -H "X-aws-ec2-metadata-token-ttl-seconds: 60" http://169.254.169.254/latest/api/token) && curl -fsS -m 5 -H "X-aws-ec2-metadata-token: $t" http://169.254.169.254/latest/meta-data/public-ipv4'; }
+
+# The public routes that do not go through the tunnel. Caddy on loyal-workers serves realtime.askloyal.com (proxy to
+# 127.0.0.1:10000, ACME HTTP-01 only) and the ClickStack sslip name by DNS A. The unit is the package's on both boxes; the
+# Caddyfile differs only in the sslip name's address; nothing runs or listens on loyal-main.
+c_caddy_staged() {
+  local a b ip st
+  local sum="systemctl cat caddy | sha256sum | cut -c1-16; caddy version | cut -d' ' -f1; sed -E 's/observability[.][0-9.]+[.]sslip[.]io/observability.X.sslip.io/' /etc/caddy/Caddyfile | sha256sum | cut -c1-16"
+  a=$(old "$sum") || { echo "$OLD did not answer"; return 1; }
+  b=$(new "$sum") || { echo "$NEW did not answer"; return 1; }
+  [[ $a == "$b" ]] || { echo "unit, version or Caddyfile differ: $OLD $(paste -sd' ' - <<<"$a"), $NEW $(paste -sd' ' - <<<"$b")"; return 1; }
+  ip=$(new_ip) || { echo "no public address on $NEW"; return 1; }
+  [[ $ip == "$NEW_IP" ]] || { echo "$NEW's public address is $ip, not $NEW_IP"; return 1; }
+  st=$(new "caddy adapt --config /etc/caddy/Caddyfile >/dev/null 2>&1 && echo adapt-ok; grep -c 'observability.$ip.sslip.io {' /etc/caddy/Caddyfile; grep -c '^realtime.askloyal.com {' /etc/caddy/Caddyfile; echo \$(systemctl is-enabled caddy 2>&1) \$(systemctl is-active caddy 2>&1); ss -Hltn 'sport = :80 or sport = :443 or sport = :2019' | wc -l") || { echo "$NEW did not answer"; return 1; }
+  st=$(paste -sd' ' - <<<"$st" | sed 's/  */ /g')
+  echo "unit, caddy $(awk '{print $1}' <<<"$b" | sed -n 2p) and Caddyfile (sslip name aside) equal on both; $NEW: $st (want adapt-ok 1 1 disabled inactive 0: Caddyfile parses, names observability.$ip.sslip.io once and realtime.askloyal.com once, disabled, inactive, nothing on 80, 443 or 2019)"
+  [[ $st == "adapt-ok 1 1 disabled inactive 0" ]]
 }
 
-# The production deploy reaches the box through WireGuard loyal-ci on udp 51820 (scripts/ci-worker-network.sh).
-c_deploy() {
-  local w
-  w=$(new "test -e /etc/wireguard/loyal-ci.conf && echo conf; systemctl is-enabled wg-quick@loyal-ci 2>&1") || true
-  echo "loyal-main wireguard: ${w//$'\n'/ }; LOYAL_WORKERS_HOST stays loyal-workers until the owner repoints it after switch"
-  grep -qx conf <<<"$w"
+# TLS: the certificate for realtime.askloyal.com is copied in freeze with Caddy stopped on both boxes (caddy_cert_copy), so the
+# first request after the DNS change is served with a valid certificate. This reads what would be copied.
+c_caddy_tls() {
+  local o
+  o=$(old "d=$CERT_DIR; test -s \$d/realtime.askloyal.com.crt && test -s \$d/realtime.askloyal.com.key && openssl x509 -checkend 1209600 -noout -in \$d/realtime.askloyal.com.crt >/dev/null && echo valid-over-14-days; [ \"\$(openssl x509 -in \$d/realtime.askloyal.com.crt -noout -pubkey)\" = \"\$(openssl pkey -in \$d/realtime.askloyal.com.key -pubout)\" ] && echo key-matches; openssl x509 -noout -enddate -in \$d/realtime.askloyal.com.crt; stat -c '%U:%a' \$d/realtime.askloyal.com.key") || { echo "$OLD: no usable realtime certificate under $CERT_DIR"; return 1; }
+  o=$(paste -sd' ' - <<<"$o")
+  echo "$OLD $o; copied to $NEW in freeze, removed again by abort and rollback; $NEW: $(new "getent passwd caddy | cut -d: -f1; stat -c '%U:%a' /var/lib/caddy; test -e $CERT_DIR && echo 'certificate already present' || echo 'no certificate yet'" | paste -sd' ' -)"
+  [[ $o == *valid-over-14-days*key-matches*notAfter=*caddy:600 ]] && new "getent passwd caddy >/dev/null && test -d /var/lib/caddy" >/dev/null 2>&1
+}
+
+c_ingress_conf() {
+  local r w miss=''
+  r=$(bash -c 'source "$1"; echo "${INGRESS[*]-}"' _ "$DIR/boxes/loyal-main.conf")
+  for w in udp:51820:0.0.0.0/0 tcp:80:0.0.0.0/0 tcp:443:0.0.0.0/0; do [[ " $r " == *" $w "* ]] || miss+=" $w"; done
+  echo "loyal-main.conf INGRESS: ${r:-none}${miss:+; missing$miss}"
+  [[ -z $miss ]]
+}
+
+# The security group cannot be read without an AWS session (expired). A TCP connect to the Elastic IP tells tcp 80 and 443 apart:
+# refused or open means the group lets the port in (nothing listens on loyal-main yet), a timeout means it does not. UDP gives no
+# answer either way; box.sh adds the rules in conf order, udp 51820 first, so tcp 443 reaching the box means all three are in.
+c_ingress_applied() {
+  local p r out='' miss=0
+  for p in 80 443; do
+    r=$(python3 -I -c 'import socket, sys
+s = socket.socket(); s.settimeout(6)
+try:
+    s.connect((sys.argv[1], int(sys.argv[2]))); print("open")
+except ConnectionRefusedError:
+    print("refused")
+except OSError:
+    print("timeout")' "$NEW_IP" "$p")
+    out+=" tcp $p $r;"
+    [[ $r == refused || $r == open ]] || miss=1
+  done
+  if ((miss)); then
+    echo "cannot read the security group (AWS session expired); probes of $NEW_IP:$out so the conf's INGRESS is not applied. Owner, after aws login --profile mgmt: $APPLY"
+    return 3
+  fi
+  echo "probes of $NEW_IP:$out the group lets 80 and 443 in; udp 51820 cannot be read (inferred in, box.sh adds it first)"
+}
+
+c_dns_realtime() {
+  local dns ns ttl
+  dns=$(dig +short realtime.askloyal.com A | paste -sd' ' -)
+  ns=$(dig +short NS askloyal.com | head -1)
+  ttl=$([[ -n $ns ]] && dig +noall +answer @"$ns" realtime.askloyal.com A | awk 'NR == 1 { print $2 }')
+  echo "realtime.askloyal.com A ${dns:-none}, record TTL ${ttl:-unread} s; the owner's switch-time step O2 moves it to $NEW_IP (lower the TTL the day before)"
+  [[ $dns == "$NEW_IP" ]] && return 0
+  [[ $dns == "$OLD_IP" ]] && return 3
+  return 1
+}
+
+# The production deploy reaches the box through WireGuard loyal-ci on udp 51820 (scripts/ci-worker-network.sh), with the same
+# server key: LOYAL_WORKERS_WIREGUARD_PUBLIC_KEY stays valid. The sealed key on loyal-main must be the key that runs on
+# loyal-workers (compared by public key; no private key is printed), with the same conf and nft file, and nothing up.
+c_wg_staged() {
+  local sum="sha256sum /etc/wireguard/loyal-ci.conf /etc/wireguard/loyal-ci.nft /etc/systemd/system/wg-quick@loyal-ci.service.d/credentials.conf | cut -c1-16"
+  local a b pub_old pub_new st
+  a=$(old "$sum") || { echo "$OLD did not answer"; return 1; }
+  b=$(new "$sum") || { echo "$NEW has no loyal-ci conf, nft file or drop-in"; return 1; }
+  [[ $a == "$b" ]] || { echo "the loyal-ci conf, nft file or credential drop-in differ between $OLD and $NEW"; return 1; }
+  pub_old=$(old "wg show loyal-ci public-key") || { echo "wg-quick@loyal-ci does not run on $OLD"; return 1; }
+  pub_new=$(new "systemd-creds decrypt --name=private-key /etc/credstore.encrypted/loyal-ci-wireguard.cred - | wg pubkey") || { echo "the sealed key on $NEW does not decrypt"; return 1; }
+  st=$(new "echo \$(systemctl is-enabled wg-quick@loyal-ci 2>&1) \$(systemctl is-active wg-quick@loyal-ci 2>&1); ip link show loyal-ci >/dev/null 2>&1 && echo interface-up || echo no-interface; ss -Hlun 'sport = :51820' | wc -l" | paste -sd' ' -) || { echo "$NEW did not answer"; return 1; }
+  echo "conf, nft file and drop-in equal on both; public key ${pub_new:0:8}... of the key sealed on $NEW $([[ $pub_old == "$pub_new" ]] && echo equals || echo DIFFERS from) the one up on $OLD; $NEW: $st (want disabled inactive no-interface 0)"
+  [[ $pub_old == "$pub_new" && $st == "disabled inactive no-interface 0" ]]
+}
+
+# The deploy's ssh (scripts/ci-worker-network.sh then root@10.203.0.1, production.yml) logs in as root with the loyal-ci-production
+# key, a restrict line on loyal-workers. loyal-main's root file starts with the cloud image's refusal; the key must be there too.
+c_deploy_ssh() {
+  local fp="grep -E ' loyal-ci-production-[0-9]+\$' /root/.ssh/authorized_keys | ssh-keygen -lf - | awk '{print \$2}'" a b
+  a=$(old "$fp") || { echo "$OLD does not trust a loyal-ci-production key"; return 1; }
+  b=$(new "$fp") || { echo "$NEW does not trust the loyal-ci-production key for root (loyal-main-config.sh stage adds it)"; return 1; }
+  echo "root trusts the loyal-ci-production key ${a:7:8}... on $OLD and ${b:7:8}... on $NEW; $NEW sshd: $(new "sshd -T | grep -i '^permitrootlogin '")"
+  [[ $a == "$b" && -n $a ]]
+}
+
+# The owner's O4: the repo variable names the host the deploy dials (endpoint host:51820, ssh HostKeyAlias). It is read, never set.
+c_ci_variable() {
+  local v
+  v=$(gh variable get LOYAL_WORKERS_HOST --env production -R loyal-labs/loyal-yield-routing 2>&1) || { echo "cannot read LOYAL_WORKERS_HOST (gh: ${v:0:60}); O4 sets it to $NEW_IP after unfreeze"; return 3; }
+  echo "LOYAL_WORKERS_HOST=$v; O4 sets it to $NEW_IP after unfreeze (and LOYAL_WORKERS_KNOWN_HOSTS)"
+  [[ $v == "$NEW_IP" ]] && return 0
+  [[ $v == "$OLD_IP" ]] && return 3
+  return 1
 }
 
 preflight() {
   check services c_services
   check pgmove-preflight c_pgmove
   check cutover-preflight c_cutover
-  check units-28 c_units
+  check units-29 c_units
   check old-sides c_old_sides
   check pgbouncer-path c_pgbouncer
   check pgbouncer-passwords c_passwords
   check tunnel c_tunnel
-  check public-route c_public
-  check deploy-route c_deploy
+  check caddy-staged c_caddy_staged
+  check caddy-tls c_caddy_tls
+  check ingress-conf c_ingress_conf
+  check ingress-applied c_ingress_applied
+  check dns-realtime c_dns_realtime
+  check wg-staged c_wg_staged
+  check deploy-ssh c_deploy_ssh
+  check ci-variable c_ci_variable
   echo "$OK ok, $BLOCK blocker, $PARK parked"
   ((BLOCK == 0))
 }
