@@ -615,7 +615,7 @@ ensure_hypertables() {
     [[ -n $table ]] || continue
     grep -qxF -- "$table" <<<"$have" && continue
     apply dst "$db" "SELECT create_hypertable($(lit "$table"), by_range($(lit "$column"), interval $(lit "$interval")));" "$db: $table is a hypertable on $column every $interval"
-  done < <(q src "$db" "select format('%I.%I', hypertable_schema, hypertable_name) || ' ' || column_name || ' ' || time_interval from timescaledb_information.dimensions order by 1" -F' ')
+  done < <(q src "$db" "select format('%I.%I', hypertable_schema, hypertable_name) || ' ' || column_name || ' ' || time_interval from timescaledb_information.dimensions order by 1")
 }
 
 cmd_init() {
