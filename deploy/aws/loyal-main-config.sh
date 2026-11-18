@@ -175,9 +175,14 @@ EOF
 }
 
 stage_db() {
-  local spec
+  local spec skip=''
+  # The receivers are re-pinned for the single-box layout (loyal-receivers-repin.sh); a restage must not put the
+  # db-primary originals back over the nine files it rewrote.
+  if [[ -n $(new "ls /opt/loyal/ops/receivers-repinned 2>/dev/null || true") ]]; then
+    skip='"skip": "^(/opt/loyal-observer-monitor/observer-monitor/push/private-tls/transport[.]py|/opt/loyal-squads-watch-recovery-v2/(transport[.]py|dependencies/transport[.]py|PINS[.]json)|/etc/loyal-squads-watch/(firewall[.]nft|policy[.]json)|/etc/loyal-observer-monitor/(monitor-ca[.]pem|monitor-server[.]pem|private-tls[.]json))$",'
+  fi
   spec=$(cat <<EOF
-{"entries": [
+{$skip "entries": [
   {"k": "glob", "src": "/etc/systemd/system/loyal-*"},
   {"src": "/etc/systemd/system/postgresql@18-main.service.d", "dst": "$STAGED/etc/systemd/system/postgresql@18-main.service.d"},
   {"src": "/etc/postgresql/18/main", "dst": "$STAGED/etc/postgresql/18/main"},
