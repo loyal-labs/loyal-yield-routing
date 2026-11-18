@@ -1464,8 +1464,8 @@ reverse_ready() {
   local spec db counts total
   for spec in "${DATABASES[@]}"; do
     db=$(db_of "$spec")
+    [[ -n $(q src "$db" "select 1 from pg_subscription where subname = $(lit "$(sub_name rev "$db")")") ]] || { blocked "src $db: no reverse subscription $(sub_name rev "$db")"; continue; }
     IFS='|' read -r counts total <<<"$(ready_count src "$db" "$(sub_name rev "$db")")"
-    [[ -n $total && $total != 0 ]] || { blocked "src $db: no reverse subscription $(sub_name rev "$db") with tables"; continue; }
     [[ $counts == 0 ]] || blocked "src $db: $counts of $total tables of $(sub_name rev "$db") not in state r"
   done
 }
