@@ -5,8 +5,8 @@
 #                            builds nothing), then points the two unit files at the new image ids
 #   loyal-images.sh prove    starts each image in a throwaway container with no network and no published port,
 #                            waits for its health check, removes the container
-# Run from the repo root on the Mac after loyal-main-config.sh (a rerun of that script restores the amd64 ids,
-# so run `build` again after it). Starts docker if it was stopped and stops it again when done. Starts no Loyal unit.
+# Run from the repo root on the Mac. It records the ids in /opt/loyal/ops/arm64-images, which loyal-main-config.sh
+# reads to rewrite the unit pins when it stages (so a rerun of that script keeps them). Starts docker if it was stopped and stops it again when done. Starts no Loyal unit.
 # Env, all optional: BOX (loyal-main).
 set -euo pipefail
 
@@ -57,6 +57,9 @@ pin() {
   echo "\$1: now \$id"
   changed=1
 }
+ids=/opt/loyal/ops/arm64-images
+want=\$(printf 'clickstack=%s\\nrelay=%s\\n' $cs_id $relay_id)
+[ "\$(cat \$ids 2>/dev/null)" = "\$want" ] || { install -d -m 0755 /opt/loyal/ops; printf '%s\\n' "\$want" >\$ids; chmod 0644 \$ids; echo "\$ids: written"; }
 pin loyal-clickstack.service $cs_id
 pin loyal-clickstack-relay.service $relay_id
 [ \$changed = 0 ] || systemctl daemon-reload

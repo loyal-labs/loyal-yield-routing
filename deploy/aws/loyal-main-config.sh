@@ -124,7 +124,21 @@ stage_release() {
 }
 
 stage_workers() {
-  local spec params
+  local spec params ids cs_new relay_new cs_old relay_old image_args='' cs_rules='' relay_rules=''
+  # The two docker images are built natively on loyal-main (deploy/aws/loyal-images.sh), which records their ids; the
+  # amd64 ids in the old units would not run here.
+  ids=$(new "cat /opt/loyal/ops/arm64-images 2>/dev/null || true")
+  cs_new=$(sed -n 's/^clickstack=\(sha256:[0-9a-f]\{64\}\)$/\1/p' <<<"$ids")
+  relay_new=$(sed -n 's/^relay=\(sha256:[0-9a-f]\{64\}\)$/\1/p' <<<"$ids")
+  if [[ -n $cs_new && -n $relay_new ]]; then
+    cs_old=$(old "grep -o -E ' sha256:[0-9a-f]{64} --service' /etc/systemd/system/loyal-clickstack.service" | awk '{ print $1 }')
+    relay_old=$(old "grep -o -E ' sha256:[0-9a-f]{64} --service' /etc/systemd/system/loyal-clickstack-relay.service" | awk '{ print $1 }')
+    [[ $cs_old =~ ^sha256:[0-9a-f]{64}$ && $relay_old =~ ^sha256:[0-9a-f]{64}$ ]] || die "old clickstack units name no single image id"
+    image_args=", \"old_cs_image\": \"$cs_old\", \"new_cs_image\": \"$cs_new\", \"old_relay_image\": \"$relay_old\", \"new_relay_image\": \"$relay_new\""
+    cs_rules=', "sub:cs_image"' relay_rules=', "sub:relay_image"'
+  else
+    echo "warning: /opt/loyal/ops/arm64-images missing on $NEW; the clickstack units keep the amd64 image ids (run deploy/aws/loyal-images.sh build, then stage again)" >&2
+  fi
   spec=$(cat <<EOF
 {"skip": "/40-verified-release\\\\.conf$|/loyal-ci-wireguard\\\\.cred$",
  "entries": [
@@ -148,13 +162,13 @@ EOF
   params=$(cat <<EOF
 {"args": {"old_pubip": "$old_ip", "new_pubip": "$new_ip",
           "old_launcher": "/opt/loyal-hetzner/env-launcher-$old_launcher",
-          "new_launcher": "/opt/loyal-hetzner/env-launcher-$launcher_sha"},
+          "new_launcher": "/opt/loyal-hetzner/env-launcher-$launcher_sha"$image_args},
  "cred_rules": ["db"],
  "rules": {"/etc/prometheus/prometheus.yml": ["promdb"],
            "/etc/caddy/Caddyfile": ["pubip"],
            "/etc/systemd/system/loyal-admin.service.d/60-env.conf": ["pubip"],
-           "/etc/systemd/system/loyal-clickstack.service": ["pubip", "launcher"],
-           "/etc/systemd/system/loyal-clickstack-relay.service": ["launcher"]}}
+           "/etc/systemd/system/loyal-clickstack.service": ["pubip", "launcher"$cs_rules],
+           "/etc/systemd/system/loyal-clickstack-relay.service": ["launcher"$relay_rules]}}
 EOF
 )
   recv "$params" < <(old "sudo $(py) send $(j64 <<<"$spec")")
