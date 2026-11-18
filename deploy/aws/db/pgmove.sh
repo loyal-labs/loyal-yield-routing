@@ -731,7 +731,7 @@ ensure_forward() {
     restart=1
   fi
   if [[ $have != "$env" ]]; then
-    put "$DST_SSH" "$SECRETS/forward.env" 0600 root "$env" "$SECRETS/forward.env: 127.0.0.1:$FWD_PORT to $FWD_SSH:$SRC_SOCKET$([[ $env == *FWD_REV=* ]] && echo ", and $FWD_SSH 127.0.0.1:$REV_PORT back to this box")"
+    put "$DST_SSH" "$SECRETS/forward.env" 0600 root "$env" "$SECRETS/forward.env: 127.0.0.1:$FWD_PORT to $(sed -n 's/^FWD_SOCKET=//p' <<<"$env") behind $FWD_SSH$([[ $env == *FWD_REV=* ]] && echo ", and $FWD_SSH 127.0.0.1:$REV_PORT back to this box")"
     restart=1
   fi
   if ((restart)); then
