@@ -591,6 +591,22 @@ identity_blockers() {
   done < <(q "$side" "$db" "$(no_identity_sql "$shape")")
 }
 
+# The source reads the upstream password from a passfile on its own disk. The target gets that one
+# line in its postgres user's ~/.pgpass, and the conninfo it subscribes with loses passfile=.
+ensure_upstream_pass() {
+  local conn=$1 pf host user line f
+  pf=$(sed -nE 's/(^|.* )passfile=([^ ]+).*/\2/p' <<<"$conn")
+  [[ -n $pf ]] || return 0
+  host=$(sed -nE 's/(^|.* )host=([^ ]+).*/\2/p' <<<"$conn")
+  user=$(sed -nE 's/(^|.* )user=([^ ]+).*/\2/p' <<<"$conn")
+  line=$(on "$SRC_SSH" "awk -F: -v h=$(printf %q "$host") -v u=$(printf %q "$user") '(\$1 == h || \$1 == \"*\") && \$4 == u' $(printf %q "$pf")") || die "reading $pf on $SRC_SSH failed"
+  [[ -n $line ]] || die "$pf on $SRC_SSH holds no line for $user at $host"
+  f="\$(getent passwd $DST_OSUSER | cut -d: -f6)/.pgpass"
+  ((DRY)) || ! printf '%s\n' "$line" | on "$DST_SSH" "IFS= read -r l; grep -qxF \"\$l\" $f" 2>/dev/null || return 0
+  changed "dst: $DST_OSUSER's ~/.pgpass holds the upstream password line for $user"
+  ((DRY)) || printf '%s\n' "$line" | on "$DST_SSH" "IFS= read -r l; f=$f; umask 077; { cat \$f 2>/dev/null || true; printf '%s\n' \"\$l\"; } >\$f.new && chown $DST_OSUSER: \$f.new && mv -f \$f.new \$f"
+}
+
 cmd_subscribe() {
   local spec db shape sub prev='' counts wal keep conn
   for spec in "${DATABASES[@]}"; do
@@ -625,6 +641,8 @@ cmd_subscribe() {
       local pubs
       pubs=$(q src "$db" "select array_to_string(subpublications, ', ') from pg_subscription where subname = $(lit "${shape#upstream=}")")
       [[ -n $conn ]] || { blocked "$db: the source has no subscription ${shape#upstream=} to copy"; break; }
+      ensure_upstream_pass "$conn"
+      conn=$(sed -E 's/(^| )passfile=[^ ]+//' <<<"$conn")
       apply dst "$db" "CREATE SUBSCRIPTION $sub CONNECTION $(lit "$conn") PUBLICATION $pubs WITH (binary = $BINARY, streaming = on, copy_data = true, disable_on_error = false);" \
         "dst $db: subscription $sub to the publisher of ${shape#upstream=} ($pubs), copy_data=true"
       continue
