@@ -165,13 +165,26 @@ c_role_settings() {
   return 3
 }
 
+# The metric (robinx-textfile.sh on robinx-prod) has one line per repository: repo1 carries no repo label, repo2 (S3)
+# carries repo="2". The newest full of either counts, as old as S5_BACKUP_MAX_DAYS (8, the PgBackRestFullStale limit).
 c_backup() {
-  local ts unit
-  ts=$(old "grep -h 'robinx_pgbackrest_last_backup_timestamp_seconds{stanza=\"robinx\",type=\"full\"}' /var/lib/node_exporter/textfile/robinx_pgbackrest.prom" | awk '{ print $2 }')
-  unit=$(old "systemctl show robinx-backup@full.service -p Result --value")
-  [[ $ts =~ ^[0-9]+$ ]] || { echo "no robinX full in the textfile metric"; return 1; }
-  echo "newest good full $(date -u -r "$ts" +%FT%TZ), $(( ($(date +%s) - ts) / 86400 )) days old; last full run result $unit"
-  return 3
+  local rows t1 t2 newest now max=${S5_BACKUP_MAX_DAYS:-8} age u1 u2 d1=none d2=none
+  rows=$(old "grep -h 'robinx_pgbackrest_last_backup_timestamp_seconds{stanza=\"robinx\",type=\"full\"[,}]' /var/lib/node_exporter/textfile/robinx_pgbackrest.prom") ||
+    { echo "no robinX full in the textfile metric, or it could not be read"; return 1; }
+  t1=$(awk '$1 !~ /repo=/ { print $2 }' <<<"$rows")
+  t2=$(awk '$1 ~ /repo="2"/ { print $2 }' <<<"$rows")
+  [[ $t1 =~ ^[0-9]+$ ]] || t1=0
+  [[ $t2 =~ ^[0-9]+$ ]] || t2=0
+  newest=$((t1 > t2 ? t1 : t2))
+  ((newest > 0)) || { echo "no robinX full in the textfile metric"; return 1; }
+  now=$(date +%s)
+  age=$(((now - newest) / 86400))
+  ((t1 > 0)) && d1="$(((now - t1) / 86400)) days"
+  ((t2 > 0)) && d2="$(((now - t2) / 86400)) days"
+  u1=$(old "systemctl show robinx-backup@full.service -p Result --value")
+  u2=$(old "systemctl show robinx-backup-repo2@full.service -p Result --value")
+  echo "newest good full $(date -u -r "$newest" +%FT%TZ), $age days old, limit $max (repo1 $d1, repo2 $d2); last full run result repo1 $u1, repo2 $u2"
+  ((age <= max))
 }
 
 # One read-only run of robinx-main-config.sh check feeds two lines.
