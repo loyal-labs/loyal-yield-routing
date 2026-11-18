@@ -233,8 +233,12 @@ pgmove_on() {
 }
 
 install_on() {
-  local box
+  local box running
   box=$(conf_box "$1")
+  # A run reads its script as it goes and its stamps are read by the next: no new copy lands under one.
+  # The bracket keeps the grep from matching its own command line.
+  running=$(ssh -o BatchMode=yes "$box" "ps -eo pid=,args= | grep -E '[${DEST:0:1}]${DEST:1}/pgmove[.]sh ' || true") || { echo "remote: $box did not answer whether pgmove runs there" >&2; exit 1; }
+  [[ -z $running ]] || { printf 'remote: %s runs pgmove from %s, so it is not reinstalled; wait for it, or install beside it with PGMOVE_DEST=/opt/pgmove-<name>:\n%s\n' "$box" "$DEST" "$running" >&2; exit 1; }
   COPYFILE_DISABLE=1 tar --no-xattrs -C "$HERE" -cf - pgmove.sh parsers-copy.sh pg-forward@.service clusters |
     ssh -o BatchMode=yes "$box" "sudo -n install -d -m 0755 $DEST && sudo -n tar -C $DEST --no-same-owner -xf - && sudo -n chown -R root:root $DEST"
   echo "remote: $DEST on $box holds pgmove.sh at $(git -C "$HERE" rev-parse --short HEAD 2>/dev/null || echo '?')"

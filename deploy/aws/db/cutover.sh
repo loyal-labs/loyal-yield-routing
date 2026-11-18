@@ -33,7 +33,7 @@ on() {
   if [[ $host == root@* ]]; then ssh -o BatchMode=yes -o ConnectTimeout=15 "$host" "$cmd"; else ssh -o BatchMode=yes -o ConnectTimeout=15 "$host" "sudo -n bash -c $(printf %q "$cmd")"; fi
 }
 CUT_OLD='' CUT_NEW='' BOX=''
-CUT_TIMERS=() CUT_ONESHOTS=() CUT_ENGINES=() CUT_SERVICES=() CUT_HEALTH=() CUT_STOP=()
+CUT_TIMERS=() CUT_ONESHOTS=() CUT_ENGINES=() CUT_SERVICES=() CUT_HEALTH=() CUT_STOP=() CUT_HASH=full
 # shellcheck source=/dev/null
 source "$HERE/clusters/$CLUSTER.conf"
 [[ -n $CUT_OLD && -n $CUT_NEW && -n $BOX ]] || { echo "cutover: $CLUSTER.conf sets no CUT_OLD, CUT_NEW or BOX; $CLUSTER has no writers to move" >&2; exit 2; }
@@ -52,6 +52,9 @@ SERVICES=${CUT_SERVICES[*]+"${CUT_SERVICES[*]}"}
 # robinX slot that is not live, which a deploy may have left running.
 STOPS=${CUT_STOP[*]+"${CUT_STOP[*]}"}
 ALL="$TIMERS $ENGINES $SERVICES"
+# CUT_HASH=moved: freeze rehashes only the tables whose write counters moved since the last 0-DIFF
+# full hash (pgmove hash --moved); full, the default, rehashes every table under the fence.
+case $CUT_HASH in full) FREEZE_HASH='' ;; moved) FREEZE_HASH=--moved ;; *) die "CUT_HASH is full or moved, not $CUT_HASH" ;; esac
 [[ -n $SERVICES ]] || { echo "cutover: $CLUSTER.conf lists no CUT_SERVICES" >&2; exit 2; }
 CUTOVER_PROOF=${CUTOVER_PROOF:-/Users/user/loyal/artifacts/orchestrate/aws-migration/proof/cutover-$CLUSTER}
 STATE=/var/lib/pgmove/$CLUSTER
@@ -60,6 +63,9 @@ TIMES=()
 now() { perl -MTime::HiRes=time -e 'printf "%.1f", time'; }
 pg() { local sub=$1; shift; "$HERE/remote.sh" run "$sub" "$CLUSTER" "$@"; }
 stamped() { [[ $(on "$BOX" "test -e $STATE/$1 && echo yes || echo no") == yes ]]; }
+# yes once a switch reached its first LOGIN on the target and no switch --reverse has reached its
+# first on the source since (pgmove.sh target_primary); no otherwise; anything else is no answer.
+target_primary() { on "$BOX" "if test -s $STATE/switched && ! { test -s $STATE/reversed && [ \$(cat $STATE/reversed) -ge \$(cat $STATE/switched) ]; }; then echo yes; else echo no; fi"; }
 
 # A step runs in an OR-list here, where bash turns errexit off for everything it calls: every
 # command in a step function carries its own || die or || return 1.
@@ -101,8 +107,13 @@ stop_writers() {
     on "$host" "systemctl stop $u; [ \"\$(systemctl show -p Result --value $u)\" = success ] || { echo '$u did not stop cleanly' >&2; exit 1; }" || die "$host: $u did not stop cleanly"
     echo "$host: stopped $u cleanly"
   done
-  on "$host" "systemctl stop $SERVICES $STOPS" || die "$host: stopping $SERVICES $STOPS failed"
-  echo "$host: stopped $SERVICES $STOPS"
+  on "$host" "systemctl stop $SERVICES" || die "$host: stopping $SERVICES failed"
+  echo "$host: stopped $SERVICES"
+  # A CUT_STOP unit may be absent from a host; one systemctl call for all would fail on it.
+  for u in $STOPS; do
+    on "$host" "[ \"\$(systemctl show -p LoadState --value $u)\" = not-found ] || systemctl stop $u" || die "$host: stopping $u failed"
+  done
+  [[ -z $STOPS ]] || echo "$host: stopped $STOPS where loaded"
   writers_stopped "$host" || die "a writer is still active on $host"
 }
 
@@ -209,8 +220,9 @@ cmd_preflight() {
 }
 
 cmd_freeze() {
-  local out
-  stamped switched && die "the switch has run; freeze is for the source side, rerun switch instead"
+  local out tp
+  tp=$(target_primary) || die "$BOX did not answer for its stamps"
+  [[ $tp == no ]] || die "the switch has run and no rollback since; freeze is for the source side, rerun switch instead"
   on "$BOX" "rm -f $STATE/freeze-ok" || die "cannot remove $STATE/freeze-ok on $BOX"
   mkdir -p "$CUTOVER_PROOF"
   out=$CUTOVER_PROOF/freeze-verify-$(date -u +%Y%m%dT%H%MZ).txt
@@ -220,16 +232,19 @@ cmd_freeze() {
   timed catchup pg catchup || die "catchup failed"
   timed sequences pg sequences || die "sequences failed"
   timed writes-save pg writes save freeze src || die "writes save failed"
-  timed verify pg verify >"$out" || { cat "$out"; die "the target differs from the source at the freeze point ($out); rerun freeze, or abort"; }
+  # Under the fence one full hash covers every row, the old ones verify's tail does not read. It runs
+  # before verify, which needs a 0-DIFF hash: a rerun after a bad one would otherwise never hash again.
+  timed hash pg hash $FREEZE_HASH >"$out" || { tail -20 "$out"; die "the hash under the fence differs ($out); rerun freeze, or abort"; }
+  timed verify pg verify >>"$out" || { tail -40 "$out"; die "the target differs from the source at the freeze point ($out); rerun freeze, or abort"; }
   echo "verify: $(tail -1 "$out") at the freeze point; $out"
-  # Under the fence one full hash covers every row, the old ones verify's tail does not read.
-  timed hash pg hash >>"$out" || { tail -20 "$out"; die "the full hash under the fence differs ($out); rerun freeze, or abort"; }
   on "$BOX" "touch $STATE/freeze-ok" || die "cannot stamp $STATE/freeze-ok on $BOX"
   report_times
 }
 
 cmd_abort() {
-  stamped switched && die "the switch has run; rollback is the way back"
+  local tp
+  tp=$(target_primary) || die "$BOX did not answer for its stamps"
+  [[ $tp == no ]] || die "the switch has run and no rollback since; rollback is the way back"
   on "$BOX" "rm -f $STATE/freeze-ok" || die "cannot remove $STATE/freeze-ok on $BOX"
   timed thaw pg thaw || die "thaw failed; the source roles may still be NOLOGIN"
   timed start start_healthy "$CUT_OLD" "${CUT_SERVICES[@]}" || die "the writers did not start healthy on $CUT_OLD"
