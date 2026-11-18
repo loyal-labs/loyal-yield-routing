@@ -51,6 +51,7 @@ new=$(collect "$NEW")
 
 lines=$(awk -F'\t' -v OFS='\t' '
   FNR == 1 { fileno++ }
+  NF == 0 { next }
   { key = $1 "\t" $2; seen[key] = 1; if (fileno == 1) a[key] = $3; else b[key] = $3 }
   END {
     for (k in seen) {
