@@ -1,0 +1,15 @@
+# Classification of host-diff.sh lines for S4 (loyal-workers and loyal-db-primary against loyal-main). Fields, tab separated: ERE matched against the whole line, class, reason.
+# A line "only on new" is explained without a row here when the other old box holds that name (loyal-main is the union of both). Any other line needs a row.
+^etc /etc/apt/sources[.]list[.]d/cloudflared[.]list: only on old$	meant-to-differ	prepare installs cloudflared from the pinned release deb, not the apt repo
+^etc /etc/caddy/loyal-clickstack-before-[0-9a-f]+[.]public: only on old$	clutter	backup of an old Caddyfile
+^etc /etc/cloudflared/loyal-workers[.]json: only on old$	meant-to-differ	tunnel credential sealed at /etc/credstore.encrypted/cloudflared/loyal-workers.json
+^etc /etc/credstore[.]encrypted/cloudflared(/loyal-workers[.]json)?: only on new$	meant-to-differ	the sealed copy of the tunnel credential above
+^etc /etc/(credstore[.]encrypted/loyal-ci-wireguard[.]cred|systemd/system/wg-quick@loyal-ci[.]service[.]d/credentials[.]conf|wireguard/loyal-ci[.](conf|nft)): only on old$	meant-to-differ	WireGuard loyal-ci is not copied; one box needs no private network
+^etc /etc/prometheus/xstock[.]rules[.]yml: only on old$	meant-to-differ	xstock, not Loyal
+^pkg (libpq5|postgresql-client-common|sqlite3): 	meant-to-differ	package set owned by loyal-main-prepare.sh (PGDG client libraries, newer sqlite3 point release)
+^unit loyal-clickstack(-relay)?[.]service: content differs$	meant-to-differ	arm64 image id, arm64 env-launcher sha, and the public IP for clickstack (loyal-main-config.sh rules)
+^pkg docker-buildx: only on new	meant-to-differ	loyal-images.sh builds the arm64 images on the box and needs buildx for COPY --chmod
+^etc /etc/postgresql/18/main/conf[.]d/zz-(replica|pgmove-archive)[.]conf: only on (old|new)$	owned-by-postgres-lane	cluster config, deploy/aws/db
+^etc /etc/systemd/system/postgresql@18-main[.]service[.]d/volume[.]conf: only on old$	owned-by-postgres-lane	cluster unit drop-in, deploy/aws/db
+^etc /etc/postgresql/18/main/pg_hba[.]conf[.]pgmove-[0-9TZ]+: only on old$	clutter	pgmove backup copy on db-primary
+^unit pg-forward@[.]service: only on new	owned-by-postgres-lane	pg-forward@loyal, deploy/aws/db

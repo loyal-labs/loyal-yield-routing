@@ -22,6 +22,16 @@ Conf fields, all required, none with a default: `PROFILE` (or `AWS_PROFILE`), `R
 
 `deploy/aws/host-diff.sh <old-alias> <new-alias>` is read-only on both hosts (one `bash -s` over ssh each, nothing written). It prints only differing lines and ends `<n> difference(s)`: package versions with the architecture suffix ignored, `/etc/systemd/system` unit files by name and sha256, and the names (never contents) of what sits under the `/etc` trees the services read, drop-ins included. The default scopes are in the script header and can be replaced with `HOST_DIFF_PKGS`, `HOST_DIFF_UNITS`, `HOST_DIFF_TREES`, `HOST_DIFF_EXCLUDE` and `HOST_DIFF_SSH_OPTS`.
 
+## Loyal services on loyal-main (S4 service side)
+
+None of these starts or enables a Loyal unit; every one reruns to a no-op.
+
+- `loyal-images.sh build|prove` builds the arm64 ClickStack and relay images on loyal-main from the committed `web/observability` tree (tag `arm64-<tree hash>`, so a rerun builds nothing), records their ids in `/opt/loyal/ops/arm64-images`, and pins them in the two unit files. `loyal-main-config.sh stage` reads that file and rewrites the amd64 ids it copies from loyal-workers, so a restage keeps the pins. `prove` starts each image with no network and no published port, waits for its health check and removes the container. Docker is started for the run and stopped after.
+- `loyal-clickstack-copy.sh pass|delta|final` moves `/srv/loyal-clickstack` from loyal-workers through this machine as a tar stream with a manifest comparison. `pass` runs with the old service up (ClickHouse merges parts away mid-copy; that is tolerated and the next pass lists them), `delta` only lists, `final` refuses while the container runs on the old box, fails on any moved file and then deletes target-only files. The MongoDB (WiredTiger) files under `.clickstack` and ClickHouse's status files are consistent only with the service stopped, so only `final` makes them trustworthy.
+- `loyal-receivers-repin.sh apply|state` re-pins the observer (8443) and squads-watch (8444) receivers to 127.0.0.1: three `transport.py`, `firewall.nft`, `private-tls.json`, `policy.json`, `PINS.json`, and a new CA and server certificate for the same public key (the old certificate names only 10.92.1.1). The CA key exists in `/dev/shm` for the run and is shredded. `state` copies `/var/lib/loyal-observer-monitor` and `/var/lib/loyal-squads-watch` from db-primary. The marker `/opt/loyal/ops/receivers-repinned` makes `loyal-main-config.sh stage` leave those nine files alone.
+- `loyal-web-assets.sh` fills `/opt/loyal/assets/web` from loyal-workers' retained assets, then folds in the staged release's assets with `retain-web-assets.sh`.
+- `s4-services-preflight.sh` is the read-only gate over all of the above plus the unit states, the two unreferenced Neon-URL credentials and `host-diff.sh` against both old boxes with every line classified in `s4-services-hostdiff.tsv`.
+
 ## backup.sh
 
 `deploy/aws/backup.sh <box> [--dry-run]` creates the pgBackRest backup storage for a database box from `deploy/aws/boxes/<box>.conf` and converges on rerun. A second run prints `<box>: 0 change(s)`. Boxes: `robinx-main`, `loyal-main`. The conf's `BACKUP_BUCKET` names the bucket and must carry the account id; `ACCOUNT` must be set and match the profile.
