@@ -25,8 +25,8 @@ clusters: $(for f in "$HERE"/clusters/*.conf; do basename "$f" .conf; done | pas
   sequences <c> [--reverse]    setval on every sequence that differs
   grants <c>                   role, membership, setting, owner and ACL rows on both sides
   schema <c>                   pg_dump --schema-only of both sides, object by object
-  hash <c> [table] [--age]     md5 per row, summed per 1M-key bucket; differing buckets hashed a second time
-  verify <c> [--reverse]       tables, sequences, hypertables, schema, grants and hash age
+  hash <c> [table] [--age]     md5 per row, summed per 1M-key bucket; differing buckets hashed a second time; hypertables up to the target's max key
+  verify <c> [--reverse]       tables, sequences, hypertables, schema, grants, hash age and the hypertable rows above the hash bound
   preflight <c>                read-only: tables in state r, lag, verify, the reverse, fence and switch dry runs, marker, volume guard
   fence <c> [--reverse]        login roles NOLOGIN on the side being left, sessions ended, slots caught up
   switch <c> [--reverse]       catchup, sequences, subscriptions off, the other direction armed or resumed, login roles LOGIN on the side taking over
@@ -1141,11 +1141,32 @@ hash_wait() {
   ((rs == 0 && rd == 0)) || die "hash: $1 $2: the $( ((rs)) && echo source)$( ((rs && rd)) && echo ' and ')$( ((rd)) && echo target) query failed (exit $rs/$rd); nothing was compared"
 }
 
+ROW_SUM="sum(('x' || left(md5(t::text), 16))::bit(64)::bigint::numeric)"
+HASH_BOUNDS=''
+
+# Catchup, not the subscription, moves a hypertable, so the source runs ahead of the target. hash
+# compares the rows up to the target's max key; verify compares the rest exactly under the fence.
+ht_bound() {
+  local db=$1 table=$2 f max floor
+  f=$(ht_state "$table")/event_floor
+  floor=$(cat "$f" 2>/dev/null || true)
+  [[ $floor =~ ^[0-9]+$ ]] || { diff_row "$db $table: no backfill floor in $f, so nothing bounds the hash; run backfill and catchup"; return 1; }
+  max=$(q dst "$db" "select max($HT_KEY) from $table") || die "hash: $db $table: the target's max($HT_KEY) query failed; nothing was compared"
+  if [[ ! $max =~ ^[0-9]+$ ]] || ((max < floor)); then
+    diff_row "$db $table: the target's max $HT_KEY ${max:-NULL} is below the backfill floor $floor; run catchup"
+    return 1
+  fi
+  HT_BOUND=$max
+}
+
 hash_table() {
-  local db=$1 table=$2 pk=$3 type=$4 nb=$5 bexpr where='' key tmp b n bad s d lo sc ss dc ds
+  local db=$1 table=$2 pk=$3 type=$4 nb=$5 bexpr where='' key tmp b n bad s d lo sc ss dc ds bound=''
   key=${pk%%,*}
   if is_hypertable "$table"; then
-    bexpr="(t.$HT_KEY / $HASH_BUCKET)" where="where t.$HT_TIME >= $(lit "$(ts_cutoff)")"
+    ht_bound "$db" "$table" || return 0
+    bound=$HT_BOUND
+    HASH_BOUNDS+="$table $bound"$'\n'
+    bexpr="(t.$HT_KEY / $HASH_BUCKET)" where="where t.$HT_TIME >= $(lit "$(ts_cutoff)") and t.$HT_KEY <= $bound"
   elif [[ -z $pk ]]; then
     bexpr=0::int
   elif [[ $type == smallint || $type == integer || $type == bigint ]]; then
@@ -1155,13 +1176,14 @@ hash_table() {
   fi
   # The planner reads (key / bucket) as one group per row and sorts the whole table, which spilled
   # past the source's temp_file_limit on 17.9M rows; the real buckets fit a hash table in memory.
-  sel() { echo "set enable_sort = off; select $bexpr || '|' || count(*) || '|' || sum(('x' || left(md5(t::text), 16))::bit(64)::bigint::numeric) from $table t $1 group by $bexpr order by 1"; }
+  sel() { echo "set enable_sort = off; select $bexpr || '|' || count(*) || '|' || $ROW_SUM from $table t $1 group by $bexpr order by 1"; }
   tmp=$(mktemp -d)
   q src "$db" "$(sel "$where")" >"$tmp/s" & s=$!
   q dst "$db" "$(sel "$where")" >"$tmp/d" & d=$!
   hash_wait "$db" "$table" $s $d
   bad=$(join -t'|' -a1 -a2 -e- -o 0,1.2,1.3,2.2,2.3 <(sort -t'|' -k1,1 "$tmp/s") <(sort -t'|' -k1,1 "$tmp/d") | awk -F'|' '$2 != $4 || $3 != $5 { print $1 }' | paste -sd, -)
   n=$(wc -l <"$tmp/s" | tr -d ' ')
+  [[ -z $bound ]] || bound=", $HT_KEY <= $bound: src $(awk -F'|' '{ r += $2 } END { print r + 0 }' "$tmp/s") rows, dst $(awk -F'|' '{ r += $2 } END { print r + 0 }' "$tmp/d") rows"
   if [[ -n $bad ]]; then
     sleep "$HASH_RECHECK_SECS"
     if [[ $bexpr == "(t.$key / $HASH_BUCKET)" || $bexpr == "(t.$HT_KEY / $HASH_BUCKET)" ]]; then
@@ -1180,7 +1202,27 @@ hash_table() {
     done < <(join -t'|' -a1 -a2 -e- -o 0,1.2,1.3,2.2,2.3 <(sort -t'|' -k1,1 "$tmp/s") <(sort -t'|' -k1,1 "$tmp/d"))
   fi
   rm -rf "$tmp"
-  echo "hash: $db $table $n bucket(s)${bad:+, first pass differed in bucket(s) $bad}"
+  echo "hash: $db $table $n bucket(s)$bound${bad:+, first pass differed in bucket(s) $bad}"
+}
+
+# Under the fence: each hypertable's rows above the last full hash's bound, less the margin catchup
+# rereads for ids committed out of order, hashed exactly on both sides.
+check_tail() {
+  local table bound lo tq tmp s d a b
+  for table in ${HYPERTABLES[@]+"${HYPERTABLES[@]}"}; do
+    bound=$(awk -v t="$table" '$1 == t { print $2 }' "$WORK/hash-bounds" 2>/dev/null || true)
+    if [[ ! $bound =~ ^[0-9]+$ ]]; then diff_row "$table: no bound in $WORK/hash-bounds from a 0-DIFF full hash; run hash $CLUSTER"; continue; fi
+    lo=$((bound - CATCHUP_MARGIN))
+    tq="select count(*) || '|' || coalesce($ROW_SUM, 0) from $table t where t.$HT_KEY > $lo and t.$HT_TIME >= $(lit "$(ts_cutoff)")"
+    tmp=$(mktemp -d)
+    q src "$HT_DB" "$tq" >"$tmp/s" & s=$!
+    q dst "$HT_DB" "$tq" >"$tmp/d" & d=$!
+    hash_wait "$HT_DB" "$table" $s $d
+    a=$(cat "$tmp/s") b=$(cat "$tmp/d")
+    rm -rf "$tmp"
+    if [[ -n $a && $a == "$b" ]]; then echo "verify: $table ${a%%|*} row(s) above $HT_KEY $lo (hash bound $bound less $CATCHUP_MARGIN) hash equal on both"
+    else diff_row "$table rows above $HT_KEY $lo (hash bound $bound less $CATCHUP_MARGIN): src ${a%%|*} rows, dst ${b%%|*} rows, sums ${a#*|} and ${b#*|}"; fi
+  done
 }
 
 hash_age() {
@@ -1200,7 +1242,11 @@ cmd_hash() {
       hash_table "$db" "$table" "$pk" "$type" "$nb"
     done < <(hash_meta "$db")
   done
-  [[ -n $only || $diffs != 0 ]] || state "$WORK/hash-ok" "$(date +%s)"
+  if [[ -z $only && $diffs == 0 ]]; then
+    query_failures
+    state "$WORK/hash-bounds" "$HASH_BOUNDS"
+    state "$WORK/hash-ok" "$(date +%s)"
+  fi
   finish_check
 }
 
@@ -1282,6 +1328,7 @@ cmd_verify() {
   check_schema
   check_grants
   hash_age
+  check_tail
   finish_check
 }
 
