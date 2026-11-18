@@ -140,7 +140,7 @@ stage_workers() {
     echo "warning: /opt/loyal/ops/arm64-images missing on $NEW; the clickstack units keep the amd64 image ids (run deploy/aws/loyal-images.sh build, then stage again)" >&2
   fi
   spec=$(cat <<EOF
-{"skip": "/40-verified-release\\\\.conf$|/loyal-ci-wireguard\\\\.cred$",
+{"skip": "/40-verified-release\\\\.conf$",
  "entries": [
   {"k": "glob", "src": "/etc/systemd/system/loyal-*"},
   {"src": "/etc/systemd/system/cloudflared.service"},
@@ -152,6 +152,7 @@ stage_workers() {
   {"src": "/etc/otelcol-contrib/otelcol-contrib.conf"},
   {"src": "/etc/cloudflared/config.yml"},
   {"src": "/etc/caddy/Caddyfile"},
+  {"src": "/etc/wireguard"}, {"src": "/etc/systemd/system/wg-quick@loyal-ci.service.d"},
   {"src": "/etc/loyal"}, {"src": "/etc/loyal-clickstack"},
   {"k": "creds"},
   {"k": "seal", "src": "/etc/cloudflared/loyal-workers.json", "name": "loyal-workers.json",
@@ -199,6 +200,7 @@ EOF
 }
 
 stage() {
+  local states
   reload=0
   preflight
   echo "release $RELEASE_SHA (loyal-workers runs $running; service source identical)"
@@ -208,6 +210,8 @@ stage() {
   stage_release
   ((reload == 0)) || new "sudo systemctl daemon-reload"
   [[ -z $(new "systemctl list-unit-files 'loyal-*' --state=enabled --no-legend") ]] || die "a loyal-* unit is enabled on $NEW"
+  states=$(new "for u in caddy.service wg-quick@loyal-ci.service; do echo \$u \$(systemctl is-enabled \$u 2>&1) \$(systemctl is-active \$u 2>&1); done")
+  [[ $(grep -c ' disabled inactive$' <<<"$states") -eq 2 ]] || die "caddy or wg-quick@loyal-ci is enabled or running on $NEW: $states"
   echo "$NEW: $total change(s)"
 }
 
@@ -215,7 +219,7 @@ proof() { # proof <dir>: the evidence files, names and exit codes only
   local p=$1 units u
   mkdir -p "$p"
   new "sudo $(py) creds e30=" >"$p/creds-new.txt" || true
-  old "sudo $(py) creds $(j64 <<<'{"skip": "loyal-ci-wireguard\\.cred$"}')" >"$p/creds-old-workers.txt" || true
+  old "sudo $(py) creds e30=" >"$p/creds-old-workers.txt" || true
   box "$(py) creds e30=" >"$p/creds-old-db.txt" || true
   units=$(new "cd /etc/systemd/system && ls -d loyal-*.service loyal-*.timer cloudflared.service" |
     sed -E 's/@\.service$/@probe.service/')
@@ -224,7 +228,7 @@ proof() { # proof <dir>: the evidence files, names and exit codes only
   done >"$p/verify.txt"
   new "echo '# enabled loyal-* unit files:'; systemctl list-unit-files 'loyal-*' --state=enabled --no-legend;
     echo '# active loyal-* units:'; systemctl list-units 'loyal-*' --all --state=active --no-legend;
-    for u in cloudflared otelcol-contrib prometheus prometheus-alertmanager prometheus-node-exporter caddy docker pgbouncer postgresql; do
+    for u in cloudflared otelcol-contrib prometheus prometheus-alertmanager prometheus-node-exporter caddy wg-quick@loyal-ci docker pgbouncer postgresql; do
       echo \"\$u \$(systemctl is-enabled \$u 2>&1) \$(systemctl is-active \$u 2>&1)\"; done
     echo '# listening:'; sudo ss -lntu" >"$p/enabled.txt"
   new "for b in /opt/loyal/releases/*/$RELEASE_SHA/loyal-* /opt/loyal/bin/loyal-env-launcher /opt/loyal/bin/loyal-yield-realtime /opt/loyal-hetzner/env-launcher-*; do
