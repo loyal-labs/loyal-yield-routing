@@ -133,6 +133,7 @@ pairs=(
   "/var/lib/private/weather-reward-pilot/|/var/lib/private/weather-reward-pilot/"
   "/var/lib/weather-reward-pilot-rotate/|/var/lib/weather-reward-pilot-rotate/|--exclude=segments/ --exclude=rotate.lock"
   "/var/lib/weather-reward-pilot.rotate-hold/|/var/lib/weather-reward-pilot.rotate-hold/"
+  "/var/lib/weather-reward-pilot-rotate/segments/|/var/lib/weather-reward-pilot-rotate/segments/"
 )
 for d in /srv/w20/behind*/; do pairs+=("\$d|\$d"); done
 bad=0

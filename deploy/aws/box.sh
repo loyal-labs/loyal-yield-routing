@@ -9,9 +9,9 @@ usage() {
   cat >&2 <<EOF
 usage: $0 <box> [--dry-run]
 boxes: $(for f in "$HERE"/boxes/*.conf; do basename "$f" .conf; done | paste -sd' ' -)
-Ensures, each step found again by its Name tag: key pair, security group (tcp 22 in, nothing else),
+Ensures, each step found again by its Name tag: key pair, security group (tcp 22 in, plus the conf's INGRESS rules),
 instance (Ubuntu 24.04 from Canonical's SSM parameter, IMDSv2 required, termination protection on),
-gp3 volumes attached and tagged, one Elastic IP associated. Never deletes, stops or terminates.
+gp3 volumes attached and tagged, one Elastic IP associated. Never deletes or terminates; stops an instance only to change its type, and only with BOX_RESIZE=1.
 Prints "changed:" lines and ends "<box>: <n> change(s)". --dry-run prints each aws command it would run.
 Reads need a live session; a dry run without one lists every step as missing and says so.
 EOF
@@ -34,7 +34,7 @@ die() { echo "box.sh: $*" >&2; exit 1; }
 command -v aws >/dev/null || die "aws CLI not found"
 command -v jq >/dev/null || die "jq not found"
 
-PROFILE='' ACCOUNT='' REGION='' INSTANCE_TYPE='' ARCH='' PUBKEY='' VOLUMES=()
+PROFILE='' ACCOUNT='' REGION='' INSTANCE_TYPE='' ARCH='' PUBKEY='' VOLUMES=() INGRESS=()
 # shellcheck source=/dev/null
 source "$HERE/boxes/$BOX.conf"
 PROFILE=${PROFILE:-${AWS_PROFILE:-}}
@@ -143,13 +143,19 @@ if [[ -z $SG ]]; then
   SG=$(pick .GroupId)
   if ((DRY)); then SG=new-security-group-id; fi
 fi
-has22=$(jq '[.[] | select(.IpProtocol=="tcp" and .FromPort==22 and .ToPort==22 and ([.IpRanges[].CidrIp] | index("0.0.0.0/0")))] | length' <<<"$SGPERMS")
-if ((has22 == 0)); then
-  change "security group $SGNAME allows tcp 22 from 0.0.0.0/0"
-  mut ec2 authorize-security-group-ingress --group-id "$SG" --protocol tcp --port 22 --cidr 0.0.0.0/0 --output json
-fi
-extra=$(jq '[.[] | select((.IpProtocol=="tcp" and .FromPort==22 and .ToPort==22 and ([.IpRanges[].CidrIp] | index("0.0.0.0/0")) and (.IpRanges | length)==1 and (.Ipv6Ranges | length)==0 and (.UserIdGroupPairs | length)==0 and (.PrefixListIds | length)==0) | not)] | length' <<<"$SGPERMS")
-if ((extra > 0)); then warn "security group $SGNAME has $extra inbound rule(s) besides tcp 22 from 0.0.0.0/0; left as is, remove by hand"; fi
+RULES=("tcp:22:0.0.0.0/0" ${INGRESS[@]+"${INGRESS[@]}"})
+for r in "${RULES[@]}"; do
+  [[ $r =~ ^(tcp|udp):[0-9]+:[0-9./]+$ ]] || die "INGRESS entry '$r' must be tcp|udp:port:cidr"
+  IFS=: read -r R_PROTO R_PORT R_CIDR <<<"$r"
+  have=$(jq --arg p "$R_PROTO" --argjson port "$R_PORT" --arg c "$R_CIDR" '[.[] | select(.IpProtocol==$p and .FromPort==$port and .ToPort==$port and ([.IpRanges[].CidrIp] | index($c)))] | length' <<<"$SGPERMS")
+  if ((have == 0)); then
+    change "security group $SGNAME allows $R_PROTO $R_PORT from $R_CIDR"
+    mut ec2 authorize-security-group-ingress --group-id "$SG" --protocol "$R_PROTO" --port "$R_PORT" --cidr "$R_CIDR" --output json
+  fi
+done
+RULES_JSON=$(printf '%s\n' "${RULES[@]}" | jq -R 'split(":") | {p: .[0], port: (.[1] | tonumber), c: .[2]}' | jq -sc .)
+extra=$(jq --argjson rules "$RULES_JSON" '[.[] | select(((.IpRanges | length)==1 and (.Ipv6Ranges | length)==0 and (.UserIdGroupPairs | length)==0 and (.PrefixListIds | length)==0 and (. as $x | any($rules[]; .p==$x.IpProtocol and .port==$x.FromPort and .port==$x.ToPort and .c==$x.IpRanges[0].CidrIp))) | not)] | length' <<<"$SGPERMS")
+if ((extra > 0)); then warn "security group $SGNAME has $extra inbound rule(s) besides the conf's; left as is, remove by hand"; fi
 
 # instance
 rd ec2 describe-instances --filters "Name=tag:Name,Values=$BOX" Name=instance-state-name,Values=pending,running,stopping,stopped --output json
@@ -179,7 +185,24 @@ if [[ -z $IID ]]; then
   fi
 else
   have_type=$(pick '.Reservations[0].Instances[0].InstanceType')
-  [[ $have_type == "$INSTANCE_TYPE" ]] || warn "instance $BOX is $have_type, conf says $INSTANCE_TYPE; resize is a stop, modify, start and is not done here"
+  if [[ $have_type != "$INSTANCE_TYPE" ]]; then
+    if [[ ${BOX_RESIZE:-} == 1 ]]; then
+      have_state=$(pick '.Reservations[0].Instances[0].State.Name')
+      change "instance $BOX $have_type -> $INSTANCE_TYPE (stop, modify, start; address and termination protection stay)"
+      if [[ $have_state != stopped ]]; then
+        mut ec2 stop-instances --instance-ids "$IID" --output json
+        mut ec2 wait instance-stopped --instance-ids "$IID"
+      fi
+      mut ec2 modify-instance-attribute --instance-id "$IID" --instance-type "{\"Value\":\"$INSTANCE_TYPE\"}"
+      if [[ $have_state != stopped ]]; then
+        mut ec2 start-instances --instance-ids "$IID" --output json
+        mut ec2 wait instance-running --instance-ids "$IID"
+      fi
+      rd ec2 describe-instances --instance-ids "$IID" --output json
+    else
+      warn "instance $BOX is $have_type, conf says $INSTANCE_TYPE; set BOX_RESIZE=1 to stop, modify and start it"
+    fi
+  fi
   tokens=$(pick '.Reservations[0].Instances[0].MetadataOptions.HttpTokens')
   if [[ $tokens != required ]]; then
     change "instance $BOX requires IMDSv2"

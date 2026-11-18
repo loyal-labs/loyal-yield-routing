@@ -187,7 +187,6 @@ stage_db() {
   {"src": "/etc/systemd/system/postgresql@18-main.service.d", "dst": "$STAGED/etc/systemd/system/postgresql@18-main.service.d"},
   {"src": "/etc/postgresql/18/main", "dst": "$STAGED/etc/postgresql/18/main"},
   {"src": "/etc/pgbouncer/loyal.ini"}, {"src": "/etc/pgbouncer/loyal-users.txt"},
-  {"src": "/etc/pgbackrest/pgbackrest.conf"}, {"src": "/etc/pgbackrest.conf"},
   {"src": "/etc/loyal-db/replica"}, {"src": "/etc/loyal-db/tls"},
   {"src": "/etc/loyal-observer-monitor"}, {"src": "/etc/loyal-squads-watch"},
   {"src": "/opt/loyal-observer-monitor"}, {"src": "/opt/loyal-squads-watch-recovery-v2"},
