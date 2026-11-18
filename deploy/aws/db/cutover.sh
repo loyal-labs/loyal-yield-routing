@@ -198,14 +198,13 @@ src_writers_off() {
 # record_boot <old|src>: before freeze first disables anything there, the units running there, kept
 # in $STATE/boot-<side>.active, then the units enabled there, in $STATE/boot-<side> on BOX. A rerun
 # keeps the first record, which saw them before any disable; boot-<side> is written last, so it
-# stands only beside its running list.
+# stands only beside its running list. back-on-old goes last; a kill leaves the stamp, the record or both, and the record wins.
 record_boot() {
   local side=$1 have list ran
   have=$(on "$BOX" "test -e $STATE/boot-$side && echo yes || echo no") || die "$BOX did not answer for $STATE/boot-$side"
   [[ $have == yes ]] && { echo "$side: boot record $STATE/boot-$side kept from the first freeze"; return 0; }
   [[ $have == no ]] || die "$BOX answered '$have' for $STATE/boot-$side"
   if [[ $side == old ]]; then
-    on "$BOX" "rm -f $STATE/back-on-old && sync $STATE" || die "cannot remove $STATE/back-on-old on $BOX"
     list=$(on "$CUT_OLD" "for u in $OLD_ALL $STOPS; do [ \"\$(systemctl show -p UnitFileState --value \$u)\" != enabled ] || echo \$u; done") || die "$CUT_OLD did not answer for its enabled units"
     ran=$(on "$CUT_OLD" "for u in $OLD_ALL; do case \"\$(systemctl show -p ActiveState --value \$u)\" in active|activating|reloading) echo \$u ;; esac; done") || die "$CUT_OLD did not answer for its running units"
   else
@@ -215,6 +214,7 @@ record_boot() {
   list=$(sort -u <<<"$list" | awk 'NF' | paste -sd' ' -) ran=$(sort -u <<<"$ran" | awk 'NF' | paste -sd' ' -)
   printf '# running on %s before freeze, %s\n%s\n' "$side" "$(date -u +%FT%TZ)" "$ran" | on "$BOX" "mkdir -p $STATE && cat >$STATE/boot-$side.active.new && mv -f $STATE/boot-$side.active.new $STATE/boot-$side.active && sync $STATE" || die "cannot write $STATE/boot-$side.active on $BOX"
   printf '# enabled on %s before freeze, %s\n%s\n' "$side" "$(date -u +%FT%TZ)" "$list" | on "$BOX" "mkdir -p $STATE && cat >$STATE/boot-$side.new && mv -f $STATE/boot-$side.new $STATE/boot-$side && sync $STATE" || die "cannot write $STATE/boot-$side on $BOX"
+  [[ $side == old ]] && { on "$BOX" "rm -f $STATE/back-on-old && sync $STATE" || die "cannot remove $STATE/back-on-old on $BOX"; }
   echo "$side: enabled before freeze: ${list:-none}; running: ${ran:-none}; recorded in $STATE/boot-$side and $STATE/boot-$side.active"
 }
 
@@ -309,20 +309,32 @@ hook() {
   [[ -n $2 ]] || return 0
   timed "$1" bounded "$2"
 }
-# The hook runs in a process group of its own, which is killed whole when CUT_HOOK_SECONDS pass or when this script is gone
-# (a copy the hook started never outlives either). Its stdin is /dev/null: a group in the background cannot read the terminal.
+# The hook runs in a process group of its own, which is killed whole when CUT_HOOK_SECONDS pass, when this script is gone
+# (a copy the hook started never outlives either) or when the runner is sent INT, TERM or HUP. The runner stays in this
+# script's group, so the terminal's Ctrl-C reaches it; it passes the signal on, then dies of that same signal, so bash stops.
+# Its stdin is /dev/null: a group in the background cannot read the terminal.
 # shellcheck disable=SC2016 # perl source
 HOOK_PERL='
 use POSIX ":sys_wait_h";
-setpgrp(0, 0);
-my ($limit, $parent) = (shift, getppid);
+my ($limit, $parent, $stop) = (shift, getppid);
+$SIG{$_} = sub { $stop ||= $_[0] } for qw(INT TERM HUP);
 my $pid = fork;
 defined $pid or exit 126;
-if (!$pid) { exec @ARGV; exit 127 }
+if (!$pid) { setpgrp(0, 0); exec @ARGV; exit 127 }
+setpgrp($pid, $pid);
 my $end = time + $limit;
 while (1) {
   if (waitpid($pid, WNOHANG) == $pid) { exit($? & 127 ? 128 + ($? & 127) : $? >> 8) }
-  kill "KILL", -$$ if time >= $end || getppid != $parent;
+  if ($stop) {
+    kill $stop, -$pid;
+    for (1 .. 20) { last if waitpid($pid, WNOHANG) == $pid; select(undef, undef, undef, 0.1) }
+    kill "KILL", -$pid;
+    $SIG{$stop} = "DEFAULT";
+    kill $stop, $$;
+    select(undef, undef, undef, 1);
+    exit 128;
+  }
+  kill "KILL", -$pid if time >= $end || getppid != $parent;
   select(undef, undef, undef, 0.2);
 }'
 bounded() { (cd "$HERE" && exec perl -e "$HOOK_PERL" "$CUT_HOOK_SECONDS" bash -c "$1" </dev/null); }
