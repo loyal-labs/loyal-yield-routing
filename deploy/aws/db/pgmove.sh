@@ -698,10 +698,36 @@ src_dump() {
   fi
 }
 
+ANY_ROWS="select count(*) from pg_class c join pg_namespace n on n.oid = c.relnamespace where c.relkind = 'r' and $NS and $NOT_EXT and (xpath('/table/row/e/text()', query_to_xml(format('select exists (select 1 from only %I.%I) as e', n.nspname, c.relname), false, false, '')))[1]::text = 'true'"
+
+# The source migrates after the target's restore. Until the target holds a subscription or a row,
+# what the source made since is added here; once it does, the schema is the subscription's.
+catch_up_schema() {
+  local db=$1 subs rows tmp kind what adds=() b0=$blocks
+  local flags="--schema-only --no-publications --no-subscriptions --exclude-schema='_timescaledb*' --exclude-schema='timescaledb_*'"
+  subs=$(q dst "$db" "select count(*) from pg_subscription s join pg_database d on d.oid = s.subdbid where d.datname = current_database()")
+  rows=$(q dst "$db" "$ANY_ROWS")
+  [[ $subs == 0 && $rows == 0 ]] || return 0
+  tmp=$(mktemp -d)
+  dump src "$db" "$flags" >"$tmp/src.sql"
+  dump dst "$db" "$flags" >"$tmp/dst.sql"
+  schema_diff "$tmp/src.sql" "$tmp/dst.sql" "$tmp/add.sql" >"$tmp/out" || die "init: $db: the dump comparator failed, so the schemas were not compared"
+  while read -r kind what; do
+    case $kind in A) adds+=("$what") ;; B) blocked "$db schema: $what; the target has no subscription and no rows, so it can be restored afresh by hand" ;; esac
+  done <"$tmp/out"
+  if ((blocks == b0 && ${#adds[@]})); then
+    printf -v what '%s, ' "${adds[@]}"
+    apply dst "$db" "BEGIN; SET LOCAL check_function_bodies = false; SELECT pg_catalog.set_config('search_path', '', true);
+$(<"$tmp/add.sql")
+COMMIT;" "$db: ${#adds[@]} schema object(s) the source made after the target's restore: ${what%, }"
+  fi
+  rm -rf "$tmp"
+}
+
 ensure_schema() {
   local db=$1 n dump=$WORK/schema-$1.dump list=$WORK/schema-$1.list
   n=$(q dst "$db" "$USER_OBJECTS")
-  [[ -z $n || $n == 0 ]] || return 0
+  [[ -z $n || $n == 0 ]] || { catch_up_schema "$db"; return 0; }
   [[ $(q src "$db" "$USER_OBJECTS") != 0 ]] || return 0
   local fetch restore
   fetch="$(src_dump "$db" "--schema-only -Fc --no-publications --no-subscriptions --exclude-schema='_timescaledb*' --exclude-schema='timescaledb_*'")"
@@ -982,6 +1008,7 @@ cmd_subscribe() {
     [[ $wal == logical ]] || blocked "source wal_level=$wal; a slot needs logical (owner-gated restart)"
     [[ $keep != -1 ]] || blocked "source max_slot_wal_keep_size=-1; set it to half the free space and reload first"
     identity_blockers src "$db" "$shape"
+    ensure_schema "$db"
   done
   ((blocks == 0 || DRY)) || finish
   ensure_marker
@@ -1187,15 +1214,19 @@ cmd_grants() {
   finish_check
 }
 
+# schema_diff <src.sql> <dst.sql> [add.sql]: with add.sql, writes the DDL that brings dst up to src
+# and prints "A <object>" per object it adds and "B <object>: <why>" per difference it cannot add.
 schema_diff() {
-  python3 -I - "$1" "$2" <<'PY'
+  python3 -I - "$@" <<'PY'
 import re, sys
+raw = {}
 def blocks(path):
     out, key, body = {}, "preamble", []
     def flush():
         text = "\n".join(l for l in body if l.strip() and not l.startswith("--"))
         if text:
             out.setdefault(key, []).append(text)
+            raw.setdefault(path, {}).setdefault(key, []).append(text)
     for line in open(path):
         line = line.rstrip("\n")
         if line.startswith(("\\restrict", "\\unrestrict", "SET ", "SELECT pg_catalog.set_config")):
@@ -1217,6 +1248,58 @@ def bare(t):
         out += [re.sub(r"\s", "", t[pos:m.start()]), m.group(0)]
         pos = m.end()
     return "".join(out) + re.sub(r"\s", "", t[pos:])
+def same(x, y):
+    return x == y or (x is not None and y is not None and bare(x) == bare(y))
+def table_parts(t):
+    lines = t.split("\n")
+    m = re.match(r"CREATE (?:UNLOGGED )?TABLE (\S+) \($", lines[0])
+    end = next((i for i, l in enumerate(lines) if l.startswith(")")), None)
+    if not m or end is None:
+        return None
+    body = [l.strip().rstrip(",") for l in lines[1:end]]
+    cons = [l for l in body if l.startswith("CONSTRAINT ")]
+    return m.group(1), [l for l in body if l not in cons], cons, "\n".join(lines[:1] + lines[end:])
+def table_adds(x, y):
+    p, q = table_parts(x), table_parts(y)
+    if not p or not q or p[0] != q[0] or not same(p[3], q[3]):
+        return None
+    cols, cons = p[1][len(q[1]):], [c for c in p[2] if c not in q[2]]
+    if p[1][:len(q[1])] != q[1] or any(c not in p[2] for c in q[2]):
+        return None
+    return p[0], [f"ALTER TABLE {p[0]} ADD COLUMN {c};" for c in cols] + [f"ALTER TABLE {p[0]} ADD {c};" for c in cons]
+if len(sys.argv) > 3:
+    sql, src = [], raw.get(sys.argv[1], {})
+    parent = {}
+    for k in a:
+        if k.startswith("TABLE ATTACH "):
+            m = re.match(r"ALTER TABLE ONLY (\S+) ATTACH PARTITION", a[k])
+            parent[k[len("TABLE ATTACH "):]] = m and m.group(1)
+    for k in (k for k in src if k in a):
+        x, y = a[k], b.get(k)
+        acl = k.startswith(("ACL ", "DEFAULT ACL ")) and len(src[k]) == 1
+        if k == "preamble" or same(x, y) or (acl and y is not None and set(x.split("\n")) == set(y.split("\n"))):
+            continue
+        if y is None:
+            sql += src[k]
+            print(f"A {k}")
+        elif k.startswith("TABLE ") and (got := table_adds(x, y)):
+            name = k[len("TABLE "):]
+            # ADD COLUMN and ADD CONSTRAINT on the parent reach its partitions.
+            if name in parent and parent[name] and not same(a.get(f"TABLE {parent[name]}"), b.get(f"TABLE {parent[name]}")):
+                continue
+            sql += got[1]
+            print(f"A {k}: {len(got[1])} column(s) or check(s) added")
+        elif acl and set(y.split("\n")) <= set(x.split("\n")):
+            sql += [l for l in src[k][0].split("\n") if l not in y.split("\n")]
+            print(f"A {k}: grants added")
+        else:
+            print(f"B {k}: differs from the source in a way init does not add (pgmove schema shows it)")
+    for k in sorted(b.keys() - a.keys()):
+        if k != "preamble":
+            print(f"B {k}: only on the target")
+    with open(sys.argv[3], "w") as f:
+        f.write("\n".join(sql) + ("\n" if sql else ""))
+    sys.exit(0)
 for k in sorted(a.keys() | b.keys()):
     x, y = a.get(k), b.get(k)
     if x == y or (x is not None and y is not None and bare(x) == bare(y)):
