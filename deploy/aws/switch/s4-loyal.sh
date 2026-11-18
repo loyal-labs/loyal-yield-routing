@@ -26,8 +26,9 @@ usage: $0 preflight|handover|handback|dbcheck
 preflight  Read-only. Runs s4-services-preflight.sh, pgmove preflight loyal, cutover.sh loyal preflight and the S4 checks,
            one line per check as ok, BLOCKER or PARKED, then "<n> ok, <m> blocker, <k> parked". Exit 0 only with 0 blockers.
 handover   CUT_HANDOVER, in freeze once the old units are proven stopped: the ClickStack final copy, the receivers' state
-           copy, Caddy's realtime.askloyal.com certificate, then the tunnel credential placed on $NEW. Fails closed; cutover.sh bounds it.
-handback   CUT_HANDBACK, in abort and rollback once $NEW is stopped: removes the placed tunnel credential and the copied certificate.
+           copy, Caddy's realtime.askloyal.com certificate, the loyal-ci-production root key, then the tunnel credential placed on $NEW. Fails closed; cutover.sh bounds it.
+handback   CUT_HANDBACK, in abort and rollback once $NEW is stopped: removes the placed tunnel credential, the copied certificate and the
+           loyal-ci-production key from root's authorized_keys.
 dbcheck    CUT_DBCHECK, before any app starts: each app database credential on $NEW logs in through 127.0.0.1:6432.
 Env: PGMOVE_SRC_ADMIN (runs its one argument as root on loyal-db-primary), PGMOVE_AGENT, S4_UNITS_TSV.
 EOF
@@ -81,6 +82,30 @@ caddy_cert_copy() {
   [[ -n $so && $so == "$sn" ]]
 }
 
+# The production deploy's root login (scripts/ci-worker-network.sh brings the tunnel, then ssh root@10.203.0.1): loyal-workers
+# trusts the loyal-ci-production key as one restrict line. Root login on loyal-main is granted at the switch, never before: the
+# handover appends that one public line and the handback removes it, so abort and rollback leave loyal-main without it.
+CI_KEY_RE=' loyal-ci-production-[0-9]+$'
+ci_key_line() {
+  local line
+  line=$(old "grep -E '$CI_KEY_RE' /root/.ssh/authorized_keys") || return 1
+  [[ $(grep -c '' <<<"$line") -eq 1 && $line =~ ^restrict\ ssh-ed25519\ [A-Za-z0-9+/]+\ loyal-ci-production-[0-9]+$ ]] || return 1
+  printf '%s\n' "$line"
+}
+ci_key_count() { new "grep -cE '$CI_KEY_RE' /root/.ssh/authorized_keys || true"; }
+ci_key_install() {
+  local line n
+  line=$(ci_key_line) || return 1
+  n=$(ci_key_count) || return 1
+  [[ $n == 0 ]] || return 1
+  printf '%s\n' "$line" | new "f=/root/.ssh/authorized_keys; [ -z \"\$(tail -c1 \$f)\" ] || echo >>\$f; cat >>\$f" || return 1
+  [[ $(ci_key_count) == 1 ]]
+}
+ci_key_remove() {
+  new "f=/root/.ssh/authorized_keys; grep -vE '$CI_KEY_RE' \$f >\$f.new; chmod --reference=\$f \$f.new && chown --reference=\$f \$f.new && mv \$f.new \$f" || return 1
+  [[ $(ci_key_count) == 0 ]]
+}
+
 handover() {
   local out
   stopped old loyal-clickstack loyal-clickstack-relay cloudflared caddy wg-quick@loyal-ci || fail "$OLD: ClickStack, cloudflared, Caddy or the loyal-ci tunnel runs; nothing copied"
@@ -94,6 +119,8 @@ handover() {
   grep -qx 'final copy: the old receivers and tick timer are stopped' <<<"$out" || fail "the receiver state copy was not final"
   caddy_cert_copy || fail "the realtime certificate was not copied to $NEW"
   echo "$NEW: realtime.askloyal.com certificate placed at $CERT_DIR"
+  ci_key_install || fail "the loyal-ci-production key was not installed for root on $NEW"
+  echo "$NEW: loyal-ci-production key installed for root"
   new "test -s $TUNNEL_SEALED && umask 077 && systemd-creds decrypt --name=loyal-workers.json $TUNNEL_SEALED $TUNNEL_PLAIN.new && chmod 0600 $TUNNEL_PLAIN.new && mv -f $TUNNEL_PLAIN.new $TUNNEL_PLAIN && sync /etc/cloudflared" ||
     fail "the tunnel credential was not placed on $NEW"
   echo "$NEW: tunnel credential placed at $TUNNEL_PLAIN"
@@ -105,6 +132,8 @@ handback() {
   echo "$NEW: tunnel credential removed"
   new "rm -rf $CERT_DIR && sync $CADDY_DATA && test ! -e $CERT_DIR" || fail "the realtime certificate is still on $NEW"
   echo "$NEW: realtime.askloyal.com certificate removed"
+  ci_key_remove || fail "the loyal-ci-production key is still in root's authorized_keys on $NEW"
+  echo "$NEW: loyal-ci-production key removed"
 }
 
 # The app database credentials of every unit on the box (the loyal_yield_prod ones go straight to Postgres on 5432, the
@@ -395,14 +424,14 @@ c_wg_staged() {
   [[ $pub_old == "$pub_new" && $st == "disabled inactive no-interface 0" ]]
 }
 
-# The deploy's ssh (scripts/ci-worker-network.sh then root@10.203.0.1, production.yml) logs in as root with the loyal-ci-production
-# key, a restrict line on loyal-workers. loyal-main's root file starts with the cloud image's refusal; the key must be there too.
+# Before the switch root login on loyal-main stays closed: the key is absent there (the handover installs it, the handback removes
+# it), and the line it will install is readable on loyal-workers.
 c_deploy_ssh() {
-  local fp="grep -E ' loyal-ci-production-[0-9]+\$' /root/.ssh/authorized_keys | ssh-keygen -lf - | awk '{print \$2}'" a b
-  a=$(old "$fp") || { echo "$OLD does not trust a loyal-ci-production key"; return 1; }
-  b=$(new "$fp") || { echo "$NEW does not trust the loyal-ci-production key for root (loyal-main-config.sh stage adds it)"; return 1; }
-  echo "root trusts the loyal-ci-production key ${a:7:8}... on $OLD and ${b:7:8}... on $NEW; $NEW sshd: $(new "sshd -T | grep -i '^permitrootlogin '")"
-  [[ $a == "$b" && -n $a ]]
+  local line n
+  line=$(ci_key_line) || { echo "$OLD does not trust exactly one loyal-ci-production key as a restrict line; the handover has nothing to install"; return 1; }
+  n=$(ci_key_count) || { echo "$NEW did not answer"; return 1; }
+  echo "source: one restrict line on $OLD ($(ssh-keygen -lf - <<<"${line#restrict }" | awk '{print $2}' | cut -c8-15)...); $NEW root authorized_keys holds it $n time(s), want 0 before the switch; sshd: $(new "sshd -T | grep -i '^permitrootlogin '")"
+  [[ $n == 0 ]]
 }
 
 # The owner's O4: the repo variable names the host the deploy dials (endpoint host:51820, ssh HostKeyAlias). It is read, never set.

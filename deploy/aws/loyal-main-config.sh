@@ -199,21 +199,6 @@ EOF
   recv "{\"rules\": {\"/etc/pgbouncer/loyal.ini\": [\"listen\"], \"$STAGED/etc/postgresql/18/main/conf.d/loyal.conf\": [\"listen\"]}, \"cred_rules\": [\"db\"]}" < <(box "$(py) send $(j64 <<<"$spec")")
 }
 
-# The production deploy's root login (scripts/ci-worker-network.sh brings the tunnel, then ssh root@10.203.0.1): loyal-workers
-# trusts the loyal-ci-production key as one restrict line; loyal-main's root file holds only the cloud image's refusal line.
-# A public key, appended once, never replaced.
-stage_ci_key() {
-  local line n
-  line=$(old "sudo grep -E ' loyal-ci-production-[0-9]+\$' /root/.ssh/authorized_keys")
-  [[ $(grep -c '' <<<"$line") -eq 1 && $line =~ ^restrict\ ssh-ed25519\ [A-Za-z0-9+/]+\ loyal-ci-production-[0-9]+$ ]] || die "loyal-workers does not trust exactly one loyal-ci-production key as a restrict line"
-  n=$(new "sudo grep -cxF $(printf %q "$line") /root/.ssh/authorized_keys || true")
-  if [[ $n == 0 ]]; then
-    printf '%s\n' "$line" | new "sudo bash -c 'f=/root/.ssh/authorized_keys; [ -z \"\$(tail -c1 \$f)\" ] || echo >>\$f; cat >>\$f'"
-    echo "changed: /root/.ssh/authorized_keys line loyal-ci-production"
-    total=$((total + 1))
-  fi
-}
-
 stage() {
   local states
   reload=0
@@ -223,7 +208,6 @@ stage() {
   stage_workers
   stage_db
   stage_release
-  stage_ci_key
   ((reload == 0)) || new "sudo systemctl daemon-reload"
   [[ -z $(new "systemctl list-unit-files 'loyal-*' --state=enabled --no-legend") ]] || die "a loyal-* unit is enabled on $NEW"
   states=$(new "for u in caddy.service wg-quick@loyal-ci.service; do echo \$u \$(systemctl is-enabled \$u 2>&1) \$(systemctl is-active \$u 2>&1); done")
