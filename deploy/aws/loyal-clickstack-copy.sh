@@ -56,9 +56,12 @@ if [[ $mode == delta ]]; then
   exit 0
 fi
 
-if [[ $mode == final ]] && as_root "$OLD" docker ps -q --filter "name=^${CONTAINER}$" | grep . >/dev/null; then
-  echo "refusing: $CONTAINER is running on $OLD; stop it first (the S4 window does)" >&2
-  exit 1
+if [[ $mode == final ]]; then
+  running=$(as_root "$OLD" docker ps -q --filter "name=^${CONTAINER}$") || { echo "refusing: could not ask $OLD whether $CONTAINER is running (exit $?)" >&2; exit 1; }
+  if [[ -n $running ]]; then
+    echo "refusing: $CONTAINER is running on $OLD; stop it first (the S4 window does)" >&2
+    exit 1
+  fi
 fi
 
 if [[ $copy_n -gt 0 ]]; then

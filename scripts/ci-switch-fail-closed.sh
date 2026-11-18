@@ -157,6 +157,29 @@ def early_reader(stage):
         return "m"
     return ""
 
+# A test (if, elif, while, until, !, &&) on a pipeline whose first stage reads a box: the filter's "no" and a dead ssh look the same.
+BOX_READERS = r"(?:ssh|on|old|new|oldsh|newsh|rd|mnem|remote|as_root|box_pgmove)"
+BOX_TEST = re.compile(r"(?:\b(?:if|elif|while|until)\s+(?:!\s*)?(?:\[\[.*?\]\]\s*&&\s*)*|!\s+|&&\s*)(" + BOX_READERS + r")\s")
+
+def box_pipe(line):
+    for m in BOX_TEST.finditer(line):
+        q, i = None, m.start(1)
+        while i < len(line):
+            c = line[i]
+            if q:
+                if c == "\\" and q == '"':
+                    i += 1
+                elif c == q:
+                    q = None
+            elif c in "'\"":
+                q = c
+            elif c == "|" and not line.startswith("||", i) and line[i - 1] not in "|\\":
+                return True
+            elif c in ";)" or line.startswith("&&", i) or line.startswith("||", i):
+                break
+            i += 1
+    return False
+
 PIPE = re.compile(r"(?<![|\\])\|(?!\|)&?")
 
 def allowed(table, rel, stripped):
@@ -197,6 +220,9 @@ for f in sys.argv[1:]:
         elif "m" in kinds and not allowed(EARLY_OK, rel, stripped):
             flag(f, n, fn, "a pipe into a reader that stops early (head, grep -m or -l, sed with q, awk with exit): the writer dies on the closed pipe and under pipefail (here or on the remote side) the pipeline reports failure for a good answer",
                  "use a reader that drains: `sed -n '1,Np'`, `awk 'NR<=N'`, awk setting a flag in place of exit, or read the whole answer into a variable first; a writer that never ends goes on EARLY_OK with that reason")
+        if box_pipe(line):
+            flag(f, n, fn, "a test on a pipeline that starts with a read of a box: when ssh or docker fails, the filter sees nothing and the test reads it as the answer no",
+                 "read the answer into a variable under `|| { echo ...; exit 1; }` (loyal-clickstack-copy.sh final does), then test the variable")
         if f.endswith("s1-mnemonic.sh") and re.search(r"\$\{\w+:-0\}", line):
             flag(f, n, fn, "a missing statistic defaults to zero", "rsync_stats, which fails on a missing line")
 for b in bad:

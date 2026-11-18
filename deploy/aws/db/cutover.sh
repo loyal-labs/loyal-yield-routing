@@ -360,12 +360,16 @@ units_ready() {
   local u bad=0 all
   all="$ALL $FIRST"
   for u in $all; do
-    if ! on "$CUT_NEW" "systemctl cat $u >/dev/null 2>&1"; then echo "preflight: $CUT_NEW has no unit $u"; bad=1; continue; fi
-    if on "$CUT_NEW" "systemctl is-active --quiet $u"; then echo "preflight: $CUT_NEW runs $u before the switch"; bad=1; fi
-    if on "$CUT_NEW" "systemctl is-enabled --quiet $u"; then echo "preflight: $CUT_NEW starts $u at boot before the switch"; bad=1; fi
+    if on "$CUT_NEW" "systemctl cat $u >/dev/null 2>&1"; then :; else
+      if (($? == 255)); then echo "preflight: $CUT_NEW did not answer for unit $u"; else echo "preflight: $CUT_NEW has no unit $u"; fi
+      bad=1
+      continue
+    fi
+    if on "$CUT_NEW" "systemctl is-active --quiet $u"; then echo "preflight: $CUT_NEW runs $u before the switch"; bad=1; elif (($? == 255)); then echo "preflight: $CUT_NEW did not answer whether $u runs"; bad=1; fi
+    if on "$CUT_NEW" "systemctl is-enabled --quiet $u"; then echo "preflight: $CUT_NEW starts $u at boot before the switch"; bad=1; elif (($? == 255)); then echo "preflight: $CUT_NEW did not answer whether $u starts at boot"; bad=1; fi
   done
   for u in $STOPS; do
-    if on "$CUT_NEW" "systemctl is-active --quiet $u"; then echo "preflight: $CUT_NEW runs $u, which the switch never starts"; bad=1; fi
+    if on "$CUT_NEW" "systemctl is-active --quiet $u"; then echo "preflight: $CUT_NEW runs $u, which the switch never starts"; bad=1; elif (($? == 255)); then echo "preflight: $CUT_NEW did not answer whether $u runs"; bad=1; fi
   done
   ((bad == 0)) && echo "preflight: $CUT_NEW has every unit of $CLUSTER.conf, all stopped and disabled"
   return $bad
