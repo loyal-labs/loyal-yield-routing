@@ -50,9 +50,9 @@ echo "$(date -u +%FT%TZ) $mode: $OLD has $(wc -l <"$work/old" | tr -d ' ') entri
 
 if [[ $mode == delta ]]; then
   echo "to copy, by top-level directory:"
-  awk -F/ '{ print $1 }' "$work/copy" | sort | uniq -c | sort -rn | head -12 | sed 's/^/  /'
+  awk -F/ '{ print $1 }' "$work/copy" | sort | uniq -c | sort -rn | sed -n '1,12p' | sed 's/^/  /'
   echo "only on $NEW, by top-level directory:"
-  awk -F/ '{ print $1 }' "$work/remove" | sort | uniq -c | sort -rn | head -12 | sed 's/^/  /'
+  awk -F/ '{ print $1 }' "$work/remove" | sort | uniq -c | sort -rn | sed -n '1,12p' | sed 's/^/  /'
   exit 0
 fi
 

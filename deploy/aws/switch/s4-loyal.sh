@@ -226,7 +226,7 @@ c_pgmove() {
   local out rc
   out=$(PGMOVE_SRC_ADMIN=$SRC_ADMIN PGMOVE_AGENT=$AGENT bash "$DB/remote.sh" run preflight loyal 2>&1)
   rc=$?
-  grep -E 'DIFF' <<<"$out" | grep -vE '(^| )0 DIFF$' | head -5
+  grep -E 'DIFF' <<<"$out" | grep -vE '(^| )0 DIFF$' | sed -n '1,5p'
   grep -E ' DIFF$' <<<"$out" | tail -1
   return "$rc"
 }
@@ -423,7 +423,7 @@ except OSError:
 c_dns_realtime() {
   local dns ns ttl
   dns=$(dig +short realtime.askloyal.com A | paste -sd' ' -)
-  ns=$(dig +short NS askloyal.com | head -1)
+  ns=$(dig +short NS askloyal.com | sed -n 1p)
   ttl=$([[ -n $ns ]] && dig +noall +answer @"$ns" realtime.askloyal.com A | awk 'NR == 1 { print $2 }')
   echo "realtime.askloyal.com A ${dns:-none}, record TTL ${ttl:-unread} s; the owner's switch-time step O2 moves it to $NEW_IP (lower the TTL the day before)"
   [[ $dns == "$NEW_IP" ]] && return 0

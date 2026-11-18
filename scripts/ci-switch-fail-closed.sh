@@ -13,48 +13,190 @@ import re, sys, pathlib
 
 bad = []
 
-# Two command substitutions compared where the comparison cannot pass on two failed reads (file, text on the line, why).
+# Two command substitutions compared where the comparison cannot pass on two failed reads (exact repo path, the whole stripped line, why).
 TWO_SUBS_OK = [
-    ("loyal-receivers-repin.sh", '[ "$(openssl x509 -in "$t/server.pem" -noout -pubkey)" = "$(cat "$t/pub.pem")" ]', "pub.pem fed `openssl x509 -force_pubkey` two lines up, so it is not empty"),
-    ("pgmove.sh", "catch_sum src", "catch_sum is q, and a failed q kills the run (die signals the main shell)"),
-    ("pgmove.sh", "-s $(fence_id) &&", "the test `-s` on the id file guards the comparison, so the right side is not empty"),
-    ("pgmove.sh", "-s $(fence_ok) ]] &&", "the test `-s` on the ok file guards the comparison, so the right side is not empty"),
-    ("pgmove.sh", '"$(volume_dropin)"', "volume_dropin prints a fixed unit text, so the right side is never empty"),
+    ('deploy/aws/loyal-receivers-repin.sh', r'''[ "$(openssl x509 -in "$t/server.pem" -noout -pubkey)" = "$(cat "$t/pub.pem")" ]''', 'pub.pem fed `openssl x509 -force_pubkey` two lines up, so it is not empty'),
+    ('deploy/aws/db/pgmove.sh', r'''if [[ $(catch_sum src "$table" "$floor" "$cutoff") == "$(catch_sum "$FROM" "$table" "$floor" "$cutoff")" ]]; then state "$f" "$ceiling"; else need catchup "$table" "$floor"; fi''', 'catch_sum is q, and a failed q kills the run (die signals the main shell)'),
+    ('deploy/aws/db/pgmove.sh', r'''if [[ -s $(fence_id) && $(cat "$WORK/drained-$sub" 2>/dev/null) == "$(cat "$(fence_id)")" ]]; then''', 'the test `-s` on the id file guards the comparison, so the right side is not empty'),
+    ('deploy/aws/db/pgmove.sh', r'''if ((DRY == 0 && REVERSE == 0)) && [[ -s $(fence_ok) ]] && [[ $(cut -s -d' ' -f2- "$WORK/hash-ok" 2>/dev/null) != "$(cat "$(fence_ok)")" ]]; then''', 'the test `-s` on the ok file guards the comparison, so the right side is not empty'),
+    ('deploy/aws/db/pgmove.sh', r'''if [[ $(on "$DST_SSH" "cat $f" 2>/dev/null || true) != "$(volume_dropin)" ]]; then''', 'volume_dropin prints a fixed unit text, so the right side is never empty'),
+    ('deploy/aws/db/pgmove.sh', r'''[[ $(on "$DST_SSH" "cat $f" 2>/dev/null || true) == "$(volume_dropin)" ]] || { diff_row "volume: no $f; run init $CLUSTER (writes it and reloads systemd, no restart)"; return 0; }''', 'volume_dropin prints a fixed unit text, so the right side is never empty'),
 ]
 
 def flag(f, n, fn, what, use):
     bad.append(f"{f}:{n} ({fn or 'top level'}): {what}; instead {use}")
 
-QUIET = r"(?:\S*/)?e?grep\s+(?:-\S+\s+)*?(?:-[A-Za-z]*q[A-Za-z]*|--quiet)(?=[\s\"'\\]|$)"
-QUIET_PIPE = re.compile(r"(?<![|\\])\|(?!\|)\s*" + QUIET)
-QUIET_START = re.compile(r"^\s*" + QUIET)
+# Pipe stages that stop reading early (exact repo path, the whole stripped line, why the writer ends on its own or the cut is harmless).
+EARLY_OK = []
+
+# Words that put a command before the one that matters: `sudo -n grep`, `LC_ALL=C grep`, `command grep`, `\grep`.
+WRAP = {"{", "(", "!", "if", "then", "else", "elif", "do", "while", "until", "time", "command", "builtin", "exec", "env", "nice", "sudo", "timeout"}
+WRAP_ARG = {"sudo": {"-u", "-g", "-h", "-p", "-C", "-D", "-R", "-T", "-U"}, "timeout": {"-s", "-k"}, "nice": {"-n"}, "env": {"-u"}}
+GREPS = {"grep", "egrep", "fgrep", "zgrep", "rg"}
+GREP_ARG = set("efmABCdDgtTj")
+
+def words(s):
+    out, cur, has, q, i = [], "", False, None, 0
+    while i < len(s):
+        c = s[i]
+        if q == "'":
+            if c == "'":
+                q = None
+            else:
+                cur += c
+        elif q == '"':
+            if c == '"':
+                q = None
+            elif c == "\\" and i + 1 < len(s):
+                i += 1
+                cur += s[i]
+            else:
+                cur += c
+        elif c in " \t":
+            if has:
+                out.append(cur)
+                cur, has = "", False
+        elif c in "'\"":
+            q, has = c, True
+        elif c == "\\" and i + 1 < len(s):
+            i += 1
+            cur += s[i]
+            has = True
+        elif c == "#" and not has:
+            break
+        elif c in ");" or s.startswith("&&", i) or s.startswith("||", i):
+            break
+        else:
+            cur += c
+            has = True
+        i += 1
+    if has:
+        out.append(cur)
+    return out
+
+def command(ws):
+    i = 0
+    while i < len(ws):
+        w = ws[i]
+        if re.match(r"[A-Za-z_]\w*=", w):
+            i += 1
+        elif w in WRAP:
+            i += 1
+            while i < len(ws) and ws[i].startswith("-") and w in WRAP_ARG:
+                i += 2 if ws[i] in WRAP_ARG[w] else 1
+            if w == "timeout" and i < len(ws):
+                i += 1
+        else:
+            return w.rsplit("/", 1)[-1], ws[i + 1:]
+    return "", []
+
+def grep_early(args):
+    pos = False
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if pos or not a.startswith("-") or a == "-":
+            i += 1
+            continue
+        if a == "--":
+            pos = True
+        elif a.startswith("--"):
+            n = a.split("=")[0]
+            if n in ("--quiet", "--silent"):
+                return "q"
+            if n in ("--max-count", "--files-with-matches", "--files-without-match"):
+                return "m"
+            if n in ("--regexp", "--file", "--after-context", "--before-context", "--context", "--exclude", "--include", "--directories", "--devices", "--glob", "--type") and "=" not in a:
+                i += 1
+        else:
+            for j, c in enumerate(a[1:]):
+                if c == "q":
+                    return "q"
+                if c in "mlL":
+                    return "m"
+                if c in GREP_ARG:
+                    if j == len(a) - 2:
+                        i += 1
+                    break
+        i += 1
+    return ""
+
+def sed_quits(args):
+    for a in args:
+        a = re.sub(r"(?<![\w\\])[sy](.).*?\1.*?\1\w*", "", a)
+        a = re.sub(r"/[^/]*/", "", a)
+        if re.search(r"(?:^|[\s;{}!$\d,])q\d*\s*(?:$|[;}])", a):
+            return True
+    return False
+
+def awk_exits(args):
+    for a in args:
+        a = re.sub(r'"(?:[^"\\]|\\.)*"', '""', a)
+        while True:
+            m = re.search(r"\bEND\s*\{", a)
+            if not m:
+                break
+            depth, k = 1, m.end()
+            while k < len(a) and depth:
+                depth += (a[k] == "{") - (a[k] == "}")
+                k += 1
+            a = a[:m.start()] + a[k:]
+        if re.search(r"\bexit\b", a):
+            return True
+    return False
+
+def early_reader(stage):
+    cmd, args = command(words(stage))
+    if cmd in GREPS:
+        return grep_early(args)
+    if cmd == "head":
+        return "m"
+    if cmd == "sed" and sed_quits(args):
+        return "m"
+    if cmd in ("awk", "gawk", "mawk") and awk_exits(args):
+        return "m"
+    return ""
+
+PIPE = re.compile(r"(?<![|\\])\|(?!\|)&?")
+
+def allowed(table, rel, stripped):
+    return any(rel == a and stripped == b for a, b, _ in table)
+
+top = pathlib.Path.cwd().resolve()
 
 for f in sys.argv[1:]:
     p = pathlib.Path(f)
+    try:
+        rel = str(p.resolve().relative_to(top))
+    except ValueError:
+        rel = str(p)
     fn = ""
-    prev = ""
+    open_pipe = False
     for n, line in enumerate(p.read_text().split("\n"), 1):
-        before, prev = prev, line.rstrip()
+        stripped = line.strip()
+        carry = open_pipe
         m = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)\(\)\s*\{", line)
         if m:
             fn = m.group(1)
         elif line.startswith("}"):
             fn = ""
-        if line.lstrip().startswith("#"):
+        if not stripped or stripped.startswith("#"):
             continue
-        if re.search(r"\$\([^()]*\)\"?\s*(==|!=|=)\s*\"?\$\(", line) and not any(f.endswith(a) and b in line for a, b, _ in TWO_SUBS_OK):
+        open_pipe = bool(re.search(r"(?<![|\\])\|&?$", re.sub(r"\\$", "", line.rstrip()).rstrip()))
+        if re.search(r"\$\([^()]*\)\"?\s*(==|!=|=)\s*\"?\$\(", line) and not allowed(TWO_SUBS_OK, rel, stripped):
             flag(f, n, fn, "two command substitutions compared: two failed reads are two empty strings and compare equal",
                  "read each into a variable under `|| fail`, then compare the variables (rd and sha_set in s3-weather.sh, same_read in s2-lib.sh)")
         if re.search(r"(sha|hash|digest)\w*\(\)", line) and re.search(r"\|\|\s*(true|:|echo)\b", line):
             flag(f, n, fn, "a hash read that ends in `|| true`: a failed read becomes an empty hash", "let the failure through (hex64 in s2-lib.sh rejects an empty answer)")
         if fn in ("preflight_checks", "cmd_preflight") and re.search(r"\b(oldsh|newsh)\b", line) and "rd " not in line:
             flag(f, n, fn, "a preflight check reads a box without rd: its failure or empty answer can pass", "rd old|new COMMAND, then block when it fails")
-        if re.search(r"\|\s*head\b[^()]*\)\s*\|\|", line) or re.search(r"\|\s*grep\s+-\w*m\s*\d[^()]*\)\s*\|\|", line):
-            flag(f, n, fn, "a pipe cut short by head or grep -m inside a read that falls back with `||`: under pipefail the cut pipe reads as a failed read, so a long answer passes as an empty one",
-                 "read the whole answer into a variable first, then grep it (push_log_errors in s1-mnemonic.sh)")
-        if QUIET_PIPE.search(line) or (QUIET_START.search(line) and re.search(r"(?<!\|)\|$", before)):
+        kinds = {early_reader(st) for k, st in enumerate(PIPE.split(line)) if k or carry}
+        if "q" in kinds:
             flag(f, n, fn, "a pipe into a quiet grep: grep -q exits at the first match, the writer then dies on the closed pipe, and under pipefail (here or on the remote side) the pipeline reports failure for a match",
                  "read the output into a variable first and test it with a here-string (`grep -q ... <<<\"$var\"`), count with `grep -c ... || true` and compare the number, or drop the q and send the output away (`grep ... >/dev/null`), which reads the whole pipe and keeps the pipeline's failure")
+        elif "m" in kinds and not allowed(EARLY_OK, rel, stripped):
+            flag(f, n, fn, "a pipe into a reader that stops early (head, grep -m or -l, sed with q, awk with exit): the writer dies on the closed pipe and under pipefail (here or on the remote side) the pipeline reports failure for a good answer",
+                 "use a reader that drains: `sed -n '1,Np'`, `awk 'NR<=N'`, awk setting a flag in place of exit, or read the whole answer into a variable first; a writer that never ends goes on EARLY_OK with that reason")
         if f.endswith("s1-mnemonic.sh") and re.search(r"\$\{\w+:-0\}", line):
             flag(f, n, fn, "a missing statistic defaults to zero", "rsync_stats, which fails on a missing line")
 for b in bad:

@@ -359,7 +359,7 @@ proof() { # proof <dir>: the evidence files, names, hashes and exit codes only
     echo '# active (robinx*|mnemonic*|monitoring):'
     systemctl list-units 'robinx*' 'mnemonic*' 'cloudflared*' 'prometheus*' 'alertmanager*' 'node_exporter*' 'postgres_exporter*' --all --state=active --no-legend
     echo '# listening:'; sudo ss -lnt" >"$p/enabled.txt"
-  new "echo '# ffmpeg:'; ffmpeg -version | head -1; ffmpeg -hide_banner -encoders 2>/dev/null | grep libx264
+  new "echo '# ffmpeg:'; ffmpeg -version | sed -n 1p; ffmpeg -hide_banner -encoders 2>/dev/null | grep libx264
     for b in /opt/robinx/releases/robinx-$RELEASE_SHA/robinx /usr/local/bin/wallet-indexer /usr/bin/cloudflared /opt/prometheus/prometheus /opt/prometheus/promtool /opt/alertmanager/alertmanager /opt/node_exporter/node_exporter /opt/postgres_exporter/postgres_exporter; do
       case \$b in *wallet-indexer) a=--help ;; *cloudflared) a=--version ;; *robinx) a=--help ;; *) a=--version ;; esac
       out=\$(sudo unshare -n setpriv --reuid=nobody --regid=nogroup --clear-groups timeout 10 \$b \$a 2>&1); rc=\$?

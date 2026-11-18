@@ -69,7 +69,7 @@ agent_up() {
   AGENT_SOCK=$SSH_AUTH_SOCK
   AGENT_PID=$SSH_AGENT_PID
   ssh-add "$SSH_KEY" </dev/null >/dev/null 2>&1 || die "ssh-add $SSH_KEY failed (needs a key without passphrase)"
-  HKLINE=$(ssh-keygen -F "$NEWIP" -f "$HOME/.ssh/known_hosts" 2>/dev/null | awk '$2 == "ssh-ed25519" {print $2, $3; exit}')
+  HKLINE=$(ssh-keygen -F "$NEWIP" -f "$HOME/.ssh/known_hosts" 2>/dev/null | awk '$2 == "ssh-ed25519" !f {print $2, $3; f = 1}')
   [[ -n $HKLINE ]] || die "no ed25519 host key for $NEWIP in ~/.ssh/known_hosts; ssh $NEW once first"
 }
 cleanup() {
@@ -309,8 +309,8 @@ for p in "${pairs[@]}"; do
   fi
   extras=$(printf '%s\n' "$extra_list" | grep -c . || true)
   printf '  %-62s files=%s missing_or_different=%s extra_on_new=%s\n' "$dst" "$nold" "$nmiss" "$extras"
-  if [ "$nmiss" -ne 0 ]; then printf '%s\n' "$miss" | head -3 | cut -f1-3 | sed 's/^/    old has: /'; bad=1; fi
-  if [ "$extras" -ne 0 ]; then printf '%s\n' "$extra_list" | head -3 | sed 's/^/    only on new: /'; echo "    (sync deletes it; or allow it with S3_EXTRA_OK)"; bad=1; fi
+  if [ "$nmiss" -ne 0 ]; then printf '%s\n' "$miss" | sed -n '1,3p' | cut -f1-3 | sed 's/^/    old has: /'; bad=1; fi
+  if [ "$extras" -ne 0 ]; then printf '%s\n' "$extra_list" | sed -n '1,3p' | sed 's/^/    only on new: /'; echo "    (sync deletes it; or allow it with S3_EXTRA_OK)"; bad=1; fi
 done
 newdirs=$("${SSHN[@]}" "ubuntu@$NEWIP" 'for d in /srv/w20/behind*/; do [ -d "$d" ] && echo "$d"; done; true' </dev/null) || { echo "  FAIL cannot list /srv/w20/behind*/ on the new box (no answer)"; bad=1; newdirs=; }
 for d in $newdirs; do

@@ -131,7 +131,7 @@ daemon_domain() { echo "gui/$(id -u)/$DAEMON_LABEL"; }
 
 daemon_print() { launchctl print "$(daemon_domain)" 2>/dev/null; }
 
-daemon_pid() { awk '$1 == "pid" && $2 == "=" {print $3; exit}'; }
+daemon_pid() { awk '$1 == "pid" && $2 == "=" !d {print $3; d = 1}'; }
 
 daemon_config() { awk '/^[ \t]*arguments = \{/ {a=1; next} a && /^[ \t]*\}/ {a=0} a {n++; if (p) {print $1; exit} p = ($1 == "--config")}'; }
 
@@ -214,7 +214,7 @@ check() {
 }
 
 new_hostkey() {
-  ssh-keygen -F "$NEW_ADDR" -f "$HOME/.ssh/known_hosts" | grep -v '^#' | grep ssh-ed25519 | head -1
+  ssh-keygen -F "$NEW_ADDR" -f "$HOME/.ssh/known_hosts" | grep -v '^#' | grep ssh-ed25519 | sed -n 1p
 }
 
 rsync_run() {
@@ -353,7 +353,7 @@ new_static() {
     echo 'server.toml present, data_dir and quic_addr as expected'"
   check cloudflared new "
     sudo -n test -s /etc/cloudflared/mnemonic.yml && sudo -n test -s /etc/cloudflared/mnemonic-share.json || { echo 'config or credentials missing'; exit 1; }
-    /usr/local/bin/cloudflared --version | head -1"
+    /usr/local/bin/cloudflared --version | sed -n 1p"
   check credentials-match creds_match
   check udp-8741 sg_udp
 }
@@ -551,7 +551,7 @@ sync_back_dry() {
   rsync_run reverse dry "$out" || { cat "$out"; rm -f "$out"; die "sync-back dry run failed"; }
   echo "would copy back from $NEW_HOST:$STORE/ over $OLD_ADDR:$STORE/ (rsync -aH --delete-delay, nothing written):"
   total=$(grep -cE '^([<>ch.][a-zA-Z.+?]{10}|\*deleting) ' "$out" || true)
-  { grep -E '^([<>ch.][a-zA-Z.+?]{10}|\*deleting) ' "$out" || true; } | head -n "$LIST_MAX" | sed 's/^/  /' || true
+  { grep -E '^([<>ch.][a-zA-Z.+?]{10}|\*deleting) ' "$out" || true; } | awk -v m="$LIST_MAX" 'NR <= m' | sed 's/^/  /' || true
   ((total <= LIST_MAX)) || echo "  ... $((total - LIST_MAX)) more (S1_LIST_MAX=$LIST_MAX)"
   rsync_stats "$out" || { rm -f "$out"; die "sync-back dry run: rsync printed no usable statistics"; }
   n=$ST_BYTES

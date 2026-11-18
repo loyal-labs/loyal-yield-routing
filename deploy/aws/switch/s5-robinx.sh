@@ -291,7 +291,7 @@ c_units_cover() {
     n=$((n + 1))
     boot='(disabled|masked)'
     [[ " $oneshots " != *" $u "* ]] || boot='(static|disabled|masked)'
-    line=$(grep "^$u " <<<"$states" | head -1)
+    line=$(grep "^$u " <<<"$states" | sed -n 1p)
     if [[ $u == robinx-backup-full.timer || $u == robinx-backup@full.service ]] && [[ $line == "$u not-found "* ]]; then
       park+="$u (not on robinx-main until backup.sh robinx-main at runbook step 1.7) "
     elif [[ " $stops " == *" $u "* && " $svcs " != *" $u "* ]] && grep -qxE "$u (not-found inactive ?|loaded (inactive|failed) (static|disabled|masked))" <<<"$line"; then
