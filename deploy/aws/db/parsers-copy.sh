@@ -15,7 +15,7 @@ upstream() {
   conn=$(pg "$1" -c "select subconninfo from pg_subscription where subname = '$(sub "$1")'")
   [[ -n $conn ]] || { echo "no subscription $(sub "$1") on the target" >&2; return 1; }
   shift
-  sudo -n -u postgres psql "$conn" -XAtq -v ON_ERROR_STOP=1 "$@"
+  sudo -n -u postgres /usr/lib/postgresql/18/bin/psql "$conn" -XAtq -v ON_ERROR_STOP=1 "$@"
 }
 
 upstream_slots() {
@@ -51,7 +51,7 @@ abandon() {
   done
   echo "upstream slots left (the two feeding the old box stay):"
   if [[ -n $conn ]]; then
-    sudo -n -u postgres psql "$conn" -XAtq -F ' ' -c "select slot_name, active from pg_replication_slots where slot_type = 'logical' order by slot_name" | sed 's/^/  /'
+    sudo -n -u postgres /usr/lib/postgresql/18/bin/psql "$conn" -XAtq -F ' ' -c "select slot_name, active from pg_replication_slots where slot_type = 'logical' order by slot_name" | sed 's/^/  /'
   else
     echo "  (no subscription was left to read the upstream through)"
   fi
