@@ -1463,12 +1463,13 @@ check_tables() {
       # The source keeps taking ids until the fence; switch's setval copies the values, so before it
       # only a sequence missing on one side, or a target ahead of the source, is a fault.
       local sseq dseq
-      sseq=$(q "$FROM" "$db" "$SEQ_ROWS" | cut -d'|' -f1,2) dseq=$(q "$TO" "$db" "$SEQ_ROWS" | cut -d'|' -f1,2)
+      sseq=$(q "$FROM" "$db" "$SEQ_ROWS" | cut -d'|' -f1,2,5) dseq=$(q "$TO" "$db" "$SEQ_ROWS" | cut -d'|' -f1,2)
       compare_rows "$db sequence" "$(cut -d'|' -f1 <<<"$sseq")" "$(cut -d'|' -f1 <<<"$dseq")"
-      while IFS='|' read -r name a b; do
-        [[ $a =~ ^-?[0-9]+$ && $b =~ ^-?[0-9]+$ ]] && ((b > a)) && diff_row "$db sequence $name: $TO next $b is ahead of $FROM next $a"
+      # A descending sequence (negative increment) is ahead when its next value is lower.
+      while IFS='|' read -r name a inc b; do
+        [[ $a =~ ^-?[0-9]+$ && $b =~ ^-?[0-9]+$ && $inc =~ ^-?[0-9]+$ ]] && (((b - a) * inc > 0)) && diff_row "$db sequence $name: $TO next $b is ahead of $FROM next $a"
       done < <(join -t'|' <(sort -t'|' -k1,1 <<<"$sseq") <(sort -t'|' -k1,1 <<<"$dseq"))
-      echo "preflight: $db: $(join -t'|' <(sort -t'|' -k1,1 <<<"$sseq") <(sort -t'|' -k1,1 <<<"$dseq") | awk -F'|' '$2 != $3 { n++ } END { print n + 0 }') sequence(s) behind the source, which switch's setval closes"
+      echo "preflight: $db: $(join -t'|' <(sort -t'|' -k1,1 <<<"$sseq") <(sort -t'|' -k1,1 <<<"$dseq") | awk -F'|' '$2 != $4 { n++ } END { print n + 0 }') sequence(s) behind the source, which switch's setval closes"
     else
       compare_rows "$db sequence" "$(q "$FROM" "$db" "$SEQ_ROWS" | cut -d'|' -f1,2)" "$(q "$TO" "$db" "$SEQ_ROWS" | cut -d'|' -f1,2)"
     fi
