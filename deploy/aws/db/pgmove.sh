@@ -151,9 +151,10 @@ q() {
   err=$(mktemp)
   if printf '%s\n' "$text" | sql "$side" ro "$db" "$extra" 2>"$err"; then rm -f "$err"; return 0; else rc=$?; fi
   cat "$err" >&2
-  # A dry run reads databases and objects that do not exist yet; only that error means absent. A
-  # refused connection, a timeout or a syntax error is a failure in a dry run too.
-  if ((DRY == 0)) || ! grep -qE '(database|relation|role|schema|function|column) .* does not exist' "$err"; then
+  # A dry run reads databases, tables, roles and schemas an earlier step would create; only that
+  # error means absent. A missing column or function is a typo, and a refused connection, a timeout
+  # or a syntax error is a failure in a dry run too.
+  if ((DRY == 0)) || ! grep -qE '(database|relation|role|schema) "[^"]*" does not exist' "$err"; then
     echo "$side $db exit $rc: $(head -c 200 "$err" | tr '\n' ' ')" >>"$QFAIL"
   fi
   rm -f "$err"
@@ -1202,8 +1203,8 @@ from t order by 1"
 at_least() { [[ $1 == "$2" ]] || { [[ $1 =~ ^-?[0-9]+$ && $2 =~ ^-?[0-9]+$ ]] && (($2 >= $1)); }; }
 
 slot_seen() {
-  local deadline=$((SECONDS + 60))
-  until [[ $(q src "$2" "select coalesce(bool_and(confirmed_flush_lsn >= '$3'), false) from pg_replication_slots where slot_name = '$1'") == t ]]; do
+  local deadline=$((SECONDS + 60)) v
+  while v=$(q src "$2" "select coalesce(bool_and(confirmed_flush_lsn >= '$3'), false) from pg_replication_slots where slot_name = '$1'") || return 1; [[ $v != t ]]; do
     ((SECONDS < deadline)) || return 1
     sleep 1
   done
