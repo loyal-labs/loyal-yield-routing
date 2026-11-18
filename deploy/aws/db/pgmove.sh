@@ -1198,20 +1198,53 @@ select format('%I.%I', nspname, relname),
   case when sync is not null or pk is null then '-' else coalesce((xpath('/table/row/v/text()', query_to_xml(format('select %I::text as v from %I.%I order by %I desc limit 1', pk, nspname, relname, pk), false, false, '')))[1]::text, '-') end
 from t order by 1"
 
+# at_least <source value> <target value>: equal, or both integers with the target not below.
+at_least() { [[ $1 == "$2" ]] || { [[ $1 =~ ^-?[0-9]+$ && $2 =~ ^-?[0-9]+$ ]] && (($2 >= $1)); }; }
+
+slot_seen() {
+  local deadline=$((SECONDS + 60))
+  until [[ $(q src "$2" "select coalesce(bool_and(confirmed_flush_lsn >= '$3'), false) from pg_replication_slots where slot_name = '$1'") == t ]]; do
+    ((SECONDS < deadline)) || return 1
+    sleep 1
+  done
+}
+
 check_tables() {
-  local spec db shape start rows
+  local spec db shape start rows name
   for spec in "${DATABASES[@]}"; do
     db=$(db_of "$spec") shape=$(shape_of "$spec") start=$diffs
-    rows=$(join -t'|' -a1 -a2 -e- -o 0,1.2,2.2,1.3,2.3 \
-      <(q "$FROM" "$db" "$VERIFY_TABLES" | sort -t'|' -k1,1) <(q "$TO" "$db" "$VERIFY_TABLES" | sort -t'|' -k1,1))
+    local live=0 srows lsn
+    # Before the fence the source keeps writing. preflight reads the source, waits for the slot to
+    # confirm an LSN past that read, then reads the target: the target must hold at least what the
+    # source showed. Anything else compares exactly.
+    [[ $CMD == preflight && $shape != upstream=* && $FROM == src ]] && live=1
+    srows=$(q "$FROM" "$db" "$VERIFY_TABLES" | sort -t'|' -k1,1)
+    if ((live)); then
+      lsn=$(q src "$db" "select pg_current_wal_lsn()")
+      slot_seen "$(sub_name fwd "$db")" "$db" "$lsn" || diff_row "$db: slot $(sub_name fwd "$db") did not confirm $lsn in 60 s, so the target read below may be behind"
+    fi
+    rows=$(join -t'|' -a1 -a2 -e- -o 0,1.2,2.2,1.3,2.3 <(grep . <<<"$srows" || true) <(q "$TO" "$db" "$VERIFY_TABLES" | sort -t'|' -k1,1))
     while IFS='|' read -r table a b pa pb; do
       [[ -n $table ]] || continue
       if is_hypertable "$table"; then continue; fi
+      if ((live)) && [[ $b != syncing:* && $a != - && $b != - ]] && at_least "$pa" "$pb" && { [[ $a == "~"* || $b == "~"* ]] || at_least "$a" "$b"; }; then continue; fi
       if [[ $b == syncing:* || $a == - || $b == - || $pa != "$pb" ]] || { [[ $a != "~"* && $b != "~"* && $a != "$b" ]]; }; then
         diff_row "$db $table: $FROM rows $a max key $pa, $TO rows $b max key $pb"
       fi
     done <<<"$rows"
-    compare_rows "$db sequence" "$(q "$FROM" "$db" "$SEQ_ROWS")" "$(q "$TO" "$db" "$SEQ_ROWS")"
+    if [[ $CMD == preflight ]]; then
+      # The source keeps taking ids until the fence; switch's setval copies the values, so before it
+      # only a sequence missing on one side, or a target ahead of the source, is a fault.
+      local sseq dseq
+      sseq=$(q "$FROM" "$db" "$SEQ_ROWS") dseq=$(q "$TO" "$db" "$SEQ_ROWS")
+      compare_rows "$db sequence" "$(cut -d'|' -f1 <<<"$sseq")" "$(cut -d'|' -f1 <<<"$dseq")"
+      while IFS='|' read -r name a b; do
+        [[ $a =~ ^[0-9]+$ && $b =~ ^[0-9]+$ ]] && ((b > a)) && diff_row "$db sequence $name: $TO at $b is ahead of $FROM at $a"
+      done < <(join -t'|' <(sort -t'|' -k1,1 <<<"$sseq") <(sort -t'|' -k1,1 <<<"$dseq"))
+      echo "preflight: $db: $(join -t'|' <(sort -t'|' -k1,1 <<<"$sseq") <(sort -t'|' -k1,1 <<<"$dseq") | awk -F'|' '$2 != $3' | grep -c . || true) sequence(s) behind the source, which switch's setval closes"
+    else
+      compare_rows "$db sequence" "$(q "$FROM" "$db" "$SEQ_ROWS")" "$(q "$TO" "$db" "$SEQ_ROWS")"
+    fi
     echo "verify: $db $(grep -c . <<<"$rows") tables and the sequences: $((diffs - start)) DIFF"
   done
   local table qh a b
@@ -1679,7 +1712,9 @@ cmd_preflight() {
   for spec in "${DATABASES[@]}"; do
     db=$(db_of "$spec") shape=$(shape_of "$spec") sub=$(sub_name fwd "$db")
     IFS='|' read -r counts total <<<"$(ready_count dst "$db" "$sub")"
-    if [[ -z $total || $total == 0 ]]; then diff_row "$db: the target has no subscription $sub with tables"
+    if [[ -z $total || $total == 0 ]] && [[ $(q src "$db" "select count(*) from pg_class c join pg_namespace n on n.oid = c.relnamespace where c.relkind = 'r' and $NS") == 0 ]]; then
+      echo "preflight: $db: the source has no tables, so $sub has none to copy"
+    elif [[ -z $total || $total == 0 ]]; then diff_row "$db: the target has no subscription $sub with tables"
     elif [[ $counts != 0 ]]; then diff_row "$db: $counts of $total tables not in state r (the copy is still running)"
     else echo "preflight: $db: all $total tables in state r"; fi
     if [[ $shape == upstream=* ]]; then
