@@ -1214,31 +1214,91 @@ cmd_grants() {
   finish_check
 }
 
-# schema_diff <src.sql> <dst.sql> [add.sql]: with add.sql, writes the DDL that brings dst up to src
-# and prints "A <object>" per object it adds and "B <object>: <why>" per difference it cannot add.
+# schema_diff <src.sql> <dst.sql>: prints each object whose definition differs.
+# schema_diff <src.sql> <dst.sql> <add.sql>: writes the DDL that brings dst up to src and prints
+# "A <object>" per object it adds, "P <table>" per new partition of a table dst has (sync_partitions
+# makes those) and "B <object>: <why>" per difference it cannot add.
+# schema_diff <src.sql> <dst.sql> --left: "B <object>: <why>" per difference left, P as above.
 schema_diff() {
   python3 -I - "$@" <<'PY'
 import re, sys
-raw = {}
-def blocks(path):
-    out, key, body = {}, "preamble", []
-    def flush():
-        text = "\n".join(l for l in body if l.strip() and not l.startswith("--"))
-        if text:
-            out.setdefault(key, []).append(text)
-            raw.setdefault(path, {}).setdefault(key, []).append(text)
-    for line in open(path):
-        line = line.rstrip("\n")
-        if line.startswith(("\\restrict", "\\unrestrict", "SET ", "SELECT pg_catalog.set_config")):
-            continue
-        m = re.match(r"-- Name: (.*); Type: (.*); Schema: (.*); Owner: .*", line)
+# The dump is split into statements as psql reads it (quotes, dollar quotes, comments and BEGIN
+# ATOMIC bodies), so only what lies between statements is dropped: blank lines, comment headers,
+# psql's \restrict lines and the session SETs, which differ by pg_dump version.
+TOK = re.compile(r"""[ \t\r\f\n]+|--[^\n]*|/\*|[Ee]'(?:[^'\\]|\\.|'')*'|'(?:[^']|'')*'|"(?:[^"]|"")*"|\$(?:[A-Za-z_\x80-￿][\w\x80-￿]*)?\$|[A-Za-z_\x80-￿][\w$\x80-￿]*|.""", re.S)
+GAP = re.compile(r"[ \t\r\f\n]+")
+def statements(text):
+    pos, n = 0, len(text)
+    while pos < n:
+        m = GAP.match(text, pos)
         if m:
-            flush()
-            key, body = f"{m.group(2)} {m.group(3)}.{m.group(1)}", []
+            pos = m.end()
+            continue
+        if text.startswith(("--", "\\"), pos):
+            end = text.find("\n", pos)
+            end = n if end < 0 else end
+            yield "line", text[pos:end]
+            pos = end
+            continue
+        start, words, paren, depth = pos, [], 0, 0
+        while pos < n:
+            t = TOK.match(text, pos).group(0)
+            pos += len(t)
+            c = t[0]
+            if t == "/*":
+                level = 1
+                while level and pos < n:
+                    if text.startswith("/*", pos): level, pos = level + 1, pos + 2
+                    elif text.startswith("*/", pos): level, pos = level - 1, pos + 2
+                    else: pos += 1
+            elif c == "$" and len(t) > 1:
+                end = text.find(t, pos)
+                pos = n if end < 0 else end + len(t)
+            elif (c.isalpha() or c == "_") and not (len(t) > 1 and t[1] == "'"):
+                w = t.lower()
+                words.append(w)
+                fn = words[0] == "create" and (words[1:2] in (["function"], ["procedure"]) or (words[1:3] == ["or", "replace"] and words[3:4] in (["function"], ["procedure"])))
+                if fn and paren == 0:
+                    if w == "begin" or (w == "case" and depth): depth += 1
+                    elif w == "end" and depth: depth -= 1
+            elif t == "(":
+                paren += 1
+            elif t == ")" and paren:
+                paren -= 1
+            elif t == ";" and paren == 0 and depth == 0:
+                break
+        yield "sql", text[start:pos]
+HDR = re.compile(r"-- Name: (.*); Type: (.*); Schema: (.*); Owner: .*")
+SESSION = re.compile(r"SET (\w+) = (.*);", re.S)
+# pg_dump sets these between entries, before the entry that needs a new value, and only on a change.
+WHERE = {"default_table_access_method": ("TABLE", "MATERIALIZED VIEW"), "default_tablespace": ("TABLE", "MATERIALIZED VIEW", "INDEX", "CONSTRAINT")}
+DEFAULT = {"default_table_access_method": "heap", "default_tablespace": "''"}
+info, ddl = {}, {}
+def blocks(path):
+    out, own = {}, {}
+    key, kind, body, at, state = "preamble", "", [], dict(DEFAULT), dict(DEFAULT)
+    def flush():
+        if not body:
+            return
+        names = [n for n, kinds in WHERE.items() if kind in kinds]
+        out.setdefault(key, []).append("\n".join([f"SET {n} = {at[n]};" for n in names if at[n] != DEFAULT[n]] + body))
+        own.setdefault(key, []).append("\n".join([f"SET LOCAL {n} = {at[n]};" for n in names] + body))
+    for what, text in statements(open(path).read()):
+        if what == "line":
+            m = HDR.fullmatch(text)
+            if m:
+                flush()
+                key, kind, body, at = f"{m.group(2)} {m.group(3)}.{m.group(1)}", m.group(2), [], dict(state)
+                info[key] = (m.group(2), m.group(3), m.group(1))
+        elif (m := SESSION.fullmatch(text)) or text.startswith("SELECT pg_catalog.set_config("):
+            if m and m.group(1) in state:
+                state[m.group(1)] = m.group(2)
         else:
-            body.append(line)
+            body.append(text)
     flush()
-    return {k: "\n".join(sorted(v)) for k, v in out.items() if not k.startswith(("EXTENSION ", "COMMENT -.EXTENSION "))}
+    skip = ("EXTENSION ", "COMMENT -.EXTENSION ")
+    ddl[path] = {k: v for k, v in own.items() if not k.startswith(skip)}
+    return {k: "\n".join(sorted(v)) for k, v in out.items() if not k.startswith(skip)}
 a, b = blocks(sys.argv[1]), blocks(sys.argv[2])
 # Only whitespace outside literals, quoted names and dollar-quoted bodies is ignored: parentheses carry precedence.
 lit = re.compile(r"'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\"|\$([A-Za-z_0-9]*)\$.*?\$\1\$", re.S)
@@ -1250,6 +1310,51 @@ def bare(t):
     return "".join(out) + re.sub(r"\s", "", t[pos:])
 def same(x, y):
     return x == y or (x is not None and y is not None and bare(x) == bare(y))
+QI = r'(?:"(?:[^"]|"")*"|[^\s."(),;]+)'
+QN = rf"{QI}\.{QI}"
+def kind_of(k):
+    return info.get(k, ("", "", ""))[0]
+def stmt(t):
+    return re.sub(r"\A(?:SET [^\n]*\n)+", "", t)
+def tables(d):
+    names = {}
+    for k in d:
+        m = kind_of(k) == "TABLE" and re.match(rf"CREATE (?:UNLOGGED )?TABLE ({QN}) ", stmt(d[k]))
+        if m:
+            names[m.group(1)] = k
+    return names
+ON_TABLE = ("CONSTRAINT", "FK CONSTRAINT", "CHECK CONSTRAINT", "TRIGGER", "DEFAULT", "POLICY", "ROW SECURITY")
+# A new partition of a table dst has, with what hangs off it, is sync_partitions' to make: its
+# indexes come from the parent at ATTACH, so replaying the source's would collide with them.
+def new_leaves():
+    src, dst, parent = tables(a), tables(b), {}
+    for k in a:
+        m = kind_of(k) == "TABLE ATTACH" and re.match(rf"ALTER TABLE ONLY ({QN}) ATTACH PARTITION ({QN}) ", a[k])
+        if m:
+            parent[m.group(2)] = m.group(1)
+    leaves, grew = set(), True
+    while grew:
+        grew = False
+        for child, up in parent.items():
+            if child not in leaves and child in src and child not in dst and (up in dst or up in leaves):
+                leaves.add(child)
+                grew = True
+    raw = {info[src[c]][1:] for c in leaves}
+    keys, index = set(), set()
+    for k in a:
+        t, s, name = info.get(k, ("", "", ""))
+        m = t == "INDEX" and re.match(rf"CREATE (?:UNIQUE )?INDEX {QI} ON (?:ONLY )?({QN}) ", stmt(a[k]))
+        if m and m.group(1) in leaves:
+            keys.add(k)
+            index.add((s, name))
+        elif t in ("TABLE", "TABLE ATTACH") and (s, name) in raw:
+            keys.add(k)
+        elif any(s == rs and (t in ON_TABLE and name.startswith(rn + " ") or t in ("ACL", "COMMENT") and (name == "TABLE " + rn or name.startswith("COLUMN " + rn + "."))) for rs, rn in raw):
+            keys.add(k)
+            if t == "CONSTRAINT":
+                index.add((s, name.split(" ", 1)[1]))
+    keys |= {k for k in a if kind_of(k) == "INDEX ATTACH" and info[k][1:] in index}
+    return sorted(leaves), keys
 def table_parts(t):
     lines = t.split("\n")
     m = re.match(r"CREATE (?:UNLOGGED )?TABLE (\S+) \($", lines[0])
@@ -1267,14 +1372,25 @@ def table_adds(x, y):
     if p[1][:len(q[1])] != q[1] or any(c not in p[2] for c in q[2]):
         return None
     return p[0], [f"ALTER TABLE {p[0]} ADD COLUMN {c};" for c in cols] + [f"ALTER TABLE {p[0]} ADD {c};" for c in cons]
+def target_only(k):
+    return f"B {k}: only on the target; the catch-up never drops, so drop {k} there by hand (a table only while it holds no rows) and rerun"
 if len(sys.argv) > 3:
-    sql, src = [], raw.get(sys.argv[1], {})
+    leaves, theirs = new_leaves()
+    for leaf in leaves:
+        print(f"P {leaf}")
+    if sys.argv[3] == "--left":
+        for k in sorted(a.keys() | b.keys()):
+            if k in theirs or same(a.get(k), b.get(k)):
+                continue
+            print(target_only(k) if k not in a else f"B {k}: still differs from the source after the catch-up (pgmove schema shows it)")
+        sys.exit(0)
+    sql, src = [], ddl[sys.argv[1]]
     parent = {}
     for k in a:
-        if k.startswith("TABLE ATTACH "):
+        if kind_of(k) == "TABLE ATTACH":
             m = re.match(r"ALTER TABLE ONLY (\S+) ATTACH PARTITION", a[k])
-            parent[k[len("TABLE ATTACH "):]] = m and m.group(1)
-    for k in (k for k in src if k in a):
+            parent[info[k][1] + "." + info[k][2]] = m and m.group(1)
+    for k in (k for k in src if k in a and k not in theirs):
         x, y = a[k], b.get(k)
         acl = k.startswith(("ACL ", "DEFAULT ACL ")) and len(src[k]) == 1
         if k == "preamble" or same(x, y) or (acl and y is not None and set(x.split("\n")) == set(y.split("\n"))):
@@ -1284,7 +1400,7 @@ if len(sys.argv) > 3:
             print(f"A {k}")
         elif k.startswith("TABLE ") and (got := table_adds(x, y)):
             name = k[len("TABLE "):]
-            # ADD COLUMN and ADD CONSTRAINT on the parent reach its partitions.
+            # ADD COLUMN and ADD CONSTRAINT on the parent reach its partitions; what is left the check after the adds finds.
             if name in parent and parent[name] and not same(a.get(f"TABLE {parent[name]}"), b.get(f"TABLE {parent[name]}")):
                 continue
             sql += got[1]
@@ -1296,13 +1412,13 @@ if len(sys.argv) > 3:
             print(f"B {k}: differs from the source in a way init does not add (pgmove schema shows it)")
     for k in sorted(b.keys() - a.keys()):
         if k != "preamble":
-            print(f"B {k}: only on the target")
+            print(target_only(k))
     with open(sys.argv[3], "w") as f:
         f.write("\n".join(sql) + ("\n" if sql else ""))
     sys.exit(0)
 for k in sorted(a.keys() | b.keys()):
     x, y = a.get(k), b.get(k)
-    if x == y or (x is not None and y is not None and bare(x) == bare(y)):
+    if same(x, y):
         continue
     print(f"{k}: {'only on src' if y is None else 'only on dst' if x is None else 'definition differs'}")
     for side, t in (("<", x), (">", y)):
