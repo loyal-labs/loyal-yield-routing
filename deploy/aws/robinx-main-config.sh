@@ -4,7 +4,9 @@
 # migration), the wallet indexer, ffmpeg with libx264, the pinned monitoring binaries, every robinx unit with its
 # drop-ins, the helper scripts, the config trees, the sealed credentials re-sealed for this host, the two slices.
 # Enables, starts and activates nothing; runs daemon-reload only.
-# Run from the Mac: deploy/aws/robinx-main-config.sh [stage|proof <dir>]. Idempotent; a rerun prints 0 change(s).
+# Run from the Mac: deploy/aws/robinx-main-config.sh [stage|check|proof <dir>]. Idempotent; a rerun prints 0 change(s).
+# check is read-only: what a stage rerun would change, as "differs:" lines and "check: <n> difference(s)", then the
+# secrets count. Without BUILD it compares the two binaries by the release sha and presence instead of by content.
 # Contents cross one boundary: an old host's read or `systemd-creds decrypt` piped straight into robinx-main's writer
 # (deploy/aws/box-copy.py recv), which prints paths and rewrite counts, never contents. The old hosts are only read.
 # Env: BUILD (a tree holding bin/robinx-linux and bin/wallet-indexer built for arm64 at RELEASE_SHA, see below),
@@ -21,7 +23,7 @@ OLD=${OLD:-root@5.161.126.23}
 MNEMONIC_OLD=${MNEMONIC_OLD:-root@5.78.147.233}
 NEW=${NEW:-robinx-main}
 WEN=${WEN:-$HOME/loyal/wen}
-BUILD=${BUILD:?BUILD is the tree with bin/robinx-linux and bin/wallet-indexer for linux/arm64}
+BUILD=${BUILD:-}
 CLOUDFLARED_VERSION=2026.8.3
 CLOUDFLARED_SHA256=2c0d991ed6061e55d2e0148b794d86f594ddb473c1db43cf0647278b62e326ab # arm64 deb, fetched once from the release page
 
@@ -59,7 +61,7 @@ tool_pins() {
   done
 }
 
-preflight() {
+live_release() {
   [[ $(new uname -m) == aarch64 ]] || die "$NEW is not arm64"
   live=$(old 'readlink /opt/robinx/current' | sed -n 's|^/opt/robinx/releases/robinx-\([0-9a-f]\{40\}\)$|\1|p')
   [[ $live =~ ^[0-9a-f]{40}$ ]] || die "robinx-prod has no live release under /opt/robinx/current"
@@ -67,10 +69,19 @@ preflight() {
   [[ $RELEASE_SHA == "$live" ]] || die "RELEASE_SHA $RELEASE_SHA is not the live release $live"
   [[ $(old "cat /opt/robinx/releases/robinx-$RELEASE_SHA/REVISION") == "$RELEASE_SHA" ]] || die "live REVISION does not say $RELEASE_SHA"
   git -C "$WEN" cat-file -e "$RELEASE_SHA^{commit}" 2>/dev/null || git -C "$WEN" fetch -q origin
+}
+
+build_ok() {
+  [[ -n $BUILD ]] || die "BUILD is the tree with bin/robinx-linux and bin/wallet-indexer for linux/arm64"
   for b in robinx-linux wallet-indexer; do
     [[ $(file -b "$BUILD/bin/$b") == *"ARM aarch64"* ]] || die "$BUILD/bin/$b is not linux/arm64"
   done
   [[ $(strings -a "$BUILD/bin/robinx-linux" | grep -c "$RELEASE_SHA") -ge 1 ]] || die "bin/robinx-linux does not carry $RELEASE_SHA"
+}
+
+preflight() {
+  live_release
+  build_ok
   alerts_sha=$(git -C "$WEN" show "$RELEASE_SHA:deploy/monitoring/alerts.yml" | shasum -a 256 | cut -d' ' -f1)
   [[ $(old "sha256sum </opt/robinx/releases/robinx-$RELEASE_SHA/alerts.yml" | cut -d' ' -f1) == "$alerts_sha" ]] ||
     die "the live release's alerts.yml is not the commit's"
@@ -79,6 +90,10 @@ preflight() {
   slot_ref=$(git -C "$WEN" rev-parse --short origin/main)
   git -C "$WEN" show origin/main:deploy/systemd/robinx-slot | grep -q 'FREEZE_MARKER=/etc/pgmove/freeze' || die "wen main's robinx-slot has no freeze refusal"
   git -C "$WEN" show origin/main:deploy/systemd/sudoers-robinx | new "sudo visudo -cf /dev/stdin" >/dev/null || die "sudoers-robinx does not parse on $NEW"
+  addrs
+}
+
+addrs() {
   # shellcheck disable=SC2016 # expanded on robinx-main
   new_ip=$(new 't=$(curl -fsS -m 5 -X PUT -H "X-aws-ec2-metadata-token-ttl-seconds: 60" http://169.254.169.254/latest/api/token) && curl -fsS -m 5 -H "X-aws-ec2-metadata-token: $t" http://169.254.169.254/latest/meta-data/public-ipv4')
   mnem_ip=$(mnem "grep -o 'quic_addr *= *\"[0-9.]*:' /etc/mnemonic/server.toml" | grep -o '[0-9.]*[0-9]')
@@ -147,12 +162,11 @@ local_spec() { # local_spec <have file>
     "$(dir /opt/robinx/slots 0755 deploy:deploy)" "$(dir /opt/robinx/assets 0755 deploy:deploy)"
     "$(dir /opt/robinx/incoming 0755 deploy:deploy)" "$(dir /opt/robinx/deploy 0755 deploy:deploy)"
     "$(gen /opt/robinx/deploy.lock 0664 deploy:deploy '')"
-    "$(ent "$BUILD/bin/robinx-linux" "$rel/robinx" 0755 deploy:deploy)"
+    "$(dir /srv/robinx-data/recovery 0700 postgres:postgres)"
     "{\"k\":\"file\",\"dst\":\"$rel/alerts.yml\",\"mode\":\"0644\",\"own\":\"deploy:deploy\",\"data\":\"$(git -C "$WEN" show "$RELEASE_SHA:deploy/monitoring/alerts.yml" | b64)\"}"
     "$(gen "$rel/REVISION" 0664 deploy:deploy "$RELEASE_SHA
 ")"
     "$(link /opt/robinx/current "$rel" root:root)" "$(link /opt/robinx/slots/8080 "$rel" deploy:deploy)"
-    "$(ent "$BUILD/bin/wallet-indexer" /usr/local/bin/wallet-indexer 0755 root:root)"
     "{\"k\":\"file\",\"dst\":\"/usr/local/bin/robinx-slot\",\"mode\":\"0755\",\"own\":\"root:root\",\"data\":\"$(git -C "$WEN" show origin/main:deploy/systemd/robinx-slot | b64)\"}"
     "{\"k\":\"file\",\"dst\":\"/etc/sudoers.d/robinx\",\"mode\":\"0440\",\"own\":\"root:root\",\"data\":\"$(git -C "$WEN" show origin/main:deploy/systemd/sudoers-robinx | b64)\"}"
     "$(gen /etc/systemd/system/robinx.slice 0644 root:root '[Unit]
@@ -169,6 +183,8 @@ Description=mnemonic: capped so it cannot starve robinX
 CPUQuota=200%
 MemoryMax=8G
 ')")
+  [[ -z $BUILD ]] || e+=("$(ent "$BUILD/bin/robinx-linux" "$rel/robinx" 0755 deploy:deploy)"
+    "$(ent "$BUILD/bin/wallet-indexer" /usr/local/bin/wallet-indexer 0755 root:root)")
   local u
   for u in robinx@.service robinx-wallet-indexer.service postgresql@18-production.service postgresql@18-parsers.service postgresql@18-test.service; do
     e+=("$(dir "/etc/systemd/system/$u.d" 0755 root:root)"
@@ -199,9 +215,8 @@ stage_local() {
   recv '{}' < <(python3 -I -c "$(cat "$DIR/box-copy.py")" local "$(j64 <<<"$spec")")
 }
 
-stage_robinx() {
-  local spec params
-  spec=$(cat <<EOF
+robinx_spec() {
+  cat <<EOF
 {"skip": "\\\\.retired-",
  "entries": [
   {"k": "dir", "dst": "/etc/robinx", "mode": "0755", "own": "root:root"},
@@ -245,15 +260,14 @@ stage_robinx() {
    "ids": {"robinx-pg-verify-production": "pg-verify", "robinx-pg-verify-parsers": "pg-verify"}}
  ]}
 EOF
-)
-  params='{"args": {"old_pg": "robinx-postgres.service", "new_pg": "postgresql@18-production.service"},
- "rules": {"/etc/systemd/system/robinx@.service": ["sub:pg"]}}'
-  recv "$params" < <(old "$(py) send $(j64 <<<"$spec")")
 }
+ROBINX_PARAMS='{"args": {"old_pg": "robinx-postgres.service", "new_pg": "postgresql@18-production.service"},
+ "rules": {"/etc/systemd/system/robinx@.service": ["sub:pg"]}}'
 
-stage_mnemonic() {
-  local spec params
-  spec=$(cat <<EOF
+stage_robinx() { recv "$ROBINX_PARAMS" < <(old "$(py) send $(robinx_spec | j64)"); }
+
+mnemonic_spec() {
+  cat <<EOF
 {"entries": [
   {"k": "dir", "dst": "/etc/mnemonic", "mode": "0750", "own": "root:mnemonic"},
   {"src": "/etc/systemd/system/mnemonic.service"}, {"src": "/etc/systemd/system/cloudflared-mnemonic.service"},
@@ -262,12 +276,15 @@ stage_mnemonic() {
   {"src": "/etc/cloudflared/mnemonic-share.json"}
  ]}
 EOF
-)
-  params="{\"args\": {\"old_quic\": \"$mnem_ip:8741\", \"new_quic\": \"$new_ip:8741\",
+}
+
+mnemonic_params() {
+  echo "{\"args\": {\"old_quic\": \"$mnem_ip:8741\", \"new_quic\": \"$new_ip:8741\",
           \"old_cfg\": \"--config /etc/cloudflared/config.yml\", \"new_cfg\": \"--config /etc/cloudflared/mnemonic.yml\"},
  \"rules\": {\"/etc/mnemonic/server.toml\": [\"sub:quic\"], \"/etc/systemd/system/cloudflared-mnemonic.service\": [\"sub:cfg\"]}}"
-  recv "$params" < <(mnem "$(py) send $(j64 <<<"$spec")")
 }
+
+stage_mnemonic() { recv "$(mnemonic_params)" < <(mnem "$(py) send $(mnemonic_spec | j64)"); }
 
 stage() {
   preflight
@@ -310,11 +327,8 @@ host_diffs() { # host_diffs <dir>: host-diff.sh after staging, robinx-prod and t
     classify "$DIR/boxes/robinx-main.host-diff.tsv" "$p/host-diff-after-robinx-prod.txt" "$p/host-diff-after-mnemonic.txt"; } >"$p/classification.txt"
 }
 
-proof() { # proof <dir>: the evidence files, names, hashes and exit codes only
-  local p=$1 units u a b
-  mkdir -p "$p"
-  RELEASE_SHA=${RELEASE_SHA:-$(old 'readlink /opt/robinx/current' | sed -n 's|^/opt/robinx/releases/robinx-\([0-9a-f]\{40\}\)$|\1|p')}
-  # (b) secret names and sha256s, old against new
+secrets() { # secrets <dir>: secret names and sha256s, old against new, into <dir>/secrets-{old,new}.txt and secrets.txt
+  local p=$1 a b
   old "$(py) sums $(j64 <<<"$SUMS_ROBINX")" >"$p/secrets-old.txt"
   new "sudo $(py) sums $(j64 <<<"$SUMS_ROBINX")" >"$p/secrets-new.txt" || true
   mnem "$(py) sums $(j64 <<<"$SUMS_MNEMONIC")" >>"$p/secrets-old.txt"
@@ -324,6 +338,13 @@ proof() { # proof <dir>: the evidence files, names, hashes and exit codes only
   b=$(comm -12 <(LC_ALL=C sort "$p/secrets-old.txt") <(LC_ALL=C sort "$p/secrets-new.txt") | grep -v -E ' (MISSING|UNDECRYPTABLE)$' | wc -l | tr -d ' ')
   echo "$b of $a secret names present with matching sha256" >"$p/secrets.txt"
   comm -23 <(LC_ALL=C sort "$p/secrets-old.txt") <(LC_ALL=C sort "$p/secrets-new.txt") | cut -d' ' -f1 | sed 's/^/  not matching: /' >>"$p/secrets.txt"
+}
+
+proof() { # proof <dir>: the evidence files, names, hashes and exit codes only
+  local p=$1 units u
+  mkdir -p "$p"
+  RELEASE_SHA=${RELEASE_SHA:-$(old 'readlink /opt/robinx/current' | sed -n 's|^/opt/robinx/releases/robinx-\([0-9a-f]\{40\}\)$|\1|p')}
+  secrets "$p"
   # unit checks
   units=$(new "cd /etc/systemd/system && ls -d robinx*.service robinx*.timer robinx*.slice mnemonic*.service mnemonic.slice cloudflared*.service cloudflared-mnemonic.service prometheus.service alertmanager.service node_exporter.service postgres_exporter@.service 2>/dev/null | sort -u" |
     sed -E 's/^robinx@\.service$/robinx@8080.service/; s/^postgres_exporter@\.service$/postgres_exporter@production.service/')
@@ -349,8 +370,91 @@ proof() { # proof <dir>: the evidence files, names, hashes and exit codes only
   host_diffs "$p"
 }
 
+# One line per frame a sender emits, as recv would leave it: "file sha mode owner dst", "dir mode owner dst",
+# "link target owner dst". Credentials are left to secrets. Runs box-copy.py's own rewrite.
+MANIFEST='import hashlib, json, sys
+src = open(sys.argv[1]).read()
+exec(src[:src.index("\nmode = sys.argv")])
+params = json.loads(sys.argv[2])
+inp = sys.stdin.buffer
+while True:
+    line = inp.readline()
+    line or die("the sender stopped before its end frame")
+    h = json.loads(line)
+    if h["k"] == "end":
+        break
+    data = inp.read(h["size"])
+    if h["k"] == "dir":
+        print("dir", h["mode"], h["own"], h["dst"])
+    elif h["k"] == "link":
+        print("link", data.decode(), h["own"], h["dst"])
+    elif h["k"] == "file":
+        data, _ = rewrite(h["dst"], data, params.get("rules", {}).get(h["dst"], []), params.get("args", {}))
+        print("file", hashlib.sha256(data).hexdigest(), h["mode"], h["own"], h["dst"])'
+# The same lines for what robinx-main holds now, for "kind dst" lines on stdin.
+STATE='import grp, hashlib, os, pwd, stat, sys
+def own(st):
+    return pwd.getpwuid(st.st_uid).pw_name + ":" + grp.getgrgid(st.st_gid).gr_name
+for line in sys.stdin:
+    k, dst = line.split()
+    if k == "dir" and os.path.isdir(dst) and not os.path.islink(dst):
+        st = os.lstat(dst)
+        print("dir", "%04o" % stat.S_IMODE(st.st_mode), own(st), dst)
+    elif k == "link" and os.path.islink(dst):
+        print("link", os.readlink(dst), own(os.lstat(dst)), dst)
+    elif k == "file" and os.path.isfile(dst) and not os.path.islink(dst):
+        st = os.lstat(dst)
+        print("file", hashlib.sha256(open(dst, "rb").read()).hexdigest(), "%04o" % stat.S_IMODE(st.st_mode), own(st), dst)'
+
+manifest() { python3 -I -c "$MANIFEST" "$DIR/box-copy.py" "$1"; }
+
+prepare_check() { # what prepare would change, as "differs:" lines
+  local pins
+  pins=$(tool_pins)
+  # shellcheck disable=SC2016 # expanded on robinx-main
+  new "CF_VER=$CLOUDFLARED_VERSION PINS='$pins' bash -s" <<'REMOTE'
+{ dpkg-query -W ffmpeg >/dev/null 2>&1 && ffmpeg -hide_banner -encoders 2>/dev/null | grep -q libx264; } || echo "differs: ffmpeg with libx264"
+[ "$(dpkg-query -W -f '${Version}' cloudflared 2>/dev/null)" = "$CF_VER" ] || echo "differs: cloudflared $CF_VER"
+[ "$(readlink /usr/local/bin/cloudflared)" = /usr/bin/cloudflared ] || echo "differs: link /usr/local/bin/cloudflared"
+while read -r _ name ver _; do
+  [ -x "/opt/$name-$ver/$name" ] || echo "differs: tool $name $ver"
+  [ "$(readlink "/opt/$name")" = "/opt/$name-$ver" ] || echo "differs: link /opt/$name"
+done <<<"$PINS"
+for u in prometheus alertmanager node_exporter postgres_exporter cloudflared mnemonic deploy; do id "$u" >/dev/null 2>&1 || echo "differs: user $u"; done
+REMOTE
+}
+
+check() {
+  local want got n rel staged t
+  live_release
+  git -C "$WEN" fetch -q origin main
+  addrs
+  rel=/opt/robinx/releases/robinx-$RELEASE_SHA
+  want=$({ python3 -I -c "$(cat "$DIR/box-copy.py")" local "$(local_spec /dev/null | j64)" | manifest '{}'
+    old "$(py) send $(robinx_spec | j64)" | manifest "$ROBINX_PARAMS"
+    mnem "$(py) send $(mnemonic_spec | j64)" | manifest "$(mnemonic_params)"; } | LC_ALL=C sort -u)
+  got=$(awk '{ print $1, $NF }' <<<"$want" | new "sudo python3 -I -c \"\$(echo $(b64 <<<"$STATE") | base64 -d)\"" | LC_ALL=C sort -u)
+  t=$(mktemp -d)
+  { comm -23 <(echo "$want") <(echo "$got") | awk '{ print "differs: " $1 " " $NF }'
+    prepare_check
+    if [[ -z $BUILD ]]; then
+      new "sudo grep -c -a $RELEASE_SHA $rel/robinx >/dev/null" || echo "differs: $rel/robinx does not carry $RELEASE_SHA"
+      new "test -x /usr/local/bin/wallet-indexer" || echo "differs: /usr/local/bin/wallet-indexer missing"
+    fi; } >"$t/differs"
+  cat "$t/differs"
+  n=$(grep -c '^differs: ' "$t/differs" || true)
+  staged=$(new "cat /opt/robinx/current/REVISION 2>/dev/null" || true)
+  echo "release: robinx-main stages ${staged:-nothing}, robinx-prod runs $RELEASE_SHA$([[ -n $BUILD ]] || echo '; binaries by release sha and presence, BUILD unset')"
+  echo "check: $n difference(s)"
+  secrets "$t"
+  echo "secrets: $(head -1 "$t/secrets.txt")"
+  tail -n +2 "$t/secrets.txt"
+  [[ $n == 0 && $staged == "$RELEASE_SHA" ]] && ! grep -q 'not matching' "$t/secrets.txt"
+}
+
 case ${1:-stage} in
   stage) stage ;;
+  check) check ;;
   proof) proof "${2:?proof <dir>}" ;;
-  *) echo "usage: $0 [stage|proof <dir>]" >&2; exit 2 ;;
+  *) echo "usage: $0 [stage|check|proof <dir>]" >&2; exit 2 ;;
 esac
