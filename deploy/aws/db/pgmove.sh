@@ -646,7 +646,9 @@ ensure_extensions() {
   done < <(q src "$db" "select e.extname || '|' || e.extversion || '|' || n.nspname from pg_extension e join pg_namespace n on n.oid = e.extnamespace where e.extname <> 'plpgsql' order by 1")
 }
 
-USER_OBJECTS="select (select count(*) from pg_class c join pg_namespace n on n.oid = c.relnamespace where c.relkind in ('r','p','v','m','S') and $NS) + (select count(*) from pg_proc p join pg_namespace n on n.oid = p.pronamespace where $USER_NS and not exists (select 1 from pg_depend e where e.classid = 'pg_proc'::regclass and e.objid = p.oid and e.deptype = 'e'))"
+# Only what the restore would collide with: an extension's own views (pg_stat_statements, made just
+# before by ensure_extensions) are left out of the dump, so they are not counted.
+USER_OBJECTS="select (select count(*) from pg_class c join pg_namespace n on n.oid = c.relnamespace where c.relkind in ('r','p','v','m','S') and $NS and $NOT_EXT) + (select count(*) from pg_proc p join pg_namespace n on n.oid = p.pronamespace where $USER_NS and not exists (select 1 from pg_depend e where e.classid = 'pg_proc'::regclass and e.objid = p.oid and e.deptype = 'e'))"
 
 src_dump() {
   if via_forward; then
@@ -736,7 +738,7 @@ ensure_database_acl() {
   have=$(q dst "$db" "$DB_ACL_ROWS" | sort)
   [[ $want == "$have" ]] && return 0
   while IFS='|' read -r who priv opt; do [[ -z $who ]] || sql+="REVOKE ALL ON DATABASE $(printf '"%s"' "${db//\"/\"\"}") FROM $who CASCADE;"$'\n'; done <<<"$have"
-  while IFS='|' read -r who priv opt; do [[ -z $who ]] || sql+="GRANT $priv ON DATABASE $(printf '"%s"' "${db//\"/\"\"}") TO $who$([[ $opt == t ]] && echo ' WITH GRANT OPTION');"$'\n'; done <<<"$want"
+  while IFS='|' read -r who priv opt; do [[ -z $who ]] || sql+="GRANT $priv ON DATABASE $(printf '"%s"' "${db//\"/\"\"}") TO $who$([[ $opt != t ]] || echo ' WITH GRANT OPTION');"$'\n'; done <<<"$want"
   apply dst "$db" "$sql" "$db: database privileges as on the source ($(grep -c . <<<"$want") row(s))"
 }
 
