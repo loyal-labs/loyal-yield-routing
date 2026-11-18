@@ -2,7 +2,9 @@
 set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
-DEST=/opt/pgmove
+# PGMOVE_DEST: a second install beside a running one (/opt/pgmove-next while /opt/pgmove runs a backfill).
+DEST=${PGMOVE_DEST:-/opt/pgmove}
+[[ $DEST =~ ^/opt/pgmove[a-z0-9-]*$ ]] || { echo "remote: PGMOVE_DEST=$DEST is not /opt/pgmove or /opt/pgmove-<name>" >&2; exit 2; }
 
 die() { echo "remote: $*" >&2; exit 1; }
 
@@ -25,8 +27,14 @@ ipv4_of() { # the literal IPv4 this machine's ssh config resolves <alias> to
 # is made on the box and never leaves it; the hop accepts it from the box's address only, for a
 # -L to FWD_TARGET only, with no shell, pty, agent, X11, listener or unix socket.
 route_on() {
-  local c=$1 box hop user alias target box_ip hop_ip pub hostkey v
+  local c=$1 box hop user alias target box_ip hop_ip pub hostkey v listen='' rev_host rev_port
   box=$(conf_box "$c") hop=$(conf_get "$c" FWD_HOP) user=$(conf_get "$c" FWD_USER) alias=$(conf_get "$c" FWD_SSH) target=$(conf_get "$c" FWD_TARGET)
+  rev_host=$(conf_get "$c" REV_HOST) rev_port=$(conf_get "$c" REV_PORT)
+  # The reverse: pg-forward@ binds REV_HOST:REV_PORT on the hop (-R), where the source reaches the target.
+  if [[ -n $rev_port ]]; then
+    [[ ${rev_host:=127.0.0.1} =~ ^[0-9.]+$ && $rev_port =~ ^[0-9]+$ ]] || die "$c.conf: REV_HOST or REV_PORT has an unexpected shape"
+    listen=$rev_host:$rev_port
+  fi
   for v in hop user alias target; do [[ -n ${!v} ]] || die "$c.conf: route needs FWD_HOP, FWD_USER, FWD_SSH and FWD_TARGET"; done
   [[ $user =~ ^[a-z][a-z0-9-]*$ && $alias =~ ^[a-z][a-z0-9-]*$ && $target =~ ^[0-9.]+:[0-9]+$ ]] || die "$c.conf: FWD_USER, FWD_SSH or FWD_TARGET has an unexpected shape"
   box_ip=$(ipv4_of "$box") hop_ip=$(ipv4_of "$hop")
@@ -34,7 +42,7 @@ route_on() {
   [[ $pub =~ ^ssh-ed25519\ [A-Za-z0-9+/]+=*\ pgmove-$c-forward$ ]] || die "the box's forward key is not one ed25519 public key"
   hostkey=$(ssh -o BatchMode=yes "$hop" 'cat /etc/ssh/ssh_host_ed25519_key.pub' | awk '{ print $1 " " $2 }')
   [[ $hostkey =~ ^ssh-ed25519\ [A-Za-z0-9+/]+=*$ ]] || die "$hop: no ed25519 host key"
-  { printf 'user=%q box_ip=%q target=%q pub=%q\n' "$user" "$box_ip" "$target" "$pub"; cat <<'EOF'
+  { printf 'user=%q box_ip=%q target=%q pub=%q listen=%q\n' "$user" "$box_ip" "$target" "$pub" "$listen"; cat <<'EOF'
 set -euo pipefail
 ts=$(date -u +%Y%m%dT%H%M%SZ) n=0
 changed() { n=$((n + 1)); echo "changed: $(hostname -s): $*"; }
@@ -46,7 +54,7 @@ if ! id -u "$user" >/dev/null 2>&1; then
 fi
 [[ $(passwd -S "$user" | awk '{ print $2 }') == L ]] || { usermod -L "$user"; changed "$user password locked"; }
 keys=/etc/ssh/authorized_keys.d/$user
-want="from=\"$box_ip\",restrict,port-forwarding,permitopen=\"$target\",command=\"/usr/sbin/nologin\" $pub"
+want="from=\"$box_ip\",restrict,port-forwarding,permitopen=\"$target\"${listen:+,permitlisten=\"$listen\"},command=\"/usr/sbin/nologin\" $pub"
 if [[ $(cat "$keys" 2>/dev/null || true) != "$want" ]]; then
   install -d -m 0755 -o root -g root /etc/ssh/authorized_keys.d
   [[ ! -e $keys ]] || { install -d -m 0700 "$bak"; cp -a "$keys" "$bak/"; }
@@ -63,11 +71,11 @@ Match User $user
   AuthenticationMethods publickey
   PasswordAuthentication no
   KbdInteractiveAuthentication no
-  AllowTcpForwarding local
+  AllowTcpForwarding ${listen:+yes}${listen:-local}
   AllowStreamLocalForwarding no
   PermitOpen $target
-  PermitListen none
-  GatewayPorts no
+  PermitListen ${listen:-none}
+  GatewayPorts ${listen:+clientspecified}${listen:-no}
   PermitTunnel no
   X11Forwarding no
   AllowAgentForwarding no
@@ -88,10 +96,10 @@ if [[ -n $old || $(cat "$conf" 2>/dev/null || true) != "$wantc" ]]; then
   sshd -t || revert "sshd -t failed"
   [[ $(sshd -T -C "user=root,$probe") == "$before" ]] || revert "root's effective sshd settings would change"
   systemctl reload ssh
-  changed "$conf: Match User $user, publickey only, -L to $target only, no shell, pty, agent, X11, listener or unix socket${old:+; replaced $old}; sshd -t ok, root's settings unchanged, ssh reloaded"
+  changed "$conf: Match User $user, publickey only, -L to $target only, ${listen:+-R on $listen only, }no shell, pty, agent, X11${listen:-, listener} or unix socket${old:+; replaced $old}; sshd -t ok, root's settings unchanged, ssh reloaded"
 fi
 echo "route: $(hostname -s) effective for $user from the box:"
-sshd -T -C "user=$user,host=pgmove-check,addr=$box_ip" | grep -E '^(authorizedkeysfile|authenticationmethods|passwordauthentication|allowtcpforwarding|allowstreamlocalforwarding|permitopen|permitlisten|permittty|permittunnel|x11forwarding|allowagentforwarding|forcecommand) ' | sed 's/^/  /'
+sshd -T -C "user=$user,host=pgmove-check,addr=$box_ip" | grep -E '^(authorizedkeysfile|authenticationmethods|passwordauthentication|allowtcpforwarding|allowstreamlocalforwarding|permitopen|permitlisten|gatewayports|permittty|permittunnel|x11forwarding|allowagentforwarding|forcecommand) ' | sed 's/^/  /'
 echo "route: $(hostname -s) $n change(s)"
 EOF
   } | ssh -o BatchMode=yes "$hop" bash -s
@@ -118,10 +126,11 @@ EOF
 # names a command that runs its one argument as root on the source; the script comes from
 # pgmove.sh here, and the box only answers whether the source's verifier for pgmove is current.
 source_on() {
-  local c=$1 admin=${PGMOVE_SRC_ADMIN:-} cur res
-  [[ -n $admin ]] || die "set PGMOVE_SRC_ADMIN to a command that runs its one argument as root on the source"
-  cur=$("$admin" "cd / && sudo -n -u postgres psql -d postgres -XAtqc \"select coalesce(rolpassword, '') from pg_authid where rolname = 'pgmove'\"")
-  res=$(printf '%s\n' "$cur" | pgmove_on verifier "$c")
+  local c=$1 admin cur res
+  admin=$(admin_cmd)
+  # The conf's OS user and socket: on robinx-prod the default socket is production's, not the test cluster's.
+  cur=$("$admin" "cd / && sudo -n -u $(printf %q "$(conf_get "$c" SRC_OSUSER)") psql -h $(printf %q "$(conf_get "$c" SRC_SOCKET)") -p $(printf %q "$(conf_get "$c" SRC_PORT)") -d postgres -XAtqc \"select coalesce(rolpassword, '') from pg_authid where rolname = 'pgmove'\"")
+  res=$(printf '%s\n' "$cur" | box_pgmove verifier "$c")
   bash "$HERE/pgmove.sh" source "$c" "$res" | "$admin" "bash -s"
 }
 
@@ -129,11 +138,87 @@ source_on() {
 # holds only that key (ssh-agent -a <socket>, then ssh-add the key), named in PGMOVE_AGENT and
 # forwarded for the length of the run.
 # SRC_VIA=forward needs no agent: the box reads the source through its forward as pgmove.
+box_pgmove() { local box; box=$(conf_box "$2"); ssh -o BatchMode=yes "$box" "sudo -n $DEST/pgmove.sh $(printf '%q ' "$@")"; }
+
+admin_cmd() {
+  [[ -n ${PGMOVE_SRC_ADMIN:-} ]] || die "set PGMOVE_SRC_ADMIN to a command that runs its one argument as root on the source"
+  echo "$PGMOVE_SRC_ADMIN"
+}
+
+# src_run <cluster> <need lines>: the root script srcexec builds here from the box's need lines,
+# run on the source through PGMOVE_SRC_ADMIN. Catchup rows go box to source over a pipe.
+src_run() {
+  local c=$1 needs=$2 admin script t f
+  admin=$(admin_cmd)
+  while read -r _ _ t f; do
+    script=$(printf 'need: catchin %s %s\n' "$t" "$f" | bash "$HERE/pgmove.sh" srcexec "$c")
+    echo "remote: catchup $t above $f, target to source: +$(box_pgmove catchout "$c" "$t" "$f" | "$admin" "bash -c $(printf %q "$script")") rows"
+  done < <(grep '^need: catchup ' <<<"$needs" || true)
+  if grep -q '^need: revsub ' <<<"$needs"; then
+    PGMOVE_REV_PW=$(ssh -o BatchMode=yes "$(conf_box "$c")" "sudo -n cat /etc/pgmove/$c/repl.password") || die "cannot read the replication password on the box"
+    export PGMOVE_REV_PW
+  fi
+  printf '%s\n' "$needs" | bash "$HERE/pgmove.sh" srcexec "$c" | "$admin" "bash -s"
+  unset PGMOVE_REV_PW
+}
+
+# The box step prints need: lines and exits 3 when root on the source must act; this runs them and
+# reruns the step, which is idempotent, until it exits 0. The same needs twice is a stop.
+forward_loop() {
+  local c=$2 out rc prev='' needs round dry=0 a
+  for a in "$@"; do [[ $a != --dry-run ]] || dry=1; done
+  if [[ $1 == switch && " $* " != *" --reverse "* ]] && ((dry == 0)); then
+    passwords_on "$c" || return
+  fi
+  out=$(mktemp)
+  for round in 1 2 3 4; do
+    set +e
+    box_pgmove "$@" | tee "$out"
+    rc=${PIPESTATUS[0]}
+    set -e
+    ((rc == 3)) || break
+    needs=$(grep '^need: ' "$out" || true)
+    [[ -n $needs ]] || die "$1 exited 3 with no need: lines"
+    [[ $needs != "$prev" ]] || die "$1 asked for the same source steps after they ran; stopping"
+    prev=$needs
+    echo "remote: round $round: $(grep -c . <<<"$needs") source step(s) through PGMOVE_SRC_ADMIN"
+    src_run "$c" "$needs" || { rm -f "$out"; die "the source steps failed; $1 not rerun"; }
+  done
+  rm -f "$out"
+  if ((rc == 0 && dry == 0)) && [[ $1 == retire ]]; then src_run "$c" "need: rmmarker"; fi
+  if [[ $1 == preflight ]]; then preflight_admin "$c" || { ((rc)) || rc=1; }; fi
+  return "$rc"
+}
+
+# passwords <cluster> [--dry-run]: the source's verifiers, read as root there, piped to the box.
+passwords_on() {
+  local c=$1 admin
+  shift
+  admin=$(admin_cmd)
+  bash "$HERE/pgmove.sh" srcexec "$c" verifiers </dev/null | "$admin" "bash -s" | box_pgmove passwords "$c" "$@"
+}
+
+# The checks that need root on the source: the freeze marker is there, the verifiers are equal.
+preflight_admin() {
+  local c=$1 admin out bad=0
+  admin=$(admin_cmd)
+  bash "$HERE/pgmove.sh" srcexec "$c" marker </dev/null | "$admin" "bash -s" || { echo "DIFF marker: absent on the source"; bad=1; }
+  out=$(passwords_on "$c" --dry-run) || bad=1
+  sed 's/^/  passwords: /' <<<"$out"
+  grep -q '^passwords: 0 change(s) in the dry run' <<<"$out" || { echo "DIFF passwords: the target's verifiers differ from the source's; run remote.sh run passwords $c"; bad=1; }
+  echo "preflight: source-side checks: $bad DIFF"
+  return "$bad"
+}
+
 pgmove_on() {
   local box
   box=$(conf_box "$2")
   if [[ $(conf_get "$2" SRC_VIA) == forward ]]; then
-    ssh -o BatchMode=yes "$box" "sudo -n $DEST/pgmove.sh $(printf '%q ' "$@")"
+    case $1 in
+      passwords) shift; passwords_on "$@" ;;
+      verifier | catchout | srcexec) box_pgmove "$@" ;;
+      *) forward_loop "$@" ;;
+    esac
     return
   fi
   [[ -S ${PGMOVE_AGENT:-} ]] || { echo "remote: PGMOVE_AGENT must name the socket of an agent holding the source key" >&2; exit 2; }

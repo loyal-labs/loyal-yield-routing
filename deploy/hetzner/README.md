@@ -875,7 +875,11 @@ hypertables only. `remote.sh retain --dry-run` lists the chunks it would drop.
 
 ### After the cutover
 
-Replication from Neon is retired. `cutover.sh pause-neon` dropped the
+Replication from Neon is retired. The Neon `cutover.sh` named here and in
+`db/cutover.md` was `deploy/hetzner/db/cutover.sh`; a9507153f moved that path
+to `deploy/aws/db/cutover.sh`, which is the AWS switch and has no Neon steps,
+so read the Neon one with `git show c063a59d2:deploy/hetzner/db/cutover.sh`.
+`cutover.sh pause-neon` dropped the
 subscriptions `loyal_hz_{app,yield,timescale}` and their Neon slots on Nov 5
 2026 (16:15 PST), and the subscription and Neon slot alerts and their metrics
 are gone from the rules. Apply migrations to loyal-db-primary only. The Neon
