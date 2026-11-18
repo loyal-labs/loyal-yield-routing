@@ -9,7 +9,8 @@
 #                                    trees, data/ and w2-weather/data/ except state.db*, and then proves only path, size and mtime there)
 #   s3-weather.sh preflight          read-only; exit 0 only when ready and the old units are active
 #   s3-weather.sh switch --go        stop and disable the old units, final copy, start the new ones, check quotes and fills
-#   s3-weather.sh back --go          the reverse: stop and disable the new units, copy state home, start the old ones
+#   s3-weather.sh back --go          the reverse: stop and disable the new units, copy state home only when the owner marker on the new
+#                                    box says AWS started (every tree of the forward copy, then the same manifest gate), start the old ones
 # Runs on the operator's Mac. Both boxes are reached by their ssh aliases; data moves box to box through a throwaway ssh agent
 # forwarded to the old box, so no secret or data file touches the Mac. Nothing here places an order or signs anything.
 set -euo pipefail
@@ -25,6 +26,7 @@ QUOTE_WAIT=${S3_QUOTE_WAIT:-240}
 PAIR_TIMEOUT=${S3_PAIR_TIMEOUT:-1200}
 VERIFY_HASH=${S3_VERIFY_HASH:-all}
 EXTRA_OK=${S3_EXTRA_OK:-}
+OWNER_FILE=/srv/w20/.s3-owner
 HERE=$(cd "$(dirname "$0")" && pwd)
 
 UNITS=(w20-live.service w20-record.service w2-weather.service w20-scorecard.service w20-scorecard.timer
@@ -36,6 +38,27 @@ say() { echo "s3-weather: $*"; }
 
 oldsh() { ssh -o BatchMode=yes -o ConnectTimeout=20 "$OLD" "$@"; }
 newsh() { ssh -o BatchMode=yes -o ConnectTimeout=20 "$NEW" "$@"; }
+
+# rd old|new COMMAND...: the one way a check reads a box. It fails when ssh or the command exits non-zero and when the answer is
+# empty, so a failed read is never an empty value that compares equal to another or reads as "nothing wrong". A command whose
+# honest answer can be empty or non-zero ends in an echo or "|| true" so it still prints something.
+rd() {
+  local side=$1 out
+  shift
+  if [[ $side == old ]]; then out=$(oldsh "$@") || return 1; else out=$(newsh "$@") || return 1; fi
+  [[ -n $out ]] || return 1
+  printf '%s\n' "$out"
+}
+
+# sha_set old|new FILE...: sorted "sha256  path" lines, exactly one per file; fails unless every file was read
+sha_set() {
+  local side=$1 out cmd="sha256sum"
+  shift
+  [[ $side == new ]] && cmd="sudo sha256sum"
+  out=$(rd "$side" "$cmd $*") || return 1
+  [[ $(grep -cE '^[0-9a-f]{64}  /' <<<"$out") -eq $# && $(wc -l <<<"$out" | tr -d ' ') -eq $# ]] || return 1
+  sort -k2 <<<"$out"
+}
 
 AGENT_SOCK=
 AGENT_PID=
@@ -70,7 +93,7 @@ EOF
 }
 
 old_bins() { # paths the units name under /srv/w20/bin and /srv/w20/reward-pilot, read from the old box so a new tail binary is followed
-  oldsh "cd /etc/systemd/system && grep -ohE '/srv/w20/(bin|reward-pilot)/[A-Za-z0-9._-]+' ${UNITS[*]} w20-record.service.d/*.conf | sort -u"
+  rd old "cd /etc/systemd/system && grep -ohE '/srv/w20/(bin|reward-pilot)/[A-Za-z0-9._-]+' ${UNITS[*]} w20-record.service.d/*.conf | sort -u"
 }
 
 # ---- prepare: host convergence, then units, binaries, env and scripts copied from the old box
@@ -154,9 +177,19 @@ bad=0; ran=0
 for p in "${pairs[@]}"; do
   IFS='|' read -r src dst extra <<<"$p"
   [ -z "$ONLY" ] || [ "${dst%/}" = "${ONLY%/}" ] || continue
-  [ -e "$src" ] || { echo "skip (absent on old box) $src"; continue; }
+  if [ "$DIR" = pull ]; then
+    "${SSHN[@]}" "ubuntu@$NEWIP" "sudo test -e '$src'" </dev/null; e=$?
+    case $e in
+      0) ;;
+      1) echo "skip (absent on new box) $src"; continue ;;
+      *) echo "  FAIL cannot look for $src on the new box (ssh exit $e)"; bad=1; continue ;;
+    esac
+  else
+    [ -e "$src" ] || { echo "skip (absent on old box) $src"; continue; }
+  fi
   ran=$((ran + 1))
-  out=$(rs $FLAGS $extra "$src" "ubuntu@$NEWIP:$dst" 2>&1); rc=$?
+  if [ "$DIR" = pull ]; then out=$(rs $FLAGS $extra "ubuntu@$NEWIP:$src" "$dst" 2>&1); rc=$?
+  else out=$(rs $FLAGS $extra "$src" "ubuntu@$NEWIP:$dst" 2>&1); rc=$?; fi
   files=$(echo "$out" | grep -cE '^[<>ch.*][a-zA-Z.+?]{10}_' || true)
   n=$(echo "$out" | sed -nE 's/^Number of regular files transferred: ([0-9,]+)/\1/p')
   b=$(echo "$out" | sed -nE 's/^Total transferred file size: ([0-9,]+) bytes/\1/p')
@@ -190,7 +223,7 @@ cmd_sync() {
   done
   say "sync $([[ $dry == 1 ]] && echo dry-run || echo copy)${only:+ of $only only} $OLD -> $NEW (bwlimit ${BWLIMIT} KB/s, nice 19, idle io, ${PAIR_TIMEOUT}s per tree)"
   local script
-  script="$(printf 'DRY=%s\nSUM=%s\nONLY=%q\n' "$dry" "$sum" "$only")
+  script="$(printf 'DIR=push\nDRY=%s\nSUM=%s\nONLY=%q\n' "$dry" "$sum" "$only")
 $(pairs_def)
 $(sync_body)"
   # a copy that changes files must not leave an earlier stamp standing as proof the tree is fresh (S2-15)
@@ -326,68 +359,122 @@ done
 EOF
 }
 
-cmd_preflight() {
-  local u out a b n
+# Every read goes through rd and every failed read becomes a blocker; nothing here relies on errexit, so the list is always reached,
+# whether preflight runs alone or as the left side of an OR-list in switch (where errexit is off).
+cmd_preflight() { ( set +e; preflight_checks ); }
+
+presence() { # presence old|new PATH: prints present or absent; fails when the box could not be read
+  rd "$1" "if [ -e '$2' ]; then echo present; else echo absent; fi"
+}
+
+preflight_checks() {
+  local u out a b n f m bins list files
   echo "S3 preflight $(date -u +%FT%TZ) old=$OLD new=$NEW"
   echo "architecture"
-  a=$(oldsh uname -m) || a="(no answer)"
-  b=$(newsh uname -m) || b="(no answer)"
-  if [[ $a == "$b" ]]; then okl "both $a"; else block "architecture differs: $OLD $a, $NEW $b; binaries cannot run as copied"; fi
-  for f in $(old_bins | grep -E '/bin/w20|rewardcollect'); do
-    m=$(newsh "od -An -tx1 -j18 -N2 $f 2>/dev/null | tr -d ' \n'") || m=
-    if [[ $m == b700 ]]; then okl "$f is an aarch64 ELF on $NEW"; else block "$f missing or not aarch64 on $NEW (run prepare)"; fi
-  done
+  if a=$(rd old uname -m) && b=$(rd new uname -m); then
+    if [[ $a == "$b" ]]; then okl "both $a"; else block "architecture differs: $OLD $a, $NEW $b; binaries cannot run as copied"; fi
+  else
+    block "architecture could not be read on both boxes ($OLD: ${a:-no answer}, $NEW: ${b:-no answer})"
+  fi
+  if bins=$(old_bins); then
+    files=$(grep -E '/bin/w20|rewardcollect' <<<"$bins")
+    [[ -n $files ]] || block "the old units name no /srv/w20/bin/w20 or rewardcollect binary; the aarch64 check has nothing to read"
+    for f in $files; do
+      if m=$(rd new "od -An -tx1 -j18 -N2 $f 2>/dev/null | tr -d ' \n'"); then
+        if [[ $m == b700 ]]; then okl "$f is an aarch64 ELF on $NEW"; else block "$f is not aarch64 on $NEW (run prepare)"; fi
+      else
+        block "$f could not be read on $NEW (missing, or no answer; run prepare)"
+      fi
+    done
+  else
+    bins=
+    block "the binary list could not be read from the old units on $OLD"
+  fi
 
   echo "old units (must be active)"
   for u in "${WATCHED_OLD[@]}"; do
-    a=$(oldsh "systemctl is-active $u" || true)
-    if [[ $a == active ]]; then okl "$OLD $u active"; else block "$OLD $u is $a, preflight needs the old bot running"; fi
+    if a=$(rd old "systemctl is-active $u || true"); then
+      if [[ $a == active ]]; then okl "$OLD $u active"; else block "$OLD $u is $a, preflight needs the old bot running"; fi
+    else
+      block "$OLD $u: state could not be read"
+    fi
   done
-  if oldsh 'test ! -e /etc/systemd/system/w20-live.service.d/zz-s3-moved.conf'; then okl "old w20-live not already fenced"; else block "old w20-live carries the S3 fence drop-in (a switch ran; use back)"; fi
+  if a=$(presence old /etc/systemd/system/w20-live.service.d/zz-s3-moved.conf); then
+    if [[ $a == absent ]]; then okl "old w20-live not already fenced"; else block "old w20-live carries the S3 fence drop-in (a switch ran; use back)"; fi
+  else
+    block "the fence drop-in on $OLD could not be looked for"
+  fi
+  if a=$(presence new "$OWNER_FILE"); then
+    if [[ $a == absent ]]; then okl "no AWS owner marker on $NEW"; else block "$NEW carries the AWS owner marker $OWNER_FILE (a switch started the new units; use back)"; fi
+  else
+    block "the owner marker on $NEW could not be looked for"
+  fi
 
   echo "new units (installed, disabled, inactive)"
   for u in "${UNITS[@]}"; do
-    out=$(newsh "systemctl is-enabled $u 2>&1; systemctl is-active $u 2>&1" | tr '\n' ' ' || true)
-    case $out in
-      "enabled "* | "enabled-runtime "*) block "$NEW $u enabled" ;;
-      *"inactive "*) okl "$NEW $u: $out" ;;
-      *) block "$NEW $u: $out" ;;
-    esac
+    if out=$(rd new "systemctl is-enabled $u 2>&1; systemctl is-active $u 2>&1; true"); then
+      out="${out//$'\n'/ } "
+      case $out in
+        "enabled "* | "enabled-runtime "*) block "$NEW $u enabled" ;;
+        *"inactive "*) okl "$NEW $u: $out" ;;
+        *) block "$NEW $u: $out" ;;
+      esac
+    else
+      block "$NEW $u: state could not be read"
+    fi
   done
   # shellcheck disable=SC2016
-  out=$(newsh 'for u in '"${UNITS[*]}"'; do sudo systemd-analyze verify /etc/systemd/system/$u >/dev/null 2>&1 || echo "$u"; done')
-  if [[ -z $out ]]; then okl "systemd-analyze verify rc=0 on all ${#UNITS[@]} units"; else block "systemd-analyze verify fails: $out"; fi
+  if out=$(rd new 'for u in '"${UNITS[*]}"'; do sudo systemd-analyze verify /etc/systemd/system/$u >/dev/null 2>&1 || echo "FAIL $u"; done; echo VERIFIED'); then
+    if [[ $out == VERIFIED ]]; then okl "systemd-analyze verify rc=0 on all ${#UNITS[@]} units"; else block "systemd-analyze verify fails: $(grep '^FAIL' <<<"$out" | tr '\n' ' ')"; fi
+  else
+    block "systemd-analyze verify could not be run on $NEW"
+  fi
 
   echo "copies match (sha256 by name)"
-  local list="/etc/w20/live.env /etc/w20/reward-pilot/observer.env /srv/w20/policy/hc_final.json /srv/w20/reward-pilot/rotate.py /srv/w20/reward-pilot/config.json /srv/w20/scorecard/scorecard.py /srv/w20/w2-weather/recorder.py /etc/systemd/system/w20-record.service.d/weather-ahead.conf"
+  list="/etc/w20/live.env /etc/w20/reward-pilot/observer.env /srv/w20/policy/hc_final.json /srv/w20/reward-pilot/rotate.py /srv/w20/reward-pilot/config.json /srv/w20/scorecard/scorecard.py /srv/w20/w2-weather/recorder.py /etc/systemd/system/w20-record.service.d/weather-ahead.conf"
   for u in "${UNITS[@]}"; do list="$list /etc/systemd/system/$u"; done
-  list="$list $(old_bins | tr '\n' ' ')"
-  a=$(oldsh "sha256sum $list 2>&1" | sort -k2)
-  b=$(newsh "sudo sha256sum $list 2>&1" | sort -k2)
-  if [[ $a == "$b" ]]; then
-    n=$(echo "$a" | wc -l | tr -d ' '); okl "$n files identical on both boxes (units, binaries, scripts, policy, env files)"
+  list="$list $(tr '\n' ' ' <<<"$bins")"
+  # shellcheck disable=SC2086
+  if a=$(sha_set old $list) && b=$(sha_set new $list); then
+    if [[ $a == "$b" ]]; then
+      n=$(wc -l <<<"$a" | tr -d ' '); okl "$n files identical on both boxes (units, binaries, scripts, policy, env files)"
+    else
+      { diff <(awk '{print $2, $1}' <<<"$a") <(awk '{print $2, $1}' <<<"$b") | grep '^[<>]' | awk '{print $2}' | sort -u | while read -r f; do echo "          differs: $f"; done; } || true
+      block "copies differ from the old box (a lineage change since the last prepare?): run prepare"
+    fi
   else
-    # diff exits 1 on a difference and grep exits 1 on none; under pipefail either would end the preflight before its list
-    { diff <(echo "$a" | awk '{print $2, $1}') <(echo "$b" | awk '{print $2, $1}') | grep '^[<>]' | awk '{print $2}' | sort -u | while read -r f; do echo "          differs: $f"; done; } || true
-    block "copies differ from the old box (a lineage change since the last prepare?): run prepare"
+    block "the checksums could not be read for every file on both boxes, so the copies are not proven equal"
   fi
-  if oldsh "grep -q '^ARM=yes' /etc/w20/live.env" && newsh "sudo grep -q '^ARM=yes' /etc/w20/live.env"; then okl "ARM=yes in both live.env (gate 1)"; else block "ARM=yes missing from a live.env"; fi
-  if newsh 'test ! -e /srv/w20/out/KILL'; then okl "no KILL file on $NEW"; else block "KILL file exists on $NEW"; fi
+  if a=$(rd old "grep -c '^ARM=yes' /etc/w20/live.env || true") && b=$(rd new "sudo grep -c '^ARM=yes' /etc/w20/live.env || true"); then
+    if ((a > 0 && b > 0)); then okl "ARM=yes in both live.env (gate 1)"; else block "ARM=yes missing from a live.env"; fi
+  else
+    block "ARM=yes could not be read from both live.env files"
+  fi
+  if a=$(presence new /srv/w20/out/KILL); then
+    if [[ $a == absent ]]; then okl "no KILL file on $NEW"; else block "KILL file exists on $NEW"; fi
+  else
+    block "the KILL file on $NEW could not be looked for"
+  fi
 
   echo "venue geoblock from $NEW's own address"
   out=$(geoblock "$NEW" || true)
   if echo "$out" | grep -q '"blocked":false'; then okl "$(echo "$out" | sed -E 's/"ip":"[^"]*",?//')"; else block "geoblock read from $NEW: ${out:-no answer}"; fi
 
   echo "disk, clock"
-  out=$(newsh "df -B1G --output=avail /srv/w20 | tail -n1 | tr -d ' '") || out=0
-  if [[ ${out:-0} -ge 20 ]]; then okl "${out} GiB free on $NEW (the collector and w2-weather refuse below 15)"; else block "only ${out} GiB free on $NEW"; fi
-  if newsh 'timedatectl show -p NTPSynchronized --value' | grep -q yes; then okl "clock synchronized on $NEW"; else block "clock not synchronized on $NEW"; fi
+  if out=$(rd new "df -B1G --output=avail /srv/w20 | tail -n1 | tr -d ' '") && [[ $out =~ ^[0-9]+$ ]]; then
+    if ((out >= 20)); then okl "${out} GiB free on $NEW (the collector and w2-weather refuse below 15)"; else block "only ${out} GiB free on $NEW"; fi
+  else
+    block "the free disk on $NEW could not be read"
+  fi
+  if out=$(rd new 'timedatectl show -p NTPSynchronized --value') && [[ $out == yes ]]; then okl "clock synchronized on $NEW"; else block "clock not synchronized on $NEW (${out:-no answer})"; fi
 
   echo "state copy"
-  out=$(newsh 'cat /srv/w20/.s3-sync-epoch 2>/dev/null' || true)
-  if [[ -z $out ]]; then block "no sync stamp on $NEW: run sync"
-  elif (($(date +%s) - out > STALE_SECS)); then block "last sync was $((($(date +%s) - out) / 60)) min ago (limit $((STALE_SECS / 60))): run sync"
-  else okl "last sync $((($(date +%s) - out) / 60)) min ago"; fi
+  if out=$(rd new 'cat /srv/w20/.s3-sync-epoch 2>/dev/null') && [[ $out =~ ^[0-9]+$ ]]; then
+    if (($(date +%s) - out > STALE_SECS)); then block "last sync was $((($(date +%s) - out) / 60)) min ago (limit $((STALE_SECS / 60))): run sync"
+    else okl "last sync $((($(date +%s) - out) / 60)) min ago"; fi
+  else
+    block "no readable sync stamp on $NEW: run sync"
+  fi
 
   echo "owed from others"
   if [[ -s $PROOF ]]; then okl "resting-order proof on file: $PROOF"
@@ -466,23 +553,17 @@ systemctl enable --now w20-scorecard.timer weather-reward-pilot-rotate.timer
 EOF
 }
 
-copy_final() { # copy_final <new-to-old|old-to-new>
-  local dir=$1
-  if [[ $dir == old-to-new ]]; then
-    cmd_sync
-  else
-    say "copying state from $NEW back to $OLD"
-    hop <<'EOF'
-pl() { nice -n 19 ionice -c 3 timeout -k 20 "$PT" rsync -a --numeric-ids --timeout=300 --inplace --exclude='*.pid' --rsync-path="sudo rsync" -e "$RSH" "$@"; }
-bad=0
-for p in /srv/w20/data /srv/w20/out /srv/w20/w2-weather/data /srv/w20/band /srv/w20/scorecard /var/lib/private/weather-reward-pilot /var/lib/weather-reward-pilot-rotate; do
-  extra=""; [ "$p" = /var/lib/weather-reward-pilot-rotate ] && extra="--exclude=segments/ --exclude=rotate.lock"
-  pl $extra "ubuntu@$NEWIP:$p/" "$p/" || { echo "pull failed: $p"; bad=1; }
-done
-pl "ubuntu@$NEWIP:/srv/w20/w2-weather/recorder.log" /srv/w20/w2-weather/recorder.log || bad=1
-exit $bad
-EOF
-  fi
+# copy_home: the reverse of the forward sync. The same tree list (archive, segments and behind*/ included), the same rsync flags with
+# --delete so the old box ends equal to the new one, and the same manifest gate with sha256 of every file. Only back calls it, and
+# only when the owner marker says AWS started.
+copy_home() {
+  say "copying state from $NEW back to $OLD (every tree the forward copy mirrors)"
+  local script
+  script="$(printf 'DIR=pull\nDRY=0\nSUM=0\nONLY=\n')
+$(pairs_def)
+$(sync_body)"
+  hop <<<"$script" || return 1
+  cmd_verify
 }
 
 cmd_switch() {
@@ -494,15 +575,21 @@ cmd_switch() {
   say "3/7 stop and disable the old units"
   stop_old || die "old units not fully stopped and disabled; nothing was started on $NEW. Old state needs a look; 'back --go' restores"
   say "4/7 final copy with everything stopped"
-  copy_final old-to-new || die "final copy failed; old units are stopped. Run 'back --go' or fix and rerun the copy"
+  cmd_sync || die "final copy failed; old units are stopped. Run 'back --go' or fix and rerun the copy"
   say "5/7 cross-check: every copied tree by path set, size, mtime and the start state by sha256, then the files that matter"
   cmd_verify || die "manifest mismatch after final copy; old units are stopped, nothing started on $NEW. Run 'back --go' or fix and rerun the copy"
   local list="/srv/w20/out/live/venue.journal.jsonl /srv/w20/out/live/merge.journal.jsonl /srv/w20/out/live/redeem.journal.jsonl /srv/w20/w2-weather/data/state.db /etc/w20/live.env /srv/w20/bin/w20"
-  [[ $(oldsh "sha256sum $list" | sort -k2) == "$(newsh "sudo sha256sum $list" | sort -k2)" ]] || die "sha256 mismatch after final copy; old units are stopped, nothing started on $NEW. Run 'back --go'"
+  local a b
+  # shellcheck disable=SC2086
+  a=$(sha_set old $list) || die "the checksums of the files that matter could not be read on $OLD; nothing started on $NEW. Run 'back --go'"
+  # shellcheck disable=SC2086
+  b=$(sha_set new $list) || die "the checksums of the files that matter could not be read on $NEW; old units are stopped, nothing started there. Run 'back --go'"
+  [[ $a == "$b" ]] || die "sha256 mismatch after final copy; old units are stopped, nothing started on $NEW. Run 'back --go'"
   echo "  identical: $list"
   say "6/7 geoblock, then start the new units"
   geoblock "$NEW" | grep -q '"blocked":false' || die "geoblock true from $NEW now; nothing started there. Run 'back --go'"
-  start_new
+  newsh "date -u +%FT%TZ | sudo tee $OWNER_FILE >/dev/null && sudo test -s $OWNER_FILE" || die "the owner marker could not be written on $NEW; nothing started there. Run 'back --go'"
+  start_new || die "the new units did not all start on $NEW; the owner marker is set, so 'back --go' copies home and restarts the old side"
   local since
   since=$(newsh 'date -u "+%F %T"')
   newsh 'sudo systemctl start w20-live.service' || { newsh 'sudo journalctl -u w20-live --no-pager -n 15 -o cat | cut -c1-200'; die "w20-live did not start on $NEW. Run 'back --go'"; }
@@ -514,12 +601,19 @@ cmd_switch() {
 
 cmd_back() {
   [[ ${1:-} == --go ]] || die "back needs --go"
-  say "1/4 stop and disable the new units"
+  local owned
+  owned=$(rd new "if [ -e $OWNER_FILE ]; then echo owned; else echo never; fi") || die "cannot read the owner marker on $NEW, so it is not known whether AWS ever held the data; nothing was stopped or copied"
+  say "1/4 stop and disable the new units ($NEW owner marker: $owned)"
   stop_new || die "new units not fully stopped; the old units were not started, so two quoters cannot run"
-  say "2/4 copy state home"
-  copy_final new-to-old || die "copy home failed; both sides stopped. Fix and rerun back --go"
+  if [[ $owned == owned ]]; then
+    say "2/4 copy state home, then the manifest gate with sha256 of every file"
+    copy_home || die "copy home or its manifest gate failed; both sides stopped, $NEW keeps the owner marker. Fix and rerun back --go"
+    newsh "sudo rm -f $OWNER_FILE" || die "state is home and verified, but the owner marker on $NEW could not be cleared; remove $OWNER_FILE there, then rerun back --go"
+  else
+    say "2/4 no copy home: AWS never started the units, so $OLD still holds the only complete state and is not overwritten"
+  fi
   say "3/4 start the old units"
-  start_old
+  start_old || die "the old units did not all start on $OLD"
   local since
   since=$(oldsh 'date -u "+%F %T"')
   oldsh 'systemctl start w20-live.service' || die "old w20-live did not start"
