@@ -669,7 +669,7 @@ ensure_repl_password() {
 ensure_repl_role() {
   local side=$1 attrs cur res pw
   if [[ $side == src ]] && via_forward; then
-    [[ $(q src postgres "select rolreplication and not rolsuper and pg_has_role(current_user, 'pg_read_all_data', 'MEMBER') and pg_has_role(current_user, 'pg_read_all_stats', 'MEMBER') and pg_has_role(current_user, 'pg_read_all_settings', 'MEMBER')") == t ]] ||
+    [[ $(q src postgres "select rolreplication and not rolsuper and pg_has_role(current_user, 'pg_read_all_data', 'MEMBER') and pg_has_role(current_user, 'pg_read_all_stats', 'MEMBER') and pg_has_role(current_user, 'pg_read_all_settings', 'MEMBER') from pg_roles where rolname = current_user") == t ]] ||
       blocked "src: $REPL_ROLE lacks REPLICATION or a pg_read_all_* role; run deploy/aws/db/remote.sh source $CLUSTER from an operator machine"
     return 0
   fi
