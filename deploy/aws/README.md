@@ -45,6 +45,17 @@ The checks are:
 
 The switch itself runs from `deploy/aws/db`, in the order of the S5 runbook in the migration tracker.
 
+## switch/s4-loyal.sh
+
+Switch S4 moves loyal-workers and the database box loyal-db-primary to loyal-main with one tool: `db/cutover.sh loyal freeze|switch|verify|unfreeze|abort|rollback`. `clusters/loyal.conf` lists every loyal-main unit of the migration's units.tsv; the database moves by pgmove. `switch/s4-loyal.sh` holds what the conf calls and the S4 gate.
+
+- `preflight` is read-only on all three boxes. It runs `s4-services-preflight.sh`, `remote.sh run preflight loyal`, `cutover.sh loyal preflight` and its own checks: the 28 rows against the conf and their states on loyal-main, the running and boot sets on both old boxes, the PgBouncer path (config, certificate, every app credential's port, user and SCRAM secret against the role, the password against the secret, computed without a login), the tunnel credential, the public realtime route and the deploy route. One line per check as ok, BLOCKER or PARKED, then `<n> ok, <m> blocker, <k> parked`; exit 0 only with 0 blockers. It needs `PGMOVE_SRC_ADMIN` and `PGMOVE_AGENT`.
+- `handover` is `CUT_HANDOVER`. freeze runs it once the old units are proven stopped and before the fence: `loyal-clickstack-copy.sh final`, `loyal-receivers-repin.sh state` (it must print the final-copy line), then the sealed tunnel credential decrypted to `/etc/cloudflared/loyal-workers.json` on loyal-main.
+- `handback` is `CUT_HANDBACK`. abort and rollback run it once loyal-main is stopped: the placed credential goes.
+- `dbcheck` is `CUT_DBCHECK`. switch runs it after PgBouncer starts and before any app, unfreeze before the engines, a refused rollback before the restart: every app credential at 127.0.0.1 logs in, at least one through 6432.
+
+The cutover.sh pieces it uses are general. `CUT_FIRST` units run only on `CUT_NEW` and start first; the source keeps its own (Loyal's PgBouncer and Squads firewall front the source through the reverse window). A `CUT_SRCSTOP` unit also listed in `CUT_SERVICES` or `CUT_TIMERS` moves: it stops on the source in freeze, starts on `CUT_NEW` with its list, and abort or rollback start it on the source again if it ran there before freeze. Hooks run from `deploy/aws/db` and are killed after `CUT_HOOK_SECONDS` (1200).
+
 ## host-diff.sh
 
 `deploy/aws/host-diff.sh <old-alias> <new-alias>` is read-only on both hosts (one `bash -s` over ssh each, nothing written). It prints only differing lines and ends `<n> difference(s)`: package versions with the architecture suffix ignored, `/etc/systemd/system` unit files by name and sha256, and the names (never contents) of what sits under the `/etc` trees the services read, drop-ins included. The default scopes are in the script header and can be replaced with `HOST_DIFF_PKGS`, `HOST_DIFF_UNITS`, `HOST_DIFF_TREES`, `HOST_DIFF_EXCLUDE` and `HOST_DIFF_SSH_OPTS`.
