@@ -36,9 +36,11 @@ copy       One live pass old to new while the old units keep running. Rerun unti
 switch     Catch-up copy with the old units running, re-measure the delta (stop if still over ${DELTA_MAX_MIB} MiB), stop and disable old
            cloudflared-mnemonic and mnemonic, final rsync, write the owner marker on $OLD_ADDR, then start (never enable) mnemonic and
            cloudflared-mnemonic on $NEW_HOST, check that a search answers from it and that the share hostname answers, then point
-           the client config at $NEW_ADDR (a failure there prints the one-line fix and exits $EXIT_CLIENT; the store has moved). Needs --go.
-resume     After a reboot of $NEW_HOST: start its units again. Only when the owner marker says AWS owns the store and both old units
-           are stopped. Needs --go. Never rerun switch for this: it would overwrite the new store with the old one.
+           the client config at $NEW_ADDR and restart the resident push daemon ($DAEMON_LABEL, launchctl kickstart -k, because it reads
+           its config once) until it runs with no push error (a failure there prints the one-line fix and exits $EXIT_CLIENT; the store
+           has moved). Open 'mnemonic mcp' sessions keep the old address until they are restarted. Needs --go.
+resume     After a reboot of $NEW_HOST, or a switch killed after the marker: start its units again and finish the client handoff.
+           Only when the owner marker says AWS owns the store and both old units are stopped AND disabled.  Needs --go. Never rerun switch for this: it would overwrite the new store with the old one.
 back       Stop and disable the new units, enable and start the old ones, point the client config back at $OLD_ADDR. If $NEW_HOST
            does not answer, the old side starts only when the AWS API shows the new instance stopped or terminated
            (S1_NEW_INSTANCE_ID names it, else it is found by $NEW_ADDR); a new store that answers a search always refuses. With
@@ -46,7 +48,8 @@ back       Stop and disable the new units, enable and start the old ones, point 
            starts the old side anyway. The new units are never enabled at boot, so powering the new box on later cannot start a
            second store. When the owner marker says AWS may have taken writes, back measures what the old store lacks (dry run
            of the copy back) and refuses unless it is zero, or --sync-back copies it, or --accept-stale-store leaves it behind;
-           a new box that cannot be reached cannot be measured, so that case needs --accept-stale-store. --sync-back fails when
+           a new box that cannot be reached cannot be measured, so that case needs --accept-stale-store. A measure that fails or cannot be read
+           refuses too, before anything is stopped. --sync-back fails when
            $NEW_HOST cannot be reached or an old unit is running. Needs --go.
 back --sync-back --dry-run
            Prints what --sync-back would copy back and changes nothing; refuses when an old unit is running. No --go needed.
