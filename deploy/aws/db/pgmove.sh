@@ -2,7 +2,7 @@
 set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
-SUBCOMMANDS="forward source verifier srcexec catchout passwords probe init subscribe backfill catchup sequences grants schema hash verify preflight fence switch reverse retire writes"
+SUBCOMMANDS="forward source verifier srcexec catchout passwords probe init subscribe backfill catchup sequences grants schema hash verify preflight fence switch reverse partitions retire writes"
 PUB=pgmove
 REV_PUB=pgmove_rev
 REPL_ROLE=pgmove
@@ -31,6 +31,7 @@ clusters: $(for f in "$HERE"/clusters/*.conf; do basename "$f" .conf; done | pas
   fence <c> [--reverse]        login roles NOLOGIN on the side being left, sessions ended, slots caught up
   switch <c> [--reverse]       catchup, sequences, subscriptions off, the other direction armed or resumed, login roles LOGIN on the side taking over
   reverse <c> [--dry-run]      reverse publication on the target, reverse subscription on the source (copy_data=false)
+  partitions <c> [--dry-run]   each direction: the publisher's partitions the subscriber lacks, then REFRESH PUBLICATION; drops nothing
   retire <c> [--force]         after REVERSE_HOURS: both directions, their slots, the freeze marker and the forward go
   writes <c> save|diff <tag> src|dst   write counters per table
 Mutating subcommands print "changed:" lines and end with "<n> change(s)"; --dry-run prints each command instead.
@@ -918,6 +919,7 @@ cmd_subscribe() {
       break
     fi
     ensure_publication src "$db" "$shape" "$PUB"
+    sync_partitions src dst "$db" "$sub" "$PUB"
     apply dst "$db" "CREATE SUBSCRIPTION $sub CONNECTION $(lit "$conn") PUBLICATION $PUB WITH (binary = $BINARY, streaming = on, copy_data = true, origin = none, disable_on_error = false);" \
       "dst $db: subscription $sub (slot $sub on the source), $SYNC_WORKERS sync workers"
   done
@@ -1390,6 +1392,7 @@ cmd_switch() {
     if ((REVERSE)); then
       sub_set src "$db" "$(sub_name rev "$db")" f
       sub_resume dst "$db" "$(sub_name fwd "$db")"
+      sync_partitions src dst "$db" "$(sub_name fwd "$db")" "$PUB"
     else
       sub_set dst "$db" "$(sub_name fwd "$db")" f
     fi
@@ -1452,11 +1455,92 @@ arm_reverse() {
     apply src "$db" "CREATE SUBSCRIPTION $sub CONNECTION $(lit "$conn") PUBLICATION $REV_PUB WITH (copy_data = false, binary = $BINARY, streaming = on, origin = none, disable_on_error = false);" \
       "src $db: reverse subscription $sub (slot $sub on the target), copy_data=false"
   done
+  for spec in "${DATABASES[@]}"; do sync_partitions dst src "$(db_of "$spec")" "$(sub_name rev "$(db_of "$spec")")" "$REV_PUB"; done
 }
 
 cmd_reverse() {
   arm_reverse
   finish
+}
+
+# Logical replication carries no DDL. The app makes trades_YYYYMMDD days ahead on whichever side
+# takes writes, and the publisher's FOR ALL TABLES publication lists it at once. The subscriber
+# stops on a row for a table it lacks, and skips the rows of a table it has but does not carry.
+LEAVES_SQL="select format('%I.%I', n.nspname, c.relname) || '|' || format('%I.%I', pn.nspname, p.relname) || '|' || c.relkind::text || '|' || pg_get_userbyid(c.relowner) || '|' || pg_get_expr(c.relpartbound, c.oid) from pg_class c join pg_namespace n on n.oid = c.relnamespace join pg_inherits i on i.inhrelid = c.oid join pg_class p on p.oid = i.inhparent join pg_namespace pn on pn.oid = p.relnamespace where c.relispartition and p.relkind = 'p' and $NS order by 1"
+pub_tables_sql() { echo "select format('%I.%I', schemaname, tablename) from pg_publication_tables where pubname = $(lit "$1") order by 1"; }
+sub_tables_sql() { echo "select format('%I.%I', n.nspname, c.relname) from pg_subscription_rel r join pg_subscription s on s.oid = r.srsubid join pg_class c on c.oid = r.srrelid join pg_namespace n on n.oid = c.relnamespace where s.subname = $(lit "$1") order by 1"; }
+only_in() { comm -23 <(grep . <<<"$1" | sort -u) <(grep . <<<"$2" | sort -u); }
+
+# sync_partitions <publisher side> <subscriber side> <db> <subscription> <publication>
+sync_partitions() {
+  local from=$1 to=$2 db=$3 sub=$4 pub=$5 theirs ours leaf parent kind owner bound made=0 missing t e copy='' rows=0 empty=0
+  theirs=$(q "$from" "$db" "$LEAVES_SQL") || die "partitions: $from $db: reading partitions failed"
+  ours=$(q "$to" "$db" "$LEAVES_SQL" | cut -d'|' -f1) || die "partitions: $to $db: reading partitions failed"
+  while IFS='|' read -r leaf parent kind owner bound; do
+    [[ -n $leaf ]] || continue
+    grep -qxF -- "$leaf" <<<"$ours" && continue
+    if [[ $kind != r ]]; then blocked "$to $db: $leaf is partitioned itself (relkind $kind); partitions makes leaf tables only"; continue; fi
+    made=$((made + 1))
+    if src_by_admin "$to"; then need partition "$db" "$leaf" "$parent" "$owner" "$bound"; continue; fi
+    # As the app does (wen server/internal/store/trades_hot.go), as the publisher's owner so its default ACLs apply.
+    apply "$to" "$db" "BEGIN; SET LOCAL lock_timeout = '10s'; SET LOCAL ROLE $(ident "$owner"); CREATE TABLE $leaf (LIKE $parent INCLUDING ALL); ALTER TABLE $parent ATTACH PARTITION $leaf $bound; COMMIT;" \
+      "$to $db: partition $leaf of $parent $bound, owner $owner, as on $from"
+  done <<<"$theirs"
+  t=$(q "$to" "$db" "select count(*) from pg_subscription where subname = $(lit "$sub")") || die "partitions: $to $db: reading $sub failed"
+  [[ $t == 1 ]] || return 0
+  # The refresh runs once the source's root steps above made the tables, at the rerun.
+  ((made && DRY == 0)) && src_by_admin "$to" && return 0
+  t=$(q "$from" "$db" "$(pub_tables_sql "$pub")") || die "partitions: $from $db: reading publication $pub failed"
+  e=$(q "$to" "$db" "$(sub_tables_sql "$sub")") || die "partitions: $to $db: reading pg_subscription_rel of $sub failed"
+  missing=$(only_in "$t" "$e")
+  [[ -n $missing ]] || return 0
+  e=$(q "$to" "$db" "select subenabled from pg_subscription where subname = $(lit "$sub")") || die "partitions: $to $db: reading $sub failed"
+  [[ $e == t ]] || { echo "partitions: $to $db: $sub is disabled; its $(grep -c . <<<"$missing") new table(s) are refreshed when switch or reverse enables it"; return 0; }
+  # A table the subscriber holds rows of came the other way (the source's own, before the switch):
+  # copying it again would collide. An empty one takes the publisher's rows by a table sync.
+  while IFS= read -r t; do
+    e=$(q "$to" "$db" "select to_regclass($(lit "$t")) is not null") || die "partitions: $to $db: looking up $t failed"
+    if [[ $e != t ]]; then
+      if ((DRY)); then empty=$((empty + 1)); continue; fi
+      blocked "$to $db: $t is in publication $pub on $from but absent here"
+      continue
+    fi
+    e=$(q "$to" "$db" "select exists (select 1 from only $t)") || die "partitions: $to $db: reading $t failed"
+    if [[ $e == t ]]; then rows=$((rows + 1)); else empty=$((empty + 1)); fi
+  done <<<"$missing"
+  ((blocks == 0)) || return 0
+  if ((rows && empty)); then blocked "$to $db: $sub lacks $rows table(s) holding rows and $empty empty one(s); one REFRESH takes one copy_data, so this needs a hand decision: $(paste -sd' ' <<<"$missing")"; return 0; fi
+  if ((rows)); then copy=false; else copy=true; fi
+  if src_by_admin "$to"; then need refresh "$db" "$copy"; return 0; fi
+  apply "$to" "$db" "ALTER SUBSCRIPTION $sub REFRESH PUBLICATION WITH (copy_data = $copy);" "$to $db: $sub refreshed for $(paste -sd' ' <<<"$missing") (copy_data=$copy)"
+}
+
+cmd_partitions() {
+  local spec db n
+  for spec in "${DATABASES[@]}"; do
+    db=$(db_of "$spec")
+    if [[ $(shape_of "$spec") == upstream=* ]]; then echo "partitions: $db copies an upstream publisher, which this box does not read"; continue; fi
+    sync_partitions src dst "$db" "$(sub_name fwd "$db")" "$PUB"
+    n=$(q src "$db" "select count(*) from pg_subscription where subname = $(lit "$(sub_name rev "$db")")") || die "partitions: src $db: reading the reverse subscription failed"
+    [[ $n == 0 ]] || sync_partitions dst src "$db" "$(sub_name rev "$db")" "$REV_PUB"
+  done
+  finish
+}
+
+# check_partitions <publisher side> <subscriber side> <db> <subscription> <publication>
+check_partitions() {
+  local from=$1 to=$2 db=$3 sub=$4 pub=$5 a b t n=0
+  # A failed read leaves its list empty and is counted in QFAIL, so finish_check exits 1.
+  a=$(q "$from" "$db" "$LEAVES_SQL" | cut -d'|' -f1) || true
+  b=$(q "$to" "$db" "$LEAVES_SQL" | cut -d'|' -f1) || true
+  while IFS= read -r t; do [[ -n $t ]] && diff_row "$db partition $t: on $from, not on $to; run partitions $CLUSTER" && n=$((n + 1)); done < <(only_in "$a" "$b")
+  a=$(q "$from" "$db" "$(pub_tables_sql "$pub")") || true
+  b=$(q "$to" "$db" "$(sub_tables_sql "$sub")") || true
+  if [[ -z $a && $(q "$from" "$db" "select count(*) from pg_class c join pg_namespace n on n.oid = c.relnamespace where c.relkind = 'r' and $NS") != 0 ]]; then
+    diff_row "$db: publication $pub on $from lists no tables, but $from has tables"; n=$((n + 1))
+  fi
+  while IFS= read -r t; do [[ -n $t ]] && diff_row "$db $t: in publication $pub on $from, not carried by $sub on $to (pg_subscription_rel); run partitions $CLUSTER" && n=$((n + 1)); done < <(only_in "$a" "$b")
+  echo "preflight: $db $from to $to: $(grep -c . <<<"$a" || true) published table(s), $n partition or subscription DIFF"
 }
 
 drop_sub() {
@@ -1611,6 +1695,30 @@ else
 fi
 EOS
         ;;
+      partition)
+        ok_db "$a"
+        local p o bound id_re='^[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*$' bound_re="^FOR VALUES FROM \('[-0-9: +.]+'\) TO \('[-0-9: +.]+'\)$"
+        read -r p o bound <<<"$c"
+        [[ $b =~ $id_re && $p =~ $id_re && $o =~ ^[A-Za-z0-9_]+$ && $bound =~ $bound_re ]] || die "srcexec: partition $b of $p ($o, $bound) has an unexpected shape"
+        printf 'db=%q leaf=%q parent=%q owner=%q bound=%q\n' "$a" "$b" "$p" "$o" "$bound"
+        cat <<'EOS'
+[[ $(pq "$db" -c "select relkind from pg_class where oid = to_regclass('$parent')") == p ]] || { echo "srcexec: $parent is not a partitioned table in $db" >&2; exit 1; }
+if [[ $(pq "$db" -c "select to_regclass('$leaf') is null") == t ]]; then
+  pq "$db" -c "BEGIN" -c "SET LOCAL lock_timeout = '10s'" -c "SET LOCAL ROLE \"$owner\"" -c "CREATE TABLE $leaf (LIKE $parent INCLUDING ALL)" -c "ALTER TABLE $parent ATTACH PARTITION $leaf $bound" -c "COMMIT" >/dev/null
+  changed "src $db: partition $leaf of $parent $bound, owner $owner, as on the target"
+fi
+EOS
+        ;;
+      refresh)
+        ok_db "$a"
+        [[ $b == true || $b == false ]] || die "srcexec: refresh copy_data '$b' is not true or false"
+        printf 'db=%q sub=%q copy=%q\n' "$a" "$(sub_name rev "$a")" "$b"
+        cat <<'EOS'
+[[ $(pq "$db" -c "select subenabled from pg_subscription where subname = '$sub'") == t ]] || { echo "srcexec: $sub in $db is absent or disabled; REFRESH needs it enabled" >&2; exit 1; }
+pq "$db" -c "ALTER SUBSCRIPTION $sub REFRESH PUBLICATION WITH (copy_data = $copy)" >/dev/null
+changed "src $db: $sub refreshed (copy_data=$copy)"
+EOS
+        ;;
       rmmarker)
         printf 'm=%q\n' "$FREEZE_MARKER"
         echo '[[ -z $m || ! -e $m ]] || { rm -f "$m"; changed "src: $m removed; migrations run again"; }'
@@ -1759,6 +1867,14 @@ cmd_preflight() {
   done
   check_tables
   check_schema
+  for spec in "${DATABASES[@]}"; do
+    db=$(db_of "$spec")
+    [[ $(shape_of "$spec") == upstream=* ]] && { echo "preflight: $db: the publisher is upstream of the source; its partitions are not read here"; continue; }
+    check_partitions src dst "$db" "$(sub_name fwd "$db")" "$PUB"
+    s=$(sub_name rev "$db")
+    if [[ $(q src "$db" "select count(*) from pg_subscription where subname = $(lit "$s")") == 0 ]]; then echo "preflight: $db: no reverse subscription $s on the source, so no reverse partitions to compare"
+    else check_partitions dst src "$db" "$s" "$REV_PUB"; fi
+  done
   check_grants
   hash_age
   if ((upstream)); then
