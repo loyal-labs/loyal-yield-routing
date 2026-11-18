@@ -20,7 +20,7 @@ SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=30)
 
 usage() {
   cat >&2 <<EOF
-usage: $0 preflight | delta [--reverse] | copy | switch --go | back --go [--sync-back] | back --sync-back --dry-run
+usage: $0 preflight | delta [--reverse] | copy | switch --go | back --go [--sync-back] [--risk-two-stores] | back --sync-back --dry-run
 preflight  Read-only. Exit 0 only when, on $NEW_HOST, the arm64 binary, both unit files and their slice, the store volume, the
            cloudflared config and credentials and the share port are in place and both units are inactive, the UDP port of the store
            is open in the security group, the new store has room for the delta, and on $OLD_ADDR both units are active and a search
@@ -30,9 +30,12 @@ copy       One live pass old to new while the old units keep running. Rerun unti
 switch     Catch-up copy with the old units running, re-measure the delta (stop if still over ${DELTA_MAX_MIB} MiB), stop and disable old
            cloudflared-mnemonic and mnemonic, final rsync, enable and start mnemonic then cloudflared-mnemonic on $NEW_HOST, check
            that a search answers from it and that the share hostname answers. Needs --go.
-back       Stop and disable the new units, enable and start the old ones. If $NEW_HOST does not answer it says so and starts the old
-           side anyway. --sync-back first copies the new store over the old one (use it when the new box took writes) and fails when
-           $NEW_HOST cannot be reached or an old unit is running. Needs --go.
+back       Stop and disable the new units, enable and start the old ones. If $NEW_HOST does not answer, the old side starts only
+           when the AWS API shows the new instance stopped or terminated (S1_NEW_INSTANCE_ID names it, else it is found by
+           $NEW_ADDR); a new store that answers a search always refuses. With no proof, back refuses, because the new store may
+           still be serving and two stores must never run; --risk-two-stores starts the old side anyway, for an operator who knows
+           the new box is down or accepts the risk. --sync-back first copies the new store over the old one (use it when the new
+           box took writes) and fails when $NEW_HOST cannot be reached or an old unit is running. Needs --go.
 back --sync-back --dry-run
            Prints what --sync-back would copy back and changes nothing; refuses when an old unit is running. No --go needed.
 Both boxes are reached from this machine. The copy runs on the old box and pushes to the new one; the old box reaches the new
@@ -319,20 +322,38 @@ sync_back_dry() {
   rsync_run reverse dry "$out" || { cat "$out"; rm -f "$out"; die "sync-back dry run failed"; }
   echo "would copy back from $NEW_HOST:$STORE/ over $OLD_ADDR:$STORE/ (rsync -aH --delete-delay, nothing written):"
   total=$(grep -cE '^([<>ch.][a-zA-Z.+?]{10}|\*deleting) ' "$out" || true)
-  grep -E '^([<>ch.][a-zA-Z.+?]{10}|\*deleting) ' "$out" | head -n "$LIST_MAX" | sed 's/^/  /'
+  { grep -E '^([<>ch.][a-zA-Z.+?]{10}|\*deleting) ' "$out" || true; } | head -n "$LIST_MAX" | sed 's/^/  /' || true
   ((total <= LIST_MAX)) || echo "  ... $((total - LIST_MAX)) more (S1_LIST_MAX=$LIST_MAX)"
   n=$(stat_of 'Total transferred file size' "$out")
   echo "dry run: $total path(s) listed, files $(stat_of 'Number of regular files transferred' "$out"), deleted $(stat_of 'Number of deleted files' "$out"), bytes $n ($((n / 1048576)) MiB). Nothing was copied or stopped."
   rm -f "$out"
 }
 
+new_proven_down() { # the AWS API says the new instance is stopped or terminated; says why not otherwise
+  local st ids=${S1_NEW_INSTANCE_ID:-}
+  command -v aws >/dev/null || { echo "aws CLI not found"; return 1; }
+  if [[ -n $ids ]]; then
+    st=$(aws --profile "$AWS_PROFILE_NAME" --region "$AWS_REGION_NAME" ec2 describe-instances --instance-ids "$ids" \
+      --query 'Reservations[].Instances[].State.Name' --output text 2>&1) || { echo "aws: $st"; return 1; }
+  else
+    st=$(aws --profile "$AWS_PROFILE_NAME" --region "$AWS_REGION_NAME" ec2 describe-instances --filters "Name=ip-address,Values=$NEW_ADDR" \
+      --query 'Reservations[].Instances[].State.Name' --output text 2>&1) || { echo "aws: $st"; return 1; }
+  fi
+  case $st in
+    stopped | terminated) echo "AWS reports the new instance $st"; return 0 ;;
+    "") echo "AWS shows no instance for $NEW_ADDR (a stopped instance without an elastic IP has none): set S1_NEW_INSTANCE_ID"; return 1 ;;
+    *) echo "AWS reports the new instance $st"; return 1 ;;
+  esac
+}
+
 cmd_back() {
-  local sync=0 dry=0 go=0 arg out new_up=1
+  local sync=0 dry=0 go=0 risk=0 arg out new_up=1 why
   for arg in "$@"; do
     case $arg in
       --go) go=1 ;;
       --sync-back) sync=1 ;;
       --dry-run) dry=1 ;;
+      --risk-two-stores) risk=1 ;;
       *) die "back: unknown argument $arg" ;;
     esac
   done
@@ -351,7 +372,16 @@ cmd_back() {
   else
     new_up=0
     ((sync == 0)) || die "$NEW_HOST does not answer, so --sync-back cannot be honoured; nothing was changed. Rerun without --sync-back to start the old side on its own store"
-    echo "$NEW_HOST does not answer: its units could not be stopped. Starting the old side anyway; if the new box is up, stop its units when it answers"
+    if search_check "$NEW_ADDR" >/dev/null 2>&1; then
+      die "$NEW_HOST does not answer ssh but the store at $NEW_ADDR answers a search: it is serving. The old side was not started, so two stores cannot run. Stop the new units, then rerun"
+    fi
+    if why=$(new_proven_down); then
+      echo "$NEW_HOST does not answer ssh; $why. Starting the old side"
+    elif ((risk)); then
+      echo "RISK ACCEPTED (--risk-two-stores): $NEW_HOST does not answer ssh and nothing proves it is down ($why). Starting the old side; if the new store is up this is two stores, and writes it took are not on the old store"
+    else
+      die "$NEW_HOST does not answer ssh and nothing proves its store is down ($why). The old side was not started, so two stores cannot run. Stop the new instance and rerun, or rerun with --risk-two-stores to start the old side anyway"
+    fi
   fi
   if ((sync)); then
     echo "copy new store over old"

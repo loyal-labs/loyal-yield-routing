@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Switch S3: the live weather bot moves from Hetzner loyal-eu-1 to the AWS box weather-live (Stockholm).
 #   s3-weather.sh prepare            install users, dirs, units (disabled), binaries and env on weather-live; a rerun prints "0 change(s)"
-#   s3-weather.sh sync [--dry-run] [--pair DST]   niced pre-copy while the old bot runs; --dry-run records the delta; --pair DST
-#                                    copies one tree (no stamp); a full sync that fails in any pair writes no stamp
-#   s3-weather.sh verify             read-only manifest (path, size, mtime) of every copied tree, old box against new box
+#   s3-weather.sh sync [--dry-run] [--checksum] [--pair DST]   niced copy that mirrors the old box (files gone there are deleted on
+#                                    the new box); --dry-run records the delta; --checksum compares content, not size and mtime;
+#                                    --pair DST copies one tree (no stamp); a full sync that fails in any pair writes no stamp
+#   s3-weather.sh verify             read-only manifest of every copied tree, old box against new box: path set (extra files fail),
+#                                    size, mtime, and sha256 of the state the bot reads at start (S3_VERIFY_HASH=all: every file)
 #   s3-weather.sh preflight          read-only; exit 0 only when ready and the old units are active
 #   s3-weather.sh switch --go        stop and disable the old units, final copy, start the new ones, check quotes and fills
 #   s3-weather.sh back --go          the reverse: stop and disable the new units, copy state home, start the old ones
@@ -20,6 +22,8 @@ BWLIMIT=${S3_BWLIMIT:-15000}
 STALE_SECS=${S3_STALE_SECS:-21600}
 QUOTE_WAIT=${S3_QUOTE_WAIT:-240}
 PAIR_TIMEOUT=${S3_PAIR_TIMEOUT:-1200}
+VERIFY_HASH=${S3_VERIFY_HASH:-start}
+EXTRA_OK=${S3_EXTRA_OK:-}
 HERE=$(cd "$(dirname "$0")" && pwd)
 
 UNITS=(w20-live.service w20-record.service w2-weather.service w20-scorecard.service w20-scorecard.timer
@@ -142,8 +146,9 @@ EOF
 
 sync_body() {
   cat <<'EOF'
-FLAGS="-i --out-format=%i_%n --stats --inplace --bwlimit=$BW --exclude=*.pid"
+FLAGS="-i --out-format=%i_%n --stats --inplace --delete --bwlimit=$BW --exclude=*.pid"
 [ "$DRY" = 1 ] && FLAGS="$FLAGS -n"
+[ "$SUM" = 1 ] && FLAGS="$FLAGS --checksum"
 bad=0; ran=0
 for p in "${pairs[@]}"; do
   IFS='|' read -r src dst extra <<<"$p"
@@ -172,10 +177,11 @@ EOF
 }
 
 cmd_sync() {
-  local dry=0 only=
+  local dry=0 only='' sum=0
   while (($#)); do
     case $1 in
       --dry-run) dry=1 ;;
+      --checksum) sum=1 ;;
       --pair) [[ -n ${2:-} ]] || die "sync --pair needs a destination path"; only=$2; shift ;;
       *) die "sync: unknown argument $1" ;;
     esac
@@ -183,26 +189,40 @@ cmd_sync() {
   done
   say "sync $([[ $dry == 1 ]] && echo dry-run || echo copy)${only:+ of $only only} $OLD -> $NEW (bwlimit ${BWLIMIT} KB/s, nice 19, idle io, ${PAIR_TIMEOUT}s per tree)"
   local script
-  script="$(printf 'DRY=%s\nONLY=%q\n' "$dry" "$only")
+  script="$(printf 'DRY=%s\nSUM=%s\nONLY=%q\n' "$dry" "$sum" "$only")
 $(pairs_def)
 $(sync_body)"
+  # a copy that changes files must not leave an earlier stamp standing as proof the tree is fresh (S2-15)
+  if [[ $dry == 0 && -z $only ]]; then newsh 'sudo rm -f /srv/w20/.s3-sync-epoch' || die "could not clear the old sync stamp on $NEW"; fi
   hop <<<"$script" || { echo "s3-weather: sync failed, no stamp written" >&2; return 1; }
   if [[ $dry == 0 && -z $only ]]; then
     newsh 'date +%s | sudo tee /srv/w20/.s3-sync-epoch >/dev/null' || { echo "s3-weather: sync copied but the stamp write failed" >&2; return 1; }
     say "sync stamp written on $NEW"
   elif [[ $dry == 0 ]]; then
-    say "one tree copied; no stamp (a stamp needs a full sync)"
+    newsh 'sudo rm -f /srv/w20/.s3-sync-epoch' || die "could not clear the old sync stamp on $NEW"
+    say "one tree copied; the sync stamp is cleared (a stamp needs a full sync)"
   fi
 }
 
-# verify: every file of every copied tree, path and size and mtime, old box against new box. Extra files on the new box are counted, not failed.
+# verify: every file of every copied tree, old box against new box: the path sets must be equal (a file only on the new box fails
+# unless S3_EXTRA_OK, an anchored regex on dst+path, allows it), and size and mtime and, for the state the bot reads at start, the
+# sha256. Under S3_VERIFY_HASH=start the two history trees (data/, w2-weather/data/ except state.db*) are not hashed; =all hashes
+# every file.
 verify_body() {
   cat <<'EOF'
 MFPY=$(cat <<'PY'
-import os, sys
-t, ex = sys.argv[1], sys.argv[2].split()
+import hashlib, os, sys
+t, ex, mode = sys.argv[1], sys.argv[2].split(), sys.argv[3]
 names = {x[10:] for x in ex if x.startswith("--exclude=") and not x.endswith("/")}
 prefixes = [x[10:] for x in ex if x.startswith("--exclude=") and x.endswith("/")]
+def digest(p, f):
+    if mode != "all" and (t == "/srv/w20/data/" or (t == "/srv/w20/w2-weather/data/" and not f.startswith("state.db"))):
+        return "-"
+    h = hashlib.sha256()
+    with open(p, "rb") as fh:
+        for blk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(blk)
+    return h.hexdigest()
 rows = []
 if os.path.isdir(t):
     for d, _, fs in os.walk(t):
@@ -210,38 +230,52 @@ if os.path.isdir(t):
             p = os.path.normpath(os.path.join(os.path.relpath(d, t), f))
             if f.endswith(".pid") or f in names or any(p.startswith(q) for q in prefixes):
                 continue
-            st = os.lstat(os.path.join(d, f))
-            rows.append("%s\t%d\t%d" % (p, st.st_size, int(st.st_mtime)))
-else:
+            fp = os.path.join(d, f)
+            st = os.lstat(fp)
+            rows.append("%s\t%d\t%d\t%s" % (p, st.st_size, int(st.st_mtime), digest(fp, f) if os.path.isfile(fp) and not os.path.islink(fp) else "-"))
+elif os.path.lexists(t):
     st = os.lstat(t)
-    rows.append("%s\t%d\t%d" % (os.path.basename(t), st.st_size, int(st.st_mtime)))
+    rows.append("%s\t%d\t%d\t%s" % (os.path.basename(t), st.st_size, int(st.st_mtime), digest(t, os.path.basename(t))))
+else:
+    rows.append("__ABSENT__")
 print("\n".join(sorted(rows)))
 PY
 )
 bad=0; trees=0
 for p in "${pairs[@]}"; do
   IFS='|' read -r src dst extra <<<"$p"
-  [ -e "$src" ] || continue
-  trees=$((trees + 1))
-  o=$(python3 -I - "$src" "$extra" <<<"$MFPY") || { echo "  FAIL $dst: manifest unreadable on the old box"; bad=1; continue; }
-  n=$("${SSHN[@]}" "ubuntu@$NEWIP" "sudo python3 -I - $(printf %q "$dst") $(printf %q "$extra")" <<<"$MFPY") || { echo "  FAIL $dst: manifest unreadable on the new box (tree missing or no answer)"; bad=1; continue; }
+  o=$(python3 -I - "$src" "$extra" "$HASHMODE" <<<"$MFPY") || { echo "  FAIL $dst: manifest unreadable on the old box"; bad=1; continue; }
+  n=$("${SSHN[@]}" "ubuntu@$NEWIP" "sudo python3 -I - $(printf %q "$dst") $(printf %q "$extra") $(printf %q "$HASHMODE")" <<<"$MFPY") || { echo "  FAIL $dst: manifest unreadable on the new box (no answer)"; bad=1; continue; }
+  [ "$o" != __ABSENT__ ] && trees=$((trees + 1))
   miss=$(LC_ALL=C comm -23 <(printf '%s\n' "$o") <(printf '%s\n' "$n") | grep . || true)
   nmiss=$(printf '%s\n' "$miss" | grep -c . || true)
   nold=$(printf '%s\n' "$o" | grep -c . || true)
-  extras=$(LC_ALL=C comm -13 <(printf '%s\n' "$o" | cut -f1 | LC_ALL=C sort) <(printf '%s\n' "$n" | cut -f1 | LC_ALL=C sort) | grep -c . || true)
+  extra_list=$(LC_ALL=C comm -13 <(printf '%s\n' "$o" | cut -f1 | LC_ALL=C sort) <(printf '%s\n' "$n" | cut -f1 | LC_ALL=C sort) | grep . || true)
+  if [ -n "$EXTRA_OK" ] && [ -n "$extra_list" ]; then
+    extra_list=$(while IFS= read -r x; do printf '%s\n' "$dst$x" | grep -qE "^($EXTRA_OK)$" || printf '%s\n' "$x"; done <<<"$extra_list")
+  fi
+  extras=$(printf '%s\n' "$extra_list" | grep -c . || true)
   printf '  %-62s files=%s missing_or_different=%s extra_on_new=%s\n' "$dst" "$nold" "$nmiss" "$extras"
-  if [ "$nmiss" -ne 0 ]; then printf '%s\n' "$miss" | head -3 | sed 's/^/    old has: /'; bad=1; fi
+  if [ "$nmiss" -ne 0 ]; then printf '%s\n' "$miss" | head -3 | cut -f1-3 | sed 's/^/    old has: /'; bad=1; fi
+  if [ "$extras" -ne 0 ]; then printf '%s\n' "$extra_list" | head -3 | sed 's/^/    only on new: /'; echo "    (sync deletes it; or allow it with S3_EXTRA_OK)"; bad=1; fi
+done
+newdirs=$("${SSHN[@]}" "ubuntu@$NEWIP" "ls -d /srv/w20/behind*/ 2>/dev/null" </dev/null || true)
+for d in $newdirs; do
+  known=0
+  for p in "${pairs[@]}"; do [ "${p%%|*}" = "$d" ] && known=1; done
+  [ $known = 1 ] || { echo "  FAIL $d exists on the new box and is not on the old box"; bad=1; }
 done
 [ $trees -gt 0 ] || { echo "  FAIL no tree found on the old box"; bad=1; }
-[ $bad -eq 0 ] && echo "verify: $trees tree(s) identical (path, size, mtime)" || echo "verify: MISMATCH"
+[ $bad -eq 0 ] && echo "verify: $trees tree(s) identical (paths, size, mtime, sha256 of the state read at start)" || echo "verify: MISMATCH"
 exit $bad
 EOF
 }
 
 cmd_verify() {
-  say "verify: manifest of every copied tree, $OLD against $NEW"
+  say "verify: manifest of every copied tree (hash: $VERIFY_HASH), $OLD against $NEW"
   local script
-  script="$(pairs_def)
+  script="$(printf 'HASHMODE=%q\nEXTRA_OK=%q\n' "$VERIFY_HASH" "$EXTRA_OK")
+$(pairs_def)
 $(verify_body)"
   hop <<<"$script"
 }
@@ -453,7 +487,7 @@ cmd_switch() {
   stop_old || die "old units not fully stopped and disabled; nothing was started on $NEW. Old state needs a look; 'back --go' restores"
   say "4/7 final copy with everything stopped"
   copy_final old-to-new || die "final copy failed; old units are stopped. Run 'back --go' or fix and rerun the copy"
-  say "5/7 cross-check: every copied tree by path, size and mtime, then the files that matter by sha256"
+  say "5/7 cross-check: every copied tree by path set, size, mtime and the start state by sha256, then the files that matter"
   cmd_verify || die "manifest mismatch after final copy; old units are stopped, nothing started on $NEW. Run 'back --go' or fix and rerun the copy"
   local list="/srv/w20/out/live/venue.journal.jsonl /srv/w20/out/live/merge.journal.jsonl /srv/w20/out/live/redeem.journal.jsonl /srv/w20/w2-weather/data/state.db /etc/w20/live.env /srv/w20/bin/w20"
   [[ $(oldsh "sha256sum $list" | sort -k2) == "$(newsh "sudo sha256sum $list" | sort -k2)" ]] || die "sha256 mismatch after final copy; old units are stopped, nothing started on $NEW. Run 'back --go'"
