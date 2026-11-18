@@ -35,7 +35,7 @@ build_one() {
     return
   fi
   git archive --format=tar "$treeish" |
-    ssh "$BOX" "d=\$(mktemp -d) && tar -C \$d -xf - && cd \$d && nice -n 19 sudo -n docker buildx build --platform linux/arm64 --load --pull=false -t $tag . ; s=\$?; cd /; rm -r \$d; exit \$s"
+    ssh "$BOX" "d=\$(mktemp -d) && tar -C \$d -xf - && cd \$d && nice -n 19 sudo -n docker buildx build --platform linux/arm64 --load --pull=false --provenance=false --sbom=false -t $tag . ; s=\$?; cd /; rm -r \$d; exit \$s"
   echo "$tag: built"
 }
 
