@@ -18,11 +18,17 @@ jobs:
       PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
       PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       PR_TITLE: ${{ github.event.pull_request.title }}
+      PR_BODY: ${{ github.event.pull_request.body }}
+      PR_BASE_REF: ${{ github.base_ref }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Check the pull request restores no older file content
+        working-directory: .
+        run: scripts/ci-no-silent-revert.sh "origin/$PR_BASE_REF" "$PR_HEAD_SHA"
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
