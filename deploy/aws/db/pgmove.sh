@@ -123,7 +123,10 @@ end_masters() {
   for h in "${SRC_SSH:-local}" "${DST_SSH:-local}"; do [[ $h == local ]] || ssh -o ControlPath="$SSH_CTL" -O exit "$h" >/dev/null 2>&1 || :; done
 }
 RUN_ID=''
-trap 'rc=$?; [[ -z $RUN_ID ]] || echo "$CMD: run $RUN_ID ended rc=$rc"; rm -f "$QFAIL"; end_masters; ((REOPEN == 0)) || reopen_target $rc' EXIT
+# REV_FENCED: a switch --reverse that stops now leaves the target the primary with its roles NOLOGIN.
+REV_FENCED=0
+rev_fenced_hint() { ((REV_FENCED == 0 || $1 == 0 || $1 == 3)) || echo "pgmove: switch --reverse refused; the target stays the primary with no LOGIN and no source role got LOGIN: run thaw $CLUSTER --reverse to reopen the target (cutover.sh rollback runs it)" >&2; }
+trap 'rc=$?; [[ -z $RUN_ID ]] || echo "$CMD: run $RUN_ID ended rc=$rc"; rm -f "$QFAIL"; end_masters; ((REOPEN == 0)) || reopen_target $rc; rev_fenced_hint $rc' EXIT
 # PROBE names the reverse verify, so a query that fails there never reads as a difference.
 PROBE=0
 query_stopped() {
@@ -1909,6 +1912,7 @@ cmd_switch() {
   local role spec db table roles n fence sub can
   fence=fence
   ((REVERSE == 0)) || fence='fence --reverse'
+  if ((REVERSE && DRY == 0)) && target_primary && [[ -e $(fence_ok) || -e $(fenced_file) ]]; then REV_FENCED=1; fi
   upstream_blockers "the switch"
   roles=$(login_roles)
   for role in $roles; do
@@ -1979,11 +1983,12 @@ cmd_switch() {
     verify_checks
     query_failures
     PROBE=0
-    ((diffs == 0)) || { echo "$diffs DIFF"; die "switch --reverse: the source differs from the target in the $diffs DIFF line(s) above; no source role got LOGIN, so the target stays the primary; thaw $CLUSTER --reverse gives it back its LOGIN (cutover.sh rollback runs it)"; }
+    ((diffs == 0)) || { echo "$diffs DIFF"; die "switch --reverse: the source differs from the target in the $diffs DIFF line(s) above"; }
     echo "switch: verify --reverse 0 DIFF; the source gets LOGIN"
   fi
   # From the first grant on, TO may take writes: recovery treats it as primary, FROM's fence is over.
   # A rerun keeps the stamp of the switch it finishes: cutover.sh binds its later stamps to that value.
+  REV_FENCED=0
   if ((DRY == 0)); then
     if ((REVERSE)); then unfence fwd; target_primary && switch_stamp reversed switched; else unfence rev; target_primary || switch_stamp switched reversed; fi
   fi
