@@ -309,7 +309,23 @@ hook() {
   [[ -n $2 ]] || return 0
   timed "$1" bounded "$2"
 }
-bounded() { (cd "$HERE" && exec perl -e 'alarm shift; exec @ARGV or exit 127' "$CUT_HOOK_SECONDS" bash -c "$1"); }
+# The hook runs in a process group of its own, which is killed whole when CUT_HOOK_SECONDS pass or when this script is gone
+# (a copy the hook started never outlives either). Its stdin is /dev/null: a group in the background cannot read the terminal.
+# shellcheck disable=SC2016 # perl source
+HOOK_PERL='
+use POSIX ":sys_wait_h";
+setpgrp(0, 0);
+my ($limit, $parent) = (shift, getppid);
+my $pid = fork;
+defined $pid or exit 126;
+if (!$pid) { exec @ARGV; exit 127 }
+my $end = time + $limit;
+while (1) {
+  if (waitpid($pid, WNOHANG) == $pid) { exit($? & 127 ? 128 + ($? & 127) : $? >> 8) }
+  kill "KILL", -$$ if time >= $end || getppid != $parent;
+  select(undef, undef, undef, 0.2);
+}'
+bounded() { (cd "$HERE" && exec perl -e "$HOOK_PERL" "$CUT_HOOK_SECONDS" bash -c "$1" </dev/null); }
 
 drop_boot() { on "$BOX" "touch $STATE/back-on-old && sync $STATE && rm -f $STATE/boot-old $STATE/boot-src $STATE/boot-old.active $STATE/boot-src.active && sync $STATE" || die "cannot remove the boot records on $BOX"; }
 
