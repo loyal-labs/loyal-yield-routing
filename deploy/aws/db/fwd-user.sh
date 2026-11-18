@@ -31,6 +31,10 @@ if [[ $(cat "$keys" 2>/dev/null || true) != "$line" ]]; then
   changed "$keys holds the key, from $from, one reverse listener"
 fi
 
+# sshd 9.6 lets a unix-socket -L through only when PermitOpen allows it, and a [path]:* entry is the
+# one spelling that names a socket; every TCP destination then falls outside the list.
+open=''
+for s in "$@"; do open+="[$s]:* "; done
 drop=/etc/ssh/sshd_config.d/50-$user.conf
 want="Match User $user
     AuthorizedKeysFile $keys
@@ -44,6 +48,7 @@ want="Match User $user
     AllowAgentForwarding no
     PermitTunnel no
     PermitTTY no
+    PermitOpen ${open% }
     ForceCommand /usr/sbin/nologin"
 if [[ $(cat "$drop" 2>/dev/null || true) != "$want" ]]; then
   printf '%s\n' "$want" >"$drop.new"
