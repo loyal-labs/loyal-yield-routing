@@ -11,7 +11,7 @@ usage: $0 <box> [--dry-run]
 boxes: $(for f in "$HERE"/boxes/*.conf; do basename "$f" .conf; done | paste -sd' ' -)
 Ensures, each step found again by its Name tag: key pair, security group (tcp 22 in, nothing else),
 instance (Ubuntu 24.04 from Canonical's SSM parameter, IMDSv2 required, termination protection on),
-gp3 volumes attached and tagged, one Elastic IP associated. Never deletes, stops or terminates.
+gp3 volumes attached and tagged, one Elastic IP associated. Never deletes or terminates; stops an instance only to change its type, and only with BOX_RESIZE=1.
 Prints "changed:" lines and ends "<box>: <n> change(s)". --dry-run prints each aws command it would run.
 Reads need a live session; a dry run without one lists every step as missing and says so.
 EOF
@@ -179,7 +179,24 @@ if [[ -z $IID ]]; then
   fi
 else
   have_type=$(pick '.Reservations[0].Instances[0].InstanceType')
-  [[ $have_type == "$INSTANCE_TYPE" ]] || warn "instance $BOX is $have_type, conf says $INSTANCE_TYPE; resize is a stop, modify, start and is not done here"
+  if [[ $have_type != "$INSTANCE_TYPE" ]]; then
+    if [[ ${BOX_RESIZE:-} == 1 ]]; then
+      have_state=$(pick '.Reservations[0].Instances[0].State.Name')
+      change "instance $BOX $have_type -> $INSTANCE_TYPE (stop, modify, start; address and termination protection stay)"
+      if [[ $have_state != stopped ]]; then
+        mut ec2 stop-instances --instance-ids "$IID" --output json
+        mut ec2 wait instance-stopped --instance-ids "$IID"
+      fi
+      mut ec2 modify-instance-attribute --instance-id "$IID" --instance-type "{\"Value\":\"$INSTANCE_TYPE\"}"
+      if [[ $have_state != stopped ]]; then
+        mut ec2 start-instances --instance-ids "$IID" --output json
+        mut ec2 wait instance-running --instance-ids "$IID"
+      fi
+      rd ec2 describe-instances --instance-ids "$IID" --output json
+    else
+      warn "instance $BOX is $have_type, conf says $INSTANCE_TYPE; set BOX_RESIZE=1 to stop, modify and start it"
+    fi
+  fi
   tokens=$(pick '.Reservations[0].Instances[0].MetadataOptions.HttpTokens')
   if [[ $tokens != required ]]; then
     change "instance $BOX requires IMDSv2"
