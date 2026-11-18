@@ -16,7 +16,34 @@ Conf fields, all required, none with a default: `PROFILE` (or `AWS_PROFILE`), `R
 
 ## loyal-main-config.sh
 
-`ARTIFACTS=<gh run download dir> LAUNCHER=<arm64 env-launcher dir> deploy/aws/loyal-main-config.sh stage` runs from the Mac after `loyal-main-prepare.sh` and stages, without enabling or starting anything, what loyal-workers-1 and loyal-db-primary run for Loyal: the arm64 release of `RELEASE_SHA` laid out under `/opt/loyal/releases` as `scripts/deploy-workers.sh` would, with its `40-verified-release.conf` drop-ins; every `loyal-*` unit, drop-in and timer; the cloudflared, otelcol, Prometheus, Alertmanager, Caddy, PgBouncer, pgBackRest and receiver configs; and every sealed credential, decrypted on the old box and re-sealed on loyal-main under the same name and path through one pipe (`deploy/aws/loyal-main-copy.py`), never touching disk or a terminal on the way. Database URLs and listen addresses are rewritten to 127.0.0.1 inside that pipe. The Postgres cluster config is staged beside the cluster under `/opt/loyal-db-staged` for `deploy/aws/db/pgmove.sh`; the tunnel credential is sealed but referenced by no unit. Old boxes are only read. It refuses to run when the running commit and `RELEASE_SHA` differ in service source, ends `loyal-main: <n> change(s)`, and fails if any `loyal-*` unit is enabled. `proof <dir>` writes credential decrypt results and database host:port per credential (no values), `systemd-analyze verify` per unit, enabled and listening state, and each binary's `--help` exit code run without network.
+`ARTIFACTS=<gh run download dir> LAUNCHER=<arm64 env-launcher dir> deploy/aws/loyal-main-config.sh stage` runs from the Mac after `loyal-main-prepare.sh` and stages, without enabling or starting anything, what loyal-workers-1 and loyal-db-primary run for Loyal: the arm64 release of `RELEASE_SHA` laid out under `/opt/loyal/releases` as `scripts/deploy-workers.sh` would, with its `40-verified-release.conf` drop-ins; every `loyal-*` unit, drop-in and timer; the cloudflared, otelcol, Prometheus, Alertmanager, Caddy, PgBouncer, pgBackRest and receiver configs; and every sealed credential, decrypted on the old box and re-sealed on loyal-main under the same name and path through one pipe (`deploy/aws/box-copy.py`), never touching disk or a terminal on the way. Database URLs and listen addresses are rewritten to 127.0.0.1 inside that pipe. The Postgres cluster config is staged beside the cluster under `/opt/loyal-db-staged` for `deploy/aws/db/pgmove.sh`; the tunnel credential is sealed but referenced by no unit. Old boxes are only read. It refuses to run when the running commit and `RELEASE_SHA` differ in service source, ends `loyal-main: <n> change(s)`, and fails if any `loyal-*` unit is enabled. `proof <dir>` writes credential decrypt results and database host:port per credential (no values), `systemd-analyze verify` per unit, enabled and listening state, and each binary's `--help` exit code run without network.
+
+## robinx-main-config.sh
+
+`BUILD=<arm64 build tree> deploy/aws/robinx-main-config.sh stage` stages on robinx-main what robinx-prod and the mnemonic box run, without enabling or starting anything: the arm64 release of the commit robinx-prod's live slot runs, the wallet indexer, the pinned monitoring tools, every robinx unit with its drop-ins, the config trees, the sealed credentials re-sealed for this host and `/srv/robinx-data/recovery` (postgres 0700, as on robinx-prod). It goes through `box-copy.py` like `loyal-main-config.sh` and ends `robinx-main: <n> change(s)`; a rerun prints 0. The build steps are in the script header.
+
+`deploy/aws/robinx-main-config.sh check` is read-only on all three hosts. It runs the same senders as `stage`, applies the same rewrites on the Mac, and compares the result with what robinx-main holds (content hash, mode, owner, link target). Each path a rerun would change prints as a `differs:` line, then `release:`, `check: <n> difference(s)` and `secrets: <b> of <a> ...`. It exits 0 only when nothing differs, the staged release is the live one and every secret matches. Without `BUILD` the two binaries are checked by the release sha inside the binary and by presence. Credentials are compared by `sums`, never by content.
+
+## switch/s5-robinx.sh
+
+`deploy/aws/switch/s5-robinx.sh preflight` is the read-only gate before `subscribe robinx`. It runs every check even when one fails and prints one line per check as `ok`, `BLOCKER` or `PARKED`. It ends `<n> ok, <m> blocker, <k> parked` and exits 0 only when m is 0. PARKED marks an owner call or a known gap that does not stop the subscribe: the backup age, root and deploy login on robinx-main, mnemonic units after S1, and a source that is already subscribed.
+
+The checks are:
+
+- 0348 on production
+- no publication or slot on robinx-prod
+- `subscribe`, `init` and `partitions` dry runs through `db/remote.sh`
+- the target cluster, its room, schema and settings against robinx-prod
+- the 337 GB slot cap at the measured WAL rate
+- `robinx-main-config.sh check` (rerun and secrets)
+- no robinx or monitoring unit enabled or active on robinx-main
+- the recovery directory
+- wen's `deploy/aws/repoint.sh check`
+- the `wen-prod` alias
+- cloudflared versions
+- both app slots in `CUT_STOP`
+
+The switch itself runs from `deploy/aws/db`, in the order of the S5 runbook in the migration tracker.
 
 ## host-diff.sh
 
