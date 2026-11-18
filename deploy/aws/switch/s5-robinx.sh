@@ -36,7 +36,7 @@ EOF
 old() { ssh "${SSH_OPTS[@]}" "$OLD" "$@"; }
 # shellcheck disable=SC2029
 new() { ssh "${SSH_OPTS[@]}" "$NEW" "$@"; }
-srcq() { old "cd /tmp && sudo -u postgres psql -h /run/robinx-postgres -d robinx -XAtq -v ON_ERROR_STOP=1" <<<"$1"; }
+srcq() { old "cd /tmp && sudo -u postgres psql -h /run/robinx-postgres -d ${2:-robinx} -XAtq -v ON_ERROR_STOP=1" <<<"$1"; }
 dstq() { new "cd /tmp && sudo -n -u postgres psql -p 5432 -d ${2:-robinx} -XAtq -v ON_ERROR_STOP=1" <<<"$1"; }
 pgmove() { local sub=$1; shift; PGMOVE_AGENT=$AGENT bash "$DB/remote.sh" run "$sub" robinx "$@"; }
 conf() { bash -c 'source "$1"; eval "echo \"\${$2[*]}\""' _ "$DB/clusters/robinx.conf" "$1"; }
@@ -137,14 +137,30 @@ c_slot_cap() {
   return 1
 }
 
+# Both sides are read as postgres in database postgres: in robinx, postgres carries per-database
+# settings (role-settings below), and they would show here as server settings.
 c_settings() {
   local q a b d
   q="select name || '=' || setting || coalesce(unit, '') from pg_settings where name in ($SETTINGS) order by name"
-  a=$(srcq "$q") || return 1
+  a=$(srcq "$q" postgres) || return 1
   b=$(dstq "$q" postgres) || return 1
   d=$(join -t= <(sort <<<"$a") <(sort <<<"$b") | awk -F= '$2 != $3 { printf "%s %s/%s ", $1, $2, $3 }')
   echo "${d:-every listed setting equal}${d:+(robinx-prod/robinx-main)}"
   [[ -z $d ]]
+}
+
+# pgmove init copies every role's settings except postgres's, and gives postgres in robinx only
+# statement_timeout and idle_in_transaction_session_timeout 0. Any other postgres-in-robinx setting on
+# the source (temp_file_limit=-1, lock_timeout=0) is not on the target: a session there as postgres
+# gets the server value. PARKED, as it changes no app session; the owner sets them by hand if wanted.
+c_role_settings() {
+  local q a b
+  q="select c from pg_db_role_setting s join pg_roles r on r.oid = s.setrole join pg_database d on d.oid = s.setdatabase cross join unnest(s.setconfig) c where r.rolname = 'postgres' and d.datname = 'robinx' order by 1"
+  a=$(srcq "$q" postgres) || return 1
+  b=$(dstq "$q" postgres) || return 1
+  [[ $a == "$b" ]] && { echo "postgres in robinx: $(paste -sd, - <<<"$a") on both"; return 0; }
+  echo "postgres in robinx: robinx-prod $(paste -sd, - <<<"$a"), robinx-main $(paste -sd, - <<<"$b"); init does not copy these, so a postgres session in robinx on robinx-main gets the server value (ALTER ROLE postgres IN DATABASE robinx SET ... by hand if wanted)"
+  return 3
 }
 
 c_backup() {
@@ -246,6 +262,7 @@ preflight() {
   check target-cluster c_cluster
   check target-schema c_schema
   check target-settings c_settings
+  check role-settings c_role_settings
   check init-rerun c_init_rerun
   check partitions-dry-run c_partitions_dry
   check slot-cap c_slot_cap
