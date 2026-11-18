@@ -28,13 +28,13 @@ for f in /etc/systemd/system/*; do
   [ -f "$f" ] && [ ! -L "$f" ] || continue
   b=${f##*/}
   case $b in *.service | *.timer | *.socket | *.path | *.mount | *.target) ;; *) continue ;; esac
-  printf '%s\n' "$b" | grep -Eq "$UNITS" || continue
+  printf '%s\n' "$b" | grep -E "$UNITS" >/dev/null || continue
   printf 'unit\t%s\t%s\n' "$b" "$(sha256sum "$f" | cut -d' ' -f1)"
 done
 {
   for t in $TREES; do [ -e "$t" ] && find "$t" -printf '%p\n'; done
   find /etc/systemd/system -mindepth 2 -maxdepth 2 -path '*.d/*' -printf '%P\n' | while IFS= read -r p; do
-    printf '%s\n' "${p%%/*}" | grep -Eq "$UNITS" && printf '/etc/systemd/system/%s\n' "$p"
+    printf '%s\n' "${p%%/*}" | grep -E "$UNITS" >/dev/null && printf '/etc/systemd/system/%s\n' "$p"
   done
 } | grep -Ev "$EXCLUDE" | sort -u | awk '{ print "etc\t" $0 "\t-" }'
 true

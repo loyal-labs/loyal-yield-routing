@@ -187,7 +187,7 @@ APPS="loyal-web loyal-admin loyal-stats loyal-telegram loyal-observer loyal-real
 
 dbcheck() {
   local out n bad via
-  out=$(new "systemctl is-active loyal-pgbouncer >/dev/null && ss -Hltn 'sport = :6432' | grep -q . && cd /tmp && CRED_EXEC=1 python3 -I -c $(printf '%q' "$CREDS_PY") $(printf '%q' "$APPS")") ||
+  out=$(new "systemctl is-active loyal-pgbouncer >/dev/null && ss -Hltn 'sport = :6432' | grep . >/dev/null && cd /tmp && CRED_EXEC=1 python3 -I -c $(printf '%q' "$CREDS_PY") $(printf '%q' "$APPS")") ||
     fail "$NEW: PgBouncer is not up on 6432, or the credentials did not read"
   echo "$out"
   grep -q '^loyal-realtime/' <<<"$out" || fail "loyal-realtime: no database login was tested; its realtime-envelope holds no postgres URL at 127.0.0.1"
@@ -226,7 +226,7 @@ c_pgmove() {
   local out rc
   out=$(PGMOVE_SRC_ADMIN=$SRC_ADMIN PGMOVE_AGENT=$AGENT bash "$DB/remote.sh" run preflight loyal 2>&1)
   rc=$?
-  grep -E 'DIFF' <<<"$out" | grep -vE '(^| )0 DIFF$' | head -5
+  grep -E 'DIFF' <<<"$out" | grep -vE '(^| )0 DIFF$' | sed -n '1,5p'
   grep -E ' DIFF$' <<<"$out" | tail -1
   return "$rc"
 }
@@ -277,10 +277,10 @@ set -u
 ini=/etc/pgbouncer/loyal.ini users=/etc/pgbouncer/loyal-users.txt
 grep -qxE 'listen_addr = 127.0.0.1' \$ini && grep -qxE 'listen_port = 6432' \$ini || { echo "\$ini does not listen on 127.0.0.1:6432"; exit 1; }
 dbs=\$(awk '/^\[databases\]/ { s = 1; next } /^\[/ { s = 0 } s && /=/' \$ini)
-[ -n "\$dbs" ] && ! grep -vE 'host=127\.0\.0\.1 port=5432' <<<"\$dbs" | grep -q . || { echo "a [databases] entry is not host=127.0.0.1 port=5432"; exit 1; }
+[ -n "\$dbs" ] && ! grep -vE 'host=127\.0\.0\.1 port=5432' <<<"\$dbs" | grep . >/dev/null || { echo "a [databases] entry is not host=127.0.0.1 port=5432"; exit 1; }
 openssl verify -CAfile /etc/loyal-db/tls/ca.crt -verify_ip 127.0.0.1 /etc/loyal-db/tls/server.crt >/dev/null 2>&1 || { echo "server.crt does not verify for 127.0.0.1"; exit 1; }
 st=\$(systemctl is-enabled loyal-pgbouncer 2>&1) at=\$(systemctl is-active loyal-pgbouncer 2>&1)
-ss -Hltn 'sport = :6432' | grep -q . && { echo "something listens on 6432 before switch"; exit 1; }
+ss -Hltn 'sport = :6432' | grep . >/dev/null && { echo "something listens on 6432 before switch"; exit 1; }
 cd /tmp
 secrets=\$(sudo -n -u postgres psql -XAtq -F ' ' -c "select rolname, rolcanlogin, rolpassword from pg_authid where rolpassword like 'SCRAM%'") || { echo "pg_authid did not read"; exit 1; }
 python3 -I -c $(printf '%q' "$CREDS_PY") $(printf '%q' "$APPS") >/tmp/.s4-creds.\$\$ || exit 1
@@ -414,7 +414,7 @@ except OSError:
     [[ $r == refused || $r == open ]] || miss=1
   done
   if ((miss)); then
-    echo "cannot read the security group (AWS session expired); probes of $NEW_IP:$out so the conf's INGRESS is not applied. Owner, after aws login --profile mgmt: $APPLY"
+    echo "tcp 80 or 443 on $NEW_IP did not answer (probes of $NEW_IP:$out), so the conf's INGRESS is not applied. Owner, after aws login --profile mgmt: $APPLY"
     return 3
   fi
   echo "probes of $NEW_IP:$out the group lets 80 and 443 in; udp 51820 cannot be read (inferred in, box.sh adds it first)"
@@ -423,7 +423,7 @@ except OSError:
 c_dns_realtime() {
   local dns ns ttl
   dns=$(dig +short realtime.askloyal.com A | paste -sd' ' -)
-  ns=$(dig +short NS askloyal.com | head -1)
+  ns=$(dig +short NS askloyal.com | sed -n 1p)
   ttl=$([[ -n $ns ]] && dig +noall +answer @"$ns" realtime.askloyal.com A | awk 'NR == 1 { print $2 }')
   echo "realtime.askloyal.com A ${dns:-none}, record TTL ${ttl:-unread} s; the owner's switch-time step O2 moves it to $NEW_IP (lower the TTL the day before)"
   [[ $dns == "$NEW_IP" ]] && return 0

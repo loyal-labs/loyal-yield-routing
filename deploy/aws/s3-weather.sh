@@ -69,7 +69,7 @@ agent_up() {
   AGENT_SOCK=$SSH_AUTH_SOCK
   AGENT_PID=$SSH_AGENT_PID
   ssh-add "$SSH_KEY" </dev/null >/dev/null 2>&1 || die "ssh-add $SSH_KEY failed (needs a key without passphrase)"
-  HKLINE=$(ssh-keygen -F "$NEWIP" -f "$HOME/.ssh/known_hosts" 2>/dev/null | awk '$2 == "ssh-ed25519" {print $2, $3; exit}')
+  HKLINE=$(ssh-keygen -F "$NEWIP" -f "$HOME/.ssh/known_hosts" 2>/dev/null | awk '$2 == "ssh-ed25519" && !f {print $2, $3; f = 1}')
   [[ -n $HKLINE ]] || die "no ed25519 host key for $NEWIP in ~/.ssh/known_hosts; ssh $NEW once first"
 }
 cleanup() {
@@ -159,8 +159,8 @@ EOF
   out=$(newsh 'sudo bash -s' <<<"$script")
   echo "$out" | grep -v '^count' | sed 's/^/  /'
   n=$(echo "$out" | sed -nE 's/^count ([0-9]+)$/\1/p'); total=$((total + n))
-  echo "$out" | grep -q 'verify rc=[1-9]' && die "systemd-analyze verify failed on $NEW, see above"
-  echo "$out" | grep -q '^MISSING' && die "a unit file is missing on $NEW"
+  echo "$out" | grep 'verify rc=[1-9]' >/dev/null && die "systemd-analyze verify failed on $NEW, see above"
+  echo "$out" | grep '^MISSING' >/dev/null && die "a unit file is missing on $NEW"
   say "weather-live: $total change(s)"
 }
 
@@ -305,12 +305,12 @@ for p in "${pairs[@]}"; do
   nold=$(printf '%s\n' "$o" | grep -c . || true)
   extra_list=$(LC_ALL=C comm -13 <(printf '%s\n' "$o" | cut -f1 | LC_ALL=C sort) <(printf '%s\n' "$n" | cut -f1 | LC_ALL=C sort) | grep . || true)
   if [ -n "$EXTRA_OK" ] && [ -n "$extra_list" ]; then
-    extra_list=$(while IFS= read -r x; do printf '%s\n' "$dst$x" | grep -qE "^($EXTRA_OK)$" || printf '%s\n' "$x"; done <<<"$extra_list")
+    extra_list=$(while IFS= read -r x; do printf '%s\n' "$dst$x" | grep -E "^($EXTRA_OK)$" >/dev/null || printf '%s\n' "$x"; done <<<"$extra_list")
   fi
   extras=$(printf '%s\n' "$extra_list" | grep -c . || true)
   printf '  %-62s files=%s missing_or_different=%s extra_on_new=%s\n' "$dst" "$nold" "$nmiss" "$extras"
-  if [ "$nmiss" -ne 0 ]; then printf '%s\n' "$miss" | head -3 | cut -f1-3 | sed 's/^/    old has: /'; bad=1; fi
-  if [ "$extras" -ne 0 ]; then printf '%s\n' "$extra_list" | head -3 | sed 's/^/    only on new: /'; echo "    (sync deletes it; or allow it with S3_EXTRA_OK)"; bad=1; fi
+  if [ "$nmiss" -ne 0 ]; then printf '%s\n' "$miss" | sed -n '1,3p' | cut -f1-3 | sed 's/^/    old has: /'; bad=1; fi
+  if [ "$extras" -ne 0 ]; then printf '%s\n' "$extra_list" | sed -n '1,3p' | sed 's/^/    only on new: /'; echo "    (sync deletes it; or allow it with S3_EXTRA_OK)"; bad=1; fi
 done
 newdirs=$("${SSHN[@]}" "ubuntu@$NEWIP" 'for d in /srv/w20/behind*/; do [ -d "$d" ] && echo "$d"; done; true' </dev/null) || { echo "  FAIL cannot list /srv/w20/behind*/ on the new box (no answer)"; bad=1; newdirs=; }
 for d in $newdirs; do
@@ -476,7 +476,7 @@ preflight_checks() {
 
   echo "venue geoblock from $NEW's own address"
   out=$(geoblock "$NEW" || true)
-  if echo "$out" | grep -q '"blocked":false'; then okl "$(echo "$out" | sed -E 's/"ip":"[^"]*",?//')"; else block "geoblock read from $NEW: ${out:-no answer}"; fi
+  if echo "$out" | grep '"blocked":false' >/dev/null; then okl "$(echo "$out" | sed -E 's/"ip":"[^"]*",?//')"; else block "geoblock read from $NEW: ${out:-no answer}"; fi
 
   echo "disk, clock"
   if out=$(rd new "df -B1G --output=avail /srv/w20 | tail -n1 | tr -d ' '") && [[ $out =~ ^[0-9]+$ ]]; then
@@ -605,7 +605,7 @@ cmd_switch() {
   [[ $a == "$b" ]] || die "sha256 mismatch after final copy; old units are stopped, nothing started on $NEW. Run 'back --go'"
   echo "  identical: $list"
   say "6/7 geoblock, then start the new units"
-  geoblock "$NEW" | grep -q '"blocked":false' || die "geoblock true from $NEW now; nothing started there. Run 'back --go'"
+  geoblock "$NEW" | grep '"blocked":false' >/dev/null || die "geoblock true from $NEW now; nothing started there. Run 'back --go'"
   newsh "date -u +%FT%TZ | sudo tee $OWNER_FILE >/dev/null && sudo test -s $OWNER_FILE" || die "the owner marker could not be written on $NEW; nothing started there. Run 'back --go'"
   start_new || die "the new units did not all start on $NEW; the owner marker is set, so 'back --go' copies home and restarts the old side"
   local since

@@ -135,7 +135,7 @@ halt_writers() {
     echo "$host: disabled and stopped timers $timers"
   fi
   if [[ -n ${oneshots// /} ]]; then
-    on "$host" "for i in \$(seq 300); do systemctl is-active $oneshots | grep -qvxE 'inactive|failed' || exit 0; sleep 1; done; echo 'a timer run is still running after 300s' >&2; exit 1" || die "$host: a timer run of $oneshots did not end"
+    on "$host" "for i in \$(seq 300); do systemctl is-active $oneshots | grep -vxE 'inactive|failed' >/dev/null || exit 0; sleep 1; done; echo 'a timer run is still running after 300s' >&2; exit 1" || die "$host: a timer run of $oneshots did not end"
   fi
   for u in $engines; do
     on "$host" "systemctl disable --now $u; [ \"\$(systemctl show -p Result --value $u)\" = success ] || { echo '$u did not stop cleanly' >&2; exit 1; }" || die "$host: $u did not stop cleanly"
@@ -360,12 +360,16 @@ units_ready() {
   local u bad=0 all
   all="$ALL $FIRST"
   for u in $all; do
-    if ! on "$CUT_NEW" "systemctl cat $u >/dev/null 2>&1"; then echo "preflight: $CUT_NEW has no unit $u"; bad=1; continue; fi
-    if on "$CUT_NEW" "systemctl is-active --quiet $u"; then echo "preflight: $CUT_NEW runs $u before the switch"; bad=1; fi
-    if on "$CUT_NEW" "systemctl is-enabled --quiet $u"; then echo "preflight: $CUT_NEW starts $u at boot before the switch"; bad=1; fi
+    if on "$CUT_NEW" "systemctl cat $u >/dev/null 2>&1"; then :; else
+      if (($? == 255)); then echo "preflight: $CUT_NEW did not answer for unit $u"; else echo "preflight: $CUT_NEW has no unit $u"; fi
+      bad=1
+      continue
+    fi
+    if on "$CUT_NEW" "systemctl is-active --quiet $u"; then echo "preflight: $CUT_NEW runs $u before the switch"; bad=1; elif (($? == 255)); then echo "preflight: $CUT_NEW did not answer whether $u runs"; bad=1; fi
+    if on "$CUT_NEW" "systemctl is-enabled --quiet $u"; then echo "preflight: $CUT_NEW starts $u at boot before the switch"; bad=1; elif (($? == 255)); then echo "preflight: $CUT_NEW did not answer whether $u starts at boot"; bad=1; fi
   done
   for u in $STOPS; do
-    if on "$CUT_NEW" "systemctl is-active --quiet $u"; then echo "preflight: $CUT_NEW runs $u, which the switch never starts"; bad=1; fi
+    if on "$CUT_NEW" "systemctl is-active --quiet $u"; then echo "preflight: $CUT_NEW runs $u, which the switch never starts"; bad=1; elif (($? == 255)); then echo "preflight: $CUT_NEW did not answer whether $u runs"; bad=1; fi
   done
   ((bad == 0)) && echo "preflight: $CUT_NEW has every unit of $CLUSTER.conf, all stopped and disabled"
   return $bad

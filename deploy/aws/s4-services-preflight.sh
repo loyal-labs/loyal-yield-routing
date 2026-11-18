@@ -43,9 +43,9 @@ done
 echo "enabled $(systemctl list-unit-files 'loyal-*' --state=enabled --no-legend | wc -l)"
 echo "active $(systemctl list-units 'loyal-*' --all --no-legend --state=active,activating,reloading | wc -l)"
 for u in loyal-clickstack.service loyal-clickstack-relay.service; do
-  echo "unit $u $(systemctl is-enabled $u 2>&1 | head -1) $(systemctl is-active $u 2>&1 | head -1)"
+  echo "unit $u $(systemctl is-enabled $u 2>&1 | sed -n 1p) $(systemctl is-active $u 2>&1 | sed -n 1p)"
 done
-echo "docker $(systemctl is-active docker 2>&1 | head -1)"
+echo "docker $(systemctl is-active docker 2>&1 | sed -n 1p)"
 E=/etc/loyal-observer-monitor S=/etc/loyal-squads-watch Q=/opt/loyal-squads-watch-recovery-v2
 echo "cert_verify $(openssl verify -CAfile $E/monitor-ca.pem -verify_ip 127.0.0.1 $E/monitor-server.pem >/dev/null 2>&1 && echo yes || echo no)"
 echo "cert_days $(( ( $(date -d "$(openssl x509 -in $E/monitor-server.pem -noout -enddate | cut -d= -f2)" +%s) - $(date +%s) ) / 86400 ))"
@@ -63,9 +63,9 @@ print('pins_files', all(sha(Q + '/' + k) == v for k, v in pins.items()))
 print('hosts', t['bind_ip'], t['allowed_peer'], t['endpoint'].split('/')[2].split(':')[0])
 PY
 echo "old_ip_left $(grep -rIl --exclude='*.pre-repin' -e '10\.92\.1\.[12]' $E $S /opt/loyal-observer-monitor $Q 2>/dev/null | wc -l)"
-rel=$(ls -d /opt/loyal/releases/web/*/ 2>/dev/null | head -2 | wc -l)
+rel=$(ls -d /opt/loyal/releases/web/*/ 2>/dev/null | sed -n '1,2p' | wc -l)
 echo "release_dirs $rel"
-sha=${SHA:-$(ls /opt/loyal/releases/web | head -1)}
+sha=${SHA:-$(ls /opt/loyal/releases/web | sed -n 1p)}
 echo "release_sha $sha"
 missing=$(cd /opt/loyal/releases/web/$sha/assets 2>/dev/null && find . -type f | while read -r f; do [ -f /opt/loyal/assets/web/$f ] || echo "$f"; done | wc -l)
 echo "assets_missing $missing"
@@ -79,7 +79,7 @@ echo "neon_globs $(echo "$units" | xargs grep -h -E '^(ImportCredential|LoadCred
 echo "clickstack_dir $([ -d /srv/loyal-clickstack/.clickstack ] && echo yes || echo no)"
 REMOTE
 )
-get() { sed -n "s/^$1 //p" <<<"$collect" | head -1; }
+get() { sed -n "s/^$1 //p" <<<"$collect" | sed -n 1p; }
 
 # 1 images
 read -r _ cs_id relay_id <<<"$(grep '^ids_file' <<<"$collect")"
@@ -102,7 +102,7 @@ fi
 
 # 3 clickstack data (read-only listing)
 cd_out=$("$DIR/loyal-clickstack-copy.sh" delta 2>&1)
-cd_line=$(grep ' delta: ' <<<"$cd_out" | head -1)
+cd_line=$(grep ' delta: ' <<<"$cd_out" | sed -n 1p)
 cd_bytes=$(sed -n 's/.*to copy [0-9]* entries (\([0-9]*\) bytes).*/\1/p' <<<"$cd_line")
 if [[ $(get clickstack_dir) == yes && -n $cd_bytes && $cd_bytes -le $WINDOW_BYTES ]]; then
   report ok clickstack "a final pass would send $cd_bytes bytes (limit $WINDOW_BYTES); ${cd_line#* delta: }"

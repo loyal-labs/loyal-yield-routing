@@ -88,7 +88,7 @@ preflight() {
   # The root-side helper and its sudoers come from wen main (they carry the migration-freeze refusal).
   git -C "$WEN" fetch -q origin main
   slot_ref=$(git -C "$WEN" rev-parse --short origin/main)
-  git -C "$WEN" show origin/main:deploy/systemd/robinx-slot | grep -q 'FREEZE_MARKER=/etc/pgmove/freeze' || die "wen main's robinx-slot has no freeze refusal"
+  git -C "$WEN" show origin/main:deploy/systemd/robinx-slot | grep 'FREEZE_MARKER=/etc/pgmove/freeze' >/dev/null || die "wen main's robinx-slot has no freeze refusal"
   git -C "$WEN" show origin/main:deploy/systemd/sudoers-robinx | new "sudo visudo -cf /dev/stdin" >/dev/null || die "sudoers-robinx does not parse on $NEW"
   addrs
 }
@@ -359,7 +359,7 @@ proof() { # proof <dir>: the evidence files, names, hashes and exit codes only
     echo '# active (robinx*|mnemonic*|monitoring):'
     systemctl list-units 'robinx*' 'mnemonic*' 'cloudflared*' 'prometheus*' 'alertmanager*' 'node_exporter*' 'postgres_exporter*' --all --state=active --no-legend
     echo '# listening:'; sudo ss -lnt" >"$p/enabled.txt"
-  new "echo '# ffmpeg:'; ffmpeg -version | head -1; ffmpeg -hide_banner -encoders 2>/dev/null | grep libx264
+  new "echo '# ffmpeg:'; ffmpeg -version | sed -n 1p; ffmpeg -hide_banner -encoders 2>/dev/null | grep libx264
     for b in /opt/robinx/releases/robinx-$RELEASE_SHA/robinx /usr/local/bin/wallet-indexer /usr/bin/cloudflared /opt/prometheus/prometheus /opt/prometheus/promtool /opt/alertmanager/alertmanager /opt/node_exporter/node_exporter /opt/postgres_exporter/postgres_exporter; do
       case \$b in *wallet-indexer) a=--help ;; *cloudflared) a=--version ;; *robinx) a=--help ;; *) a=--version ;; esac
       out=\$(sudo unshare -n setpriv --reuid=nobody --regid=nogroup --clear-groups timeout 10 \$b \$a 2>&1); rc=\$?
@@ -413,7 +413,7 @@ prepare_check() { # what prepare would change, as "differs:" lines
   pins=$(tool_pins)
   # shellcheck disable=SC2016 # expanded on robinx-main
   new "CF_VER=$CLOUDFLARED_VERSION PINS='$pins' bash -s" <<'REMOTE'
-{ dpkg-query -W ffmpeg >/dev/null 2>&1 && ffmpeg -hide_banner -encoders 2>/dev/null | grep -q libx264; } || echo "differs: ffmpeg with libx264"
+{ dpkg-query -W ffmpeg >/dev/null 2>&1 && ffmpeg -hide_banner -encoders 2>/dev/null | grep libx264 >/dev/null; } || echo "differs: ffmpeg with libx264"
 [ "$(dpkg-query -W -f '${Version}' cloudflared 2>/dev/null)" = "$CF_VER" ] || echo "differs: cloudflared $CF_VER"
 [ "$(readlink /usr/local/bin/cloudflared)" = /usr/bin/cloudflared ] || echo "differs: link /usr/local/bin/cloudflared"
 while read -r _ name ver _; do
