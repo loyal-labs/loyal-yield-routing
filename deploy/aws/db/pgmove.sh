@@ -2,7 +2,7 @@
 set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
-SUBCOMMANDS="probe init subscribe backfill catchup sequences grants schema hash verify fence switch reverse retire writes"
+SUBCOMMANDS="forward source verifier probe init subscribe backfill catchup sequences grants schema hash verify fence switch reverse retire writes"
 PUB=pgmove
 REV_PUB=pgmove_rev
 REPL_ROLE=pgmove
@@ -11,6 +11,9 @@ usage() {
   cat >&2 <<EOF
 usage: $0 <subcommand> <cluster> [flags]
 clusters: $(for f in "$HERE"/clusters/*.conf; do basename "$f" .conf; done | paste -sd' ' -)
+  forward <c>                  SRC_VIA=forward: the replication password, the passfile and pg-forward@<c> on this box
+  source <c> <verifier|same>   SRC_VIA=forward: print, never run, the root script for the source (remote.sh source runs it)
+  verifier <c>                 SRC_VIA=forward: stdin holds the source's verifier for the role; prints same or a new one
   probe <c>                    what feeds the source (neon-fed, static or local) and what blocks a move
   init <c> [--dry-run]         target cluster, settings, roles (NOLOGIN), databases, extensions, schema, hypertables
   subscribe <c> [--dry-run]    freeze marker, replication role, forward, publication, one subscription per database in order
@@ -58,6 +61,7 @@ ENCODING=UTF8 LOCALE_PROVIDER='' LOCALE=''
 DATABASES=()
 HYPERTABLES=() HT_DB='' HT_TIME=observed_at HT_KEY=event_id TS_RETAIN_DAYS=62 CATCHUP_MARGIN=10000
 SYNC_WORKERS=2 BINARY=true COPY_SETTINGS=()
+SRC_VIA=ssh SRC_SSLMODE=disable SRC_HBA_FROM='' FWD_TARGET=''
 FWD_USER=pgmove-fwd FWD_SSH='' FWD_PORT='' REV_PORT='' FREEZE_MARKER='' FENCE_KEEP=() REVERSE_HOURS=72
 PROBE_SECS=30 LAG_WAIT_SECS=600 HASH_BUCKET=1000000 HASH_RECHECK_SECS=60 HASH_MAX_AGE_HOURS=24 EXACT_COUNT_BYTES=268435456
 # shellcheck source=/dev/null
@@ -67,6 +71,16 @@ for v in SRC_SSH SRC_SOCKET SRC_PORT SRC_OSUSER LOCALE_PROVIDER LOCALE; do
 done
 ((${#DATABASES[@]})) || { echo "pgmove: $CLUSTER.conf lists no DATABASES" >&2; exit 2; }
 [[ -n $FWD_SSH ]] || FWD_SSH=$FWD_USER@${SRC_SSH#*@}
+# SRC_VIA=ssh: psql and pg_dump run on SRC_SSH over sudo, through the operator's forwarded agent.
+# SRC_VIA=forward: nothing from this box gets a shell on the source. FWD_SSH is a forward-only
+# user on a hop to FWD_TARGET (remote.sh route makes it), every source query and dump runs here as REPL_ROLE through
+# 127.0.0.1:FWD_PORT with SRC_SSLMODE, and what needs a superuser on the source is the script that
+# `source` prints and remote.sh source runs from an operator machine.
+case $SRC_VIA in
+  ssh) ;;
+  forward) for v in FWD_SSH FWD_TARGET FWD_PORT SRC_HBA_FROM; do [[ -n ${!v} ]] || { echo "pgmove: SRC_VIA=forward needs $v in $CLUSTER.conf" >&2; exit 2; }; done ;;
+  *) echo "pgmove: SRC_VIA=$SRC_VIA (ssh or forward)" >&2; exit 2 ;;
+esac
 
 WORK=/var/lib/pgmove/$CLUSTER
 SECRETS=/etc/pgmove/$CLUSTER
@@ -88,7 +102,8 @@ lit() { local s=${1//\'/\'\'}; printf "'%s'" "$s"; }
 ident() { local s=${1//\"/\"\"}; printf '"%s"' "$s"; }
 db_of() { echo "${1%%:*}"; }
 shape_of() { echo "${1#*:}"; }
-host_of() { if [[ $1 == src ]]; then echo "$SRC_SSH"; else echo "$DST_SSH"; fi; }
+via_forward() { [[ $SRC_VIA == forward ]]; }
+host_of() { if [[ $1 == src ]] && ! via_forward; then echo "$SRC_SSH"; else echo "$DST_SSH"; fi; }
 other() { if [[ $1 == src ]]; then echo dst; else echo src; fi; }
 state() { if ((DRY)); then return 0; fi; mkdir -p "$(dirname "$1")"; printf '%s\n' "$2" >"$1"; }
 
@@ -101,11 +116,17 @@ on() {
 }
 
 psql_cmd() {
-  local side=$1 mode=$2 db=$3 extra=${4:-} user sock port opts="-c statement_timeout=0"
-  if [[ $side == src ]]; then user=$SRC_OSUSER sock=$SRC_SOCKET port=$SRC_PORT; else user=$DST_OSUSER sock=$DST_SOCKET port=$DST_PORT; fi
+  local side=$1 mode=$2 db=$3 extra=${4:-} user sock port opts="-c statement_timeout=0" as=''
+  if [[ $side == src ]] && via_forward; then
+    user=$DST_OSUSER sock=127.0.0.1 port=$FWD_PORT as=" -U $REPL_ROLE"
+  elif [[ $side == src ]]; then
+    user=$SRC_OSUSER sock=$SRC_SOCKET port=$SRC_PORT
+  else
+    user=$DST_OSUSER sock=$DST_SOCKET port=$DST_PORT
+  fi
   [[ $mode == ro ]] && opts="$opts -c default_transaction_read_only=on"
-  printf 'sudo -n -u %q env PGOPTIONS=%q PGTZ=UTC PGDATESTYLE=ISO psql -h %q -p %q -d %q -XAtq -v ON_ERROR_STOP=1 %s' \
-    "$user" "$opts" "$sock" "$port" "$db" "$extra"
+  printf 'sudo -n -u %q env PGOPTIONS=%q PGSSLMODE=%q PGTZ=UTC PGDATESTYLE=ISO psql -h %q -p %q%s -d %q -XAtq -v ON_ERROR_STOP=1 %s' \
+    "$user" "$opts" "$SRC_SSLMODE" "$sock" "$port" "$as" "$db" "$extra"
 }
 
 sql() { on "$(host_of "$1")" "$(psql_cmd "$@")"; }
@@ -200,6 +221,118 @@ probe_sample() {
     echo "select pg_sleep(1);"
   done
   echo "select 'b|' || format('%I.%I', n.nspname, c.relname) || '|' || coalesce(s.n_tup_ins + s.n_tup_upd + s.n_tup_del, 0) from pg_class c join pg_namespace n on n.oid = c.relnamespace left join pg_stat_user_tables s on s.relid = c.oid where c.relkind = 'r' and $NS and not exists (select 1 from pg_subscription_rel r where r.srrelid = c.oid);"
+}
+
+no_forward() {
+  via_forward || return 0
+  die "$CMD: not built for SRC_VIA=forward yet (it changes source roles or binds on the source box); run it with a superuser route"
+}
+
+setup_forward() {
+  ensure_repl_password
+  ensure_pgpass dst "$FWD_PORT"
+  ensure_forward
+}
+
+cmd_forward() {
+  via_forward || die "forward: $CLUSTER.conf sets SRC_VIA=$SRC_VIA; subscribe builds its forward"
+  setup_forward
+  if ((DRY == 0)) && ! can_connect dst "$FWD_PORT" postgres; then
+    echo "forward: 127.0.0.1:$FWD_PORT listens; the source refuses $REPL_ROLE until deploy/aws/db/remote.sh source $CLUSTER runs"
+  fi
+  finish
+}
+
+cmd_verifier() {
+  local pw cur
+  via_forward || die "verifier: only for SRC_VIA=forward"
+  pw=$(repl_password)
+  [[ -n $pw ]] || die "verifier: no $SECRETS/repl.password; run forward first"
+  IFS= read -r cur || true
+  printf '%s\n%s\n' "$pw" "$cur" | scram
+}
+
+# shellcheck disable=SC2016
+SCRAM_RE='^SCRAM-SHA-256\$4096:[A-Za-z0-9+/=]+\$[A-Za-z0-9+/=]+:[A-Za-z0-9+/=]+$'
+
+# The source's root script. It is built from this file and the cluster conf wherever they are
+# checked out, so nothing on the target box decides what runs as root on the source.
+cmd_source() {
+  local v=${ARGS[0]:-} spec db shape dbs=postgres line q
+  via_forward || die "source: only for SRC_VIA=forward"
+  [[ $v == same || $v =~ $SCRAM_RE ]] || die "source: the argument is not 'same' or a SCRAM-SHA-256 verifier"
+  for spec in "${DATABASES[@]}"; do dbs+=",$(db_of "$spec")"; done
+  line="hostssl $dbs $REPL_ROLE $SRC_HBA_FROM scram-sha-256"
+  cat <<'EOF'
+set -euo pipefail
+cd /
+ts=$(date -u +%Y%m%dT%H%M%SZ) n=0
+changed() { n=$((n + 1)); echo "changed: $*"; }
+pq() { local db=$1; shift; sudo -n -u postgres psql -d "$db" -XAtq -v ON_ERROR_STOP=1 "$@"; }
+ensure() { # ensure <db> <query that answers t once done> <statement> <message>
+  [[ $(pq "$1" -c "$2") == t ]] && return 0
+  printf '%s\n' "$3" | pq "$1" >/dev/null
+  changed "$4"
+}
+EOF
+  printf 'line=%q role=%q pub=%q marker=%q verifier=%q cluster=%q\n' "$line" "$REPL_ROLE" "$PUB" "$FREEZE_MARKER" "$v" "$CLUSTER"
+  cat <<'EOF'
+hba=$(pq postgres -c 'show hba_file')
+if ! grep -qxF -- "$line" "$hba"; then
+  cp -a "$hba" "$hba.pgmove-$ts"
+  awk -v l="$line" '!d && $1 ~ /^host/ && $2 == "all" && $3 == "all" && $4 == "0.0.0.0/0" && $5 == "reject" { print l; d = 1 } { print } END { exit !d }' "$hba" >"$hba.new" ||
+    { echo "source: $hba has no 'host all all 0.0.0.0/0 reject' line to put the $role line above" >&2; exit 1; }
+  chown --reference="$hba" "$hba.new" && chmod --reference="$hba" "$hba.new" && mv -f "$hba.new" "$hba"
+  [[ $(pq postgres -c 'select count(*) from pg_hba_file_rules where error is not null') == 0 ]] ||
+    { cp -a "$hba.pgmove-$ts" "$hba"; echo "source: the new $hba did not parse; the copy is back and nothing was reloaded" >&2; exit 1; }
+  pq postgres -c 'select pg_reload_conf()' >/dev/null
+  changed "$hba: '$line' above the final reject, reloaded (copy $hba.pgmove-$ts)"
+fi
+ensure postgres "select exists (select 1 from pg_roles where rolname = '$role')" "CREATE ROLE $role LOGIN REPLICATION NOSUPERUSER;" "role $role LOGIN REPLICATION"
+ensure postgres "select rolcanlogin and rolreplication and not rolsuper and not rolcreaterole and not rolcreatedb from pg_roles where rolname = '$role'" \
+  "ALTER ROLE $role LOGIN REPLICATION NOSUPERUSER NOCREATEROLE NOCREATEDB;" "role $role LOGIN REPLICATION and nothing more"
+for r in pg_read_all_data pg_read_all_settings pg_read_all_stats; do
+  ensure postgres "select pg_has_role('$role', '$r', 'MEMBER')" "GRANT $r TO $role;" "$role is a member of $r"
+done
+# A tablesync COPY of a large table outlives the cluster's statement and idle-transaction timeouts.
+for g in statement_timeout idle_in_transaction_session_timeout; do
+  ensure postgres "select exists (select 1 from pg_db_role_setting s join pg_roles r on r.oid = s.setrole where r.rolname = '$role' and s.setdatabase = 0 and '$g=0' = any (s.setconfig))" \
+    "ALTER ROLE $role SET $g = 0;" "$role $g = 0"
+done
+if [[ $verifier != same ]]; then
+  printf "ALTER ROLE %s PASSWORD '%s';\n" "$role" "$verifier" | pq postgres >/dev/null
+  changed "$role password set from the target box's repl.password as a SCRAM verifier"
+fi
+EOF
+  for spec in "${DATABASES[@]}"; do
+    db=$(db_of "$spec") shape=$(shape_of "$spec")
+    [[ $shape != upstream=* ]] || die "source: $db copies an upstream subscription; that shape has no source publication"
+    if [[ $shape == plain ]]; then
+      q="select 'CREATE PUBLICATION $PUB FOR TABLE ' || string_agg(format('%I.%I', n.nspname, c.relname), ', ' order by 1) || ';' from pg_class c join pg_namespace n on n.oid = c.relnamespace where $(pub_where plain)"
+    else
+      q="select 'CREATE PUBLICATION $PUB FOR ALL TABLES;'"
+    fi
+    printf 'db=%q shape=%q identity=%q create=%q\n' "$db" "$shape" "$(no_identity_sql "$shape")" "$q"
+    cat <<'EOF'
+if [[ $(pq "$db" -c "select exists (select 1 from pg_publication where pubname = '$pub')") != t ]]; then
+  bad=$(pq "$db" -c "$identity")
+  [[ -z $bad ]] || { echo "source: $db: $bad; UPDATE and DELETE on it would fail under a publication, so none was made" >&2; exit 1; }
+  stmt=$(pq "$db" -c "$create")
+  [[ $stmt == "CREATE PUBLICATION $pub FOR "* ]] || { echo "source: $db: no statement for publication $pub" >&2; exit 1; }
+  printf '%s\n' "$stmt" | pq "$db" >/dev/null
+  changed "$db: publication $pub ($shape: $(pq "$db" -c "select count(*) from pg_publication_tables where pubname = '$pub'") tables)"
+fi
+EOF
+  done
+  cat <<'EOF'
+if [[ -n $marker && ! -e $marker ]]; then
+  install -d -m 0755 "$(dirname "$marker")"
+  echo "pgmove $cluster subscribed $(date -u +%FT%TZ)" >"$marker"
+  changed "$marker: migrations here are frozen until retire"
+fi
+echo "source: wal_level=$(pq postgres -c 'show wal_level'), max_slot_wal_keep_size=$(pq postgres -c 'show max_slot_wal_keep_size'), slots $(pq postgres -c 'select count(*) from pg_replication_slots')/$(pq postgres -c 'show max_replication_slots')"
+echo "source: $n change(s)"
+EOF
 }
 
 cmd_probe() {
@@ -304,8 +437,13 @@ ensure_pgconf() {
   ((restart == 0)) || run "$DST_SSH" "systemctl restart postgresql@$PG_MAJOR-$DST_CLUSTER" "postgresql@$PG_MAJOR-$DST_CLUSTER restarted to load them"
 }
 
-ROLE_ROWS="select rolname || '|' || rolsuper || '|' || rolinherit || '|' || rolcreaterole || '|' || rolcreatedb || '|' || rolreplication || '|' || rolbypassrls || '|' || rolconnlimit || '|' || coalesce(nullif(rolvaliduntil, 'infinity')::text, '-') || '|' || coalesce(md5(rolpassword), '-') from pg_authid where rolname !~ '^pg_' and rolname not in ('postgres', '$REPL_ROLE') order by 1"
-ROLE_ALTER="select format('ALTER ROLE %I WITH %s %s %s %s %s %s CONNECTION LIMIT %s VALID UNTIL %s PASSWORD %s;', rolname, case when rolsuper then 'SUPERUSER' else 'NOSUPERUSER' end, case when rolinherit then 'INHERIT' else 'NOINHERIT' end, case when rolcreaterole then 'CREATEROLE' else 'NOCREATEROLE' end, case when rolcreatedb then 'CREATEDB' else 'NOCREATEDB' end, case when rolreplication then 'REPLICATION' else 'NOREPLICATION' end, case when rolbypassrls then 'BYPASSRLS' else 'NOBYPASSRLS' end, rolconnlimit, coalesce(quote_literal(rolvaliduntil::text), '''infinity'''), coalesce(quote_literal(rolpassword), 'NULL')) from pg_authid where rolname = :'role'"
+# pg_authid is superuser-only. Through the forward the source reads as REPL_ROLE, so roles come
+# from pg_roles on both sides, passwords are neither compared nor copied, and the target roles
+# get theirs before a switch.
+AUTH=pg_authid PW_ROW="coalesce(md5(rolpassword), '-')" PW_SET="coalesce(quote_literal(rolpassword), 'NULL')"
+if via_forward; then AUTH=pg_roles PW_ROW="'unread'" PW_SET="'NULL'"; fi
+ROLE_ROWS="select rolname || '|' || rolsuper || '|' || rolinherit || '|' || rolcreaterole || '|' || rolcreatedb || '|' || rolreplication || '|' || rolbypassrls || '|' || rolconnlimit || '|' || coalesce(nullif(rolvaliduntil, 'infinity')::text, '-') || '|' || $PW_ROW from $AUTH where rolname !~ '^pg_' and rolname not in ('postgres', '$REPL_ROLE') order by 1"
+ROLE_ALTER="select format('ALTER ROLE %I WITH %s %s %s %s %s %s CONNECTION LIMIT %s VALID UNTIL %s PASSWORD %s;', rolname, case when rolsuper then 'SUPERUSER' else 'NOSUPERUSER' end, case when rolinherit then 'INHERIT' else 'NOINHERIT' end, case when rolcreaterole then 'CREATEROLE' else 'NOCREATEROLE' end, case when rolcreatedb then 'CREATEDB' else 'NOCREATEDB' end, case when rolreplication then 'REPLICATION' else 'NOREPLICATION' end, case when rolbypassrls then 'BYPASSRLS' else 'NOBYPASSRLS' end, rolconnlimit, coalesce(quote_literal(rolvaliduntil::text), '''infinity'''), $PW_SET) from $AUTH where rolname = :'role'"
 MEMBER_ROWS="select distinct r.rolname || '|' || m.rolname || '|' || a.admin_option || '|' || a.inherit_option || '|' || a.set_option from pg_auth_members a join pg_roles r on r.oid = a.roleid join pg_roles m on m.oid = a.member where m.rolname not in ('postgres', '$REPL_ROLE') and m.rolname !~ '^pg_' order by 1"
 SETTING_ROWS="select coalesce(r.rolname, '-') || '|' || coalesce(d.datname, '-') || '|' || c from pg_db_role_setting s left join pg_roles r on r.oid = s.setrole left join pg_database d on d.oid = s.setdatabase cross join unnest(s.setconfig) c where coalesce(r.rolname, '') not in ('postgres', '$REPL_ROLE') order by 1"
 
@@ -383,7 +521,11 @@ ensure_extensions() {
 USER_OBJECTS="select (select count(*) from pg_class c join pg_namespace n on n.oid = c.relnamespace where c.relkind in ('r','p','v','m','S') and $NS) + (select count(*) from pg_proc p join pg_namespace n on n.oid = p.pronamespace where $USER_NS and not exists (select 1 from pg_depend e where e.classid = 'pg_proc'::regclass and e.objid = p.oid and e.deptype = 'e'))"
 
 src_dump() {
-  printf 'sudo -n -u %q pg_dump -h %q -p %q -d %q %s' "$SRC_OSUSER" "$SRC_SOCKET" "$SRC_PORT" "$1" "$2"
+  if via_forward; then
+    printf 'sudo -n -u %q env PGSSLMODE=%q pg_dump -h 127.0.0.1 -p %q -U %q -d %q %s' "$DST_OSUSER" "$SRC_SSLMODE" "$FWD_PORT" "$REPL_ROLE" "$1" "$2"
+  else
+    printf 'sudo -n -u %q pg_dump -h %q -p %q -d %q %s' "$SRC_OSUSER" "$SRC_SOCKET" "$SRC_PORT" "$1" "$2"
+  fi
 }
 
 ensure_schema() {
@@ -396,12 +538,12 @@ ensure_schema() {
   restore="/usr/lib/postgresql/$PG_MAJOR/bin/pg_restore -l $dump | grep -v -E ' EXTENSION - | COMMENT - EXTENSION ' >$list && /usr/lib/postgresql/$PG_MAJOR/bin/pg_restore -L $list -f - $dump | $(psql_cmd dst rw "$db" --single-transaction) >/dev/null"
   changed "$db: schema restored from the source with owners and grants (pg_dump --schema-only)"
   if ((DRY)); then
-    printf '  on %s: %s, stdout to %s on this box\n' "$SRC_SSH" "$fetch" "$dump"
+    printf '  on %s: %s, stdout to %s on this box\n' "$(host_of src)" "$fetch" "$dump"
     printf '  on %s: %s\n' "$DST_SSH" "$restore"
     return 0
   fi
   mkdir -p "$WORK"
-  on "$SRC_SSH" "$fetch" >"$dump"
+  on "$(host_of src)" "$fetch" >"$dump"
   on "$DST_SSH" "$restore"
 }
 
@@ -485,6 +627,11 @@ ensure_repl_password() {
 
 ensure_repl_role() {
   local side=$1 attrs cur res pw
+  if [[ $side == src ]] && via_forward; then
+    [[ $(q src postgres "select rolreplication and not rolsuper and pg_has_role(current_user, 'pg_read_all_data', 'MEMBER') and pg_has_role(current_user, 'pg_read_all_stats', 'MEMBER') and pg_has_role(current_user, 'pg_read_all_settings', 'MEMBER')") == t ]] ||
+      blocked "src: $REPL_ROLE lacks REPLICATION or a pg_read_all_* role; run deploy/aws/db/remote.sh source $CLUSTER from an operator machine"
+    return 0
+  fi
   attrs=$(q "$side" postgres "select rolcanlogin and rolreplication and not rolsuper from pg_roles where rolname = '$REPL_ROLE'")
   if [[ -z $attrs ]]; then
     apply "$side" postgres "CREATE ROLE $REPL_ROLE LOGIN REPLICATION;" "$side: role $REPL_ROLE LOGIN REPLICATION"
@@ -526,8 +673,16 @@ ensure_pgpass() {
 ensure_forward() {
   local env unit have restart=0
   have=$(on "$DST_SSH" "cat $SECRETS/forward.env" 2>/dev/null || true)
-  env=$(printf 'FWD_PORT=%s\nFWD_SOCKET=%s\nFWD_SSH=%s' "$FWD_PORT" "$SRC_SOCKET/.s.PGSQL.$SRC_PORT" "$FWD_SSH")
-  if [[ ${1:-} == rev || $have == *FWD_REV=* ]]; then env+=$(printf '\nFWD_REV="-R 127.0.0.1:%s:%s"' "$REV_PORT" "$DST_SOCKET/.s.PGSQL.$DST_PORT"); fi
+  # FWD_SOCKET is the -L destination: the source socket on SRC_SSH, or host:port behind FWD_SSH.
+  if via_forward; then
+    env=$(printf 'FWD_PORT=%s\nFWD_SOCKET=%s\nFWD_SSH=%s' "$FWD_PORT" "$FWD_TARGET" "$FWD_SSH")
+  else
+    env=$(printf 'FWD_PORT=%s\nFWD_SOCKET=%s\nFWD_SSH=%s' "$FWD_PORT" "$SRC_SOCKET/.s.PGSQL.$SRC_PORT" "$FWD_SSH")
+  fi
+  if [[ ${1:-} == rev || $have == *FWD_REV=* ]]; then
+    via_forward && die "a -R binds on the hop behind FWD_SSH, not on the source; the reverse is not built for SRC_VIA=forward"
+    env+=$(printf '\nFWD_REV="-R 127.0.0.1:%s:%s"' "$REV_PORT" "$DST_SOCKET/.s.PGSQL.$DST_PORT")
+  fi
   unit=$(cat "$HERE/pg-forward@.service")
   if [[ $(on "$DST_SSH" "cat /etc/systemd/system/pg-forward@.service" 2>/dev/null || true) != "$unit" ]]; then
     put "$DST_SSH" /etc/systemd/system/pg-forward@.service 0644 root "$unit" "pg-forward@.service installed"
@@ -554,15 +709,16 @@ forward_wait() {
 }
 
 can_connect() {
-  local side=$1 port=$2 db=$3 user
+  local side=$1 port=$2 db=$3 user ssl=disable
   local pass=''
-  if [[ $side == src ]]; then user=$SRC_OSUSER pass=" passfile=$(src_passfile)"; else user=$DST_OSUSER; fi
+  if [[ $side == src ]]; then user=$SRC_OSUSER pass=" passfile=$(src_passfile)"; else user=$DST_OSUSER ssl=$SRC_SSLMODE; fi
   ((DRY)) && return 0
-  on "$(host_of "$side")" "sudo -n -u $user psql $(printf %q "host=127.0.0.1 port=$port dbname=$db user=$REPL_ROLE sslmode=disable connect_timeout=10$pass") -XAtqc 'select 1'" >/dev/null 2>&1
+  on "$(host_of "$side")" "sudo -n -u $user psql $(printf %q "host=127.0.0.1 port=$port dbname=$db user=$REPL_ROLE sslmode=$ssl connect_timeout=10$pass") -XAtqc 'select 1'" >/dev/null 2>&1
 }
 
 ensure_marker() {
   [[ -n $FREEZE_MARKER ]] || return 0
+  via_forward && return 0 # the source script writes it
   on "$SRC_SSH" "test -e $FREEZE_MARKER" 2>/dev/null && return 0
   run "$SRC_SSH" "install -d -m 0755 $(dirname "$FREEZE_MARKER") && echo \"pgmove $CLUSTER subscribed \$(date -u +%FT%TZ)\" >$FREEZE_MARKER" \
     "$SRC_SSH:$FREEZE_MARKER: migrations on the source refuse until retire"
@@ -577,6 +733,10 @@ ready_count() {
 ensure_publication() {
   local side=$1 db=$2 shape=$3 name=$4 list
   [[ -n $(q "$side" "$db" "select 1 from pg_publication where pubname = '$name'") ]] && return 0
+  if [[ $side == src ]] && via_forward; then
+    blocked "src $db: no publication $name; run deploy/aws/db/remote.sh source $CLUSTER from an operator machine"
+    return 0
+  fi
   if [[ $shape == plain ]]; then
     list=$(q "$side" "$db" "select string_agg(format('%I.%I', n.nspname, c.relname), ', ' order by 1) from pg_class c join pg_namespace n on n.oid = c.relnamespace where $(pub_where plain)")
     [[ -n $list ]] || { blocked "$side $db: no plain tables to publish"; return 0; }
@@ -611,6 +771,10 @@ ensure_upstream_pass() {
 
 cmd_subscribe() {
   local spec db shape sub prev='' counts wal keep conn
+  if via_forward; then
+    setup_forward
+    ((DRY)) || can_connect dst "$FWD_PORT" postgres || { blocked "the source refuses $REPL_ROLE through the forward; run deploy/aws/db/remote.sh source $CLUSTER from an operator machine"; finish; }
+  fi
   for spec in "${DATABASES[@]}"; do
     db=$(db_of "$spec") shape=$(shape_of "$spec")
     [[ $shape == upstream=* ]] && continue
@@ -621,7 +785,9 @@ cmd_subscribe() {
   done
   ((blocks == 0 || DRY)) || finish
   ensure_marker
-  if [[ -n $FWD_PORT ]]; then
+  if via_forward; then
+    ensure_repl_role src
+  elif [[ -n $FWD_PORT ]]; then
     ensure_repl_password
     ensure_repl_role src
     ensure_pgpass dst "$FWD_PORT"
@@ -649,9 +815,13 @@ cmd_subscribe() {
         "dst $db: subscription $sub to the publisher of ${shape#upstream=} ($pubs), copy_data=true"
       continue
     fi
-    conn="host=127.0.0.1 port=$FWD_PORT dbname=$db user=$REPL_ROLE application_name=$sub sslmode=disable"
+    conn="host=127.0.0.1 port=$FWD_PORT dbname=$db user=$REPL_ROLE application_name=$sub sslmode=$SRC_SSLMODE"
     if ! can_connect dst "$FWD_PORT" "$db"; then
-      blocked "the source refuses $REPL_ROLE through the forward; its hba needs 'local $db $REPL_ROLE scram-sha-256' above the peer lines, then a reload"
+      if via_forward; then
+        blocked "the source refuses $REPL_ROLE for $db through the forward; run deploy/aws/db/remote.sh source $CLUSTER from an operator machine"
+      else
+        blocked "the source refuses $REPL_ROLE through the forward; its hba needs 'local $db $REPL_ROLE scram-sha-256' above the peer lines, then a reload"
+      fi
       break
     fi
     ensure_publication src "$db" "$shape" "$PUB"
@@ -836,7 +1006,7 @@ check_schema() {
   tmp=$(mktemp -d)
   for spec in "${DATABASES[@]}"; do
     db=$(db_of "$spec")
-    on "$SRC_SSH" "$(src_dump "$db" "$flags")" >"$tmp/src.sql"
+    on "$(host_of src)" "$(src_dump "$db" "$flags")" >"$tmp/src.sql"
     on "$DST_SSH" "$(printf 'sudo -n -u %q pg_dump -h %q -p %q -d %q %s' "$DST_OSUSER" "$DST_SOCKET" "$DST_PORT" "$db" "$flags")" >"$tmp/dst.sql"
     while IFS= read -r line; do
       case $line in $'\t'*) echo "  ${line#$'\t'}" ;; ?*) diff_row "$db schema $line" ;; esac
@@ -1011,6 +1181,7 @@ slot_wait() {
 }
 
 cmd_fence() {
+  no_forward
   local role spec db n slot
   upstream_blockers fencing
   ((blocks == 0)) || finish
@@ -1047,6 +1218,7 @@ sub_resume() {
 }
 
 cmd_switch() {
+  no_forward
   local role spec db table
   upstream_blockers "the switch"
   for role in $(login_roles); do
@@ -1114,6 +1286,7 @@ arm_reverse() {
 }
 
 cmd_reverse() {
+  no_forward
   arm_reverse
   finish
 }
@@ -1132,6 +1305,7 @@ drop_pub() {
 }
 
 cmd_retire() {
+  no_forward
   local stamp=$WORK/switched age spec db
   [[ -s $WORK/reversed ]] && stamp=$WORK/reversed
   if [[ -s $stamp ]]; then
