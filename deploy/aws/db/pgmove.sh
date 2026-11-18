@@ -2,7 +2,7 @@
 set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
-SUBCOMMANDS="forward source verifier probe init subscribe backfill catchup sequences grants schema hash verify fence switch reverse retire writes"
+SUBCOMMANDS="forward source verifier srcexec catchout passwords probe init subscribe backfill catchup sequences grants schema hash verify preflight fence switch reverse retire writes"
 PUB=pgmove
 REV_PUB=pgmove_rev
 REPL_ROLE=pgmove
@@ -14,6 +14,9 @@ clusters: $(for f in "$HERE"/clusters/*.conf; do basename "$f" .conf; done | pas
   forward <c>                  SRC_VIA=forward: the replication password, the passfile and pg-forward@<c> on this box
   source <c> <verifier|same>   SRC_VIA=forward: print, never run, the root script for the source (remote.sh source runs it)
   verifier <c>                 SRC_VIA=forward: stdin holds the source's verifier for the role; prints same or a new one
+  srcexec <c> [verifiers]      SRC_VIA=forward, on the operator machine: stdin holds a box step's "need:" lines; prints the root script
+  catchout <c> <table> <floor> SRC_VIA=forward: the target's hypertable rows above floor as binary COPY, for a reverse catchup
+  passwords <c> [--dry-run]    target roles get the source's SCRAM verifiers (forward: role|verifier lines on stdin); superusers never
   probe <c>                    what feeds the source (neon-fed, static or local) and what blocks a move
   init <c> [--dry-run]         target cluster, settings, roles (NOLOGIN), databases, extensions, schema, hypertables
   subscribe <c> [--dry-run]    freeze marker, replication role, forward, publication, one subscription per database in order
@@ -24,6 +27,7 @@ clusters: $(for f in "$HERE"/clusters/*.conf; do basename "$f" .conf; done | pas
   schema <c>                   pg_dump --schema-only of both sides, object by object
   hash <c> [table] [--age]     md5 per row, summed per 1M-key bucket; differing buckets hashed a second time
   verify <c> [--reverse]       tables, sequences, hypertables, schema, grants and hash age
+  preflight <c>                read-only: tables in state r, lag, verify, the reverse, fence and switch dry runs, marker, volume guard
   fence <c> [--reverse]        login roles NOLOGIN on the side being left, sessions ended, slots caught up
   switch <c> [--reverse]       catchup, sequences, subscriptions off, the other direction armed or resumed, login roles LOGIN on the side taking over
   reverse <c> [--dry-run]      reverse publication on the target, reverse subscription on the source (copy_data=false)
@@ -31,6 +35,8 @@ clusters: $(for f in "$HERE"/clusters/*.conf; do basename "$f" .conf; done | pas
   writes <c> save|diff <tag> src|dst   write counters per table
 Mutating subcommands print "changed:" lines and end with "<n> change(s)"; --dry-run prints each command instead.
 Checking subcommands print DIFF rows and end with "<n> DIFF"; they exit 1 when n > 0.
+SRC_VIA=forward: a step that needs root on the source prints "need:" lines and exits 3; remote.sh runs them through
+PGMOVE_SRC_ADMIN from a script that srcexec builds on the operator machine, then reruns the step.
 EOF
   exit 2
 }
@@ -61,8 +67,11 @@ ENCODING=UTF8 LOCALE_PROVIDER='' LOCALE=''
 DATABASES=()
 HYPERTABLES=() HT_DB='' HT_TIME=observed_at HT_KEY=event_id TS_RETAIN_DAYS=62 CATCHUP_MARGIN=10000
 SYNC_WORKERS=2 BINARY=true COPY_SETTINGS=()
-SRC_VIA=ssh SRC_SSLMODE=disable SRC_HBA_FROM='' FWD_TARGET=''
-FWD_USER=pgmove-fwd FWD_SSH='' FWD_PORT='' REV_PORT='' FREEZE_MARKER='' FENCE_KEEP=() REVERSE_HOURS=72
+SRC_VIA=ssh SRC_SSLMODE=disable SRC_HBA_FROM='' SRC_HBA_LINE='' FWD_TARGET=''
+FWD_USER=pgmove-fwd FWD_SSH='' FWD_PORT='' REV_PORT='' REV_HOST=127.0.0.1 FREEZE_MARKER='' FENCE_KEEP=() REVERSE_HOURS=72
+# MIGRATE_MARKER: the path the source's own deploy refuses migrations under, or none; preflight wants FREEZE_MARKER there.
+# DST_VOLUME: the mount the target's data directory lives on; init makes postgresql@ refuse to start without it.
+MIGRATE_MARKER='' DST_VOLUME='' MAX_LAG_BYTES=16777216 MAX_UPSTREAM_LAG_SECS=120
 PROBE_SECS=30 LAG_WAIT_SECS=600 HASH_BUCKET=1000000 HASH_RECHECK_SECS=60 HASH_MAX_AGE_HOURS=24 EXACT_COUNT_BYTES=268435456
 # shellcheck source=/dev/null
 source "$HERE/clusters/$CLUSTER.conf"
@@ -78,7 +87,7 @@ done
 # `source` prints and remote.sh source runs from an operator machine.
 case $SRC_VIA in
   ssh) ;;
-  forward) for v in FWD_SSH FWD_TARGET FWD_PORT SRC_HBA_FROM; do [[ -n ${!v} ]] || { echo "pgmove: SRC_VIA=forward needs $v in $CLUSTER.conf" >&2; exit 2; }; done ;;
+  forward) for v in FWD_SSH FWD_TARGET FWD_PORT; do [[ -n ${!v} ]] || { echo "pgmove: SRC_VIA=forward needs $v in $CLUSTER.conf" >&2; exit 2; }; done ;;
   *) echo "pgmove: SRC_VIA=$SRC_VIA (ssh or forward)" >&2; exit 2 ;;
 esac
 
@@ -87,7 +96,7 @@ SECRETS=/etc/pgmove/$CLUSTER
 FROM=src TO=dst
 ((REVERSE)) && FROM=dst TO=src
 
-changes=0 diffs=0 blocks=0 DST_DOWN=0
+changes=0 diffs=0 blocks=0 needs=0 DST_DOWN=0
 # A failed query reads as empty, and an empty answer reads as absent or as equal. q runs in
 # subshells, so it records each failure here and finish and finish_check refuse to pass.
 QFAIL=$(mktemp)
@@ -96,6 +105,10 @@ trap 'rm -f "$QFAIL"' EXIT
 changed() { changes=$((changes + 1)); if ((DRY)); then echo "would change: $*"; else echo "changed: $*"; fi; }
 diff_row() { diffs=$((diffs + 1)); echo "DIFF $*"; }
 blocked() { blocks=$((blocks + 1)); echo "blocked: $*"; }
+# need <verb> <args>: a root step on the source in SRC_VIA=forward. The box names it; srcexec on the
+# operator machine checks each word and builds the SQL, so the box never decides what runs as root there.
+need() { needs=$((needs + 1)); if ((DRY)); then echo "would need on the source: $*"; else echo "need: $*"; fi; }
+src_by_admin() { [[ $1 == src ]] && via_forward; }
 die() { echo "pgmove: $*" >&2; exit 1; }
 mask() { sed -E "s/(password=)[^ ']*/\1***/g; s/(PASSWORD +')[^']*'/\1***'/g"; }
 lit() { local s=${1//\'/\'\'}; printf "'%s'" "$s"; }
@@ -133,11 +146,17 @@ sql() { on "$(host_of "$1")" "$(psql_cmd "$@")"; }
 
 q() {
   local side=$1 db=$2 text=$3 extra=${4:-}
+  local err rc
   [[ $side == dst && $DST_DOWN == 1 ]] && return 0
-  printf '%s\n' "$text" | sql "$side" ro "$db" "$extra" && return 0
-  local rc=$?
-  # A dry run reads databases and objects that do not exist yet; those failures mean absent.
-  ((DRY)) || echo "$side $db exit $rc" >>"$QFAIL"
+  err=$(mktemp)
+  if printf '%s\n' "$text" | sql "$side" ro "$db" "$extra" 2>"$err"; then rm -f "$err"; return 0; else rc=$?; fi
+  cat "$err" >&2
+  # A dry run reads databases and objects that do not exist yet; only that error means absent. A
+  # refused connection, a timeout or a syntax error is a failure in a dry run too.
+  if ((DRY == 0)) || ! grep -qE '(database|relation|role|schema|function|column) .* does not exist' "$err"; then
+    echo "$side $db exit $rc: $(head -c 200 "$err" | tr '\n' ' ')" >>"$QFAIL"
+  fi
+  rm -f "$err"
   return $rc
 }
 
@@ -184,7 +203,11 @@ finish() {
   query_failures
   if ((DRY)); then echo "$CMD: $changes change(s) in the dry run, nothing ran${1:+; $1}"; else echo "$CMD: $changes change(s)${1:+; $1}"; fi
   ((blocks == 0)) || { echo "$CMD: $blocks blocker(s)"; exit 1; }
+  ((needs == 0 || DRY)) || { echo "$CMD: $needs step(s) need root on the source; remote.sh runs them through PGMOVE_SRC_ADMIN, then reruns $CMD"; exit 3; }
 }
+
+# Stops a step where what follows must wait for the source steps named so far.
+needs_first() { ((needs == 0 || DRY)) || finish "${1:-}"; }
 
 finish_check() {
   query_failures
@@ -223,11 +246,6 @@ probe_sample() {
   echo "select 'b|' || format('%I.%I', n.nspname, c.relname) || '|' || coalesce(s.n_tup_ins + s.n_tup_upd + s.n_tup_del, 0) from pg_class c join pg_namespace n on n.oid = c.relnamespace left join pg_stat_user_tables s on s.relid = c.oid where c.relkind = 'r' and $NS and not exists (select 1 from pg_subscription_rel r where r.srrelid = c.oid);"
 }
 
-no_forward() {
-  via_forward || return 0
-  die "$CMD: not built for SRC_VIA=forward yet (it changes source roles or binds on the source box); run it with a superuser route"
-}
-
 setup_forward() {
   ensure_repl_password
   ensure_pgpass dst "$FWD_PORT"
@@ -255,6 +273,18 @@ cmd_verifier() {
 # shellcheck disable=SC2016
 SCRAM_RE='^SCRAM-SHA-256\$4096:[A-Za-z0-9+/=]+\$[A-Za-z0-9+/=]+:[A-Za-z0-9+/=]+$'
 
+# Every root script for the source starts here: psql as the conf's OS user on its socket.
+src_preamble() {
+  printf 'osuser=%q sock=%q port=%q\n' "$SRC_OSUSER" "$SRC_SOCKET" "$SRC_PORT"
+  cat <<'EOF'
+set -euo pipefail
+cd /
+n=0
+changed() { n=$((n + 1)); echo "changed: $*"; }
+pq() { local db=$1; shift; sudo -n -u "$osuser" psql -h "$sock" -p "$port" -d "$db" -XAtq -v ON_ERROR_STOP=1 "$@"; }
+EOF
+}
+
 # The source's root script. It is built from this file and the cluster conf wherever they are
 # checked out, so nothing on the target box decides what runs as root on the source.
 cmd_source() {
@@ -262,13 +292,13 @@ cmd_source() {
   via_forward || die "source: only for SRC_VIA=forward"
   [[ $v == same || $v =~ $SCRAM_RE ]] || die "source: the argument is not 'same' or a SCRAM-SHA-256 verifier"
   for spec in "${DATABASES[@]}"; do dbs+=",$(db_of "$spec")"; done
-  line="hostssl $dbs $REPL_ROLE $SRC_HBA_FROM scram-sha-256"
+  if [[ -n $SRC_HBA_LINE ]]; then line=$SRC_HBA_LINE; else
+    [[ -n $SRC_HBA_FROM ]] || die "source: $CLUSTER.conf sets neither SRC_HBA_FROM nor SRC_HBA_LINE"
+    line="hostssl $dbs $REPL_ROLE $SRC_HBA_FROM scram-sha-256"
+  fi
+  src_preamble
   cat <<'EOF'
-set -euo pipefail
-cd /
-ts=$(date -u +%Y%m%dT%H%M%SZ) n=0
-changed() { n=$((n + 1)); echo "changed: $*"; }
-pq() { local db=$1; shift; sudo -n -u postgres psql -d "$db" -XAtq -v ON_ERROR_STOP=1 "$@"; }
+ts=$(date -u +%Y%m%dT%H%M%SZ)
 # A check query that fails stops the script: inside [[ $(...) ]] it would read as "not done yet".
 ask() { pq "$1" -c "$2" || { echo "source: $1: this check failed, so nothing after it ran: $2" >&2; exit 1; }; }
 ensure() { # ensure <db> <query that answers t once done> <statement> <message>
@@ -280,12 +310,14 @@ ensure() { # ensure <db> <query that answers t once done> <statement> <message>
 }
 EOF
   printf 'line=%q role=%q pub=%q marker=%q verifier=%q cluster=%q\n' "$line" "$REPL_ROLE" "$PUB" "$FREEZE_MARKER" "$v" "$CLUSTER"
+  # A socket-forward source takes a local line, above its final local reject.
+  if [[ $line == local\ * ]]; then echo "anchor='local all all reject'"; else echo "anchor='host all all 0.0.0.0/0 reject'"; fi
   cat <<'EOF'
 hba=$(pq postgres -c 'show hba_file')
 if ! grep -qxF -- "$line" "$hba"; then
   cp -a "$hba" "$hba.pgmove-$ts"
-  awk -v l="$line" '!d && $1 ~ /^host/ && $2 == "all" && $3 == "all" && $4 == "0.0.0.0/0" && $5 == "reject" { print l; d = 1 } { print } END { exit !d }' "$hba" >"$hba.new" ||
-    { echo "source: $hba has no 'host all all 0.0.0.0/0 reject' line to put the $role line above" >&2; exit 1; }
+  awk -v l="$line" -v a="$anchor" '!d && ($1 " " $2 " " $3 " " $4 == a || ($1 ~ /^host/ && "host " $2 " " $3 " " $4 " " $5 == a)) { print l; d = 1 } { print } END { exit !d }' "$hba" >"$hba.new" ||
+    { echo "source: $hba has no '$anchor' line to put the $role line above" >&2; exit 1; }
   chown --reference="$hba" "$hba.new" && chmod --reference="$hba" "$hba.new" && mv -f "$hba.new" "$hba"
   [[ $(pq postgres -c 'select count(*) from pg_hba_file_rules where error is not null') == 0 ]] ||
     { cp -a "$hba.pgmove-$ts" "$hba"; echo "source: the new $hba did not parse; the copy is back and nothing was reloaded" >&2; exit 1; }
@@ -632,7 +664,9 @@ cmd_init() {
     ensure_schema "$db"
     ensure_constraint_names "$db"
     ensure_hypertables "$db"
+    ensure_timescale "$db"
   done
+  ensure_volume_guard
   finish
 }
 
@@ -720,9 +754,10 @@ ensure_forward() {
   else
     env=$(printf 'FWD_PORT=%s\nFWD_SOCKET=%s\nFWD_SSH=%s' "$FWD_PORT" "$SRC_SOCKET/.s.PGSQL.$SRC_PORT" "$FWD_SSH")
   fi
+  # SRC_VIA=forward: the -R binds on the hop behind FWD_SSH at REV_HOST, where the source reaches it;
+  # the hop's sshd allows that one listener (remote.sh route) and nothing else.
   if [[ ${1:-} == rev || $have == *FWD_REV=* ]]; then
-    via_forward && die "a -R binds on the hop behind FWD_SSH, not on the source; the reverse is not built for SRC_VIA=forward"
-    env+=$(printf '\nFWD_REV="-R 127.0.0.1:%s:%s"' "$REV_PORT" "$DST_SOCKET/.s.PGSQL.$DST_PORT")
+    env+=$(printf '\nFWD_REV="-R %s:%s:%s"' "$REV_HOST" "$REV_PORT" "$DST_SOCKET/.s.PGSQL.$DST_PORT")
   fi
   unit=$(cat "$HERE/pg-forward@.service")
   if [[ $(on "$DST_SSH" "cat /etc/systemd/system/pg-forward@.service" 2>/dev/null || true) != "$unit" ]]; then
@@ -740,7 +775,8 @@ ensure_forward() {
     run "$DST_SSH" "systemctl enable --now pg-forward@$CLUSTER" "pg-forward@$CLUSTER started"
   fi
   forward_wait "$DST_SSH" "$FWD_PORT"
-  [[ $env != *FWD_REV=* ]] || forward_wait "$SRC_SSH" "$REV_PORT"
+  # Forward mode: the box has no shell on the hop; srcexec's revsub connects through it before it subscribes.
+  [[ $env != *FWD_REV=* ]] || via_forward || forward_wait "$SRC_SSH" "$REV_PORT"
 }
 
 forward_wait() {
@@ -915,6 +951,12 @@ catchup_tables() {
     [[ -s $f ]] || die "catchup: no floor $f (forward: run backfill; reverse: run switch)"
     floor=$(($(cat "$f") - CATCHUP_MARGIN))
     ceiling=$(q "$FROM" "$HT_DB" "select coalesce(max($HT_KEY), 0) from $table")
+    [[ $ceiling =~ ^[0-9]+$ ]] || die "catchup: $FROM $table answered no max($HT_KEY)"
+    if src_by_admin "$TO"; then
+      # Done once the source holds the target's top key; the insert skips rows already there.
+      if [[ $(q src "$HT_DB" "select coalesce(max($HT_KEY), 0) from $table") == "$ceiling" ]]; then state "$f" "$ceiling"; else need catchup "$table" "$floor"; fi
+      continue
+    fi
     if ((DRY)); then changed "$table rows above $HT_KEY $floor, $FROM to $TO"; continue; fi
     inserted=$(printf '\\copy (select * from %s where %s > %s and %s >= %s) to stdout with (format binary)\n' "$table" "$HT_KEY" "$floor" "$HT_TIME" "$(lit "$cutoff")" | sql "$FROM" ro "$HT_DB" |
       on "$(host_of "$TO")" "$(psql_cmd "$TO" rw "$HT_DB" "--single-transaction -c 'SET session_replication_role = replica' -c $(printf %q "CREATE TEMP TABLE catchup_rows (LIKE $table) ON COMMIT DROP") -c $(printf %q '\copy catchup_rows from stdin with (format binary)') -c $(printf %q "WITH moved AS (INSERT INTO $table SELECT c.* FROM catchup_rows c WHERE NOT EXISTS (SELECT 1 FROM $table t WHERE t.$HT_KEY = c.$HT_KEY AND t.$HT_TIME = c.$HT_TIME) RETURNING 1) SELECT count(*) FROM moved")")" | tail -1)
@@ -938,6 +980,7 @@ sync_sequences() {
     while IFS='|' read -r name value; do
       [[ -n $name && $value != - ]] || continue
       grep -qxF -- "$name|$value" <<<"$have" && continue
+      if src_by_admin "$TO"; then need setval "$db" "$name" "$value"; continue; fi
       apply "$TO" "$db" "SELECT setval($(lit "$name"), $value, true);" "$TO $db: $name at $value as on $FROM"
     done < <(q "$FROM" "$db" "$SEQ_ROWS")
   done
@@ -1039,7 +1082,8 @@ PY
 TS_SETTINGS="select 'hypertable ' || format('%I.%I', hypertable_schema, hypertable_name) || ' dims=' || num_dimensions || ' compression=' || compression_enabled from timescaledb_information.hypertables
 union all select 'dimension ' || format('%I.%I', hypertable_schema, hypertable_name) || ' ' || column_name || ' ' || coalesce(time_interval::text, integer_interval::text) from timescaledb_information.dimensions
 union all select 'compression ' || hypertable::text || ' segmentby=' || coalesce(segmentby, '-') || ' orderby=' || coalesce(orderby, '-') from timescaledb_information.hypertable_compression_settings
-union all select 'job ' || proc_name || ' ' || coalesce(format('%I.%I', hypertable_schema, hypertable_name), '-') || ' every ' || schedule_interval || ' ' || coalesce(config::text, '') from timescaledb_information.jobs where job_id >= 1000"
+union all select 'job ' || proc_name || ' ' || coalesce(format('%I.%I', hypertable_schema, hypertable_name), '-') || ' every ' || schedule_interval || ' ' || coalesce((config - 'hypertable_id' - 'mat_hypertable_id')::text, '') from timescaledb_information.jobs where job_id >= 1000
+union all select 'cagg ' || format('%I.%I', view_schema, view_name) || ' materialized_only=' || materialized_only from timescaledb_information.continuous_aggregates"
 
 check_schema() {
   local spec db start=$diffs flags line tmp
@@ -1221,18 +1265,24 @@ slot_wait() {
   echo "$CMD: slot $slot on $side confirmed past $target"
 }
 
+is_super() { [[ $(q "$1" postgres "select rolsuper from pg_roles where rolname = $(lit "$2")") == t ]]; }
+
 cmd_fence() {
-  no_forward
-  local role spec db n slot
+  local role spec db n slot can
   upstream_blockers fencing
   ((blocks == 0)) || finish
   for role in $(login_roles); do
     kept "$role" && continue
-    [[ $(q "$FROM" postgres "select rolcanlogin from pg_roles where rolname = $(lit "$role")") == f ]] ||
-      apply "$FROM" postgres "SET lock_timeout = '2s'; ALTER ROLE $(ident "$role") NOLOGIN;" "$FROM: $role NOLOGIN"
+    can=$(q "$FROM" postgres "select rolcanlogin from pg_roles where rolname = $(lit "$role")")
     n=$(q "$FROM" postgres "select count(*) from pg_stat_activity where usename = $(lit "$role")")
+    if src_by_admin "$FROM"; then
+      [[ $can == f && ( -z $n || $n == 0 ) ]] || need fence "$role"
+      continue
+    fi
+    [[ $can == f ]] || apply "$FROM" postgres "SET lock_timeout = '2s'; ALTER ROLE $(ident "$role") NOLOGIN;" "$FROM: $role NOLOGIN"
     [[ -z $n || $n == 0 ]] || apply "$FROM" postgres "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = $(lit "$role");" "$FROM: $n session(s) of $role ended"
   done
+  needs_first "the slots are waited on once the source roles are fenced"
   for spec in "${DATABASES[@]}"; do
     db=$(db_of "$spec")
     if ((REVERSE)); then slot=$(sub_name rev "$db"); else slot=$(sub_name fwd "$db"); fi
@@ -1245,27 +1295,40 @@ sub_set() {
   local side=$1 db=$2 sub=$3 want=$4 have
   have=$(q "$side" "$db" "select subenabled from pg_subscription where subname = '$sub'")
   [[ -n $have && $have != "$want" ]] || return 0
+  if src_by_admin "$side"; then
+    if [[ $want == t ]]; then need enable "$db"; else need disable "$db"; fi
+    return 0
+  fi
   if [[ $want == t ]]; then apply "$side" "$db" "ALTER SUBSCRIPTION $sub ENABLE;" "$side $db: $sub enabled"; else apply "$side" "$db" "ALTER SUBSCRIPTION $sub DISABLE;" "$side $db: $sub disabled"; fi
 }
 
 # A resumed direction must skip the rows the other one applied while it was paused, or it sends
 # them back and stops on their keys.
 sub_resume() {
-  local side=$1 db=$2 sub=$3
+  local side=$1 db=$2 sub=$3 origin
   [[ -n $(q "$side" "$db" "select 1 from pg_subscription where subname = '$sub'") ]] || return 0
-  [[ $(q "$side" "$db" "select suborigin from pg_subscription where subname = '$sub'") == none ]] ||
-    apply "$side" "$db" "ALTER SUBSCRIPTION $sub SET (origin = none);" "$side $db: $sub skips rows the other direction applied"
+  origin=$(q "$side" "$db" "select suborigin from pg_subscription where subname = '$sub'")
+  if src_by_admin "$side"; then
+    # srcexec's enable sets origin = none and enables, both idempotent.
+    [[ $origin == none && $(q src "$db" "select subenabled from pg_subscription where subname = '$sub'") == t ]] || need enable "$db"
+    return 0
+  fi
+  [[ $origin == none ]] || apply "$side" "$db" "ALTER SUBSCRIPTION $sub SET (origin = none);" "$side $db: $sub skips rows the other direction applied"
   sub_set "$side" "$db" "$sub" t
 }
 
 cmd_switch() {
-  no_forward
   local role spec db table
   upstream_blockers "the switch"
   for role in $(login_roles); do
     kept "$role" && continue
-    [[ $(q "$FROM" postgres "select rolcanlogin from pg_roles where rolname = $(lit "$role")") != t ]] || blocked "$FROM: $role can still log in; run fence$( ((REVERSE)) && echo ' --reverse') first"
+    [[ $(q "$FROM" postgres "select rolcanlogin from pg_roles where rolname = $(lit "$role")") != t ]] && continue
+    if ((DRY)); then echo "dry run: $FROM $role can still log in; fence$( ((REVERSE)) && echo ' --reverse') makes it NOLOGIN before a real switch"; else blocked "$FROM: $role can still log in; run fence$( ((REVERSE)) && echo ' --reverse') first"; fi
   done
+  # The target's roles were made without passwords; passwords copies the source's verifiers.
+  if via_forward && ((REVERSE == 0)) && [[ ! -s $WORK/passwords-ok ]]; then
+    if ((DRY)); then echo "dry run: no $WORK/passwords-ok yet; remote.sh run switch runs passwords first"; else blocked "no $WORK/passwords-ok; run deploy/aws/db/remote.sh run passwords $CLUSTER"; fi
+  fi
   ((blocks == 0)) || finish
   catchup_tables
   sync_sequences
@@ -1282,11 +1345,18 @@ cmd_switch() {
     for table in ${HYPERTABLES[@]+"${HYPERTABLES[@]}"}; do
       [[ -s $(ht_state "$table")/event_floor.rev ]] || state "$(ht_state "$table")/event_floor.rev" "$(q dst "$HT_DB" "select coalesce(max($HT_KEY), 0) from $table")"
     done
+    for spec in "${DATABASES[@]}"; do schedule_timescale "$(db_of "$spec")"; done
     arm_reverse
+    # No role logs in on the target before the reverse subscription exists on the source.
+    needs_first "target roles get LOGIN once the reverse is armed"
   fi
+  # A superuser on either side keeps the LOGIN it has there: the switch grants nothing a superuser holds.
   for role in $(login_roles); do
-    [[ $(q "$TO" postgres "select rolcanlogin from pg_roles where rolname = $(lit "$role")") == t ]] || apply "$TO" postgres "ALTER ROLE $(ident "$role") LOGIN;" "$TO: $role LOGIN"
+    if is_super src "$role" || is_super dst "$role"; then echo "$CMD: $role is a superuser; its LOGIN on $TO stays as it is"; continue; fi
+    [[ $(q "$TO" postgres "select rolcanlogin from pg_roles where rolname = $(lit "$role")") == t ]] && continue
+    if src_by_admin "$TO"; then need login "$role"; else apply "$TO" postgres "ALTER ROLE $(ident "$role") LOGIN;" "$TO: $role LOGIN"; fi
   done
+  needs_first
   if ((REVERSE)); then [[ -s $WORK/reversed ]] || state "$WORK/reversed" "$(date +%s)"; else [[ -s $WORK/switched ]] || state "$WORK/switched" "$(date +%s)"; fi
   finish
 }
@@ -1306,7 +1376,7 @@ arm_reverse() {
   ensure_repl_password
   ensure_repl_role dst
   ensure_dst_hba
-  ensure_pgpass src "$REV_PORT"
+  via_forward || ensure_pgpass src "$REV_PORT"
   ensure_forward rev
   for spec in "${DATABASES[@]}"; do
     db=$(db_of "$spec") shape=$(shape_of "$spec") sub=$(sub_name rev "$db")
@@ -1314,6 +1384,11 @@ arm_reverse() {
     ensure_publication dst "$db" "$shape" "$REV_PUB"
     if [[ -n $(q src "$db" "select 1 from pg_subscription where subname = '$sub'") ]]; then
       sub_resume src "$db" "$sub"
+      continue
+    fi
+    if via_forward; then
+      # srcexec writes the passfile, connects through REV_HOST:REV_PORT as SRC_OSUSER, then subscribes.
+      need revsub "$db"
       continue
     fi
     if ! can_connect src "$REV_PORT" "$db"; then
@@ -1327,7 +1402,6 @@ arm_reverse() {
 }
 
 cmd_reverse() {
-  no_forward
   arm_reverse
   finish
 }
@@ -1335,18 +1409,25 @@ cmd_reverse() {
 drop_sub() {
   local side=$1 db=$2 sub=$3 slot_side=$4
   if [[ -n $(q "$side" "$db" "select 1 from pg_subscription where subname = '$sub'") ]]; then
+    if src_by_admin "$side"; then
+      # The slot on the other side stays active until the source drops its subscription; the rerun drops it.
+      need dropsub "$db"
+      return 0
+    fi
     apply "$side" "$db" "ALTER SUBSCRIPTION $sub DISABLE; ALTER SUBSCRIPTION $sub SET (slot_name = NONE); DROP SUBSCRIPTION $sub;" "$side $db: subscription $sub dropped"
   fi
-  [[ -z $(q "$slot_side" "$db" "select 1 from pg_replication_slots where slot_name = '$sub'") ]] ||
-    apply "$slot_side" "$db" "SELECT pg_drop_replication_slot('$sub');" "$slot_side: slot $sub dropped"
+  [[ -n $(q "$slot_side" "$db" "select 1 from pg_replication_slots where slot_name = '$sub'") ]] || return 0
+  if src_by_admin "$slot_side"; then need dropslot "$db"; return 0; fi
+  apply "$slot_side" "$db" "SELECT pg_drop_replication_slot('$sub');" "$slot_side: slot $sub dropped"
 }
 
 drop_pub() {
-  [[ -z $(q "$1" "$2" "select 1 from pg_publication where pubname = '$3'") ]] || apply "$1" "$2" "DROP PUBLICATION $3;" "$1 $2: publication $3 dropped"
+  [[ -n $(q "$1" "$2" "select 1 from pg_publication where pubname = '$3'") ]] || return 0
+  if src_by_admin "$1"; then need droppub "$2"; return 0; fi
+  apply "$1" "$2" "DROP PUBLICATION $3;" "$1 $2: publication $3 dropped"
 }
 
 cmd_retire() {
-  no_forward
   local stamp=$WORK/switched age spec db
   [[ -s $WORK/reversed ]] && stamp=$WORK/reversed
   if [[ -s $stamp ]]; then
@@ -1362,17 +1443,285 @@ cmd_retire() {
       continue
     fi
     drop_sub src "$db" "$(sub_name rev "$db")" dst
-    drop_pub dst "$db" "$REV_PUB"
+    # The reverse publication goes once the source's subscription to it is gone.
+    [[ -n $(q src "$db" "select 1 from pg_subscription where subname = '$(sub_name rev "$db")'") ]] || drop_pub dst "$db" "$REV_PUB"
     drop_sub dst "$db" "$(sub_name fwd "$db")" src
     drop_pub src "$db" "$PUB"
   done
-  if [[ -n $FREEZE_MARKER ]] && on "$SRC_SSH" "test -e $FREEZE_MARKER" 2>/dev/null; then
+  # SRC_VIA=forward: remote.sh removes the marker through PGMOVE_SRC_ADMIN once retire exits 0.
+  if [[ -n $FREEZE_MARKER ]] && ! via_forward && on "$SRC_SSH" "test -e $FREEZE_MARKER" 2>/dev/null; then
     run "$SRC_SSH" "rm -f $FREEZE_MARKER" "$SRC_SSH:$FREEZE_MARKER removed; migrations run again"
   fi
-  if [[ -n $FWD_PORT ]] && on "$DST_SSH" "systemctl is-enabled --quiet pg-forward@$CLUSTER" 2>/dev/null; then
+  if ((needs == 0)) && [[ -n $FWD_PORT ]] && on "$DST_SSH" "systemctl is-enabled --quiet pg-forward@$CLUSTER" 2>/dev/null; then
     run "$DST_SSH" "systemctl disable --now pg-forward@$CLUSTER" "pg-forward@$CLUSTER stopped and disabled"
   fi
   finish
+}
+
+# The source's root steps for SRC_VIA=forward, built on the operator machine from the "need:" lines
+# a box step printed. Each word is checked against this checkout's conf before it goes into SQL.
+cmd_srcexec() {
+  local verb a b c line db fenced=$SECRETS/fenced role
+  via_forward || die "srcexec: only for SRC_VIA=forward"
+  ok_db() { our_db "$1" || die "srcexec: $1 is not a database of $CLUSTER.conf"; }
+  ok_role() {
+    [[ $1 =~ ^[A-Za-z0-9_.-]+$ && $1 != postgres && $1 != "$REPL_ROLE" && $1 != pg_* ]] || die "srcexec: role '$1' is not one pgmove fences"
+    local k; for k in ${FENCE_KEEP[@]+"${FENCE_KEEP[@]}"}; do [[ $k != "$1" ]] || die "srcexec: $1 is in FENCE_KEEP"; done
+  }
+  src_preamble
+  printf 'fenced=%q secrets=%q\n' "$fenced" "$SECRETS"
+  cat <<'EOS'
+role_is() { pq postgres -c "select $2 from pg_roles where rolname = '$1'"; }
+EOS
+  if [[ ${ARGS[0]:-} == verifiers ]]; then
+    # Rows for passwords on the box: every role that is not a superuser and has a verifier.
+    printf 'pq postgres -c %q\n' "select rolname || '|' || rolpassword from pg_authid where rolpassword is not null and not rolsuper and rolname !~ '^pg_' and rolname not in ('postgres', '$REPL_ROLE') order by 1"
+    return 0
+  fi
+  if [[ ${ARGS[0]:-} == marker ]]; then
+    printf 'm=%q; if [[ -z $m ]]; then echo "marker: none set"; elif [[ -e $m ]]; then echo "marker: $m present"; else echo "marker: $m absent"; exit 1; fi\n' "$FREEZE_MARKER"
+    return 0
+  fi
+  while IFS=' ' read -r line verb a b c; do
+    [[ $line == need: ]] || continue
+    case $verb in
+      fence)
+        ok_role "$a"
+        printf 'r=%q\n' "$a"
+        cat <<'EOS'
+[[ $(role_is "$r" rolsuper) == f ]] || { echo "srcexec: $r is a superuser or absent on the source; not fenced" >&2; exit 1; }
+[[ -d $secrets ]] || install -d -m 0755 "$secrets"; touch "$fenced"; chmod 0600 "$fenced"
+grep -qxF -- "$r" "$fenced" || echo "$r" >>"$fenced"
+if [[ $(role_is "$r" rolcanlogin) == t ]]; then pq postgres -c "SET lock_timeout = '2s'; ALTER ROLE \"$r\" NOLOGIN;" >/dev/null; changed "src: $r NOLOGIN (listed in $fenced)"; fi
+k=$(pq postgres -c "select count(pg_terminate_backend(pid)) from pg_stat_activity where usename = '$r'")
+[[ $k == 0 ]] || changed "src: $k session(s) of $r ended"
+EOS
+        ;;
+      login)
+        ok_role "$a"
+        printf 'r=%q\n' "$a"
+        cat <<'EOS'
+grep -qxF -- "$r" "$fenced" 2>/dev/null || { echo "srcexec: $r is not in $fenced, so fence did not take its LOGIN; not granted" >&2; exit 1; }
+[[ $(role_is "$r" rolsuper) == f ]] || { echo "srcexec: $r is a superuser; not granted" >&2; exit 1; }
+if [[ $(role_is "$r" rolcanlogin) != t ]]; then pq postgres -c "ALTER ROLE \"$r\" LOGIN;" >/dev/null; changed "src: $r LOGIN"; fi
+grep -vxF -- "$r" "$fenced" >"$fenced.new" || true; mv -f "$fenced.new" "$fenced"
+EOS
+        ;;
+      setval)
+        ok_db "$a"
+        [[ $b =~ ^[A-Za-z0-9_.\"]+$ && $c =~ ^-?[0-9]+$ ]] || die "srcexec: setval $b $c has an unexpected shape"
+        printf 'pq %q -c %q >/dev/null; changed %q\n' "$a" "SELECT setval($(lit "$b")::regclass, $c, true)" "src $a: $b at $c as on the target"
+        ;;
+      revsub)
+        ok_db "$a"
+        [[ $REV_HOST =~ ^[0-9.]+$ && $REV_PORT =~ ^[0-9]+$ ]] || die "srcexec: REV_HOST or REV_PORT has an unexpected shape"
+        [[ -n ${PGMOVE_REV_PW:-} ]] || die "srcexec: revsub needs PGMOVE_REV_PW (remote.sh reads it from the box)"
+        printf 'db=%q sub=%q pf=%q line=%q conn=%q create=%q\n' "$a" "$(sub_name rev "$a")" "$SECRETS/pgpass" "$REV_HOST:$REV_PORT:*:$REPL_ROLE:$PGMOVE_REV_PW" \
+          "host=$REV_HOST port=$REV_PORT dbname=$a user=$REPL_ROLE passfile=$SECRETS/pgpass application_name=$(sub_name rev "$a") sslmode=disable" \
+          "PUBLICATION $REV_PUB WITH (copy_data = false, binary = $BINARY, streaming = on, origin = none, disable_on_error = false)"
+        cat <<'EOS'
+[[ -d $secrets ]] || install -d -m 0755 "$secrets"
+if ! grep -qxF -- "$line" "$pf" 2>/dev/null; then
+  { grep -vF -- "${line%:*}:" "$pf" 2>/dev/null || true; printf '%s\n' "$line"; } >"$pf.new"; chown "$osuser": "$pf.new"; chmod 0600 "$pf.new"; mv -f "$pf.new" "$pf"
+  changed "src: $pf holds the reverse line"
+fi
+sudo -n -u "$osuser" psql "$conn connect_timeout=10" -XAtqc 'select 1' >/dev/null || { echo "srcexec: the source does not reach the target through ${conn%% dbname*}; nothing subscribed" >&2; exit 1; }
+if [[ $(pq "$db" -c "select count(*) from pg_subscription where subname = '$sub'") == 0 ]]; then
+  pq "$db" -c "CREATE SUBSCRIPTION $sub CONNECTION '$conn' $create;" >/dev/null
+  changed "src $db: reverse subscription $sub, copy_data=false"
+fi
+EOS
+        ;;
+      enable | disable | dropsub)
+        ok_db "$a"
+        printf 'db=%q sub=%q verb=%q\n' "$a" "$(sub_name rev "$a")" "$verb"
+        cat <<'EOS'
+have=$(pq "$db" -c "select subenabled from pg_subscription where subname = '$sub'")
+case $verb in
+  enable) [[ -n $have ]] || { echo "srcexec: no $sub in $db" >&2; exit 1; }
+    pq "$db" -c "ALTER SUBSCRIPTION $sub SET (origin = none); ALTER SUBSCRIPTION $sub ENABLE;" >/dev/null; changed "src $db: $sub origin=none, enabled" ;;
+  disable) [[ $have != t ]] || { pq "$db" -c "ALTER SUBSCRIPTION $sub DISABLE;" >/dev/null; changed "src $db: $sub disabled"; } ;;
+  dropsub) [[ -z $have ]] || { pq "$db" -c "ALTER SUBSCRIPTION $sub DISABLE;" -c "ALTER SUBSCRIPTION $sub SET (slot_name = NONE);" -c "DROP SUBSCRIPTION $sub;" >/dev/null; changed "src $db: $sub dropped"; } ;;
+esac
+EOS
+        ;;
+      dropslot | droppub)
+        ok_db "$a"
+        printf 'db=%q slot=%q pub=%q verb=%q\n' "$a" "$(sub_name fwd "$a")" "$PUB" "$verb"
+        cat <<'EOS'
+if [[ $verb == dropslot ]]; then
+  act=$(pq "$db" -c "select active from pg_replication_slots where slot_name = '$slot'")
+  [[ $act != t ]] || { echo "srcexec: slot $slot is active; drop the target's subscription first" >&2; exit 1; }
+  [[ -z $act ]] || { pq "$db" -c "select pg_drop_replication_slot('$slot')" >/dev/null; changed "src: slot $slot dropped"; }
+else
+  [[ $(pq "$db" -c "select count(*) from pg_publication where pubname = '$pub'") == 0 ]] || { pq "$db" -c "DROP PUBLICATION $pub;" >/dev/null; changed "src $db: publication $pub dropped"; }
+fi
+EOS
+        ;;
+      rmmarker)
+        printf 'm=%q\n' "$FREEZE_MARKER"
+        echo '[[ -z $m || ! -e $m ]] || { rm -f "$m"; changed "src: $m removed; migrations run again"; }'
+        ;;
+      catchup) ;; # remote.sh pipes catchout from the box into catchin
+      catchin)
+        is_hypertable "$a" && [[ $b =~ ^[0-9]+$ ]] || die "srcexec: catchin $a $b is not a hypertable of $CLUSTER.conf and a floor"
+        printf 'pq %q --single-transaction -c %q -c %q -c %q -c %q | tail -1\n' "$HT_DB" "SET session_replication_role = replica" "CREATE TEMP TABLE catchup_rows (LIKE $a) ON COMMIT DROP" '\copy catchup_rows from stdin with (format binary)' \
+          "WITH moved AS (INSERT INTO $a SELECT c.* FROM catchup_rows c WHERE NOT EXISTS (SELECT 1 FROM $a t WHERE t.$HT_KEY = c.$HT_KEY AND t.$HT_TIME = c.$HT_TIME) RETURNING 1) SELECT count(*) FROM moved"
+        return 0
+        ;;
+      *) die "srcexec: unknown need '$verb'" ;;
+    esac
+  done
+  echo 'echo "source: $n change(s)"'
+}
+
+# Rows of a target hypertable above a floor, for a reverse catchup into a SRC_VIA=forward source.
+cmd_catchout() {
+  local table=${ARGS[0]:-} floor=${ARGS[1]:-}
+  is_hypertable "$table" && [[ $floor =~ ^[0-9]+$ ]] || die "catchout: $table $floor is not a hypertable of $CLUSTER.conf and a floor"
+  printf '\\copy (select * from %s where %s > %s and %s >= %s) to stdout with (format binary)\n' "$table" "$HT_KEY" "$floor" "$HT_TIME" "$(lit "$(ts_cutoff)")" | sql dst ro "$HT_DB"
+}
+
+# Target roles get the source's SCRAM verifiers, so the switch grants LOGIN with no password reset.
+# Superusers are never touched: a target superuser keeps what it has, a source superuser is not read.
+cmd_passwords() {
+  local rows role ver super have same=0 total=0
+  if via_forward; then
+    rows=$(cat)
+  else
+    rows=$(q src postgres "select rolname || '|' || rolpassword from pg_authid where rolpassword is not null and not rolsuper and rolname !~ '^pg_' and rolname not in ('postgres', '$REPL_ROLE') order by 1")
+  fi
+  [[ -n $rows ]] || die "passwords: read no role|verifier rows from the source; an empty answer is not 'no passwords'"
+  while IFS='|' read -r role ver; do
+    [[ -n $role ]] || continue
+    total=$((total + 1))
+    [[ $ver =~ $SCRAM_RE ]] || { blocked "$role: the source's verifier is not SCRAM-SHA-256; not copied"; continue; }
+    super=$(q dst postgres "select rolsuper from pg_roles where rolname = $(lit "$role")")
+    [[ -n $super ]] || { blocked "$role is not on the target; run init"; continue; }
+    [[ $super == f ]] || { echo "passwords: $role is a superuser on the target; left as it is"; continue; }
+    have=$(q dst postgres "select coalesce(rolpassword, '') from pg_authid where rolname = $(lit "$role")")
+    if [[ $have == "$ver" ]]; then same=$((same + 1)); continue; fi
+    apply dst postgres "ALTER ROLE $(ident "$role") PASSWORD $(lit "$ver");" "dst: $role password verifier as on the source"
+  done <<<"$rows"
+  ((DRY || blocks)) || state "$WORK/passwords-ok" "$(date +%s)"
+  finish "$same of $total verifier(s) already equal"
+}
+
+# TimescaleDB policies are rows in its catalog, which neither pg_dump --schema-only nor a
+# subscription carries. init copies compression settings and the policy jobs, unscheduled; the
+# switch schedules the target's where the source's run.
+TS_JOBS="select j.job_id || '|' || j.proc_name || '|' || format('%I.%I', j.hypertable_schema, j.hypertable_name) || '|' || j.schedule_interval || '|' || j.scheduled || '|' || coalesce((j.config - 'hypertable_id' - 'mat_hypertable_id')::text, '{}') from timescaledb_information.jobs j where j.job_id >= 1000 order by 2, 3"
+
+ensure_timescale() {
+  local db=$1 have line id proc table every sched config add seg ord t c
+  has_ext src "$db" || return 0
+  while IFS='|' read -r t seg ord; do
+    [[ -n $t ]] || continue
+    [[ $(q dst "$db" "select compression_enabled from timescaledb_information.hypertables where format('%I.%I', hypertable_schema, hypertable_name) = $(lit "$t")") == t ]] && continue
+    apply dst "$db" "ALTER TABLE $t SET (timescaledb.compress$([[ $seg == - ]] || echo ", timescaledb.compress_segmentby = $(lit "$seg")")$([[ $ord == - ]] || echo ", timescaledb.compress_orderby = $(lit "$ord")"));" "$db: $t compression as on the source"
+  done < <(q src "$db" "select format('%I.%I', h.hypertable_schema, h.hypertable_name) || '|' || coalesce(s.segmentby, '-') || '|' || coalesce(s.orderby, '-') from timescaledb_information.hypertables h join timescaledb_information.hypertable_compression_settings s on s.hypertable = format('%I.%I', h.hypertable_schema, h.hypertable_name)::regclass where h.compression_enabled")
+  while IFS= read -r c; do [[ -z $c ]] || blocked "$db: continuous aggregate $c; pgmove does not build those, make it by hand"; done < <(q src "$db" "select format('%I.%I', view_schema, view_name) from timescaledb_information.continuous_aggregates")
+  have=$(q dst "$db" "$TS_JOBS" | cut -d'|' -f2,3)
+  while IFS='|' read -r id proc table every sched config; do
+    [[ -n $id ]] || continue
+    grep -qxF -- "$proc|$table" <<<"$have" && continue
+    case $proc in
+      policy_compression) add="add_compression_policy($(lit "$table"), compress_after => ($(lit "$config")::jsonb ->> 'compress_after')::interval" ;;
+      policy_retention) add="add_retention_policy($(lit "$table"), drop_after => ($(lit "$config")::jsonb ->> 'drop_after')::interval" ;;
+      *) blocked "$db: job $id $proc on $table; pgmove copies compression and retention policies only"; continue ;;
+    esac
+    apply dst "$db" "SELECT alter_job(${add}, schedule_interval => $(lit "$every")::interval), scheduled => false);" "$db: $proc on $table every $every, unscheduled until the switch"
+  done < <(q src "$db" "$TS_JOBS")
+}
+
+# The switch schedules a target job where the source's same job is scheduled.
+schedule_timescale() {
+  local db=$1 id proc table every sched config want
+  has_ext src "$db" || return 0
+  want=$(q src "$db" "$TS_JOBS" | awk -F'|' '$5 == "t" { print $2 "|" $3 }')
+  while IFS='|' read -r id proc table every sched config; do
+    [[ -n $id && $sched == f ]] && grep -qxF -- "$proc|$table" <<<"$want" || continue
+    apply dst "$db" "SELECT alter_job($id, scheduled => true);" "$db: job $id $proc on $table scheduled"
+  done < <(q dst "$db" "$TS_JOBS")
+}
+
+volume_dropin() {
+  printf '[Unit]\nRequiresMountsFor=%s\n[Service]\nExecStartPre=/usr/bin/mountpoint -q %s\n' "$DST_VOLUME" "$DST_VOLUME"
+}
+
+# Postgres must never start on an empty directory where the volume should be mounted: initdb'd or
+# not, it would take writes the volume never sees.
+ensure_volume_guard() {
+  local f=/etc/systemd/system/postgresql@$PG_MAJOR-$DST_CLUSTER.service.d/pgmove-volume.conf
+  [[ -n $DST_VOLUME ]] || { blocked "$CLUSTER.conf sets no DST_VOLUME; the target's volume guard has no mount to require"; return 0; }
+  [[ $(on "$DST_SSH" "cat $f" 2>/dev/null || true) == "$(volume_dropin)" ]] && return 0
+  put "$DST_SSH" "$f" 0644 root "$(volume_dropin)" "$f: postgresql@$PG_MAJOR-$DST_CLUSTER requires $DST_VOLUME mounted"
+  run "$DST_SSH" "systemctl daemon-reload" "systemd reloaded (no restart: the guard applies at the next start)"
+}
+
+check_volume_guard() {
+  local f=/etc/systemd/system/postgresql@$PG_MAJOR-$DST_CLUSTER.service.d/pgmove-volume.conf data mnt req
+  [[ -n $DST_VOLUME ]] || { diff_row "volume: $CLUSTER.conf sets no DST_VOLUME"; return 0; }
+  data=$(q dst postgres "show data_directory")
+  [[ -n $data ]] || { diff_row "volume: the target answered no data_directory"; return 0; }
+  mnt=$(on "$DST_SSH" "findmnt -rno TARGET -T $(printf %q "$data")" 2>/dev/null || true)
+  [[ $mnt == "$DST_VOLUME" ]] || diff_row "volume: $data is on '${mnt:-?}', not $DST_VOLUME"
+  [[ $(on "$DST_SSH" "cat $f" 2>/dev/null || true) == "$(volume_dropin)" ]] || { diff_row "volume: no $f; run init $CLUSTER (writes it and reloads systemd, no restart)"; return 0; }
+  req=$(on "$DST_SSH" "systemctl show -p RequiresMountsFor --value postgresql@$PG_MAJOR-$DST_CLUSTER" 2>/dev/null || true)
+  [[ " $req " == *" $DST_VOLUME "* ]] || { diff_row "volume: systemd has not loaded $f (RequiresMountsFor='$req')"; return 0; }
+  echo "volume: $data on $DST_VOLUME; postgresql@$PG_MAJOR-$DST_CLUSTER will not start without it"
+}
+
+# Read-only. Exits 0 only when the switch could start now: every check prints DIFF or passes.
+cmd_preflight() {
+  local spec db shape sub counts total lag age s out rc upstream=0
+  echo "preflight: $CLUSTER versions: source $(q src postgres 'show server_version'), target $(q dst postgres 'show server_version')"
+  for spec in "${DATABASES[@]}"; do
+    db=$(db_of "$spec") shape=$(shape_of "$spec") sub=$(sub_name fwd "$db")
+    IFS='|' read -r counts total <<<"$(ready_count dst "$db" "$sub")"
+    if [[ -z $total || $total == 0 ]]; then diff_row "$db: the target has no subscription $sub with tables"
+    elif [[ $counts != 0 ]]; then diff_row "$db: $counts of $total tables not in state r (the copy is still running)"
+    else echo "preflight: $db: all $total tables in state r"; fi
+    if [[ $shape == upstream=* ]]; then
+      upstream=1
+      # The publisher is upstream of the source, so its LSN is not readable here: the lag is the
+      # age of the last end position the target confirmed.
+      age=$(q dst "$db" "select coalesce(extract(epoch from now() - max(latest_end_time))::bigint, -1) from pg_stat_subscription where subname = '$sub'")
+      if [[ ! $age =~ ^[0-9]+$ ]] || ((age > MAX_UPSTREAM_LAG_SECS)); then diff_row "$db: $sub last confirmed ${age:-?} s ago (limit $MAX_UPSTREAM_LAG_SECS s)"; else echo "preflight: $db: $sub confirmed $age s ago"; fi
+      continue
+    fi
+    lag=$(q src "$db" "select pg_wal_lsn_diff(pg_current_wal_lsn(), confirmed_flush_lsn)::bigint from pg_replication_slots where slot_name = '$sub'")
+    if [[ ! $lag =~ ^-?[0-9]+$ ]]; then diff_row "$db: no slot $sub on the source"
+    elif ((lag >= MAX_LAG_BYTES)); then diff_row "$db: slot $sub is $lag bytes behind (limit $MAX_LAG_BYTES)"
+    else echo "preflight: $db: slot $sub $lag bytes behind"; fi
+  done
+  check_tables
+  check_schema
+  check_grants
+  hash_age
+  if ((upstream)); then
+    echo "preflight: $CLUSTER is fed by its upstream publisher; fence, switch and reverse do not apply"
+  else
+    for s in reverse fence switch; do
+      rc=0
+      out=$("$0" "$s" "$CLUSTER" --dry-run 2>&1) || rc=$?
+      sed "s/^/  $s: /" <<<"$out"
+      if ((rc)); then diff_row "$s --dry-run exits $rc"; else echo "preflight: $s --dry-run exits 0"; fi
+    done
+  fi
+  if ((upstream)); then echo "preflight: marker: no source publication, so no freeze marker"
+  elif [[ -z $FREEZE_MARKER ]]; then diff_row "marker: $CLUSTER.conf sets no FREEZE_MARKER"
+  elif [[ $MIGRATE_MARKER == none ]]; then echo "preflight: marker: nothing on the source refuses migrations under a marker (MIGRATE_MARKER=none); $FREEZE_MARKER is the record only"
+  elif [[ $FREEZE_MARKER != "$MIGRATE_MARKER" ]]; then diff_row "marker: FREEZE_MARKER $FREEZE_MARKER is not $MIGRATE_MARKER, the path the source's deploy refuses migrations under"
+  else echo "preflight: marker: $FREEZE_MARKER is the path the source's deploy refuses under"; fi
+  if ((upstream)); then :
+  elif [[ -n $FREEZE_MARKER ]] && ! via_forward; then
+    if on "$SRC_SSH" "test -e $FREEZE_MARKER"; then echo "preflight: marker: $FREEZE_MARKER present on the source"; else diff_row "marker: $FREEZE_MARKER absent on the source"; fi
+  elif via_forward; then
+    echo "preflight: marker presence and the verifiers are checked by remote.sh through PGMOVE_SRC_ADMIN"
+  fi
+  check_volume_guard
+  finish_check
 }
 
 WRITES_SQL="select '@epoch|' || extract(epoch from pg_postmaster_start_time())::bigint || '/' || coalesce(extract(epoch from stats_reset)::bigint, 0) from pg_stat_database where datname = current_database() union all select format('%I.%I', schemaname, relname) || '|' || (n_tup_ins + n_tup_upd + n_tup_del) from pg_stat_user_tables where schemaname not in ('_timescaledb_catalog', '_timescaledb_config')"
