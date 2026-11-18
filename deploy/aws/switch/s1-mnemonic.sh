@@ -10,6 +10,9 @@ DELTA_MAX_MIB=${S1_DELTA_MAX_MIB:-512}
 AWS_PROFILE_NAME=${S1_AWS_PROFILE:-main}
 AWS_REGION_NAME=${S1_AWS_REGION:-us-east-1}
 CLIENT_CONFIG=${S1_CLIENT_CONFIG:-$HOME/.mnemonic/config.toml}
+OWNER_FILE=/var/lib/s1-owner
+EXIT_CLIENT=3
+CLIENT_FIX_RC=0
 MNEMONIC_CLI=${S1_MNEMONIC_CLI:-mnemonic}
 SHARE_URL=${S1_SHARE_URL:-https://share.askloyal.com/}
 VANISH_OK=0
@@ -20,7 +23,7 @@ SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=30)
 
 usage() {
   cat >&2 <<EOF
-usage: $0 preflight | delta [--reverse] | copy | switch --go | back --go [--sync-back] [--risk-two-stores] | back --sync-back --dry-run
+usage: $0 preflight | delta [--reverse] | copy | switch --go | resume --go | back --go [--sync-back] [--accept-stale-store] [--risk-two-stores] | back --sync-back --dry-run
 preflight  Read-only. Exit 0 only when, on $NEW_HOST, the arm64 binary, both unit files and their slice, the store volume, the
            cloudflared config and credentials and the share port are in place and both units are inactive, the UDP port of the store
            is open in the security group, the new store has room for the delta, and on $OLD_ADDR both units are active and a search
@@ -28,14 +31,20 @@ preflight  Read-only. Exit 0 only when, on $NEW_HOST, the arm64 binary, both uni
 delta      Dry-run rsync old to new (new to old with --reverse) and print the bytes it would move.
 copy       One live pass old to new while the old units keep running. Rerun until delta is small.
 switch     Catch-up copy with the old units running, re-measure the delta (stop if still over ${DELTA_MAX_MIB} MiB), stop and disable old
-           cloudflared-mnemonic and mnemonic, final rsync, enable and start mnemonic then cloudflared-mnemonic on $NEW_HOST, check
-           that a search answers from it and that the share hostname answers. Needs --go.
-back       Stop and disable the new units, enable and start the old ones. If $NEW_HOST does not answer, the old side starts only
-           when the AWS API shows the new instance stopped or terminated (S1_NEW_INSTANCE_ID names it, else it is found by
-           $NEW_ADDR); a new store that answers a search always refuses. With no proof, back refuses, because the new store may
-           still be serving and two stores must never run; --risk-two-stores starts the old side anyway, for an operator who knows
-           the new box is down or accepts the risk. --sync-back first copies the new store over the old one (use it when the new
-           box took writes) and fails when $NEW_HOST cannot be reached or an old unit is running. Needs --go.
+           cloudflared-mnemonic and mnemonic, final rsync, write the owner marker on $OLD_ADDR, then start (never enable) mnemonic and
+           cloudflared-mnemonic on $NEW_HOST, check that a search answers from it and that the share hostname answers, then point
+           the client config at $NEW_ADDR (a failure there prints the one-line fix and exits $EXIT_CLIENT; the store has moved). Needs --go.
+resume     After a reboot of $NEW_HOST: start its units again. Only when the owner marker says AWS owns the store and both old units
+           are stopped. Needs --go. Never rerun switch for this: it would overwrite the new store with the old one.
+back       Stop and disable the new units, enable and start the old ones, point the client config back at $OLD_ADDR. If $NEW_HOST
+           does not answer, the old side starts only when the AWS API shows the new instance stopped or terminated
+           (S1_NEW_INSTANCE_ID names it, else it is found by $NEW_ADDR); a new store that answers a search always refuses. With
+           no proof, back refuses, because the new store may still be serving and two stores must never run; --risk-two-stores
+           starts the old side anyway. The new units are never enabled at boot, so powering the new box on later cannot start a
+           second store. When the owner marker says AWS may have taken writes, back measures what the old store lacks (dry run
+           of the copy back) and refuses unless it is zero, or --sync-back copies it, or --accept-stale-store leaves it behind;
+           a new box that cannot be reached cannot be measured, so that case needs --accept-stale-store. --sync-back fails when
+           $NEW_HOST cannot be reached or an old unit is running. Needs --go.
 back --sync-back --dry-run
            Prints what --sync-back would copy back and changes nothing; refuses when an old unit is running. No --go needed.
 Both boxes are reached from this machine. The copy runs on the old box and pushes to the new one; the old box reaches the new
@@ -50,6 +59,52 @@ die() { echo "s1-mnemonic: $*" >&2; exit 1; }
 old() { ssh "${SSH_OPTS[@]}" "root@$OLD_ADDR" "$@"; }
 # shellcheck disable=SC2029
 new() { ssh "${SSH_OPTS[@]}" "$NEW_HOST" "$@"; }
+
+owner_state() { # prints the owner marker of the old box ("aws <epoch>" or nothing); fails when the old box cannot be read
+  # shellcheck disable=SC2016
+  old "cat $OWNER_FILE 2>/dev/null || true"
+}
+
+client_config_state() { # prints old, new or a note; fails when the client config does not name the store being moved
+  local line
+  [[ -f $CLIENT_CONFIG ]] || { echo "no client config at $CLIENT_CONFIG (S1_CLIENT_CONFIG)"; return 1; }
+  line=$(grep -m1 '^server *=' "$CLIENT_CONFIG" || true)
+  case $line in
+    *"quic://$OLD_ADDR:8741"*) echo "$CLIENT_CONFIG names the old store $OLD_ADDR; switch --go points it at $NEW_ADDR" ;;
+    *"quic://$NEW_ADDR:8741"*) echo "note: $CLIENT_CONFIG already names the new store $NEW_ADDR" ;;
+    *) echo "$CLIENT_CONFIG server line is neither $OLD_ADDR nor $NEW_ADDR: ${line:-no server line}"; return 1 ;;
+  esac
+}
+
+point_client() { # point_client ADDR: rewrite the one server line, keep the first copy as .pre-s1
+  local addr=$1 tmp
+  [[ -f $CLIENT_CONFIG ]] || return 1
+  [[ -e $CLIENT_CONFIG.pre-s1 ]] || cp -p "$CLIENT_CONFIG" "$CLIENT_CONFIG.pre-s1" || return 1
+  tmp=$(mktemp) || return 1
+  awk -v s="server = \"quic://$addr:8741\"" '!d && /^server *=/ {print s; d=1; next} {print}' "$CLIENT_CONFIG" >"$tmp" || { rm -f "$tmp"; return 1; }
+  grep -q "^server = \"quic://$addr:8741\"" "$tmp" || { rm -f "$tmp"; return 1; }
+  cat "$tmp" >"$CLIENT_CONFIG" || { rm -f "$tmp"; return 1; }
+  rm -f "$tmp"
+}
+
+client_fix_line() { echo "sed -i.bak -E 's#^server *=.*#server = \"quic://$1:8741\"#' '$CLIENT_CONFIG'"; }
+
+repoint_client() { # repoint_client ADDR: never fails the caller's switch; sets CLIENT_FIX_RC
+  local addr=$1
+  if ! point_client "$addr"; then
+    echo "client config NOT changed: could not write $CLIENT_CONFIG. Fix by hand: $(client_fix_line "$addr")"
+    CLIENT_FIX_RC=$EXIT_CLIENT
+    return
+  fi
+  if [[ $addr == "$NEW_ADDR" ]]; then
+    if ! search_check --config; then
+      echo "client config now names $addr but a search through it does not answer. Check it, or restore: $(client_fix_line "$OLD_ADDR")"
+      CLIENT_FIX_RC=$EXIT_CLIENT
+      return
+    fi
+  fi
+  echo "client config $CLIENT_CONFIG now names $addr (first copy $CLIENT_CONFIG.pre-s1)"
+}
 
 FAILS=0
 ok() { echo "PASS $1: $2"; }
@@ -120,10 +175,14 @@ cmd_copy() {
   rm -f "$out"
 }
 
-search_check() {
+search_check() { # search_check ADDR | search_check --config: the second form uses the client config as it is
   local addr=$1 cfg
   cfg=$(mktemp)
-  awk '/^\[\[sources\]\]/{exit} {print}' "$CLIENT_CONFIG" | sed -E "s#^server *=.*#server = \"quic://$addr:8741\"#" >"$cfg"
+  if [[ $addr == --config ]]; then
+    awk '/^\[\[sources\]\]/{exit} {print}' "$CLIENT_CONFIG" >"$cfg"
+  else
+    awk '/^\[\[sources\]\]/{exit} {print}' "$CLIENT_CONFIG" | sed -E "s#^server *=.*#server = \"quic://$addr:8741\"#" >"$cfg"
+  fi
   local rc=0
   python3 -I - "$MNEMONIC_CLI" "$cfg" <<'PY' || rc=$?
 import json, subprocess, sys, threading
@@ -209,7 +268,24 @@ new_idle() {
     echo 'both inactive'"
 }
 
+new_not_enabled() {
+  check new-units-not-enabled new "
+    for u in mnemonic cloudflared-mnemonic; do systemctl is-enabled -q \$u 2>/dev/null && { echo \"\$u is enabled at boot: powering the box on would start a store\"; exit 1; }; done
+    echo 'neither unit is enabled at boot'"
+}
+
+owner_clear() {
+  local st rc=0
+  st=$(owner_state) || rc=$?
+  if ((rc)); then echo "the old box does not answer: its owner marker cannot be read"; return 1; fi
+  [[ -z $st ]] && { echo "no owner marker on $OLD_ADDR: Hetzner owns the store"; return 0; }
+  echo "owner marker on $OLD_ADDR says: $st. AWS took the store; use back (or resume), a switch would overwrite it"
+  return 1
+}
+
 old_live() {
+  check owner-marker owner_clear
+  check client-config client_config_state
   check old-units-active old "
     for u in mnemonic cloudflared-mnemonic; do s=\$(systemctl is-active \$u || true); [ \"\$s\" = active ] || { echo \"\$u is \$s\"; exit 1; }; done
     echo 'both active'"
@@ -243,6 +319,7 @@ cmd_preflight() {
   VANISH_OK=1
   new_static
   new_idle
+  new_not_enabled
   old_live
   store_delta
   if ((FAILS)); then echo "preflight: $FAILS check(s) failed"; return 1; fi
@@ -256,6 +333,8 @@ cmd_switch() {
   local t0 out b mib
   new_static
   new_idle
+  new_not_enabled
+  check owner-marker owner_clear
   ((FAILS == 0)) || die "new box is not ready ($FAILS failed); no unit was touched"
   echo "catch-up copy, old units still running"
   cmd_copy
@@ -276,12 +355,31 @@ cmd_switch() {
   fi
   grep -E 'Number of regular files transferred|Total transferred file size|Total bytes sent' "$out"
   rm -f "$out"
-  echo "start new"
-  # shellcheck disable=SC2016
-  new 'sudo -n systemctl enable --now mnemonic && for i in $(seq 1 60); do ss -ltn | grep -q ":8742 " && exit 0; sleep 1; done; echo "mnemonic is not listening on 8742"; exit 1' ||
-    die "new mnemonic did not come up; run back --go"
-  new 'sudo -n systemctl enable --now cloudflared-mnemonic' || die "new cloudflared did not start; run back --go"
+  old "echo aws \$(date +%s) >$OWNER_FILE" || die "could not write the owner marker on $OLD_ADDR; nothing was started on $NEW_HOST. Run back --go"
+  start_new_units "switch"
   echo "pause $(($(date +%s) - t0)) s (old stop to new start)"
+  switch_check
+  repoint_client "$NEW_ADDR"
+  return "$CLIENT_FIX_RC"
+}
+
+start_new_units() { # the units are started, never enabled: a power-on of the box cannot start a store
+  # shellcheck disable=SC2016
+  new 'for u in mnemonic cloudflared-mnemonic; do sudo -n systemctl disable $u >/dev/null 2>&1 || true; systemctl is-enabled -q $u 2>/dev/null && { echo "$u is still enabled at boot"; exit 1; }; done
+    sudo -n systemctl start mnemonic && for i in $(seq 1 60); do ss -ltn | grep -q ":8742 " && exit 0; sleep 1; done; echo "mnemonic is not listening on 8742"; exit 1' ||
+    die "new mnemonic did not come up; run $0 back --go"
+  new 'sudo -n systemctl start cloudflared-mnemonic' || die "new cloudflared did not start; run $0 back --go"
+}
+
+cmd_resume() {
+  need_go "${1:-}" resume
+  local st rc=0
+  st=$(owner_state) || rc=$?
+  ((rc == 0)) || die "resume: the old box does not answer, so ownership cannot be read; nothing was started"
+  [[ $st == aws* ]] || die "resume: the owner marker on $OLD_ADDR says '${st:-Hetzner}', not AWS; nothing was started. Use switch --go for a first move"
+  old_must_be_idle "resume refused"
+  new true 2>/dev/null || die "resume: $NEW_HOST does not answer"
+  start_new_units resume
   switch_check
 }
 
@@ -346,14 +444,26 @@ new_proven_down() { # the AWS API says the new instance is stopped or terminated
   esac
 }
 
+left_behind() { # prints "BYTES DELETED" the copy back would carry from the new store to the old one; fails when it cannot be measured
+  local out b d
+  out=$(mktemp)
+  VANISH_OK=1
+  if ! rsync_run reverse dry "$out"; then rm -f "$out"; return 1; fi
+  b=$(stat_of 'Total transferred file size' "$out")
+  d=$(stat_of 'Number of deleted files' "$out")
+  rm -f "$out"
+  echo "${b:-0} ${d:-0}"
+}
+
 cmd_back() {
-  local sync=0 dry=0 go=0 risk=0 arg out new_up=1 why
+  local sync=0 dry=0 go=0 risk=0 accept=0 arg out new_up=1 why owner rc=0 left
   for arg in "$@"; do
     case $arg in
       --go) go=1 ;;
       --sync-back) sync=1 ;;
       --dry-run) dry=1 ;;
       --risk-two-stores) risk=1 ;;
+      --accept-stale-store) accept=1 ;;
       *) die "back: unknown argument $arg" ;;
     esac
   done
@@ -363,12 +473,26 @@ cmd_back() {
     return
   fi
   ((go)) || die "back changes both boxes; rerun with --go"
+  owner=$(owner_state) || rc=$?
+  ((rc == 0)) || die "the old box does not answer, so back cannot start it or read who owns the store; nothing was changed"
   ((sync == 0)) || old_must_be_idle "sync-back refused, nothing was changed"
   if new true 2>/dev/null; then
     echo "stop and disable new"
     # shellcheck disable=SC2016
     new 'sudo -n systemctl disable --now cloudflared-mnemonic; a=$?; sudo -n systemctl disable --now mnemonic; b=$?; [ $a -eq 0 ] && [ $b -eq 0 ]' ||
       die "could not stop the new units; the old units were not started, so two stores cannot run"
+    if [[ -n $owner && $sync == 0 ]]; then
+      if left=$(left_behind); then
+        if [[ $left != "0 0" ]]; then
+          why="the new store holds $((${left% *} / 1048576)) MiB (${left% *} bytes) and ${left#* } deletion(s) the old store lacks"
+          ((accept)) || die "$why. The new units are stopped and the old side was not started. Rerun with --sync-back to copy them over the old store, or --accept-stale-store to start the old store without them"
+          echo "STALE STORE ACCEPTED: $why; they stay on $NEW_HOST:$STORE"
+        fi
+      else
+        ((accept)) || die "AWS took the store ($owner) and what the old store lacks could not be measured. The new units are stopped and the old side was not started. Rerun with --sync-back, or --accept-stale-store"
+        echo "STALE STORE ACCEPTED: what the old store lacks could not be measured"
+      fi
+    fi
   else
     new_up=0
     ((sync == 0)) || die "$NEW_HOST does not answer, so --sync-back cannot be honoured; nothing was changed. Rerun without --sync-back to start the old side on its own store"
@@ -376,12 +500,17 @@ cmd_back() {
       die "$NEW_HOST does not answer ssh but the store at $NEW_ADDR answers a search: it is serving. The old side was not started, so two stores cannot run. Stop the new units, then rerun"
     fi
     if why=$(new_proven_down); then
-      echo "$NEW_HOST does not answer ssh; $why. Starting the old side"
+      echo "$NEW_HOST does not answer ssh; $why"
     elif ((risk)); then
       echo "RISK ACCEPTED (--risk-two-stores): $NEW_HOST does not answer ssh and nothing proves it is down ($why). Starting the old side; if the new store is up this is two stores, and writes it took are not on the old store"
     else
       die "$NEW_HOST does not answer ssh and nothing proves its store is down ($why). The old side was not started, so two stores cannot run. Stop the new instance and rerun, or rerun with --risk-two-stores to start the old side anyway"
     fi
+    if [[ -n $owner ]]; then
+      ((accept)) || die "AWS took the store ($owner) and $NEW_HOST cannot be read, so the writes it took cannot be measured; the old store lacks them. The old side was not started. The new units are not enabled at boot, so powering the box on later starts nothing. Rerun with --accept-stale-store to start the old store without them"
+      echo "STALE STORE ACCEPTED: $NEW_HOST cannot be read; the writes AWS took stay there, size unknown"
+    fi
+    echo "starting the old side"
   fi
   if ((sync)); then
     echo "copy new store over old"
@@ -390,10 +519,13 @@ cmd_back() {
     grep -E 'Number of regular files transferred|Total transferred file size' "$out"
     rm -f "$out"
   fi
+  old "rm -f $OWNER_FILE" || die "could not clear the owner marker on $OLD_ADDR; the old units were not started"
   echo "start old"
   old 'systemctl enable --now mnemonic && systemctl enable --now cloudflared-mnemonic && systemctl is-active mnemonic cloudflared-mnemonic'
   check old-search search_check "$OLD_ADDR" || die "old box does not answer a search"
-  if ((new_up)); then echo "back done"; else echo "back done on the old side; $NEW_HOST was not reached, check its units there"; fi
+  if ((new_up)); then echo "back done"; else echo "back done on the old side; $NEW_HOST was not reached. Its units are not enabled at boot, so powering it on starts nothing; do not start them"; fi
+  repoint_client "$OLD_ADDR"
+  return "$CLIENT_FIX_RC"
 }
 
 [[ $# -ge 1 ]] || usage
@@ -405,5 +537,6 @@ case $sub in
   copy) cmd_copy ;;
   switch) cmd_switch "$@" ;;
   back) cmd_back "$@" ;;
+  resume) cmd_resume "$@" ;;
   *) usage ;;
 esac
