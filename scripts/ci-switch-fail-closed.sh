@@ -32,6 +32,9 @@ for f in sys.argv[1:]:
             flag(f, n, fn, "a hash read that ends in `|| true`: a failed read becomes an empty hash", "let the failure through (hex64 in s2-lib.sh rejects an empty answer)")
         if fn in ("preflight_checks", "cmd_preflight") and re.search(r"\b(oldsh|newsh)\b", line) and "rd " not in line:
             flag(f, n, fn, "a preflight check reads a box without rd: its failure or empty answer can pass", "rd old|new COMMAND, then block when it fails")
+        if re.search(r"\|\s*head\b[^()]*\)\s*\|\|", line) or re.search(r"\|\s*grep\s+-\w*m\s*\d[^()]*\)\s*\|\|", line):
+            flag(f, n, fn, "a pipe cut short by head or grep -m inside a read that falls back with `||`: under pipefail the cut pipe reads as a failed read, so a long answer passes as an empty one",
+                 "read the whole answer into a variable first, then grep it (push_log_errors in s1-mnemonic.sh)")
         if f.endswith("s1-mnemonic.sh") and re.search(r"\$\{\w+:-0\}", line):
             flag(f, n, fn, "a missing statistic defaults to zero", "rsync_stats, which fails on a missing line")
 for b in bad:
