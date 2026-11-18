@@ -1,0 +1,22 @@
+[Unit]
+Description=RobinX parsers off-host PostgreSQL %i backup (stanza parsers, S3)
+Requires=postgresql@18-parsers.service
+After=postgresql@18-parsers.service
+
+[Service]
+Type=oneshot
+User=postgres
+Group=postgres
+ExecStart=/usr/bin/pgbackrest --stanza=parsers --type=%i backup
+MemoryMax=4G
+CPUQuota=200%
+CPUWeight=10
+IOWeight=10
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+TimeoutStartSec=12h
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true

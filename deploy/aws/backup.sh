@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Ensures the pgBackRest backup storage and its access for one box from boxes/<box>.conf and converges on rerun.
+# Ensures the pgBackRest backup storage and access for one box from boxes/<box>.conf, then its stanzas on the box, and converges on rerun.
 set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -7,7 +7,7 @@ export AWS_PAGER='' AWS_EC2_METADATA_DISABLED=true
 
 usage() {
   cat >&2 <<EOF
-usage: $0 <box> [--dry-run]
+usage: $0 <box> [--dry-run] [--full]
 boxes: $(for f in "$HERE"/boxes/*.conf; do if grep -q '^BACKUP_BUCKET=.' "$f"; then basename "$f" .conf; fi; done | paste -sd' ' -)
 Ensures, each step found again by name: the S3 bucket BACKUP_BUCKET from the conf in the box's account and region (all public
 access blocked, SSE-S3 default encryption, versioning on, bucket-owner-enforced ownership, a policy denying non-TLS requests,
@@ -17,6 +17,11 @@ same name holding that role, and the profile attached to the instance (found by 
 Never deletes a bucket, object, role or policy and sets no object lock or retention. Prints "changed:" lines and ends
 "<box>: <n> change(s)". --dry-run prints each aws command it would run. Reads need a live session; a dry run without one lists
 every step as missing and says so.
+Then, over ssh to BOX_SSH, for a conf that lists STANZAS: the pgBackRest config (S3 repo from the instance role, no key on disk),
+a cipher passphrase generated on the box once and kept root:postgres 0640 in /etc/pgbackrest/conf.d/cipher.conf, the stanza,
+archive_command of the cluster (reload only; a box whose archive_mode is off is reported and left alone), pgbackrest check, the
+backup unit files left disabled, and with --full the first full as a transient niced, CPU- and read-capped unit that saves
+subscription lag before, during and after. Never restarts Postgres, enables or starts a timer, or prints the passphrase.
 EOF
   exit 2
 }
@@ -24,10 +29,11 @@ EOF
 BOX=${1:-}
 [[ -n $BOX ]] || usage
 shift
-DRY=0
+DRY=0 FULL=0
 for a in "$@"; do
   case $a in
     --dry-run) DRY=1 ;;
+    --full) FULL=1 ;;
     *) usage ;;
   esac
 done
@@ -37,7 +43,9 @@ die() { echo "backup.sh: $*" >&2; exit 1; }
 command -v aws >/dev/null || die "aws CLI not found"
 command -v jq >/dev/null || die "jq not found"
 
-PROFILE='' ACCOUNT='' REGION='' BACKUP_BUCKET=''
+PROFILE='' ACCOUNT='' REGION='' BACKUP_BUCKET='' BOX_SSH='' PG_MAJOR=18
+STANZAS=() UNITS=() VERIFY_UNITS=()
+RETENTION_FULL=2 RETENTION_FULL_TYPE=count RETENTION_DIFF=7 BACKUP_PROCESS_MAX=2 BACKUP_READ_MBPS=60
 # shellcheck source=/dev/null
 source "$HERE/boxes/$BOX.conf"
 PROFILE=${PROFILE:-${AWS_PROFILE:-}}
@@ -247,6 +255,249 @@ if [[ -n $IID ]]; then
     fi
   elif [[ $have_arn != */"$IPROFILE" ]]; then
     warn "instance $IID has profile $have_arn, not $IPROFILE; left as is, replace by hand"
+  fi
+fi
+
+# stanzas on the box
+if ((${#STANZAS[@]} > 0)); then
+  [[ -n $BOX_SSH ]] || BOX_SSH=$BOX
+  blobs=''
+  for u in ${UNITS[@]+"${UNITS[@]}"}; do
+    [[ -f $HERE/boxes/$BOX.units/$u ]] || die "unit file $HERE/boxes/$BOX.units/$u missing"
+    blobs+="$u:$(base64 <"$HERE/boxes/$BOX.units/$u" | tr -d '\n')"$'\n'
+  done
+  stanza_lines=$(printf '%s\n' "${STANZAS[@]}")
+  verify_lines=$(printf '%s\n' ${VERIFY_UNITS[@]+"${VERIFY_UNITS[@]}"})
+  unit_lines=$(printf '%s\n' ${UNITS[@]+"${UNITS[@]}"})
+  remote_vars=$(
+    printf '%s=%q\n' DRY "$DRY" FULL "$FULL" BUCKET "$B" REGION "$REGION" PG_MAJOR "$PG_MAJOR" \
+      RET_FULL "$RETENTION_FULL" RET_TYPE "$RETENTION_FULL_TYPE" RET_DIFF "$RETENTION_DIFF" \
+      PROCESS_MAX "$BACKUP_PROCESS_MAX" READ_MBPS "$BACKUP_READ_MBPS" \
+      STANZA_LINES "$stanza_lines" UNIT_BLOBS "$blobs" UNIT_LINES "$unit_lines" VERIFY_LINES "$verify_lines"
+  )
+  read -r -d '' remote_body <<'REMOTE' || true
+set -euo pipefail
+set +x
+changes=0 bad=0
+change() { changes=$((changes + 1)); if ((DRY)); then echo "would change: $*"; else echo "changed: $*"; fi; }
+warn() { echo "warning: $*"; }
+as_pg() { runuser -u postgres -- "$@" </dev/null; }
+pgq() { as_pg psql -p "$1" -d postgres -Atqc "$2"; }
+
+put_text() { # put_text <path> <mode> <owner:group> <text> <what>
+  local path=$1 mode=$2 owner=$3 text=$4 what=$5 tmp
+  if [[ -f $path && $(cat "$path") == "$text" && $(stat -c '%a %U:%G' "$path") == "${mode#0} $owner" ]]; then return 0; fi
+  change "$what"
+  if ((DRY)); then return 0; fi
+  tmp=$(mktemp "$path.XXXXXX")
+  chmod "$mode" "$tmp"
+  chown "$owner" "$tmp"
+  printf '%s\n' "$text" >"$tmp"
+  mv -f "$tmp" "$path"
+}
+ensure_dir() { # ensure_dir <path> <mode> <owner:group>
+  if [[ -d $1 && $(stat -c '%a %U:%G' "$1") == "${2#0} $3" ]]; then return 0; fi
+  change "directory $1 $2 $3"
+  if ((DRY)); then return 0; fi
+  install -d -m "$2" -o "${3%%:*}" -g "${3##*:}" "$1"
+}
+
+ensure_dir /etc/pgbackrest 0750 root:postgres
+ensure_dir /etc/pgbackrest/conf.d 0750 root:postgres
+for d in /var/lib/pgbackrest /var/log/pgbackrest /var/spool/pgbackrest; do ensure_dir "$d" 0750 postgres:postgres; done
+
+conf="[global]
+repo1-type=s3
+repo1-s3-bucket=$BUCKET
+repo1-s3-endpoint=s3.$REGION.amazonaws.com
+repo1-s3-region=$REGION
+repo1-s3-key-type=auto
+repo1-cipher-type=aes-256-cbc
+repo1-retention-full-type=$RET_TYPE
+repo1-retention-full=$RET_FULL
+repo1-retention-diff=$RET_DIFF
+process-max=$PROCESS_MAX
+compress-type=zst
+compress-level=3
+start-fast=y
+resume=n
+archive-timeout=120
+archive-async=y
+spool-path=/var/spool/pgbackrest
+log-path=/var/log/pgbackrest
+log-level-console=warn
+log-level-file=info
+
+[global:archive-push]
+process-max=2"
+while IFS='|' read -r st rpath cluster port pgdata sock; do
+  [[ -n $st ]] || continue
+  conf+="
+
+[$st]
+repo1-path=$rpath
+pg1-path=$pgdata
+pg1-port=$port
+pg1-socket-path=$sock"
+done <<<"$STANZA_LINES"
+put_text /etc/pgbackrest/pgbackrest.conf 0640 root:postgres "$conf" "/etc/pgbackrest/pgbackrest.conf: S3 repo $BUCKET, instance-role credentials, retention full=$RET_FULL ($RET_TYPE) diff=$RET_DIFF"
+
+CIPHER=/etc/pgbackrest/conf.d/cipher.conf
+if ! grep -q '^repo1-cipher-pass=.' "$CIPHER" 2>/dev/null; then
+  change "$CIPHER: new cipher passphrase generated here, root:postgres 0640, never printed"
+  if ((!DRY)); then
+    umask 077
+    tmp=$(mktemp /etc/pgbackrest/conf.d/.cipher.XXXXXX)
+    { printf '[global]\nrepo1-cipher-pass='; openssl rand -base64 48 | tr -d '\n'; printf '\n'; } >"$tmp"
+    chown root:postgres "$tmp"
+    chmod 0640 "$tmp"
+    mv -f "$tmp" "$CIPHER"
+  fi
+fi
+if [[ -f $CIPHER && $(stat -c '%a %U:%G' "$CIPHER") != "640 root:postgres" ]]; then warn "$CIPHER is not root:postgres 0640"; bad=1; fi
+
+LAGGED=/usr/local/sbin/pgbackrest-lagged-full
+read -r -d '' lagged <<'WRAP' || true
+#!/bin/sh
+# usage: pgbackrest-lagged-full <stanza> <port> [full|diff]. One backup, with subscription lag saved before, every 60 s during and after.
+set -u
+S=$1 P=$2 T=${3:-full}
+L=/var/log/pgbackrest/$S.$T
+Q="select to_char(now() at time zone 'utc', 'YYYY-MM-DD HH24:MI:SS'), subname, worker_type, pg_wal_lsn_diff(latest_end_lsn, received_lsn), date_trunc('second', now() - last_msg_receipt_time) from pg_stat_subscription"
+lag() { psql -p "$P" -d postgres -AtF'|' -c "$Q"; }
+date -u +%FT%TZ >"$L.started"
+lag >"$L.lag-before.txt"
+: >"$L.lag-during.txt"
+(while :; do lag >>"$L.lag-during.txt"; sleep 60; done) &
+W=$!
+pgbackrest --stanza="$S" --type="$T" backup
+rc=$?
+kill "$W" 2>/dev/null
+lag >"$L.lag-after.txt"
+date -u +%FT%TZ >"$L.finished"
+echo "$rc" >"$L.rc"
+exit "$rc"
+WRAP
+put_text "$LAGGED" 0755 root:root "$lagged" "$LAGGED: one backup with subscription lag saved before, during and after"
+
+while IFS='|' read -r st rpath cluster port pgdata sock; do
+  [[ -n $st ]] || continue
+  echo "-- stanza $st: cluster $PG_MAJOR/$cluster port $port, repo path $rpath"
+  amode=$(pgq "$port" 'show archive_mode')
+  pend=$(pgq "$port" "select pending_restart from pg_settings where name = 'archive_mode'")
+  if [[ $amode != on || $pend != f ]]; then
+    warn "stanza $st: archive_mode is $amode (pending_restart $pend); STOP, a restart is the main session's call. The rest is done, archive_command is not touched."
+    bad=1
+    archive_ok=0
+  else
+    archive_ok=1
+  fi
+
+  code=99
+  if [[ -s $CIPHER ]]; then
+    code=$(as_pg pgbackrest --stanza="$st" --output=json info | jq -r '.[0].status.code')
+  fi
+  if [[ $code == 1 || ($code == 99 && ! -s $CIPHER) ]]; then
+    change "stanza $st created in $BUCKET$rpath (encrypted repo)"
+    if ((!DRY)); then as_pg pgbackrest --stanza="$st" stanza-create; fi
+  elif [[ $code == 99 ]]; then
+    echo "stanza $st: info answered code 99:"
+    as_pg pgbackrest --stanza="$st" info | sed -n '1,12p' || true
+    exit 1
+  fi
+
+  afile=/etc/postgresql/$PG_MAJOR/$cluster/conf.d/zz-pgmove-archive.conf
+  acmd="pgbackrest --stanza=$st archive-push %p"
+  if ((archive_ok)); then
+    want="archive_mode = on
+archive_command = '$acmd'"
+    live=$(pgq "$port" 'show archive_command')
+    if [[ $live != "$acmd" ]]; then
+      put_text "$afile" 0644 postgres:postgres "$want" "$afile: archive_command pgbackrest archive-push for $st, applied by reload"
+      if ((!DRY)); then
+        systemctl reload "postgresql@$PG_MAJOR-$cluster"
+        for _ in $(seq 20); do
+          if [[ $(pgq "$port" 'show archive_command') == "$acmd" ]]; then break; fi
+          sleep 1
+        done
+        row=$(pgq "$port" "select setting || ' ' || coalesce(sourcefile, '') || ' ' || pending_restart from pg_settings where name = 'archive_command'")
+        [[ $row == "$acmd $afile false" ]] || { echo "archive_command is not live from $afile: $row"; exit 1; }
+      fi
+    fi
+  fi
+
+  if ((DRY)); then
+    echo "dry run: pgbackrest check skipped"
+  else
+    rc=0
+    as_pg pgbackrest --stanza="$st" check || rc=$?
+    echo "check $st: rc=$rc"
+    if ((rc)); then bad=1; fi
+  fi
+
+  has_full=0
+  if ((!DRY)) || [[ -s $CIPHER && $code != 1 ]]; then
+    has_full=$(as_pg pgbackrest --stanza="$st" --output=json info | jq -r '[.[0].backup[]? | select(.type == "full" and .timestamp.stop != null)] | length')
+  fi
+  if ((has_full > 0)); then
+    echo "stanza $st: $has_full full backup(s) listed"
+  elif ((FULL)) && ((!bad)); then
+    unit=pgbackrest-first-full-$st.service
+    sub=$(systemctl show -p SubState --value "$unit" 2>/dev/null || true)
+    if [[ $sub == running ]]; then
+      echo "stanza $st: first full running as $unit"
+    else
+      dev=$(findmnt -no SOURCE --target "$pgdata")
+      change "first full of $st started as transient unit $unit (Nice 10, CPUQuota 200%, IOWeight 10, read cap ${READ_MBPS}M on $dev)"
+      if ((!DRY)); then
+        systemctl reset-failed "$unit" 2>/dev/null || true
+        systemctl stop "$unit" 2>/dev/null || true
+        systemd-run --unit="${unit%.service}" --description="first pgBackRest full of stanza $st" \
+          -p User=postgres -p Group=postgres -p Nice=10 -p CPUQuota=200% -p CPUWeight=10 -p IOWeight=10 \
+          -p IOSchedulingClass=best-effort -p IOSchedulingPriority=7 -p MemoryMax=4G -p RemainAfterExit=yes \
+          -p "IOReadBandwidthMax=$dev ${READ_MBPS}M" \
+          "$LAGGED" "$st" "$port" full
+      fi
+    fi
+  else
+    echo "stanza $st: no full listed; pass --full to start one"
+  fi
+done <<<"$STANZA_LINES"
+
+reload=0
+while IFS=: read -r name b64; do
+  [[ -n $name ]] || continue
+  text=$(printf '%s' "$b64" | base64 -d)
+  before=$changes
+  put_text "/etc/systemd/system/$name" 0644 root:root "$text" "unit file $name installed, not enabled"
+  if ((changes != before)); then reload=1; fi
+done <<<"$UNIT_BLOBS"
+if ((reload)) && ((!DRY)); then systemctl daemon-reload; fi
+for name in $UNIT_LINES $VERIFY_LINES; do
+  en=$(systemctl is-enabled "$name" 2>&1 || true)
+  case $name in *@.service) ac=template ;; *) ac=$(systemctl is-active "$name" 2>&1 || true) ;; esac
+  echo "unit $name: $en, $ac"
+  case $name in
+    *.timer) if [[ $en == enabled || $ac == active ]]; then warn "timer $name is $en and $ac; it switches with its box, nothing here changes it"; fi ;;
+  esac
+  if [[ $en == *"No such file"* ]] && ((!DRY)); then warn "unit $name does not exist"; fi
+done
+
+echo "remote: $changes change(s)"
+exit "$bad"
+REMOTE
+  script=$(printf '%s\n%s\n' "$remote_vars" "$remote_body" | base64 | tr -d '\n')
+  rc=0
+  box_out=$(ssh -o BatchMode=yes -o ConnectTimeout=15 "$BOX_SSH" 'sudo -n bash -c "$(base64 -d)"' <<<"$script" 2>&1) || rc=$?
+  printf '%s\n' "$box_out"
+  n=$(grep -c -E '^(changed|would change):' <<<"$box_out" || true)
+  changes=$((changes + n))
+  if ((rc)); then
+    if ((DRY)) && ! grep -q '^remote:' <<<"$box_out"; then
+      echo "dry run: the box part could not read $BOX_SSH (rc=$rc), its steps are not listed"
+    else
+      die "box part on $BOX_SSH exited $rc"
+    fi
   fi
 fi
 

@@ -1,0 +1,11 @@
+[Unit]
+Description=RobinX parsers weekly full PostgreSQL backup (stanza parsers)
+
+[Timer]
+OnCalendar=Sun *-*-* 09:00:00 UTC
+Persistent=true
+RandomizedDelaySec=15m
+Unit=robinx-parsers-backup@full.service
+
+[Install]
+WantedBy=timers.target
