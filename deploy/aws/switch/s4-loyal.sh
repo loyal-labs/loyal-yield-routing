@@ -75,7 +75,10 @@ caddy_cert_copy() {
     [ \"\$(stat -c %U:%a \$d/realtime.askloyal.com.key)\" = caddy:600 ] &&
     [ \"\$(openssl x509 -in \$d/realtime.askloyal.com.crt -noout -pubkey)\" = \"\$(openssl pkey -in \$d/realtime.askloyal.com.key -pubout)\" ] &&
     runuser -u caddy -- test -r \$d/realtime.askloyal.com.key" || return 1
-  [[ $(old "sha256sum <$CERT_DIR/realtime.askloyal.com.crt") == "$(new "sha256sum <$CERT_DIR/realtime.askloyal.com.crt")" ]]
+  local so sn
+  so=$(old "sha256sum <$CERT_DIR/realtime.askloyal.com.crt") || return 1
+  sn=$(new "sha256sum <$CERT_DIR/realtime.askloyal.com.crt") || return 1
+  [[ -n $so && $so == "$sn" ]]
 }
 
 handover() {
