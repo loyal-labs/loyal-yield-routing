@@ -1598,7 +1598,8 @@ slot_ok() {
 
 cmd_switch() {
   local role spec db table roles n fence
-  fence="fence$( ((REVERSE)) && echo ' --reverse')"
+  fence=fence
+  ((REVERSE == 0)) || fence='fence --reverse'
   upstream_blockers "the switch"
   roles=$(login_roles)
   for role in $roles; do
