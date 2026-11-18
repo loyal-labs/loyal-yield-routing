@@ -644,7 +644,7 @@ cmd_subscribe() {
       pubs=$(q src "$db" "select array_to_string(subpublications, ', ') from pg_subscription where subname = $(lit "${shape#upstream=}")")
       [[ -n $conn ]] || { blocked "$db: the source has no subscription ${shape#upstream=} to copy"; break; }
       ensure_upstream_pass "$conn"
-      conn=$(sed -E 's/(^| )passfile=[^ ]+//' <<<"$conn")
+      conn=$(sed -E "s/(^| )passfile=[^ ]+//; s/(^| )application_name=[^ ]+/\\1application_name=$sub/" <<<"$conn")
       apply dst "$db" "CREATE SUBSCRIPTION $sub CONNECTION $(lit "$conn") PUBLICATION $pubs WITH (binary = $BINARY, streaming = on, copy_data = true, disable_on_error = false);" \
         "dst $db: subscription $sub to the publisher of ${shape#upstream=} ($pubs), copy_data=true"
       continue
