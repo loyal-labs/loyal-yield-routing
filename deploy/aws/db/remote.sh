@@ -10,16 +10,20 @@ conf_box() {
   bash -c 'BOX=; source "$1"; echo "$BOX"' _ "$HERE/clusters/$1.conf"
 }
 
+# The target holds no key for the source's root: the source side of each run rides an agent that
+# holds only that key (ssh-agent -a <socket>, then ssh-add the key), named in PGMOVE_AGENT and
+# forwarded for the length of the run.
 pgmove_on() {
   local box
+  [[ -S ${PGMOVE_AGENT:-} ]] || { echo "remote: PGMOVE_AGENT must name the socket of an agent holding the source key" >&2; exit 2; }
   box=$(conf_box "$2")
-  ssh -o BatchMode=yes "$box" "sudo -n $DEST/pgmove.sh $(printf '%q ' "$@")"
+  ssh -o ForwardAgent="$PGMOVE_AGENT" -o BatchMode=yes "$box" "sudo -n --preserve-env=SSH_AUTH_SOCK $DEST/pgmove.sh $(printf '%q ' "$@")"
 }
 
 install_on() {
   local box
   box=$(conf_box "$1")
-  COPYFILE_DISABLE=1 tar --no-xattrs -C "$HERE" -cf - pgmove.sh pg-forward@.service clusters |
+  COPYFILE_DISABLE=1 tar --no-xattrs -C "$HERE" -cf - pgmove.sh parsers-copy.sh pg-forward@.service clusters |
     ssh -o BatchMode=yes "$box" "sudo -n install -d -m 0755 $DEST && sudo -n tar -C $DEST --no-same-owner -xf - && sudo -n chown -R root:root $DEST"
   echo "remote: $DEST on $box holds pgmove.sh at $(git -C "$HERE" rev-parse --short HEAD 2>/dev/null || echo '?')"
 }

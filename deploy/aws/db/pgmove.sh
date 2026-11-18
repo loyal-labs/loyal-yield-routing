@@ -53,12 +53,12 @@ done
 
 PG_MAJOR=18
 SRC_SSH='' SRC_SOCKET='' SRC_PORT='' SRC_OSUSER=''
-DST_SSH=local DST_CLUSTER=main DST_PORT=5432 DST_SOCKET=/var/run/postgresql DST_OSUSER=postgres
+DST_SSH=local DST_CLUSTER=main DST_DATA='' DST_PORT=5432 DST_SOCKET=/var/run/postgresql DST_OSUSER=postgres
 ENCODING=UTF8 LOCALE_PROVIDER='' LOCALE=''
 DATABASES=()
 HYPERTABLES=() HT_DB='' HT_TIME=observed_at HT_KEY=event_id TS_RETAIN_DAYS=62 CATCHUP_MARGIN=10000
 SYNC_WORKERS=2 BINARY=true COPY_SETTINGS=()
-FWD_PORT='' REV_PORT='' FREEZE_MARKER='' FENCE_KEEP=() REVERSE_HOURS=72
+FWD_USER=pgmove-fwd FWD_SSH='' FWD_PORT='' REV_PORT='' FREEZE_MARKER='' FENCE_KEEP=() REVERSE_HOURS=72
 PROBE_SECS=30 LAG_WAIT_SECS=600 HASH_BUCKET=1000000 HASH_RECHECK_SECS=60 HASH_MAX_AGE_HOURS=24 EXACT_COUNT_BYTES=268435456
 # shellcheck source=/dev/null
 source "$HERE/clusters/$CLUSTER.conf"
@@ -66,6 +66,7 @@ for v in SRC_SSH SRC_SOCKET SRC_PORT SRC_OSUSER LOCALE_PROVIDER LOCALE; do
   [[ -n ${!v} ]] || { echo "pgmove: $CLUSTER.conf sets no $v" >&2; exit 2; }
 done
 ((${#DATABASES[@]})) || { echo "pgmove: $CLUSTER.conf lists no DATABASES" >&2; exit 2; }
+[[ -n $FWD_SSH ]] || FWD_SSH=$FWD_USER@${SRC_SSH#*@}
 
 WORK=/var/lib/pgmove/$CLUSTER
 SECRETS=/etc/pgmove/$CLUSTER
@@ -277,8 +278,10 @@ ensure_cluster() {
   local port extra=
   port=$(on "$DST_SSH" "pg_lsclusters -h 2>/dev/null | awk '\$1 == \"$PG_MAJOR\" && \$2 == \"$DST_CLUSTER\" { print \$3 }'" 2>/dev/null || true)
   [[ $LOCALE_PROVIDER == builtin ]] && extra=" --builtin-locale=$LOCALE"
+  local data=''
+  [[ -z $DST_DATA ]] || data=" -d $DST_DATA"
   if [[ -z $port ]]; then
-    run "$DST_SSH" "pg_createcluster $PG_MAJOR $DST_CLUSTER --port $DST_PORT --encoding $ENCODING --locale $LOCALE -- --locale-provider=$LOCALE_PROVIDER$extra && systemctl enable --now postgresql@$PG_MAJOR-$DST_CLUSTER" \
+    run "$DST_SSH" "pg_createcluster $PG_MAJOR $DST_CLUSTER$data --port $DST_PORT --encoding $ENCODING --locale $LOCALE -- --locale-provider=$LOCALE_PROVIDER$extra && systemctl enable --now postgresql@$PG_MAJOR-$DST_CLUSTER" \
       "cluster $PG_MAJOR/$DST_CLUSTER on port $DST_PORT, $ENCODING, $LOCALE_PROVIDER $LOCALE"
   elif [[ $port != "$DST_PORT" ]]; then
     die "target cluster $PG_MAJOR/$DST_CLUSTER listens on $port, $CLUSTER.conf says $DST_PORT"
@@ -523,7 +526,7 @@ ensure_pgpass() {
 ensure_forward() {
   local env unit have restart=0
   have=$(on "$DST_SSH" "cat $SECRETS/forward.env" 2>/dev/null || true)
-  env=$(printf 'FWD_PORT=%s\nFWD_SOCKET=%s\nFWD_SSH=%s' "$FWD_PORT" "$SRC_SOCKET/.s.PGSQL.$SRC_PORT" "$SRC_SSH")
+  env=$(printf 'FWD_PORT=%s\nFWD_SOCKET=%s\nFWD_SSH=%s' "$FWD_PORT" "$SRC_SOCKET/.s.PGSQL.$SRC_PORT" "$FWD_SSH")
   if [[ ${1:-} == rev || $have == *FWD_REV=* ]]; then env+=$(printf '\nFWD_REV="-R 127.0.0.1:%s:%s"' "$REV_PORT" "$DST_SOCKET/.s.PGSQL.$DST_PORT"); fi
   unit=$(cat "$HERE/pg-forward@.service")
   if [[ $(on "$DST_SSH" "cat /etc/systemd/system/pg-forward@.service" 2>/dev/null || true) != "$unit" ]]; then
@@ -532,7 +535,7 @@ ensure_forward() {
     restart=1
   fi
   if [[ $have != "$env" ]]; then
-    put "$DST_SSH" "$SECRETS/forward.env" 0600 root "$env" "$SECRETS/forward.env: 127.0.0.1:$FWD_PORT to $SRC_SSH:$SRC_SOCKET$([[ $env == *FWD_REV=* ]] && echo ", and $SRC_SSH 127.0.0.1:$REV_PORT back to this box")"
+    put "$DST_SSH" "$SECRETS/forward.env" 0600 root "$env" "$SECRETS/forward.env: 127.0.0.1:$FWD_PORT to $FWD_SSH:$SRC_SOCKET$([[ $env == *FWD_REV=* ]] && echo ", and $FWD_SSH 127.0.0.1:$REV_PORT back to this box")"
     restart=1
   fi
   if ((restart)); then
@@ -590,6 +593,22 @@ identity_blockers() {
   done < <(q "$side" "$db" "$(no_identity_sql "$shape")")
 }
 
+# The source reads the upstream password from a passfile on its own disk. The target gets that one
+# line in its postgres user's ~/.pgpass, and the conninfo it subscribes with loses passfile=.
+ensure_upstream_pass() {
+  local conn=$1 pf host user line f
+  pf=$(sed -nE 's/(^|.* )passfile=([^ ]+).*/\2/p' <<<"$conn")
+  [[ -n $pf ]] || return 0
+  host=$(sed -nE 's/(^|.* )host=([^ ]+).*/\2/p' <<<"$conn")
+  user=$(sed -nE 's/(^|.* )user=([^ ]+).*/\2/p' <<<"$conn")
+  line=$(on "$SRC_SSH" "awk -F: -v h=$(printf %q "$host") -v u=$(printf %q "$user") '(\$1 == h || \$1 == \"*\") && \$4 == u' $(printf %q "$pf")") || die "reading $pf on $SRC_SSH failed"
+  [[ -n $line ]] || die "$pf on $SRC_SSH holds no line for $user at $host"
+  f="\$(getent passwd $DST_OSUSER | cut -d: -f6)/.pgpass"
+  ((DRY)) || ! printf '%s\n' "$line" | on "$DST_SSH" "IFS= read -r l; grep -qxF \"\$l\" $f" 2>/dev/null || return 0
+  changed "dst: $DST_OSUSER's ~/.pgpass holds the upstream password line for $user"
+  ((DRY)) || printf '%s\n' "$line" | on "$DST_SSH" "IFS= read -r l; f=$f; umask 077; { cat \$f 2>/dev/null || true; printf '%s\n' \"\$l\"; } >\$f.new && chown $DST_OSUSER: \$f.new && mv -f \$f.new \$f"
+}
+
 cmd_subscribe() {
   local spec db shape sub prev='' counts wal keep conn
   for spec in "${DATABASES[@]}"; do
@@ -624,6 +643,8 @@ cmd_subscribe() {
       local pubs
       pubs=$(q src "$db" "select array_to_string(subpublications, ', ') from pg_subscription where subname = $(lit "${shape#upstream=}")")
       [[ -n $conn ]] || { blocked "$db: the source has no subscription ${shape#upstream=} to copy"; break; }
+      ensure_upstream_pass "$conn"
+      conn=$(sed -E "s/(^| )passfile=[^ ]+//; s/(^| )application_name=[^ ]+/\\1application_name=$sub/" <<<"$conn")
       apply dst "$db" "CREATE SUBSCRIPTION $sub CONNECTION $(lit "$conn") PUBLICATION $pubs WITH (binary = $BINARY, streaming = on, copy_data = true, disable_on_error = false);" \
         "dst $db: subscription $sub to the publisher of ${shape#upstream=} ($pubs), copy_data=true"
       continue
