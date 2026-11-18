@@ -71,7 +71,7 @@ SRC_VIA=ssh SRC_SSLMODE=disable SRC_HBA_FROM='' SRC_HBA_LINE='' FWD_TARGET=''
 FWD_USER=pgmove-fwd FWD_SSH='' FWD_PORT='' REV_PORT='' REV_HOST=127.0.0.1 FREEZE_MARKER='' FENCE_KEEP=() REVERSE_HOURS=72
 # MIGRATE_MARKER: the path the source's own deploy refuses migrations under, or none; preflight wants FREEZE_MARKER there.
 # DST_VOLUME: the mount the target's data directory lives on; init makes postgresql@ refuse to start without it.
-MIGRATE_MARKER='' DST_VOLUME='' MAX_LAG_BYTES=16777216 MAX_UPSTREAM_LAG_SECS=120
+MIGRATE_MARKER='' DST_VOLUME='' MAX_LAG_BYTES=16777216 MAX_UPSTREAM_LAG_SECS=120 MAX_CATCHUP_ROWS=200000
 PROBE_SECS=30 LAG_WAIT_SECS=600 HASH_BUCKET=1000000 HASH_RECHECK_SECS=60 HASH_MAX_AGE_HOURS=24 EXACT_COUNT_BYTES=268435456
 # shellcheck source=/dev/null
 source "$HERE/clusters/$CLUSTER.conf"
@@ -1252,7 +1252,11 @@ check_tables() {
   for table in ${HYPERTABLES[@]+"${HYPERTABLES[@]}"}; do
     qh="select coalesce(max($HT_KEY)::text, '-') || ' ' || count(*) from $table where $HT_TIME >= date_trunc('day', now()) - interval '1 day'"
     a=$(q "$FROM" "$HT_DB" "$qh") b=$(q "$TO" "$HT_DB" "$qh")
-    if [[ $a == "$b" ]]; then echo "verify: $table max $HT_KEY and rows since yesterday $a on both"; else diff_row "$table max $HT_KEY and rows since yesterday: $FROM $a, $TO $b"; fi
+    if [[ $a == "$b" ]]; then echo "verify: $table max $HT_KEY and rows since yesterday $a on both"
+    elif [[ $CMD == preflight && $FROM == src ]] && at_least "${b% *}" "${a% *}" && at_least "${b#* }" "${a#* }" && ((${a#* } - ${b#* } <= MAX_CATCHUP_ROWS)); then
+      # Hypertables move by catchup, not the subscription: fence's catchup copies the rows above the target's max.
+      echo "preflight: $table: the target is $((${a#* } - ${b#* })) row(s) behind since yesterday; fence's catchup copies them (limit $MAX_CATCHUP_ROWS)"
+    else diff_row "$table max $HT_KEY and rows since yesterday: $FROM $a, $TO $b"; fi
   done
 }
 
@@ -1644,7 +1648,7 @@ cmd_passwords() {
 # TimescaleDB policies are rows in its catalog, which neither pg_dump --schema-only nor a
 # subscription carries. init copies compression settings and the policy jobs, unscheduled; the
 # switch schedules the target's where the source's run.
-TS_JOBS="select j.job_id || '|' || j.proc_name || '|' || format('%I.%I', j.hypertable_schema, j.hypertable_name) || '|' || j.schedule_interval || '|' || j.scheduled || '|' || coalesce((j.config - 'hypertable_id' - 'mat_hypertable_id')::text, '{}') from timescaledb_information.jobs j where j.job_id >= 1000 order by 2, 3"
+TS_JOBS="select j.job_id || '|' || j.proc_name || '|' || format('%I.%I', j.hypertable_schema, j.hypertable_name) || '|' || j.schedule_interval || '|' || j.scheduled || '|' || coalesce((j.config - 'hypertable_id' - 'mat_hypertable_id')::text, '{}') from timescaledb_information.jobs j where j.job_id >= 1000 order by 1"
 
 ensure_timescale() {
   local db=$1 have line id proc table every sched config add seg ord t c
