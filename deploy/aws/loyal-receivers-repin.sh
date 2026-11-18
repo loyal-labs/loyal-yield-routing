@@ -45,7 +45,7 @@ keep() { [ -e "$1.pre-repin" ] || cp -p "$1" "$1.pre-repin"; }
 
 if ! openssl x509 -in $E/monitor-server.pem -noout -ext subjectAltName 2>/dev/null | grep -q 'IP Address:127\.0\.0\.1'; then
   t=$(mktemp -d -p /dev/shm)
-  trap 'shred -u "$t"/ca.key 2>/dev/null; rm -r "$t"' EXIT
+  trap 'shred -u "$t"/ca.key 2>/dev/null || true; rm -r "$t"' EXIT
   umask 077
   openssl genpkey -algorithm ED25519 -out "$t/ca.key"
   openssl req -x509 -new -key "$t/ca.key" -subj '/CN=Loyal-observer-private-CA' -days 730 \
