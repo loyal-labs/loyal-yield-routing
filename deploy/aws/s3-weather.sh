@@ -96,9 +96,26 @@ old_bins() { # paths the units name under /srv/w20/bin and /srv/w20/reward-pilot
   rd old "cd /etc/systemd/system && grep -ohE '/srv/w20/(bin|reward-pilot)/[A-Za-z0-9._-]+' ${UNITS[*]} w20-record.service.d/*.conf | sort -u"
 }
 
+# owner_marker: prints owned or never from the last line of the answer, so a banner before it is tolerated; fails when the box
+# cannot be read or the last line is neither word
+owner_marker() {
+  local out
+  out=$(rd new "if [ -e $OWNER_FILE ]; then echo owned; else echo never; fi") || return 1
+  out=$(tail -n1 <<<"$out")
+  [[ $out == owned || $out == never ]] || return 1
+  echo "$out"
+}
+
+refuse_if_aws_owns() { # refuse_if_aws_owns COMMAND: a copy toward $NEW must never run over data the new box has taken writes to
+  local m
+  m=$(owner_marker) || die "$1 refused: the owner marker on $NEW cannot be read, so it is not known whether AWS owns the data. Nothing was copied"
+  [[ $m == never ]] || die "$1 refused: the owner marker on $NEW says AWS owns the data, and a copy toward it would overwrite what it holds. Use back --go to bring the data home"
+}
+
 # ---- prepare: host convergence, then units, binaries, env and scripts copied from the old box
 cmd_prepare() {
   local total=0 n out script ulist=${UNITS[*]}
+  refuse_if_aws_owns prepare
   say "host step on $NEW"
   out=$(newsh 'sudo bash -s' <"$HERE/weather-live-prepare.sh") || die "weather-live-prepare.sh failed: $out"
   # shellcheck disable=SC2001
@@ -212,6 +229,7 @@ EOF
 
 cmd_sync() {
   local dry=0 only='' sum=0
+  refuse_if_aws_owns sync
   while (($#)); do
     case $1 in
       --dry-run) dry=1 ;;
@@ -591,7 +609,7 @@ cmd_switch() {
   newsh "date -u +%FT%TZ | sudo tee $OWNER_FILE >/dev/null && sudo test -s $OWNER_FILE" || die "the owner marker could not be written on $NEW; nothing started there. Run 'back --go'"
   start_new || die "the new units did not all start on $NEW; the owner marker is set, so 'back --go' copies home and restarts the old side"
   local since
-  since=$(newsh 'date -u "+%F %T"')
+  since=$(newsh 'date -u "+%F %T"') || die "the clock of $NEW could not be read after its units started; w20-live was NOT started there. Run 'back --go'"
   newsh 'sudo systemctl start w20-live.service' || { newsh 'sudo journalctl -u w20-live --no-pager -n 15 -o cat | cut -c1-200'; die "w20-live did not start on $NEW. Run 'back --go'"; }
   newsh 'sudo systemctl start --no-block weather-reward-pilot.service' || true
   say "7/7 quotes and fills in the journal from $NEW ($(geoblock "$NEW" | sed -nE 's/.*"country":"([^"]*)".*/\1/p'), $NEWIP), up to ${QUOTE_WAIT}s"
@@ -602,7 +620,7 @@ cmd_switch() {
 cmd_back() {
   [[ ${1:-} == --go ]] || die "back needs --go"
   local owned
-  owned=$(rd new "if [ -e $OWNER_FILE ]; then echo owned; else echo never; fi") || die "cannot read the owner marker on $NEW, so it is not known whether AWS ever held the data; nothing was stopped or copied"
+  owned=$(owner_marker) || die "cannot read the owner marker on $NEW, so it is not known whether AWS ever held the data; nothing was stopped or copied"
   say "1/4 stop and disable the new units ($NEW owner marker: $owned)"
   stop_new || die "new units not fully stopped; the old units were not started, so two quoters cannot run"
   if [[ $owned == owned ]]; then
@@ -615,7 +633,7 @@ cmd_back() {
   say "3/4 start the old units"
   start_old || die "the old units did not all start on $OLD"
   local since
-  since=$(oldsh 'date -u "+%F %T"')
+  since=$(oldsh 'date -u "+%F %T"') || die "the clock of $OLD could not be read after its units started; w20-live was NOT started and no quotes were checked. The state is home and the marker is cleared: rerun back --go"
   oldsh 'systemctl start w20-live.service' || die "old w20-live did not start"
   oldsh 'systemctl start --no-block weather-reward-pilot.service' || true
   say "4/4 quotes and fills from $OLD"

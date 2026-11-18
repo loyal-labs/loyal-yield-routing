@@ -117,6 +117,16 @@ repoint_client() { # repoint_client ADDR: never fails the caller's switch; sets 
   echo "open 'mnemonic mcp' sessions (editors, agents) keep the old address: restart them"
 }
 
+ERR_LINE_RE='^[a-z]+:'
+
+# push_log_errors LOG OFFSET: prints the first error line after OFFSET bytes and fails when the log cannot be read. The chunk is read
+# into a variable first: a reader that stops early closes its pipe, and pipefail would turn that into "no error".
+push_log_errors() {
+  local chunk
+  chunk=$(tail -c +"$(($2 + 1))" "$1" 2>/dev/null) || return 1
+  grep -m1 -E "$ERR_LINE_RE" <<<"$chunk" || true
+}
+
 daemon_domain() { echo "gui/$(id -u)/$DAEMON_LABEL"; }
 
 daemon_print() { launchctl print "$(daemon_domain)" 2>/dev/null; }
@@ -137,6 +147,7 @@ restart_daemon() { # restart_daemon ADDR
   [[ $cfg == "$CLIENT_CONFIG" ]] || { echo "the daemon reads ${cfg:-no config path}, not $CLIENT_CONFIG: restarting it would not move it to $addr"; return 1; }
   before=$(daemon_pid <<<"$st")
   off=$(wc -c <"$PUSH_LOG" 2>/dev/null | tr -d ' ') || off=0
+  [[ $off =~ ^[0-9]+$ ]] || off=0
   launchctl kickstart -k "$(daemon_domain)" || { echo "launchctl kickstart failed"; return 1; }
   while ((waited < DAEMON_WAIT)); do
     after=$(daemon_print | daemon_pid) || after=
@@ -149,9 +160,10 @@ restart_daemon() { # restart_daemon ADDR
   while ((waited < DAEMON_WAIT)); do
     sleep 1
     waited=$((waited + 1))
-    errs=$(tail -c +"$((off + 1))" "$PUSH_LOG" 2>/dev/null | grep '^push:' | head -1) || errs=
+    errs=$(push_log_errors "$PUSH_LOG" "$off") || errs=
     [[ -z $errs ]] || { echo "daemon pid $after reports: $errs"; return 1; }
   done
+  push_log_errors "$PUSH_LOG" "$off" >/dev/null || { echo "the push log $PUSH_LOG cannot be read after the restart, so a push error cannot be told from silence"; return 1; }
   [[ $(daemon_print | daemon_pid) == "$after" ]] || { echo "the daemon pid changed again within ${DAEMON_WAIT}s (a crash loop)"; return 1; }
   echo "daemon $DAEMON_LABEL restarted (pid ${before:-none} to $after), reads $addr from $CLIENT_CONFIG, no push error in ${DAEMON_WAIT}s"
 }
@@ -198,7 +210,7 @@ bad() { echo "FAIL $1: $2"; FAILS=$((FAILS + 1)); }
 check() {
   local name=$1 detail
   shift
-  if detail=$("$@" 2>&1); then ok "$name" "$detail"; else bad "$name" "${detail:-failed}"; fi
+  if detail=$("$@" 2>&1); then ok "$name" "$detail"; else bad "$name" "${detail:-failed}"; return 1; fi
 }
 
 new_hostkey() {
@@ -424,10 +436,8 @@ store_delta() {
 
 cmd_preflight() {
   VANISH_OK=1
-  new_static
-  new_idle
-  new_not_enabled
-  old_live
+  # check fails when its check fails; FAILS keeps the count, so a list of checks runs to its end inside || true
+  { new_static; new_idle; new_not_enabled; old_live; } || true
   store_delta
   if ((FAILS)); then echo "preflight: $FAILS check(s) failed"; return 1; fi
   echo "preflight: all checks passed"
@@ -438,10 +448,7 @@ need_go() { [[ ${1:-} == --go ]] || die "$2 changes both boxes; rerun with --go"
 cmd_switch() {
   need_go "${1:-}" switch
   local t0 out b mib
-  new_static
-  new_idle
-  new_not_enabled
-  check owner-marker owner_clear
+  { new_static; new_idle; new_not_enabled; check owner-marker owner_clear; } || true
   ((FAILS == 0)) || die "new box is not ready ($FAILS failed); no unit was touched"
   echo "catch-up copy, old units still running"
   cmd_copy
@@ -495,8 +502,7 @@ cmd_resume() {
 
 switch_check() {
   local fail=0 code
-  check new-search search_check "$NEW_ADDR"
-  ((FAILS == 0)) || fail=1
+  check new-search search_check "$NEW_ADDR" || fail=1
   new 'systemctl is-active mnemonic cloudflared-mnemonic && systemctl show mnemonic cloudflared-mnemonic -p Slice --value' || fail=1
   new 'sudo -n journalctl -u cloudflared-mnemonic --since "-2min" --no-pager | grep -c "Registered tunnel connection"' || fail=1
   code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "$SHARE_URL" || true)
@@ -599,9 +605,21 @@ back_gate() { # back_gate ACCEPT(0|1)
 keep_new_serving() {
   local why=$1
   if new 'sudo -n systemctl start mnemonic && sudo -n systemctl start cloudflared-mnemonic' && search_check "$NEW_ADDR" >/dev/null 2>&1; then
-    die "$why. The old side was not started. The new units were started again (not enabled) and the new store answers a search, so no side is down"
+    die "$why. The old side is not running. The new units were started again (not enabled) and the new store answers a search, so $NEW_HOST owns the store and no side is down"
   fi
-  die "$why. The old side was not started and the new units could NOT be restarted: both sides are down and $NEW_HOST holds the writes. Run: $0 resume --go"
+  die "$why. The old side is not running and the new units could NOT be restarted: both sides are down and $NEW_HOST holds the writes. Run: $0 resume --go"
+}
+
+# old_start_failed WHY OWNER NEW_UP: the old side did not come up. It is stopped again so two stores cannot run, the owner marker
+# is left as it was, and the previous owner is restarted when there is one to restart.
+old_start_failed() {
+  local why=$1 owner=$2 new_up=$3
+  # shellcheck disable=SC2016
+  old 'a=0; systemctl disable --now cloudflared-mnemonic || a=1; systemctl disable --now mnemonic || a=1; [ $a -eq 0 ]' ||
+    die "$why. The old units could not be stopped again: check both boxes before anything else (owner marker on $OLD_ADDR: ${owner:-none})"
+  [[ -n $owner ]] || die "$why. No side serves: the old units are stopped and the owner marker on $OLD_ADDR is clear, so $NEW_HOST holds no taken-over store. Fix the old units, then rerun back --go"
+  ((new_up)) || die "$why. No side serves: the old units are stopped and $NEW_HOST was not reached, so the owner marker on $OLD_ADDR still says AWS ($owner) and AWS owns the store. Fix the old units and rerun back --go, or power on $NEW_HOST and run resume --go"
+  keep_new_serving "$why. The old units were stopped again and the owner marker on $OLD_ADDR still says AWS ($owner)"
 }
 
 cmd_back() {
@@ -663,10 +681,11 @@ cmd_back() {
     grep -E 'Number of regular files transferred|Total transferred file size' "$out"
     rm -f "$out"
   fi
-  old "rm -f $OWNER_FILE" || { if ((new_up)); then keep_new_serving "could not clear the owner marker on $OLD_ADDR"; fi; die "could not clear the owner marker on $OLD_ADDR; the old units were not started"; }
   echo "start old"
-  old 'systemctl enable --now mnemonic && systemctl enable --now cloudflared-mnemonic && systemctl is-active mnemonic cloudflared-mnemonic'
-  check old-search search_check "$OLD_ADDR" || die "old box does not answer a search"
+  old 'systemctl enable --now mnemonic && systemctl enable --now cloudflared-mnemonic && systemctl is-active mnemonic cloudflared-mnemonic' ||
+    old_start_failed "the old units did not start" "$owner" "$new_up"
+  check old-search search_check "$OLD_ADDR" || old_start_failed "the old store does not answer a search" "$owner" "$new_up"
+  old "rm -f $OWNER_FILE" || die "the old store is up and answers, and the new units are stopped, so $OLD_ADDR owns the store; but its owner marker $OWNER_FILE could not be cleared and still says AWS. Remove it by hand, then point the client: $(client_fix_line "$OLD_ADDR")"
   if ((new_up)); then echo "back done"; else echo "back done on the old side; $NEW_HOST was not reached. Its units are not enabled at boot, so powering it on starts nothing; do not start them"; fi
   repoint_client "$OLD_ADDR"
   return "$CLIENT_FIX_RC"
