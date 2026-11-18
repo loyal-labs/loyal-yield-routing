@@ -63,8 +63,21 @@ fi
 
 if [[ $copy_n -gt 0 ]]; then
   as_root "$NEW" mkdir -p "$DIR"
-  as_root "$OLD" bash -c 'cd "$1" && nice -n 19 ionice -c3 tar --create --no-recursion --files-from=- --numeric-owner --format=posix --file=-' _ "$DIR" <"$work/copy" |
+  # ClickHouse merges parts while the service runs, so a part on the list can be gone or rewritten by the time tar
+  # reads it. That is the only sender complaint tolerated, and only before the final pass; the delta pass picks those up.
+  set +e
+  as_root "$OLD" bash -c 'cd "$1" && nice -n 19 ionice -c3 tar --create --no-recursion --files-from=- --numeric-owner --format=posix --file=-' _ "$DIR" <"$work/copy" 2>"$work/tar.err" |
     as_root "$NEW" bash -c 'cd "$1" && nice -n 19 ionice -c3 tar --extract --same-owner --preserve-permissions --numeric-owner --file=-' _ "$DIR"
+  st=("${PIPESTATUS[@]}")
+  set -e
+  [[ ${st[1]} -eq 0 ]] || { echo "extract on $NEW failed (exit ${st[1]})" >&2; exit 1; }
+  residual=$(grep -v -e ': Cannot stat: No such file or directory$' -e ': file changed as we read it$' -e '^tar: Exiting with failure status due to previous errors$' "$work/tar.err" || true)
+  moved=$(grep -c -e ': Cannot stat: No such file or directory$' -e ': file changed as we read it$' "$work/tar.err" || true)
+  if [[ ${st[0]} -ne 0 ]]; then
+    [[ -z $residual && ${st[0]} -le 2 ]] || { echo "tar on $OLD failed (exit ${st[0]}):" >&2; head -5 <<<"$residual" >&2; exit 1; }
+    [[ $mode != final ]] || { echo "final pass saw $moved moved files; the service must be stopped first" >&2; exit 1; }
+    echo "$moved listed files moved or vanished while the service ran (merges); the next pass lists them"
+  fi
 fi
 
 if [[ $mode == final && $remove_n -gt 0 ]]; then
