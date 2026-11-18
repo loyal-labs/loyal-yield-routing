@@ -94,8 +94,9 @@ ci_key_line() {
   [[ $(grep -c '' <<<"$line") -eq 1 && $line =~ ^restrict\ ssh-ed25519\ [A-Za-z0-9+/]+\ loyal-ci-production-[0-9]+$ ]] || return 1
   printf '%s\n' "$line"
 }
-ci_key_count() { new "grep -cE '$CI_KEY_RE' /root/.ssh/authorized_keys || true"; }
+ci_key_count() { new "f=/root/.ssh/authorized_keys; [ -e \$f ] || { echo 0; exit 0; }; grep -cE '$CI_KEY_RE' \$f || true"; }
 # Idempotent: one line already there that is the one on $OLD counts as installed; none is appended; any other state fails.
+# A missing authorized_keys is made empty (root, 0600) first.
 ci_key_install() {
   local line n have
   line=$(ci_key_line) || return 1
@@ -106,12 +107,17 @@ ci_key_install() {
     return
   fi
   [[ $n == 0 ]] || return 1
-  printf '%s\n' "$line" | new "f=/root/.ssh/authorized_keys; [ -z \"\$(tail -c1 \$f)\" ] || echo >>\$f; cat >>\$f" || return 1
+  printf '%s\n' "$line" | new "f=/root/.ssh/authorized_keys; [ -e \$f ] || (umask 077; : >\$f); [ -z \"\$(tail -c1 \$f)\" ] || echo >>\$f; cat >>\$f" || return 1
   [[ $(ci_key_count) == 1 ]]
 }
+# Removes only the line the install placed, the one byte for byte as on $OLD. A missing file holds none. A different
+# loyal-ci-production line stays, with a message.
 ci_key_remove() {
-  new "f=/root/.ssh/authorized_keys; grep -vE '$CI_KEY_RE' \$f >\$f.new; chmod --reference=\$f \$f.new && chown --reference=\$f \$f.new && mv \$f.new \$f" || return 1
-  [[ $(ci_key_count) == 0 ]]
+  local line
+  line=$(ci_key_line) || return 1
+  printf '%s\n' "$line" | new "f=/root/.ssh/authorized_keys; [ -e \$f ] || exit 0; grep -vxFf /dev/stdin \$f >\$f.new; chmod --reference=\$f \$f.new && chown --reference=\$f \$f.new && mv \$f.new \$f" || return 1
+  [[ $(printf '%s\n' "$line" | new "f=/root/.ssh/authorized_keys; [ -e \$f ] || { echo 0; exit 0; }; grep -cxFf /dev/stdin \$f || true") == 0 ]] || return 1
+  [[ $(ci_key_count) == 0 ]] || echo "$NEW: a different loyal-ci-production line is in root's authorized_keys; left as it was"
 }
 
 handover() {
