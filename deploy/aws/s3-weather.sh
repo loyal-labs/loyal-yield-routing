@@ -5,7 +5,8 @@
 #                                    the new box); --dry-run records the delta; --checksum compares content, not size and mtime;
 #                                    --pair DST copies one tree (no stamp); a full sync that fails in any pair writes no stamp
 #   s3-weather.sh verify             read-only manifest of every copied tree, old box against new box: path set (extra files fail),
-#                                    size, mtime, and sha256 of the state the bot reads at start (S3_VERIFY_HASH=all: every file)
+#                                    size, mtime and sha256 of every file (S3_VERIFY_HASH=start skips the sha256 of the two history
+#                                    trees, data/ and w2-weather/data/ except state.db*, and then proves only path, size and mtime there)
 #   s3-weather.sh preflight          read-only; exit 0 only when ready and the old units are active
 #   s3-weather.sh switch --go        stop and disable the old units, final copy, start the new ones, check quotes and fills
 #   s3-weather.sh back --go          the reverse: stop and disable the new units, copy state home, start the old ones
@@ -22,7 +23,7 @@ BWLIMIT=${S3_BWLIMIT:-15000}
 STALE_SECS=${S3_STALE_SECS:-21600}
 QUOTE_WAIT=${S3_QUOTE_WAIT:-240}
 PAIR_TIMEOUT=${S3_PAIR_TIMEOUT:-1200}
-VERIFY_HASH=${S3_VERIFY_HASH:-start}
+VERIFY_HASH=${S3_VERIFY_HASH:-all}
 EXTRA_OK=${S3_EXTRA_OK:-}
 HERE=$(cd "$(dirname "$0")" && pwd)
 
@@ -206,8 +207,9 @@ $(sync_body)"
 
 # verify: every file of every copied tree, old box against new box: the path sets must be equal (a file only on the new box fails
 # unless S3_EXTRA_OK, an anchored regex on dst+path, allows it), and size and mtime and, for the state the bot reads at start, the
-# sha256. Under S3_VERIFY_HASH=start the two history trees (data/, w2-weather/data/ except state.db*) are not hashed; =all hashes
-# every file.
+# sha256 of every file by default (S3_VERIFY_HASH=all). rsync's quick check trusts equal size and mtime, so a copy that differs in
+# bytes only is caught here and nowhere else; S3_VERIFY_HASH=start skips the sha256 of the two history trees (data/ 2.9 GB,
+# w2-weather/data/ except state.db* 1.9 GB on Nov 18 2026) and then proves only path, size and mtime for them.
 verify_body() {
   cat <<'EOF'
 MFPY=$(cat <<'PY'
@@ -259,14 +261,17 @@ for p in "${pairs[@]}"; do
   if [ "$nmiss" -ne 0 ]; then printf '%s\n' "$miss" | head -3 | cut -f1-3 | sed 's/^/    old has: /'; bad=1; fi
   if [ "$extras" -ne 0 ]; then printf '%s\n' "$extra_list" | head -3 | sed 's/^/    only on new: /'; echo "    (sync deletes it; or allow it with S3_EXTRA_OK)"; bad=1; fi
 done
-newdirs=$("${SSHN[@]}" "ubuntu@$NEWIP" "ls -d /srv/w20/behind*/ 2>/dev/null" </dev/null || true)
+newdirs=$("${SSHN[@]}" "ubuntu@$NEWIP" 'for d in /srv/w20/behind*/; do [ -d "$d" ] && echo "$d"; done; true' </dev/null) || { echo "  FAIL cannot list /srv/w20/behind*/ on the new box (no answer)"; bad=1; newdirs=; }
 for d in $newdirs; do
   known=0
   for p in "${pairs[@]}"; do [ "${p%%|*}" = "$d" ] && known=1; done
   [ $known = 1 ] || { echo "  FAIL $d exists on the new box and is not on the old box"; bad=1; }
 done
 [ $trees -gt 0 ] || { echo "  FAIL no tree found on the old box"; bad=1; }
-[ $bad -eq 0 ] && echo "verify: $trees tree(s) identical (paths, size, mtime, sha256 of the state read at start)" || echo "verify: MISMATCH"
+if [ $bad -eq 0 ]; then
+  if [ "$HASHMODE" = all ]; then echo "verify: $trees tree(s) identical (paths, size, mtime, sha256 of every file)"
+  else echo "verify: $trees tree(s) identical (paths, size, mtime; sha256 only of the state read at start, NOT of data/ and w2-weather/data/ except state.db*)"; fi
+else echo "verify: MISMATCH (a file with the same size and mtime but other bytes is fixed by: sync --checksum)"; fi
 exit $bad
 EOF
 }
@@ -325,7 +330,8 @@ cmd_preflight() {
   local u out a b n
   echo "S3 preflight $(date -u +%FT%TZ) old=$OLD new=$NEW"
   echo "architecture"
-  a=$(oldsh uname -m); b=$(newsh uname -m)
+  a=$(oldsh uname -m) || a="(no answer)"
+  b=$(newsh uname -m) || b="(no answer)"
   if [[ $a == "$b" ]]; then okl "both $a"; else block "architecture differs: $OLD $a, $NEW $b; binaries cannot run as copied"; fi
   for f in $(old_bins | grep -E '/bin/w20|rewardcollect'); do
     m=$(newsh "od -An -tx1 -j18 -N2 $f 2>/dev/null | tr -d ' \n'") || m=
@@ -361,7 +367,8 @@ cmd_preflight() {
   if [[ $a == "$b" ]]; then
     n=$(echo "$a" | wc -l | tr -d ' '); okl "$n files identical on both boxes (units, binaries, scripts, policy, env files)"
   else
-    diff <(echo "$a" | awk '{print $2, $1}') <(echo "$b" | awk '{print $2, $1}') | grep '^[<>]' | awk '{print $2}' | sort -u | while read -r f; do echo "          differs: $f"; done
+    # diff exits 1 on a difference and grep exits 1 on none; under pipefail either would end the preflight before its list
+    { diff <(echo "$a" | awk '{print $2, $1}') <(echo "$b" | awk '{print $2, $1}') | grep '^[<>]' | awk '{print $2}' | sort -u | while read -r f; do echo "          differs: $f"; done; } || true
     block "copies differ from the old box (a lineage change since the last prepare?): run prepare"
   fi
   if oldsh "grep -q '^ARM=yes' /etc/w20/live.env" && newsh "sudo grep -q '^ARM=yes' /etc/w20/live.env"; then okl "ARM=yes in both live.env (gate 1)"; else block "ARM=yes missing from a live.env"; fi
@@ -372,8 +379,8 @@ cmd_preflight() {
   if echo "$out" | grep -q '"blocked":false'; then okl "$(echo "$out" | sed -E 's/"ip":"[^"]*",?//')"; else block "geoblock read from $NEW: ${out:-no answer}"; fi
 
   echo "disk, clock"
-  out=$(newsh "df -B1G --output=avail /srv/w20 | tail -n1 | tr -d ' '")
-  if [[ $out -ge 20 ]]; then okl "${out} GiB free on $NEW (the collector and w2-weather refuse below 15)"; else block "only ${out} GiB free on $NEW"; fi
+  out=$(newsh "df -B1G --output=avail /srv/w20 | tail -n1 | tr -d ' '") || out=0
+  if [[ ${out:-0} -ge 20 ]]; then okl "${out} GiB free on $NEW (the collector and w2-weather refuse below 15)"; else block "only ${out} GiB free on $NEW"; fi
   if newsh 'timedatectl show -p NTPSynchronized --value' | grep -q yes; then okl "clock synchronized on $NEW"; else block "clock not synchronized on $NEW"; fi
 
   echo "state copy"
@@ -383,7 +390,8 @@ cmd_preflight() {
   else okl "last sync $((($(date +%s) - out) / 60)) min ago"; fi
 
   echo "owed from others"
-  if [[ -s $PROOF ]]; then okl "resting-order proof on file: $PROOF"; else block "resting-order proof from $NEW not on file ($PROOF); owed by the peer session, not this lane"; fi
+  if [[ -s $PROOF ]]; then okl "resting-order proof on file: $PROOF"
+  else block "PARKED resting-order proof from $NEW, not on file ($PROOF). No order-free proof exists (an unsigned POST gets 401 from every region, a signed FAK never rests). One order from the wallet is needed, so only the owner can allow it. The command that produces it is: $0 switch --go (step 7 reads resting_usd > 0 from $NEW's own venue journal and fails into back); save that line to the file"; fi
 
   echo
   if ((${#BLOCKERS[@]})); then
