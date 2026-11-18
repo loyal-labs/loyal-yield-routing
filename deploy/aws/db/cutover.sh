@@ -66,7 +66,7 @@ SRCSTOPS=${CUT_SRCSTOP[*]+"${CUT_SRCSTOP[*]}"}
 # The way back starts on the source the CUT_SRCSTOP timers and services that ran there before freeze.
 NOT_OLD=" $SRCSTOPS $FIRST "
 old_of() { local u; for u in $1; do [[ $NOT_OLD == *" $u "* ]] || printf '%s ' "$u"; done; }
-SRCSTARTS=$(for u in $SRCSTOPS; do [[ $u == *.timer || " $SERVICES " == *" $u "* ]] && printf '%s ' "$u"; done)
+SRCSTARTS=$(for u in $SRCSTOPS; do [[ $u != *.timer && " $SERVICES " != *" $u "* ]] || printf '%s ' "$u"; done)
 OLD_ALL=$(old_of "$ALL")
 # CUT_HASH=moved: freeze rehashes only the tables whose write counters moved since the last 0-DIFF
 # full hash (pgmove hash --moved); full, the default, rehashes every table under the fence.
