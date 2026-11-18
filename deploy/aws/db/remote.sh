@@ -38,6 +38,8 @@ route_on() {
 set -euo pipefail
 ts=$(date -u +%Y%m%dT%H%M%SZ) n=0
 changed() { n=$((n + 1)); echo "changed: $(hostname -s): $*"; }
+# Backups stay out of sshd_config.d and authorized_keys.d, so nothing stray sits where sshd reads.
+bak=/root/pgmove-backup/route-$ts
 if ! id -u "$user" >/dev/null 2>&1; then
   useradd --system --user-group --shell /usr/sbin/nologin --home-dir /nonexistent --no-create-home "$user"
   changed "user $user: system, shell /usr/sbin/nologin, no home"
@@ -47,11 +49,14 @@ keys=/etc/ssh/authorized_keys.d/$user
 want="from=\"$box_ip\",restrict,port-forwarding,permitopen=\"$target\",command=\"/usr/sbin/nologin\" $pub"
 if [[ $(cat "$keys" 2>/dev/null || true) != "$want" ]]; then
   install -d -m 0755 -o root -g root /etc/ssh/authorized_keys.d
-  [[ ! -e $keys ]] || cp -a "$keys" "$keys.pgmove-$ts"
+  [[ ! -e $keys ]] || { install -d -m 0700 "$bak"; cp -a "$keys" "$bak/"; }
   printf '%s\n' "$want" >"$keys.new" && chown root:root "$keys.new" && chmod 0644 "$keys.new" && mv -f "$keys.new" "$keys"
   changed "$keys: one key, from the box only, restrict, -L to $target only, command nologin (root-owned)"
 fi
-conf=/etc/ssh/sshd_config.d/60-pgmove-$user.conf
+# One name per user: 60-pgmove-fwd.conf for pgmove-fwd. Earlier runs wrote 60-pgmove-$user.conf.
+conf=/etc/ssh/sshd_config.d/60-pgmove-${user#pgmove-}.conf
+old=/etc/ssh/sshd_config.d/60-pgmove-$user.conf
+[[ $old != "$conf" && -e $old ]] || old=
 wantc="# pgmove forward-only user (loyal-yield-routing deploy/aws/db/remote.sh route)
 Match User $user
   AuthorizedKeysFile /etc/ssh/authorized_keys.d/%u
@@ -68,17 +73,22 @@ Match User $user
   AllowAgentForwarding no
   PermitTTY no
   ForceCommand /usr/sbin/nologin"
-if [[ $(cat "$conf" 2>/dev/null || true) != "$wantc" ]]; then
+if [[ -n $old || $(cat "$conf" 2>/dev/null || true) != "$wantc" ]]; then
   probe="host=pgmove-check,addr=192.0.2.1"
   before=$(sshd -T -C "user=root,$probe")
-  [[ ! -e $conf ]] || cp -a "$conf" "$conf.pgmove-$ts"
-  revert() { if [[ -e $conf.pgmove-$ts ]]; then cp -a "$conf.pgmove-$ts" "$conf"; else rm -f "$conf"; fi; echo "route: $1; $conf reverted, sshd not reloaded" >&2; exit 1; }
+  install -d -m 0700 "$bak"
+  for f in "$conf" ${old:+"$old"}; do [[ ! -e $f ]] || cp -a "$f" "$bak/"; done
+  revert() {
+    for f in "$conf" ${old:+"$old"}; do if [[ -e $bak/${f##*/} ]]; then cp -a "$bak/${f##*/}" "$f"; else rm -f "$f"; fi; done
+    echo "route: $1; sshd_config.d restored from $bak, sshd not reloaded" >&2; exit 1
+  }
   printf '%s\n' "$wantc" >"$conf"
   chmod 0644 "$conf"
+  [[ -z $old ]] || rm -f "$old"
   sshd -t || revert "sshd -t failed"
   [[ $(sshd -T -C "user=root,$probe") == "$before" ]] || revert "root's effective sshd settings would change"
   systemctl reload ssh
-  changed "$conf: Match User $user, publickey only, -L to $target only, no shell, pty, agent, X11, listener or unix socket; sshd -t ok, root's settings unchanged, ssh reloaded"
+  changed "$conf: Match User $user, publickey only, -L to $target only, no shell, pty, agent, X11, listener or unix socket${old:+; replaced $old}; sshd -t ok, root's settings unchanged, ssh reloaded"
 fi
 echo "route: $(hostname -s) effective for $user from the box:"
 sshd -T -C "user=$user,host=pgmove-check,addr=$box_ip" | grep -E '^(authorizedkeysfile|authenticationmethods|passwordauthentication|allowtcpforwarding|allowstreamlocalforwarding|permitopen|permitlisten|permittty|permittunnel|x11forwarding|allowagentforwarding|forcecommand) ' | sed 's/^/  /'
