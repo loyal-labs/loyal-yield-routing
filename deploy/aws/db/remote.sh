@@ -233,14 +233,21 @@ pgmove_on() {
 }
 
 install_on() {
-  local box running
+  local box script
   box=$(conf_box "$1")
-  # A run reads its script as it goes and its stamps are read by the next: no new copy lands under one.
-  # A run is a process whose program or script is this pgmove.sh: bash <script> under its shebang, or sudo's own.
-  running=$(ssh -o BatchMode=yes "$box" "ps -eo pid=,args= | awk -v p=$DEST/pgmove.sh '\$2 == p || \$3 == p'") || { echo "remote: $box did not answer whether pgmove runs there" >&2; exit 1; }
-  [[ -z $running ]] || { printf 'remote: %s runs pgmove from %s, so it is not reinstalled; wait for it, or install beside it with PGMOVE_DEST=/opt/pgmove-<name>:\n%s\n' "$box" "$DEST" "$running" >&2; exit 1; }
+  # Every pgmove run holds /var/lib/pgmove/.run.lock shared (pgmove.sh), so while this holds it
+  # exclusively no run of any copy is under way or starts. The ps check covers a copy older than that lock.
+  script="set -e
+install -d -m 0755 /var/lib/pgmove
+exec 8>>/var/lib/pgmove/.run.lock
+flock -x -n 8 || { echo 'remote: a pgmove run holds /var/lib/pgmove/.run.lock on $box; wait for it' >&2; exit 1; }
+running=\$(ps -eo pid=,args= | awk -v p=$DEST/pgmove.sh '\$2 == p || \$3 == p')
+[ -z \"\$running\" ] || { printf 'remote: $box runs pgmove from $DEST, so it is not reinstalled; wait for it, or install beside it with PGMOVE_DEST=/opt/pgmove-<name>:\\n%s\\n' \"\$running\" >&2; exit 1; }
+install -d -m 0755 $DEST
+tar -C $DEST --no-same-owner -xf -
+chown -R root:root $DEST"
   COPYFILE_DISABLE=1 tar --no-xattrs -C "$HERE" -cf - pgmove.sh parsers-copy.sh pg-forward@.service clusters |
-    ssh -o BatchMode=yes "$box" "sudo -n install -d -m 0755 $DEST && sudo -n tar -C $DEST --no-same-owner -xf - && sudo -n chown -R root:root $DEST"
+    ssh -o BatchMode=yes "$box" "sudo -n bash -c $(printf %q "$script")" || { echo "remote: install on $box failed" >&2; exit 1; }
   echo "remote: $DEST on $box holds pgmove.sh at $(git -C "$HERE" rev-parse --short HEAD 2>/dev/null || echo '?')"
 }
 

@@ -71,9 +71,9 @@ for f in FILES:
                      "q inside it (q stops the run), or write the output to a file under `|| die` and read the file")
         if re.search(r"\blocal\s+[A-Za-z_]\w*=\$\((?!\()", s):
             flag(f, n, fn, "`local x=$(...)` returns local's status, not the command's", "`local x; x=$(...) || die \"...\"`")
-        if re.search(r"^\s*(?:local\s+)?[A-Za-z_]\w*=[^\n]*\$\(\s*\(\([^)]*\)\)\s*&&(?:(?!\|\|)[^)])*\)", s):
-            flag(f, n, fn, "an assignment from `$( ((x)) && ... )`: when x is 0 it returns 1 and set -e ends the run with no message",
-                 "an if, or `x=a; ((cond)) || x=b`")
+        if re.search(r"(?:^|[;&|]|\bdo\b|\bthen\b|\belse\b)\s*(?:local\s+)?[A-Za-z_]\w*\+?=[^\n]*\$\(\s*(?:\(\([^)]*\)\)|\[\[(?:(?!\]\]).)*\]\])\s*&&(?:(?!\|\|)[^)])*\)", s):
+            flag(f, n, fn, "an assignment from `$( ((x)) && ... )` or `$([[ x ]] && ... )`: when x is false it returns 1 and set -e ends the run with no message",
+                 "`$([[ x ]] || echo ...)` with the test turned, an if, or `x=a; ((cond)) || x=b`")
         if f == "pgmove.sh" and (f, fn) not in SQL_OK and re.search(CMDPOS + r"sql\s+(src|dst|\"?\$)", s) \
                 and not re.search(r"\|\|\s*(query_failed|die|return 1)\b", s):
             flag(f, n, fn, "a direct `sql` call: its failure is the caller's to notice", "q, or end the statement with `|| query_failed \"...\"`")

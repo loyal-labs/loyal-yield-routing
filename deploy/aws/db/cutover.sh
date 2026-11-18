@@ -33,7 +33,7 @@ on() {
   if [[ $host == root@* ]]; then ssh -o BatchMode=yes -o ConnectTimeout=15 "$host" "$cmd"; else ssh -o BatchMode=yes -o ConnectTimeout=15 "$host" "sudo -n bash -c $(printf %q "$cmd")"; fi
 }
 CUT_OLD='' CUT_NEW='' BOX=''
-CUT_TIMERS=() CUT_ONESHOTS=() CUT_ENGINES=() CUT_SERVICES=() CUT_HEALTH=() CUT_STOP=() CUT_HASH=full
+CUT_TIMERS=() CUT_ONESHOTS=() CUT_ENGINES=() CUT_SERVICES=() CUT_HEALTH=() CUT_STOP=() CUT_SRCSTOP=() CUT_HASH=full CUT_ROLLBACK_VERIFY=1 SRC_VIA=ssh SRC_SSH=''
 # shellcheck source=/dev/null
 source "$HERE/clusters/$CLUSTER.conf"
 [[ -n $CUT_OLD && -n $CUT_NEW && -n $BOX ]] || { echo "cutover: $CLUSTER.conf sets no CUT_OLD, CUT_NEW or BOX; $CLUSTER has no writers to move" >&2; exit 2; }
@@ -52,6 +52,11 @@ SERVICES=${CUT_SERVICES[*]+"${CUT_SERVICES[*]}"}
 # robinX slot that is not live, which a deploy may have left running.
 STOPS=${CUT_STOP[*]+"${CUT_STOP[*]}"}
 ALL="$TIMERS $ENGINES $SERVICES"
+# CUT_SRCSTOP: units on the source database host that write there as a superuser, which no fence
+# stops (Loyal's chunk retention). freeze stops them and checks them stopped before the hash; abort
+# and rollback start their timers again. Root there is PGMOVE_SRC_ADMIN in SRC_VIA=forward.
+SRCSTOPS=${CUT_SRCSTOP[*]+"${CUT_SRCSTOP[*]}"}
+SRCTIMERS=$(tr ' ' '\n' <<<"$SRCSTOPS" | awk '/\.timer$/' | paste -sd' ' -)
 # CUT_HASH=moved: freeze rehashes only the tables whose write counters moved since the last 0-DIFF
 # full hash (pgmove hash --moved); full, the default, rehashes every table under the fence.
 case $CUT_HASH in full) FREEZE_HASH='' ;; moved) FREEZE_HASH=--moved ;; *) die "CUT_HASH is full or moved, not $CUT_HASH" ;; esac
@@ -60,9 +65,22 @@ CUTOVER_PROOF=${CUTOVER_PROOF:-/Users/user/loyal/artifacts/orchestrate/aws-migra
 STATE=/var/lib/pgmove/$CLUSTER
 TIMES=()
 
+on_src() {
+  if [[ $SRC_VIA == forward ]]; then
+    [[ -n ${PGMOVE_SRC_ADMIN:-} ]] || { echo "cutover: CUT_SRCSTOP needs PGMOVE_SRC_ADMIN, the command that runs its one argument as root on the source" >&2; return 1; }
+    "$PGMOVE_SRC_ADMIN" "$*"
+  else
+    on "$SRC_SSH" "$@"
+  fi
+}
+
 now() { perl -MTime::HiRes=time -e 'printf "%.1f", time'; }
 pg() { local sub=$1; shift; "$HERE/remote.sh" run "$sub" "$CLUSTER" "$@"; }
 stamped() { [[ $(on "$BOX" "test -e $STATE/$1 && echo yes || echo no") == yes ]]; }
+# this_tenure <file>: the file names the current switch, the switched stamp it was written under; one
+# from an earlier switch, which a rollback ended, does not count.
+this_tenure() { [[ $(on "$BOX" "test -s $STATE/switched && test \"\$(cat $STATE/$1 2>/dev/null)\" = \"\$(cat $STATE/switched)\" && echo yes || echo no") == yes ]]; }
+tenure_stamp() { on "$BOX" "mkdir -p \$(dirname $STATE/$1) && cp $STATE/switched $STATE/$1.new && mv -f $STATE/$1.new $STATE/$1 && sync $STATE"; }
 # yes once a switch reached its first LOGIN on the target and no switch --reverse has reached its
 # first on the source since (pgmove.sh target_primary); no otherwise; anything else is no answer.
 target_primary() { on "$BOX" "if test -s $STATE/switched && ! { test -s $STATE/reversed && [ \$(cat $STATE/reversed) -gt \$(cat $STATE/switched) ]; }; then echo yes; else echo no; fi"; }
@@ -131,6 +149,31 @@ writers_stopped() {
     fi
   done
   [[ $(grep -c . <<<"$states") == "$want" ]] || { echo "cutover: $1 answered $(grep -c . <<<"$states") unit lines for $want units" >&2; return 1; }
+}
+
+src_writers_stopped() {
+  local states u
+  [[ -n $SRCSTOPS ]] || return 0
+  states=$(on_src "for u in $SRCSTOPS; do echo \"\$u \$(systemctl show -p LoadState --value \$u) \$(systemctl show -p ActiveState --value \$u)\"; done") || { echo "cutover: the source did not answer for $SRCSTOPS" >&2; return 1; }
+  for u in $SRCSTOPS; do
+    grep -qxE "$u loaded (inactive|failed)" <<<"$states" || { echo "cutover: source $u: $(grep "^$u " <<<"$states" || echo 'no state')" >&2; return 1; }
+  done
+}
+
+stop_src_writers() {
+  [[ -n $SRCSTOPS ]] || return 0
+  on_src "systemctl stop $SRCSTOPS" || die "source: stopping $SRCSTOPS failed"
+  echo "source: stopped $SRCSTOPS"
+  src_writers_stopped || die "a superuser writer is still active on the source"
+}
+
+# start_src_timers [enable]: the source's own timers again, once it is the primary.
+start_src_timers() {
+  local verb=start
+  [[ -n $SRCTIMERS ]] || return 0
+  [[ ${1:-} != enable ]] || verb='enable --now'
+  on_src "systemctl $verb $SRCTIMERS" || die "source: starting $SRCTIMERS failed"
+  echo "source: started $SRCTIMERS"
 }
 
 start_healthy() {
@@ -212,7 +255,7 @@ cmd_preflight() {
   timed install "$HERE/remote.sh" install "$CLUSTER" || die "install failed"
   # pgmove preflight: tables in state r, lag, verify, the reverse, fence and switch dry runs, marker, volume.
   timed preflight pg preflight >"$out" || { cat "$out"; die "pgmove preflight failed; full output $out"; }
-  echo "preflight: $(tail -1 "$out"); full output $out"
+  echo "preflight: $(grep ' DIFF$' "$out" | tail -1); full output $out"
   timed units units_ready || die "the units on $CUT_NEW are not ready"
   timed writes-save pg writes save preflight src || die "writes save failed"
   timed ssh-roundtrip on "$CUT_OLD" true || die "$CUT_OLD did not answer"
@@ -228,15 +271,17 @@ cmd_freeze() {
   out=$CUTOVER_PROOF/freeze-verify-$(date -u +%Y%m%dT%H%MZ).txt
   timed install "$HERE/remote.sh" install "$CLUSTER" || die "install failed"
   timed stop stop_writers "$CUT_OLD" || die "the writers did not stop"
+  timed stop-source stop_src_writers || die "the source's own writers did not stop"
   timed fence pg fence || die "fence failed; rerun freeze, or abort"
   timed catchup pg catchup || die "catchup failed"
   timed sequences pg sequences || die "sequences failed"
   timed writes-save pg writes save freeze src || die "writes save failed"
   # Under the fence one full hash covers every row, the old ones verify's tail does not read. It runs
   # before verify, which needs a 0-DIFF hash: a rerun after a bad one would otherwise never hash again.
+  timed source-stopped src_writers_stopped || die "a writer on the source runs again; rerun freeze, or abort"
   timed hash pg hash $FREEZE_HASH >"$out" || { tail -20 "$out"; die "the hash under the fence differs ($out); rerun freeze, or abort"; }
   timed verify pg verify >>"$out" || { tail -40 "$out"; die "the target differs from the source at the freeze point ($out); rerun freeze, or abort"; }
-  echo "verify: $(tail -1 "$out") at the freeze point; $out"
+  echo "verify: $(grep ' DIFF$' "$out" | tail -1) at the freeze point; $out"
   on "$BOX" "touch $STATE/freeze-ok" || die "cannot stamp $STATE/freeze-ok on $BOX"
   report_times
 }
@@ -250,14 +295,16 @@ cmd_abort() {
   timed start start_healthy "$CUT_OLD" "${CUT_SERVICES[@]}" || die "the writers did not start healthy on $CUT_OLD"
   timed start-timers start_timers "$CUT_OLD" || die "the timers did not start on $CUT_OLD"
   timed start-engines start_healthy "$CUT_OLD" ${CUT_ENGINES[@]+"${CUT_ENGINES[@]}"} || die "the engines did not start healthy on $CUT_OLD"
+  timed start-source start_src_timers || die "the source's timers did not start"
   report_times
 }
 
 cmd_switch() {
   stamped freeze-ok || die "no $STATE/freeze-ok on $BOX: freeze has not passed since it last started; run freeze"
   writers_stopped "$CUT_OLD" || die "writers run on $CUT_OLD; run freeze first"
+  src_writers_stopped || die "a writer on the source runs; run freeze first"
   timed switch pg switch || die "pg switch failed"
-  stamped writes/switch-dst-ok || { timed writes-save pg writes save switch dst && on "$BOX" "touch $STATE/writes/switch-dst-ok"; } || die "writes save switch dst failed"
+  this_tenure writes/switch-dst-ok || { timed writes-save pg writes save switch dst && tenure_stamp writes/switch-dst-ok; } || die "writes save switch dst failed"
   timed start start_healthy "$CUT_NEW" "${CUT_SERVICES[@]}" || die "the writers did not start healthy on $CUT_NEW"
   report_times
 }
@@ -282,7 +329,7 @@ cmd_unfreeze() {
   local all
   stamped switched || die "the switch has not run"
   cmd_verify
-  on "$BOX" "touch $STATE/unfrozen && sync $STATE" || die "cannot stamp $STATE/unfrozen on $BOX"
+  tenure_stamp unfrozen || die "cannot stamp $STATE/unfrozen on $BOX"
   echo "unfreeze: $STATE/unfrozen on $BOX; plain rollback now refuses, rollback --reverse remains until retire"
   timed start-timers start_timers "$CUT_NEW" || die "the timers did not start on $CUT_NEW"
   timed start-engines start_healthy "$CUT_NEW" ${CUT_ENGINES[@]+"${CUT_ENGINES[@]}"} || die "the engines did not start healthy on $CUT_NEW"
@@ -291,24 +338,51 @@ cmd_unfreeze() {
   echo "$CUT_NEW: enabled $all"
   on "$CUT_OLD" "systemctl disable $all" || die "$CUT_OLD: disabling $all failed"
   echo "$CUT_OLD: disabled $all"
+  if [[ -n $SRCTIMERS ]]; then on_src "systemctl disable $SRCTIMERS" || die "source: disabling $SRCTIMERS failed"; echo "source: disabled $SRCTIMERS"; fi
   sleep 60
   timed health health "$CUT_NEW" ${CUT_ENGINES[@]+"${CUT_ENGINES[@]}"} "${CUT_SERVICES[@]}" || die "health failed on $CUT_NEW"
   report_times
 }
 
+# A rollback that stops leaves the target the primary, so its writers go back on there. pgmove gives
+# a fence --reverse that stopped its LOGIN back itself; thaw --reverse does it for a switch --reverse
+# that stopped before its stamp, and turns the reverse on again.
+rollback_failed() {
+  local tp
+  tp=$(target_primary) || die "$1; $BOX did not answer for its stamps, so the target may be fenced"
+  [[ $tp == yes ]] || die "$1 after its stamp: the source is the primary; rerun rollback to finish it"
+  timed thaw-reverse pg thaw --reverse || die "$1, and thaw --reverse failed: the target may still be fenced; rerun rollback, or run 'thaw $CLUSTER --reverse'"
+  timed restart start_healthy "$CUT_NEW" "${CUT_SERVICES[@]}" || die "$1; the target takes writes again but the writers did not start healthy on $CUT_NEW"
+  if this_tenure unfrozen; then
+    timed restart-timers start_timers "$CUT_NEW" || die "$1; the timers did not start on $CUT_NEW"
+    timed restart-engines start_healthy "$CUT_NEW" ${CUT_ENGINES[@]+"${CUT_ENGINES[@]}"} || die "$1; the engines did not start healthy on $CUT_NEW"
+  fi
+  report_times
+  die "$1; the target takes writes again and its writers run on $CUT_NEW: fix the cause above, then rerun rollback"
+}
+
 cmd_rollback() {
-  local all
+  local all out
   stamped switched || die "the switch has not run; nothing to roll back (after a freeze, abort thaws the source and restarts the writers on $CUT_OLD)"
   stamped retired && die "retire has run; the reverse subscription is gone"
-  if stamped unfrozen && [[ ${1:-} != --reverse ]]; then
+  if this_tenure unfrozen && [[ ${1:-} != --reverse ]]; then
     die "unfreeze has run, so the engines wrote to the target. 'rollback --reverse' carries those writes back over the reverse subscription"
   fi
   timed stop stop_writers "$CUT_NEW" || die "the writers did not stop on $CUT_NEW"
-  timed fence pg fence --reverse || die "fence --reverse failed"
-  timed switch pg switch --reverse || die "switch --reverse failed"
+  timed fence pg fence --reverse || rollback_failed "fence --reverse failed"
+  timed switch pg switch --reverse || rollback_failed "switch --reverse failed"
+  # The reverse carries replicated tables whole, but a hypertable only above its floor: verify hashes
+  # each one's tail on both sides before any writer runs on the source again.
+  if ((CUT_ROLLBACK_VERIFY)); then
+    mkdir -p "$CUTOVER_PROOF"
+    out=$CUTOVER_PROOF/rollback-verify-$(date -u +%Y%m%dT%H%MZ).txt
+    timed verify pg verify --reverse >"$out" || { tail -40 "$out"; die "the source is the primary, its writers on $CUT_OLD still stopped, and it differs from the target ($out): repair, then rerun rollback; CUT_ROLLBACK_VERIFY=0 in $CLUSTER.conf starts them without this check"; }
+    echo "verify: $(grep ' DIFF$' "$out" | tail -1) after switch --reverse; $out"
+  fi
   timed start start_healthy "$CUT_OLD" "${CUT_SERVICES[@]}" || die "the writers did not start healthy on $CUT_OLD"
   timed start-timers start_timers "$CUT_OLD" || die "the timers did not start on $CUT_OLD"
   timed start-engines start_healthy "$CUT_OLD" ${CUT_ENGINES[@]+"${CUT_ENGINES[@]}"} || die "the engines did not start healthy on $CUT_OLD"
+  timed start-source start_src_timers enable || die "the source's timers did not start"
   all=$ALL
   on "$CUT_OLD" "systemctl enable $all" || die "$CUT_OLD: enabling $all failed"
   echo "$CUT_OLD: enabled $all"
@@ -326,9 +400,10 @@ cmd_retire() {
 
 cmd_status() {
   local s all
-  for s in switched unfrozen reversed retired; do
+  for s in switched reversed retired; do
     if stamped "$s"; then echo "status: $s"; else echo "status: not $s"; fi
   done
+  if this_tenure unfrozen; then echo "status: unfrozen"; else echo "status: not unfrozen since the last switch"; fi
   all=$ALL
   all="$all $STOPS"
   echo "status: $CUT_OLD $(on "$CUT_OLD" "systemctl is-active $all" | paste -sd' ' - || true)"
