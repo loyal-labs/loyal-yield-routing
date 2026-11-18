@@ -138,7 +138,13 @@ trap 'exit 1' USR2
 [[ $(trap -p USR1) == *stopped* && $(trap -p USR2) == *"exit 1"* ]] || { echo "pgmove: the caller ignores SIGUSR1 or SIGUSR2, so a failed query could not stop this run; run it from a shell that does not ignore them" >&2; exit 2; }
 
 changed() { changes=$((changes + 1)); if ((DRY)); then echo "would change: $*"; else echo "changed: $*"; fi; }
-diff_row() { if ((DRIFT_ONLY)); then echo "drift $*"; else diffs=$((diffs + 1)); echo "DIFF $*"; fi; }
+diff_row() {
+  if ((DRIFT_ONLY)); then echo "drift $*"; return 0; fi
+  diffs=$((diffs + 1))
+  # A hash DIFF voids the last pass at once: a run that stops after it never reaches its end.
+  if [[ $CMD == hash ]] && ((AGE == 0 && DRY == 0)); then rm -f "$WORK/hash-ok" "$WORK/hash-sig"; fi
+  echo "DIFF $*"
+}
 blocked() { blocks=$((blocks + 1)); echo "blocked: $*"; }
 # need <verb> <args>: a root step on the source in SRC_VIA=forward. The box names it; srcexec on the
 # operator machine checks each word and builds the SQL, so the box never decides what runs as root there.
@@ -165,7 +171,7 @@ state() {
 on() {
   if [[ $1 == local ]]; then bash -c "$2"; return; fi
   install -d -m 0700 /run/pgmove 2>/dev/null || true
-  ssh -o BatchMode=yes -o ConnectTimeout=15 -o ControlMaster=auto -o ControlPath="$SSH_CTL" -o ControlPersist=120 "$1" "$2" 8>&-
+  ssh -o BatchMode=yes -o ConnectTimeout=15 -o ControlMaster=auto -o ControlPath="$SSH_CTL" -o ControlPersist=120 "$1" "$2" 8>&- 9>&-
 }
 
 psql_cmd() {
@@ -1374,6 +1380,9 @@ HASH_BUSY="select (select count(*) from pg_stat_activity where datname = current
 # sig_line <prefix> [file]: the one signature line that starts with the prefix.
 sig_line() { awk -v p="$1" 'index($0, p) == 1' "${2:--}"; }
 
+# hash_lock: an exclusive flock on fd 9, held until this run's last copy of fd 9 closes; no ssh master gets one.
+hash_lock() { perl -MFcntl=:flock -e 'open(my $f, ">&=", 9) or exit 2; flock($f, LOCK_EX | LOCK_NB) or exit 1'; }
+
 # hash_quiet <db>: 0 once no session on either side may hold writes its counters do not show yet.
 hash_quiet() {
   local db=$1 end busy
@@ -1412,6 +1421,16 @@ cmd_hash() {
   echo "hash: run $RUN_ID started $(date -u +%FT%TZ): $CLUSTER${only:+ $only}$( ((MOVED)) && echo ' --moved')$( ((AGE)) && echo ' --age')"
   if ((AGE)); then hash_age; finish_check; return 0; fi
   [[ -z $only ]] || ((MOVED == 0)) || die "hash: --moved hashes every table it cannot skip; it takes no table"
+  if ((DRY == 0)); then
+    # One hash at a time per cluster: an older run ending after a newer one would put its pass over
+    # the newer run's, or its stale pass over the newer run's DIFF.
+    mkdir -p "$WORK" || die "cannot make $WORK"
+    exec 9>>"$WORK/hash.lock" || die "cannot open $WORK/hash.lock"
+    hash_lock || die "hash: run $(cat "$WORK/hash-run" 2>/dev/null || echo '?') holds $WORK/hash.lock; wait for it to end, or stop it, then rerun"
+    state "$WORK/hash-run" "$RUN_ID pid $$"
+    # A full run's pass is the only thing that may stand after it: one that stops for any reason leaves none.
+    [[ -n $only ]] || rm -f "$WORK/hash-ok"
+  fi
   HASH_NOW=''
   for spec in "${DATABASES[@]}"; do
     db=$(db_of "$spec")
@@ -1439,8 +1458,6 @@ cmd_hash() {
     state "$WORK/hash-bounds" "$HASH_BOUNDS"
     state "$WORK/hash-sig" "$HASH_NOW"
     state "$WORK/hash-ok" "$start"
-  elif ((diffs && DRY == 0)); then
-    rm -f "$WORK/hash-ok" "$WORK/hash-sig"
   fi
   finish_check
 }

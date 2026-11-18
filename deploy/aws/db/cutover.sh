@@ -307,6 +307,10 @@ cmd_freeze() {
   tp=$(target_primary) || die "$BOX did not answer for its stamps"
   [[ $tp == no ]] || die "the switch has run and no rollback since; freeze is for the source side, rerun switch instead"
   on "$BOX" "rm -f $STATE/freeze-ok" || die "cannot remove $STATE/freeze-ok on $BOX"
+  # freeze hashes under the fence, and pgmove runs one hash at a time: one already running would make
+  # it refuse after the writers stopped.
+  on "$BOX" "test ! -e $STATE/hash.lock || perl -MFcntl=:flock -e 'open(my \$f, \">>\", \$ARGV[0]) or exit 2; flock(\$f, LOCK_EX | LOCK_NB) or exit 1' $STATE/hash.lock" ||
+    die "a pgmove hash is running on $BOX ($(on "$BOX" "cat $STATE/hash-run 2>/dev/null" || true)); nothing was stopped: wait for it to end, or stop it, then rerun freeze"
   mkdir -p "$CUTOVER_PROOF"
   out=$CUTOVER_PROOF/freeze-verify-$(date -u +%Y%m%dT%H%MZ).txt
   timed install "$HERE/remote.sh" install "$CLUSTER" || die "install failed"
