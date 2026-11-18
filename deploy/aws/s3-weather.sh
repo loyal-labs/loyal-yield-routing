@@ -69,7 +69,7 @@ agent_up() {
   AGENT_SOCK=$SSH_AUTH_SOCK
   AGENT_PID=$SSH_AGENT_PID
   ssh-add "$SSH_KEY" </dev/null >/dev/null 2>&1 || die "ssh-add $SSH_KEY failed (needs a key without passphrase)"
-  HKLINE=$(ssh-keygen -F "$NEWIP" -f "$HOME/.ssh/known_hosts" 2>/dev/null | awk '$2 == "ssh-ed25519" !f {print $2, $3; f = 1}')
+  HKLINE=$(ssh-keygen -F "$NEWIP" -f "$HOME/.ssh/known_hosts" 2>/dev/null | awk '$2 == "ssh-ed25519" && !f {print $2, $3; f = 1}')
   [[ -n $HKLINE ]] || die "no ed25519 host key for $NEWIP in ~/.ssh/known_hosts; ssh $NEW once first"
 }
 cleanup() {

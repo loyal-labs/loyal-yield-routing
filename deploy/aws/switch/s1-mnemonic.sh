@@ -131,7 +131,7 @@ daemon_domain() { echo "gui/$(id -u)/$DAEMON_LABEL"; }
 
 daemon_print() { launchctl print "$(daemon_domain)" 2>/dev/null; }
 
-daemon_pid() { awk '$1 == "pid" && $2 == "=" !d {print $3; d = 1}'; }
+daemon_pid() { awk '$1 == "pid" && $2 == "=" && !d {print $3; d = 1}'; }
 
 daemon_config() { awk '/^[ \t]*arguments = \{/ {a=1; next} a && /^[ \t]*\}/ {a=0} a {n++; if (p) {print $1; exit} p = ($1 == "--config")}'; }
 
