@@ -322,7 +322,7 @@ sync_back_dry() {
   rsync_run reverse dry "$out" || { cat "$out"; rm -f "$out"; die "sync-back dry run failed"; }
   echo "would copy back from $NEW_HOST:$STORE/ over $OLD_ADDR:$STORE/ (rsync -aH --delete-delay, nothing written):"
   total=$(grep -cE '^([<>ch.][a-zA-Z.+?]{10}|\*deleting) ' "$out" || true)
-  grep -E '^([<>ch.][a-zA-Z.+?]{10}|\*deleting) ' "$out" | head -n "$LIST_MAX" | sed 's/^/  /'
+  { grep -E '^([<>ch.][a-zA-Z.+?]{10}|\*deleting) ' "$out" || true; } | head -n "$LIST_MAX" | sed 's/^/  /' || true
   ((total <= LIST_MAX)) || echo "  ... $((total - LIST_MAX)) more (S1_LIST_MAX=$LIST_MAX)"
   n=$(stat_of 'Total transferred file size' "$out")
   echo "dry run: $total path(s) listed, files $(stat_of 'Number of regular files transferred' "$out"), deleted $(stat_of 'Number of deleted files' "$out"), bytes $n ($((n / 1048576)) MiB). Nothing was copied or stopped."
