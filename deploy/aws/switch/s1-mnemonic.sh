@@ -6,12 +6,13 @@ OLD_ADDR=${S1_OLD_ADDR:-5.78.147.233}
 NEW_ADDR=${S1_NEW_ADDR:-34.229.25.188}
 NEW_HOST=${S1_NEW_HOST:-robinx-main}
 STORE=/var/lib/mnemonic
-DELTA_MAX_MIB=${S1_DELTA_MAX_MIB:-2048}
+DELTA_MAX_MIB=${S1_DELTA_MAX_MIB:-512}
 AWS_PROFILE_NAME=${S1_AWS_PROFILE:-main}
 AWS_REGION_NAME=${S1_AWS_REGION:-us-east-1}
 CLIENT_CONFIG=${S1_CLIENT_CONFIG:-$HOME/.mnemonic/config.toml}
 MNEMONIC_CLI=${S1_MNEMONIC_CLI:-mnemonic}
 SHARE_URL=${S1_SHARE_URL:-https://share.askloyal.com/}
+VANISH_OK=0
 SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=30)
 
 usage() {
@@ -65,9 +66,12 @@ rsync_run() {
   else
     src="ubuntu@$NEW_ADDR:$STORE/" dst="$STORE/"
   fi
+  local rc=0
   ssh -A "${SSH_OPTS[@]}" "root@$OLD_ADDR" "ionice -c3 nice -n19 rsync $flags --rsync-path='sudo rsync' \
     -e \"ssh -o BatchMode=yes -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o 'KnownHostsCommand=/bin/echo $hk'\" \
-    $src $dst" >"$out" 2>&1
+    $src $dst" >"$out" 2>&1 || rc=$?
+  if ((rc == 24 && VANISH_OK)); then return 0; fi
+  return "$rc"
 }
 
 stat_of() { grep -m1 "^$1" "$2" | sed -E 's/[^:]*: *([0-9,]+).*/\1/' | tr -d ,; }
@@ -87,6 +91,7 @@ delta_bytes() {
 
 cmd_delta() {
   local dir=forward t0 b
+  VANISH_OK=1
   [[ ${1:-} == --reverse ]] && dir=reverse
   t0=$(date +%s)
   b=$(delta_bytes "$dir")
@@ -95,6 +100,7 @@ cmd_delta() {
 
 cmd_copy() {
   local out t0
+  VANISH_OK=1
   out=$(mktemp)
   t0=$(date +%s)
   rsync_run forward live "$out" || { cat "$out"; rm -f "$out"; die "copy failed"; }
@@ -200,6 +206,7 @@ old_live() {
 }
 
 cmd_preflight() {
+  VANISH_OK=1
   new_static
   new_idle
   old_live
