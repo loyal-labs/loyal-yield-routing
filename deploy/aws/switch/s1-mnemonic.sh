@@ -146,7 +146,7 @@ restart_daemon() { # restart_daemon ADDR
   while ((waited < DAEMON_WAIT)); do
     sleep 1
     waited=$((waited + 1))
-    errs=$(tail -c +"$((${off:-0} + 1))" "$PUSH_LOG" 2>/dev/null | grep '^push:' | head -1) || errs=
+    errs=$(tail -c +"$((off + 1))" "$PUSH_LOG" 2>/dev/null | grep '^push:' | head -1) || errs=
     [[ -z $errs ]] || { echo "daemon pid $after reports: $errs"; return 1; }
   done
   [[ $(daemon_print | daemon_pid) == "$after" ]] || { echo "the daemon pid changed again within ${DAEMON_WAIT}s (a crash loop)"; return 1; }

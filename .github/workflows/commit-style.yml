@@ -34,6 +34,10 @@ jobs:
         working-directory: .
         run: scripts/ci-pgmove-fail-closed.sh
 
+      - name: Check the switch scripts never compare two failed reads
+        working-directory: .
+        run: scripts/ci-switch-fail-closed.sh
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
