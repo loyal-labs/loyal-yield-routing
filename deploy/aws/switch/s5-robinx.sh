@@ -77,15 +77,19 @@ c_subscribe_dry() {
   rc=$?
   grep '^blocked:' <<<"$out"
   echo "exit $rc, $(grep -E 'change\(s\)' <<<"$out" | tail -1)"
-  ((rc == 0)) && ! grep -q '^blocked:' <<<"$out"
+  ((rc == 0)) && ! grep -q '^blocked:' <<<"$out" && schema_first
 }
+
+# A dry run against a target with no tables cannot meet the conflicts the real run would.
+TARGET_TABLES=''
+schema_first() { [[ $TARGET_TABLES != 0 ]] || { echo "(robinx-main has no tables yet: rerun once target-schema is ok)"; return 3; }; }
 
 c_partitions_dry() {
   local out rc
   out=$(pgmove partitions --dry-run 2>&1)
   rc=$?
   echo "exit $rc, $(grep -E 'change\(s\)' <<<"$out" | tail -1)"
-  ((rc == 0))
+  ((rc == 0)) && schema_first
 }
 
 c_init_rerun() {
@@ -235,6 +239,7 @@ c_slots() {
 
 preflight() {
   CONFIG_OUT=$(BUILD=${S5_BUILD:-} WEN=$WEN bash "$DIR/robinx-main-config.sh" check 2>&1)
+  TARGET_TABLES=$(dstq "select count(*) from pg_class where relkind in ('r','p') and relnamespace = 'public'::regnamespace" 2>/dev/null || echo 0)
   check 0348-on-production c_0348
   check source-untouched c_source_clean
   check subscribe-dry-run c_subscribe_dry
