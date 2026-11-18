@@ -1027,11 +1027,15 @@ cmd_subscribe() {
   finish
 }
 
+# retain_edge: the oldest UTC day retention keeps on both sides. drop_chunks(older_than => TS_RETAIN_DAYS)
+# drops a chunk only once its end is that old, and the hypertables' day chunks end at UTC midnight.
+retain_edge() { echo "(date_trunc('day', now() at time zone 'UTC') - interval '$TS_RETAIN_DAYS days')::date"; }
+
 ts_cutoff() {
   local f=$WORK/backfill/cutoff
   if [[ -s $f ]]; then cat "$f"; return 0; fi
   local c
-  c=$(q src "$HT_DB" "select (date_trunc('day', now() at time zone 'UTC') - interval '$TS_RETAIN_DAYS days')::date")
+  c=$(q src "$HT_DB" "select $(retain_edge)")
   state "$f" "$c"
   echo "$c"
 }
@@ -1544,12 +1548,12 @@ check_tables() {
 
 # The reverse catchup carries only hypertable rows above the switch's floor, and the tail check reads
 # only rows above the last hash bound: an UPDATE or DELETE below it on the target during its tenure
-# would pass both. So the reverse hashes every hypertable row a retention job on either side cannot
-# have dropped yet (newer than TS_RETAIN_DAYS less a day, and not before the backfill cutoff).
+# would pass both. So the reverse hashes every hypertable row from the backfill cutoff, or from
+# retain_edge once retention has moved past it: no retention job on either side has dropped those.
 hash_hypertables() {
   local table since
   for table in ${HYPERTABLES[@]+"${HYPERTABLES[@]}"}; do
-    since=$(q dst "$HT_DB" "select greatest($(lit "$(ts_cutoff)")::timestamptz, date_trunc('day', now()) - interval '$((TS_RETAIN_DAYS - 1)) days')")
+    since=$(q dst "$HT_DB" "select greatest($(lit "$(ts_cutoff)")::date, $(retain_edge))::timestamp at time zone 'UTC'")
     [[ -n $since ]] || die "hash: $table: the target answered no lower time bound"
     hash_table "$HT_DB" "$table" "$HT_KEY" bigint 1 "$since"
   done
