@@ -7,9 +7,9 @@ usage() {
   cat >&2 <<EOF
 usage: $0 <cluster> <step>
   preflight          installs pgmove on the target box; pgmove preflight at 0 DIFF; target units present and stopped
-  freeze             records, disables and stops the writers on CUT_OLD (and CUT_SRCSTOP), fences the source roles, catches up, syncs sequences, verify and a full hash at 0 DIFF
+  freeze             records, disables and stops the writers on CUT_OLD (and CUT_SRCSTOP), runs CUT_HANDOVER, fences the source roles, catches up, syncs sequences, verify and a full hash at 0 DIFF
   abort              after freeze, before switch: thaw (source roles LOGIN again, the forward on), writers back on CUT_OLD, enabled as freeze found them
-  switch             only after a freeze that passed: subscriptions off, reverse armed, target roles LOGIN, CUT_SERVICES enabled and started on CUT_NEW
+  switch             only after a freeze that passed: subscriptions off, reverse armed, target roles LOGIN, CUT_FIRST started, CUT_DBCHECK, CUT_SERVICES enabled and started on CUT_NEW
   verify             health on CUT_NEW, writes land on the target, the source took none outside the reverse subscription
   unfreeze           verify, then timers and engines enabled and started on CUT_NEW
   rollback           before unfreeze: the writers go back to CUT_OLD once switch --reverse verified the source; a refusal reopens the target
@@ -33,7 +33,8 @@ on() {
   if [[ $host == root@* ]]; then ssh -o BatchMode=yes -o ConnectTimeout=15 "$host" "$cmd"; else ssh -o BatchMode=yes -o ConnectTimeout=15 "$host" "sudo -n bash -c $(printf %q "$cmd")"; fi
 }
 CUT_OLD='' CUT_NEW='' BOX=''
-CUT_TIMERS=() CUT_ONESHOTS=() CUT_ENGINES=() CUT_SERVICES=() CUT_HEALTH=() CUT_STOP=() CUT_SRCSTOP=() CUT_HASH=full CUT_ROLLBACK_VERIFY=1 SRC_VIA=ssh SRC_SSH=''
+CUT_TIMERS=() CUT_ONESHOTS=() CUT_ENGINES=() CUT_SERVICES=() CUT_HEALTH=() CUT_STOP=() CUT_SRCSTOP=() CUT_FIRST=() CUT_HASH=full CUT_ROLLBACK_VERIFY=1 SRC_VIA=ssh SRC_SSH=''
+CUT_HANDOVER='' CUT_HANDBACK='' CUT_DBCHECK='' CUT_HOOK_SECONDS=1200
 # shellcheck source=/dev/null
 source "$HERE/clusters/$CLUSTER.conf"
 [[ -n $CUT_OLD && -n $CUT_NEW && -n $BOX ]] || { echo "cutover: $CLUSTER.conf sets no CUT_OLD, CUT_NEW or BOX; $CLUSTER has no writers to move" >&2; exit 2; }
@@ -52,11 +53,21 @@ SERVICES=${CUT_SERVICES[*]+"${CUT_SERVICES[*]}"}
 # robinX slot that is not live, which a deploy may have left running.
 STOPS=${CUT_STOP[*]+"${CUT_STOP[*]}"}
 ALL="$TIMERS $ENGINES $SERVICES"
+# CUT_FIRST: units only CUT_NEW runs, never stopped where they ran before (Loyal's PgBouncer keeps
+# fronting the source for a rollback). switch starts them before CUT_DBCHECK and CUT_SERVICES; abort
+# and rollback stop and disable them there with the writers.
+FIRST=${CUT_FIRST[*]+"${CUT_FIRST[*]}"}
 # CUT_SRCSTOP: units on the source database host that write there as a superuser, which no fence
 # stops (Loyal's chunk retention). freeze stops them and checks them stopped before the hash; abort
 # and rollback start their timers again. Root there is PGMOVE_SRC_ADMIN in SRC_VIA=forward.
 SRCSTOPS=${CUT_SRCSTOP[*]+"${CUT_SRCSTOP[*]}"}
-SRCTIMERS=$(tr ' ' '\n' <<<"$SRCSTOPS" | awk '/\.timer$/' | paste -sd' ' -)
+# A CUT_SRCSTOP unit also listed in CUT_SERVICES or CUT_TIMERS moves: it starts on CUT_NEW with that
+# list. Those and every CUT_FIRST unit do not live on CUT_OLD, so nothing there stops or checks them.
+# The way back starts on the source the CUT_SRCSTOP timers and services that ran there before freeze.
+NOT_OLD=" $SRCSTOPS $FIRST "
+old_of() { local u; for u in $1; do [[ $NOT_OLD == *" $u "* ]] || printf '%s ' "$u"; done; }
+SRCSTARTS=$(for u in $SRCSTOPS; do [[ $u == *.timer || " $SERVICES " == *" $u "* ]] && printf '%s ' "$u"; done)
+OLD_ALL=$(old_of "$ALL")
 # CUT_HASH=moved: freeze rehashes only the tables whose write counters moved since the last 0-DIFF
 # full hash (pgmove hash --moved); full, the default, rehashes every table under the fence.
 case $CUT_HASH in full) FREEZE_HASH='' ;; moved) FREEZE_HASH=--moved ;; *) die "CUT_HASH is full or moved, not $CUT_HASH" ;; esac
@@ -116,36 +127,53 @@ health_path() {
 # halt_writers disables and stops each unit in one step, then writers_off proves both; a unit starts
 # on the arriving side only after that proof, and the way back enables only what freeze recorded.
 halt_writers() {
-  local host=$1 u timers oneshots
-  timers=$TIMERS oneshots=$ONESHOTS
-  if [[ -n $timers ]]; then
+  local host=$1 u timers oneshots engines services first
+  lists_for "$host"
+  timers=$H_TIMERS oneshots=$H_ONESHOTS engines=$H_ENGINES services=$H_SERVICES first=$H_FIRST
+  if [[ -n ${timers// /} ]]; then
     on "$host" "systemctl disable --now $timers" || die "$host: disabling $timers failed"
     echo "$host: disabled and stopped timers $timers"
   fi
-  if [[ -n $oneshots ]]; then
+  if [[ -n ${oneshots// /} ]]; then
     on "$host" "for i in \$(seq 300); do systemctl is-active $oneshots | grep -qvxE 'inactive|failed' || exit 0; sleep 1; done; echo 'a timer run is still running after 300s' >&2; exit 1" || die "$host: a timer run of $oneshots did not end"
   fi
-  for u in $ENGINES; do
+  for u in $engines; do
     on "$host" "systemctl disable --now $u; [ \"\$(systemctl show -p Result --value $u)\" = success ] || { echo '$u did not stop cleanly' >&2; exit 1; }" || die "$host: $u did not stop cleanly"
     echo "$host: disabled and stopped $u cleanly"
   done
-  on "$host" "systemctl disable --now $SERVICES" || die "$host: disabling $SERVICES failed"
-  echo "$host: disabled and stopped $SERVICES"
+  on "$host" "systemctl disable --now $services" || die "$host: disabling $services failed"
+  echo "$host: disabled and stopped $services"
   # A CUT_STOP unit may be absent from a host; one systemctl call for all would fail on it.
   for u in $STOPS; do
     on "$host" "[ \"\$(systemctl show -p LoadState --value $u)\" = not-found ] || systemctl disable --now $u" || die "$host: disabling $u failed"
   done
   [[ -z $STOPS ]] || echo "$host: disabled and stopped $STOPS where loaded"
+  if [[ -n ${first// /} ]]; then
+    on "$host" "systemctl disable --now $first" || die "$host: disabling $first failed"
+    echo "$host: disabled and stopped $first"
+  fi
   writers_off "$host" || die "a writer on $host still runs or starts at boot"
+}
+
+# lists_for <host>: the units of each kind that live on the host, in H_*. CUT_NEW has every unit;
+# CUT_OLD has none of NOT_OLD.
+lists_for() {
+  if [[ $1 == "$CUT_NEW" ]]; then
+    H_TIMERS=$TIMERS H_ONESHOTS=$ONESHOTS H_ENGINES=$ENGINES H_SERVICES=$SERVICES H_FIRST=$FIRST
+  else
+    H_TIMERS=$(old_of "$TIMERS") H_ONESHOTS=$(old_of "$ONESHOTS") H_ENGINES=$(old_of "$ENGINES") H_SERVICES=$(old_of "$SERVICES") H_FIRST=''
+  fi
 }
 
 # One "unit LoadState ActiveState UnitFileState" line per configured unit: each loaded, inactive or
 # failed, and disabled or masked (a timer's oneshot may be static, its timer is what starts it). A
 # CUT_STOP unit may be absent from a host; an absent writer is a typo, not a stopped writer.
 writers_off() {
-  local states u want=0 boot
-  states=$(on "$1" "for u in $ENGINES $SERVICES $STOPS $ONESHOTS $TIMERS; do echo \"\$u \$(systemctl show -p LoadState --value \$u) \$(systemctl show -p ActiveState --value \$u) \$(systemctl show -p UnitFileState --value \$u)\"; done") || { echo "cutover: $1 did not answer for its units" >&2; return 1; }
-  for u in $ENGINES $SERVICES $STOPS $ONESHOTS $TIMERS; do
+  local states u want=0 boot units
+  lists_for "$1"
+  units="$H_ENGINES $H_SERVICES $STOPS $H_ONESHOTS $H_TIMERS $H_FIRST"
+  states=$(on "$1" "for u in $units; do echo \"\$u \$(systemctl show -p LoadState --value \$u) \$(systemctl show -p ActiveState --value \$u) \$(systemctl show -p UnitFileState --value \$u)\"; done") || { echo "cutover: $1 did not answer for its units" >&2; return 1; }
+  for u in $units; do
     want=$((want + 1))
     boot='(disabled|masked)'
     [[ " $ONESHOTS " != *" $u "* ]] || boot='(static|disabled|masked)'
@@ -177,11 +205,11 @@ record_boot() {
   [[ $have == yes ]] && { echo "$side: boot record $STATE/boot-$side kept from the first freeze"; return 0; }
   [[ $have == no ]] || die "$BOX answered '$have' for $STATE/boot-$side"
   if [[ $side == old ]]; then
-    list=$(on "$CUT_OLD" "for u in $ALL $STOPS; do [ \"\$(systemctl show -p UnitFileState --value \$u)\" != enabled ] || echo \$u; done") || die "$CUT_OLD did not answer for its enabled units"
-    ran=$(on "$CUT_OLD" "for u in $ALL; do case \"\$(systemctl show -p ActiveState --value \$u)\" in active|activating|reloading) echo \$u ;; esac; done") || die "$CUT_OLD did not answer for its running units"
+    list=$(on "$CUT_OLD" "for u in $OLD_ALL $STOPS; do [ \"\$(systemctl show -p UnitFileState --value \$u)\" != enabled ] || echo \$u; done") || die "$CUT_OLD did not answer for its enabled units"
+    ran=$(on "$CUT_OLD" "for u in $OLD_ALL; do case \"\$(systemctl show -p ActiveState --value \$u)\" in active|activating|reloading) echo \$u ;; esac; done") || die "$CUT_OLD did not answer for its running units"
   else
     list=$(on_src "for u in $SRCSTOPS; do [ \"\$(systemctl show -p UnitFileState --value \$u)\" != enabled ] || echo \$u; done") || die "the source did not answer for its enabled units"
-    ran=$(on_src "for u in $SRCTIMERS; do case \"\$(systemctl show -p ActiveState --value \$u)\" in active|activating|reloading) echo \$u ;; esac; done") || die "the source did not answer for its running units"
+    ran=$(on_src "for u in $SRCSTARTS; do case \"\$(systemctl show -p ActiveState --value \$u)\" in active|activating|reloading) echo \$u ;; esac; done") || die "the source did not answer for its running units"
   fi
   list=$(sort -u <<<"$list" | awk 'NF' | paste -sd' ' -) ran=$(sort -u <<<"$ran" | awk 'NF' | paste -sd' ' -)
   printf '# running on %s before freeze, %s\n%s\n' "$side" "$(date -u +%FT%TZ)" "$ran" | on "$BOX" "mkdir -p $STATE && cat >$STATE/boot-$side.active.new && mv -f $STATE/boot-$side.active.new $STATE/boot-$side.active && sync $STATE" || die "cannot write $STATE/boot-$side.active on $BOX"
@@ -228,13 +256,14 @@ halt_src_writers() {
   src_writers_off || die "a superuser writer on the source still runs or starts at boot"
 }
 
-# The source's own timers again, once it is the primary, enabled and running as freeze found them.
+# The source's own timers and services again, once it is the primary, enabled and running as freeze
+# found them.
 start_src_timers() {
   local ran
-  [[ -n $SRCTIMERS ]] || return 0
+  [[ -n ${SRCSTARTS// /} ]] || return 0
   restore_boot src
-  ran=$(ran_before src "$SRCTIMERS")
-  [[ -n ${ran// /} ]] || { echo "source: none of $SRCTIMERS ran before freeze; none started"; return 0; }
+  ran=$(ran_before src "$SRCSTARTS")
+  [[ -n ${ran// /} ]] || { echo "source: none of $SRCSTARTS ran before freeze; none started"; return 0; }
   on_src "systemctl start $ran" || die "source: starting $ran failed"
   echo "source: started $ran"
 }
@@ -264,6 +293,16 @@ start_timers() {
   [[ -z ${timers// /} ]] || { on "$1" "$([[ $2 == enable ]] && echo "systemctl enable $timers && ")systemctl start $timers" || die "$1: starting $timers failed"; echo "$1: started$([[ $2 == enable ]] && echo ' and enabled') $timers"; }
 }
 
+# hook <name> <command>: a CUT_* hook, run on this machine from this directory, killed after
+# CUT_HOOK_SECONDS. CUT_HANDOVER moves what needs both sides stopped (freeze, after the stops are
+# proven); CUT_HANDBACK undoes it (abort and rollback, once CUT_NEW is stopped); CUT_DBCHECK proves
+# CUT_NEW's database path as its apps use it (switch, rollback and unfreeze, before an app starts).
+hook() {
+  [[ -n $2 ]] || return 0
+  timed "$1" bounded "$2"
+}
+bounded() { (cd "$HERE" && exec perl -e 'alarm shift; exec @ARGV or exit 127' "$CUT_HOOK_SECONDS" bash -c "$1"); }
+
 drop_boot() { on "$BOX" "rm -f $STATE/boot-old $STATE/boot-src $STATE/boot-old.active $STATE/boot-src.active && sync $STATE" || die "cannot remove the boot records on $BOX"; }
 
 health() {
@@ -283,7 +322,7 @@ health() {
 
 units_ready() {
   local u bad=0 all
-  all=$ALL
+  all="$ALL $FIRST"
   for u in $all; do
     if ! on "$CUT_NEW" "systemctl cat $u >/dev/null 2>&1"; then echo "preflight: $CUT_NEW has no unit $u"; bad=1; continue; fi
     if on "$CUT_NEW" "systemctl is-active --quiet $u"; then echo "preflight: $CUT_NEW runs $u before the switch"; bad=1; fi
@@ -342,6 +381,7 @@ cmd_freeze() {
   # it refuse after the writers stopped.
   on "$BOX" "test ! -e $STATE/hash.lock || perl -MFcntl=:flock -e 'open(my \$f, \">>\", \$ARGV[0]) or exit 2; flock(\$f, LOCK_EX | LOCK_NB) or exit 1' $STATE/hash.lock" ||
     die "a pgmove hash is running on $BOX ($(on "$BOX" "cat $STATE/hash-run 2>/dev/null" || true)); nothing was stopped: wait for it to end, or stop it, then rerun freeze"
+  writers_off "$CUT_NEW" || die "a unit of $CLUSTER.conf runs or starts at boot on $CUT_NEW; nothing was stopped"
   mkdir -p "$CUTOVER_PROOF"
   out=$CUTOVER_PROOF/freeze-verify-$(date -u +%Y%m%dT%H%MZ).txt
   timed install "$HERE/remote.sh" install "$CLUSTER" || die "install failed"
@@ -349,6 +389,7 @@ cmd_freeze() {
   timed stop halt_writers "$CUT_OLD" || die "the writers did not stop"
   if [[ -n $SRCSTOPS ]]; then timed record-source record_boot src || die "the units enabled on the source were not recorded"; fi
   timed stop-source halt_src_writers || die "the source's own writers did not stop"
+  hook handover "$CUT_HANDOVER" || die "CUT_HANDOVER failed; nothing was fenced: rerun freeze, or abort"
   timed fence pg fence || die "fence failed; rerun freeze, or abort"
   timed catchup pg catchup || die "catchup failed"
   timed sequences pg sequences || die "sequences failed"
@@ -366,8 +407,9 @@ cmd_freeze() {
 # The way back to CUT_OLD: enabled and running there, and on the source, exactly as freeze found them.
 back_on_old() {
   local ran
+  hook handback "$CUT_HANDBACK" || die "CUT_HANDBACK failed; nothing was started on $CUT_OLD: rerun"
   timed boot restore_boot old || die "the units on $CUT_OLD were not enabled again"
-  ran=$(ran_before old "$ALL") || die "the units that ran on $CUT_OLD before freeze are not known"
+  ran=$(ran_before old "$OLD_ALL") || die "the units that ran on $CUT_OLD before freeze are not known"
   # shellcheck disable=SC2046
   timed start start_healthy "$CUT_OLD" start $(only_of "$ran" "$SERVICES") || die "the writers did not start healthy on $CUT_OLD"
   # shellcheck disable=SC2046
@@ -398,8 +440,16 @@ cmd_switch() {
   src_writers_off || die "a writer on the source runs or starts at boot; run freeze first"
   timed switch pg switch || die "pg switch failed"
   this_tenure writes/switch-dst-ok || { timed writes-save pg writes save switch dst && tenure_stamp writes/switch-dst-ok; } || die "writes save switch dst failed"
-  timed start start_healthy "$CUT_NEW" enable "${CUT_SERVICES[@]}" || die "the writers did not start healthy on $CUT_NEW"
+  start_new || die "the writers did not start healthy on $CUT_NEW"
   report_times
+}
+
+# start_new: CUT_FIRST, then CUT_DBCHECK, then CUT_SERVICES, on CUT_NEW, each enabled.
+start_new() {
+  # shellcheck disable=SC2086
+  [[ -z ${FIRST// /} ]] || timed start-first start_healthy "$CUT_NEW" enable $FIRST || { echo "cutover: $FIRST did not start on $CUT_NEW" >&2; return 1; }
+  hook dbcheck "$CUT_DBCHECK" || { echo "cutover: CUT_DBCHECK failed on $CUT_NEW; no writer started" >&2; return 1; }
+  timed start start_healthy "$CUT_NEW" enable "${CUT_SERVICES[@]}"
 }
 
 cmd_verify() {
@@ -425,6 +475,7 @@ cmd_unfreeze() {
   echo "unfreeze: $STATE/unfrozen on $BOX; plain rollback now refuses, rollback --reverse remains until retire"
   writers_off "$CUT_OLD" || die "a writer on $CUT_OLD runs or starts at boot; the timers and engines stay off on $CUT_NEW"
   src_writers_off || die "a writer on the source runs or starts at boot; the timers and engines stay off on $CUT_NEW"
+  hook dbcheck "$CUT_DBCHECK" || die "CUT_DBCHECK failed on $CUT_NEW; the timers and engines stay off"
   timed start-timers start_timers "$CUT_NEW" enable || die "the timers did not start on $CUT_NEW"
   timed start-engines start_healthy "$CUT_NEW" enable ${CUT_ENGINES[@]+"${CUT_ENGINES[@]}"} || die "the engines did not start healthy on $CUT_NEW"
   sleep 60
@@ -440,7 +491,7 @@ rollback_failed() {
   tp=$(target_primary) || die "$1; $BOX did not answer for its stamps, so the target may be fenced"
   [[ $tp == yes ]] || die "$1 after its stamp: the source is the primary; rerun rollback to finish it"
   timed thaw-reverse pg thaw --reverse || die "$1, and thaw --reverse failed: the target may still be fenced; rerun rollback, or run 'thaw $CLUSTER --reverse'"
-  timed restart start_healthy "$CUT_NEW" enable "${CUT_SERVICES[@]}" || die "$1; the target takes writes again but the writers did not start healthy on $CUT_NEW"
+  start_new || die "$1; the target takes writes again but the writers did not start healthy on $CUT_NEW"
   if this_tenure unfrozen; then
     timed restart-timers start_timers "$CUT_NEW" enable || die "$1; the timers did not start on $CUT_NEW"
     timed restart-engines start_healthy "$CUT_NEW" enable ${CUT_ENGINES[@]+"${CUT_ENGINES[@]}"} || die "$1; the engines did not start healthy on $CUT_NEW"

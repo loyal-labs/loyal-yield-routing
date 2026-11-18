@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Fails when a switch script can compare two remote reads without proof that both answered: round 4 of the AWS move found
 # preflights that printed "identical" for two failed checksum reads and "both (no answer)" for an architecture read that failed.
-# Usage: scripts/ci-switch-fail-closed.sh [script...]   (default: the S1 and S3 switch scripts; run it on the xbots S2 scripts by path)
+# Usage: scripts/ci-switch-fail-closed.sh [script...]   (default: the S1, S3 and S4 switch scripts; run it on the xbots S2 scripts by path)
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 files=("$@")
-[ ${#files[@]} -gt 0 ] || files=(deploy/aws/switch/s1-mnemonic.sh deploy/aws/s3-weather.sh)
+[ ${#files[@]} -gt 0 ] || files=(deploy/aws/switch/s1-mnemonic.sh deploy/aws/s3-weather.sh deploy/aws/switch/s4-loyal.sh)
 exec python3 -I - "${files[@]}" <<'PY'
 import re, sys, pathlib
 
