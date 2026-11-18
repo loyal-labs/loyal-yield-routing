@@ -465,7 +465,7 @@ check_pgconf() {
   for f in zz-pgmove.conf zz-pgmove-archive.conf; do
     text=$(on "$DST_SSH" "cat $dir/$f") || die "check_pgconf: cannot read $dir/$f"
     while read -r n; do
-      names+="${names:+, }$(lit "$n")" expect+="$n=$dir/$f f"$'\n' total=$((total + 1))
+      names+="${names:+, }$(lit "$n")" expect+="$n=$dir/$f false"$'\n' total=$((total + 1))
     done < <(sed -nE 's/^[[:space:]]*([a-z_.]+)[[:space:]]*=.*/\1/p' <<<"$text")
   done
   ((total)) || die "check_pgconf: read no settings from $dir/zz-pgmove*.conf"
