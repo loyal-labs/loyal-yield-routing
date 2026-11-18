@@ -414,7 +414,7 @@ except OSError:
     [[ $r == refused || $r == open ]] || miss=1
   done
   if ((miss)); then
-    echo "cannot read the security group (AWS session expired); probes of $NEW_IP:$out so the conf's INGRESS is not applied. Owner, after aws login --profile mgmt: $APPLY"
+    echo "tcp 80 or 443 on $NEW_IP did not answer (probes of $NEW_IP:$out), so the conf's INGRESS is not applied. Owner, after aws login --profile mgmt: $APPLY"
     return 3
   fi
   echo "probes of $NEW_IP:$out the group lets 80 and 443 in; udp 51820 cannot be read (inferred in, box.sh adds it first)"
