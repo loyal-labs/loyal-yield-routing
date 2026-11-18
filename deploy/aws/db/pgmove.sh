@@ -58,7 +58,7 @@ ENCODING=UTF8 LOCALE_PROVIDER='' LOCALE=''
 DATABASES=()
 HYPERTABLES=() HT_DB='' HT_TIME=observed_at HT_KEY=event_id TS_RETAIN_DAYS=62 CATCHUP_MARGIN=10000
 SYNC_WORKERS=2 BINARY=true COPY_SETTINGS=()
-FWD_PORT='' REV_PORT='' FREEZE_MARKER='' FENCE_KEEP=() REVERSE_HOURS=72
+FWD_USER=pgmove-fwd FWD_SSH='' FWD_PORT='' REV_PORT='' FREEZE_MARKER='' FENCE_KEEP=() REVERSE_HOURS=72
 PROBE_SECS=30 LAG_WAIT_SECS=600 HASH_BUCKET=1000000 HASH_RECHECK_SECS=60 HASH_MAX_AGE_HOURS=24 EXACT_COUNT_BYTES=268435456
 # shellcheck source=/dev/null
 source "$HERE/clusters/$CLUSTER.conf"
@@ -66,6 +66,7 @@ for v in SRC_SSH SRC_SOCKET SRC_PORT SRC_OSUSER LOCALE_PROVIDER LOCALE; do
   [[ -n ${!v} ]] || { echo "pgmove: $CLUSTER.conf sets no $v" >&2; exit 2; }
 done
 ((${#DATABASES[@]})) || { echo "pgmove: $CLUSTER.conf lists no DATABASES" >&2; exit 2; }
+[[ -n $FWD_SSH ]] || FWD_SSH=$FWD_USER@${SRC_SSH#*@}
 
 WORK=/var/lib/pgmove/$CLUSTER
 SECRETS=/etc/pgmove/$CLUSTER
@@ -523,7 +524,7 @@ ensure_pgpass() {
 ensure_forward() {
   local env unit have restart=0
   have=$(on "$DST_SSH" "cat $SECRETS/forward.env" 2>/dev/null || true)
-  env=$(printf 'FWD_PORT=%s\nFWD_SOCKET=%s\nFWD_SSH=%s' "$FWD_PORT" "$SRC_SOCKET/.s.PGSQL.$SRC_PORT" "$SRC_SSH")
+  env=$(printf 'FWD_PORT=%s\nFWD_SOCKET=%s\nFWD_SSH=%s' "$FWD_PORT" "$SRC_SOCKET/.s.PGSQL.$SRC_PORT" "$FWD_SSH")
   if [[ ${1:-} == rev || $have == *FWD_REV=* ]]; then env+=$(printf '\nFWD_REV="-R 127.0.0.1:%s:%s"' "$REV_PORT" "$DST_SOCKET/.s.PGSQL.$DST_PORT"); fi
   unit=$(cat "$HERE/pg-forward@.service")
   if [[ $(on "$DST_SSH" "cat /etc/systemd/system/pg-forward@.service" 2>/dev/null || true) != "$unit" ]]; then
@@ -532,7 +533,7 @@ ensure_forward() {
     restart=1
   fi
   if [[ $have != "$env" ]]; then
-    put "$DST_SSH" "$SECRETS/forward.env" 0600 root "$env" "$SECRETS/forward.env: 127.0.0.1:$FWD_PORT to $SRC_SSH:$SRC_SOCKET$([[ $env == *FWD_REV=* ]] && echo ", and $SRC_SSH 127.0.0.1:$REV_PORT back to this box")"
+    put "$DST_SSH" "$SECRETS/forward.env" 0600 root "$env" "$SECRETS/forward.env: 127.0.0.1:$FWD_PORT to $FWD_SSH:$SRC_SOCKET$([[ $env == *FWD_REV=* ]] && echo ", and $FWD_SSH 127.0.0.1:$REV_PORT back to this box")"
     restart=1
   fi
   if ((restart)); then
