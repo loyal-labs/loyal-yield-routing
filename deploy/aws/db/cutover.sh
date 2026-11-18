@@ -23,11 +23,20 @@ EOF
 CLUSTER=${1:-}
 STEP=${2:-}
 [[ -n $CLUSTER && -n $STEP && -f $HERE/clusters/$CLUSTER.conf ]] || usage
+die() { echo "cutover: $*" >&2; exit 1; }
+on() { ssh -o BatchMode=yes -o ConnectTimeout=15 "$@"; }
 CUT_OLD='' CUT_NEW='' BOX=''
 CUT_TIMERS=() CUT_ONESHOTS=() CUT_ENGINES=() CUT_SERVICES=() CUT_HEALTH=()
 # shellcheck source=/dev/null
 source "$HERE/clusters/$CLUSTER.conf"
 [[ -n $CUT_OLD && -n $CUT_NEW && -n $BOX ]] || { echo "cutover: $CLUSTER.conf sets no CUT_OLD, CUT_NEW or BOX; $CLUSTER has no writers to move" >&2; exit 2; }
+if [[ ${CUT_SERVICES[*]-}${CUT_HEALTH[*]-} == *LIVE_SLOT* ]]; then
+  LIVE=$(on "$CUT_OLD" /usr/local/bin/robinx-slot live) || die "robinx-slot live failed on $CUT_OLD; the writer slot is unknown"
+  [[ $LIVE == 8080 || $LIVE == 8081 ]] || die "robinx-slot live on $CUT_OLD answered '$LIVE', not 8080 or 8081"
+  CUT_SERVICES=("${CUT_SERVICES[@]//LIVE_SLOT/$LIVE}")
+  CUT_HEALTH=("${CUT_HEALTH[@]//LIVE_SLOT/$LIVE}")
+  echo "cutover: live slot on $CUT_OLD is $LIVE; writers ${CUT_SERVICES[*]}, health ${CUT_HEALTH[*]}"
+fi
 TIMERS=${CUT_TIMERS[*]+"${CUT_TIMERS[*]}"}
 ONESHOTS=${CUT_ONESHOTS[*]+"${CUT_ONESHOTS[*]}"}
 ENGINES=${CUT_ENGINES[*]+"${CUT_ENGINES[*]}"}
@@ -38,9 +47,7 @@ CUTOVER_PROOF=${CUTOVER_PROOF:-/Users/user/loyal/artifacts/orchestrate/aws-migra
 STATE=/var/lib/pgmove/$CLUSTER
 TIMES=()
 
-die() { echo "cutover: $*" >&2; exit 1; }
 now() { perl -MTime::HiRes=time -e 'printf "%.1f", time'; }
-on() { ssh -o BatchMode=yes -o ConnectTimeout=15 "$@"; }
 pg() { local sub=$1; shift; "$HERE/remote.sh" run "$sub" "$CLUSTER" "$@"; }
 stamped() { [[ $(on "$BOX" "test -e $STATE/$1 && echo yes || echo no") == yes ]]; }
 
