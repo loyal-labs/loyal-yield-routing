@@ -1,0 +1,31 @@
+# Classes for host-diff.sh robinx-prod robinx-main (and mnemonic old vs robinx-main): the first row whose regex matches a line wins.
+# class: meant-to-differ (the new box is meant to read differently) or still-owed (a unit of the PLAN fills it before S5).
+# columns: class, owner, regex over "<kind> <name>: <how>", why
+meant-to-differ	box image	^pkg (jq|libc6): 	Ubuntu patch level of the two images; both follow noble-security
+meant-to-differ	box image	^pkg (libpq5|postgresql-18|postgresql-18-jit|postgresql-client-18|postgresql-client-common|postgresql-common): 	PGDG point release newer on robinx-main (18.7 against 18.6); logical replication runs across it
+meant-to-differ	Backups ready	^pkg pgbackrest: 	2.60.1 on robinx-main against 2.59.2; the stanzas are created on it, not restored from old ones
+meant-to-differ	S1 mnemonic	^pkg cloudflared: only on new	mnemonic's box has the binary, not the package
+meant-to-differ	S5 robinX	^unit robinx@\.service: content differs	After= and Wants= name postgresql@18-production.service, not the custom robinx-postgres.service
+meant-to-differ	ledger row 9	^unit (robinx-postgres|robinx-parsers-postgres|robinx-postgres-test)\.service: only on old	Debian postgresql@18-<cluster> units replace the custom ones (pgmove builds the clusters)
+meant-to-differ	Hetzner era	^unit (cloudflared-update\.(service|timer)|robinx-neon-dump@\.service|robinx-pitr-rehearsal\.service|robinx-rehearsal-restore(@)?\.service): only on old	self-update, Neon dump and restore-drill units that are not among the 19 units to move; cloudflared is pinned here
+meant-to-differ	ledger row 9	^unit pg-forward@\.service: only on new	the pgmove forward on robinx-main
+meant-to-differ	S1 mnemonic	^unit (mnemonic|cloudflared-mnemonic)\.service: only on new	belong to the mnemonic box; their own host-diff against it is below
+meant-to-differ	S1 mnemonic	^unit cloudflared-mnemonic\.service: content differs	--config names /etc/cloudflared/mnemonic.yml: robinx's cloudflared owns config.yml on this box
+meant-to-differ	S1 mnemonic	^etc /etc/(cloudflared/(mnemonic\.yml|mnemonic-share\.json)|mnemonic)(/server\.toml)?: only on new	mnemonic's config, staged for S1; server.toml quic_addr names this box's address
+meant-to-differ	S5 robinX	^etc /etc/cloudflared/robinx-prod\.json: only on new	the compare against the mnemonic box sees robinx's tunnel credential
+meant-to-differ	Hetzner era	^etc /etc/cloudflared/config\.yml\.robinx-prev: only on old	clutter of an earlier edit
+meant-to-differ	slices	^etc /etc/systemd/system/[^/]*\.service\.d/10-slice\.conf: only on new	Slice= assignments of robinx.slice and mnemonic.slice (nothing is started)
+meant-to-differ	Hetzner era	^etc /etc/systemd/system/robinx\.service\.d/guest-probe\.conf: only on old	drop-in of robinx.service, which the slot units retired
+meant-to-differ	box image	^etc /etc/postgresql/	Debian cluster configs of the pgmove clusters; robinx-prod keeps its config under /etc/robinx-postgres and /etc/robinx-parsers
+meant-to-differ	Hetzner era	^etc /etc/credstore\.encrypted/(neon-robinx-(back|replicator)|[^/]*\.retired-[0-9]+): only on old	Neon replication credentials and retired passwords; robinx-main reaches Neon only through pgmove
+still-owed	Backups ready	^etc /etc/credstore\.encrypted/robinx-backup-(cipher|sftp): only on old	the pgBackRest repository moves to S3 with its own key
+still-owed	Backups ready	^unit robinx-(parsers-)?backup(-credentials|-full|-diff|@)[^:]*: only on old	backup units run against the Storage Box; the S3 stanza units are written by that step
+still-owed	Backups ready	^etc /etc/systemd/system/(robinx-backup@\.service\.d/metrics\.conf|robinx-parsers-backup-full\.timer\.d/schedule\.conf): only on old	drop-ins of the backup units above
+still-owed	Backups ready	^etc /usr/local/libexec/robinx-(postgres|parsers)/(backup|archive|pgbackrest-archive|pgbackrest-config)\.sh: only on old	backup and archive scripts call the old repository
+still-owed	Backups ready	^etc /etc/robinx-(postgres|parsers)/pgbackrest[^/]*\.conf: only on old	pgBackRest configs of the old repository
+still-owed	cluster creation (Replicas)	^etc /etc/robinx-postgres/(volume-device|installed|profile): only on old	mount-guard.sh reads volume-device and the volume's .robinx-volume-id: robinx-trim-data fails closed until the clusters exist
+meant-to-differ	ledger row 9	^etc /etc/robinx-(postgres|parsers)(/|:)	custom-cluster config (hba, tls, ident, secrets, receipts) replaced by the Debian clusters pgmove builds
+meant-to-differ	ledger row 9	^etc /usr/local/libexec/robinx-(postgres|parsers)/	Hetzner-era cutover, replication, rehearsal and cluster scripts replaced by deploy/aws/db
+still-owed	S5 robinX	^etc /opt/robinx/slots/8081: only on old	the idle blue/green slot; the first activation on robinx-main fills it
+still-owed	S5 robinX	^etc /opt/robinx/deploy/	only deploy/notify.sh is staged; ship.sh stages the rest on its first run
+meant-to-differ	S5 robinX	^unit cloudflared\.service: only on new	robinx's tunnel unit; the mnemonic box runs cloudflared-mnemonic.service only

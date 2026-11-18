@@ -1,12 +1,15 @@
-"""Byte pipe for deploy/aws/loyal-main-config.sh; it runs as `python3 -I -c <this file> <mode> <base64 json>`.
+"""Byte pipe for deploy/aws/loyal-main-config.sh and robinx-main-config.sh; it runs as
+`python3 -I -c <this file> <mode> <base64 json>`.
 
-  send   on an old host as root: read the listed files, trees and credentials, write frames to stdout
-  local  on the Mac: the same for release files and generated drop-ins, skipping what loyal-main already has
-  have   on loyal-main as root: print "sha256 mode owner path" for each path on stdin that exists
-  recv   on loyal-main as root: read frames, apply the named rewrites (per path, and cred_rules to every
+  send   on an old host as root: read the listed files, trees, links and credentials, write frames to stdout
+  local  on the Mac: the same for release files and generated drop-ins, skipping what the new box already has
+  have   on the new box as root: print "sha256 mode owner path" for each path on stdin that exists
+  recv   on the new box as root: read frames, apply the named rewrites (per path, and cred_rules to every
          credential), write only what differs, print each change
   creds  on any host as root: per sealed credential, the decrypt exit code and the host:port of every
          postgres URL inside it
+  sums   on any host as root: "label sha256" for the env keys, files, matching lines and credentials named in
+         the params, so two hosts' secrets compare without either printing one
 
 A frame is one JSON header line, then exactly header["size"] bytes. No mode prints file or credential contents;
 recv prints paths, rewrite names and counts only.
@@ -19,7 +22,7 @@ URL = re.compile(rb"postgres(?:ql)?://[^\s\"'<>\\]+")
 
 
 def die(msg):
-    sys.exit(f"loyal-main-copy: {msg}")
+    sys.exit(f"box-copy: {msg}")
 
 
 def arg(i):
@@ -56,10 +59,13 @@ def cred_ids():
     return ids
 
 
-def cred_id(path, ids):
-    """The ID a credential was sealed under: a unit's name for it, else its file name, else the ID of the
-    referenced credential whose path it extends (a rotated copy such as name.a347)."""
+def cred_id(path, ids, named=None):
+    """The ID a credential was sealed under: the caller's `ids` entry for its file name, a unit's name for it,
+    else its file name, else the ID of the referenced credential whose path it extends (a rotated copy such as
+    name.a347)."""
     path = os.path.realpath(path)
+    if named and os.path.basename(path) in named:
+        return [named[os.path.basename(path)]]
     if path in ids:
         return [ids[path]]
     base = os.path.join(os.path.dirname(path), os.path.basename(path).split(".")[0])
@@ -116,10 +122,13 @@ def send(spec, local):
                 die(f"{e['src']} is missing")
             walk(e["src"], e.get("dst", e["src"]))
         elif k == "creds":
+            only = re.compile(e["only"]) if e.get("only") else None
             for src in sorted(glob.glob(os.path.join(CRED_ROOT, "**"), recursive=True)):
                 if not os.path.isfile(src) or CLUTTER.search(src) or (skip and skip.search(src)):
                     continue
-                name, data = decrypt(src, cred_id(src, ids))
+                if only and not only.search(os.path.basename(src)):
+                    continue
+                name, data = decrypt(src, cred_id(src, ids, e.get("ids")))
                 if name is None:
                     die(f"{src} does not decrypt here under any known ID")
                 st = os.stat(src)
@@ -132,6 +141,8 @@ def send(spec, local):
                       f.read())
         elif k == "dir":
             frame(out, {"k": "dir", "dst": e["dst"], "mode": e["mode"], "own": e["own"]})
+        elif k == "link":
+            frame(out, {"k": "link", "dst": e["dst"], "mode": "0777", "own": e["own"]}, e["target"].encode())
         elif k == "file":
             data = base64.b64decode(e["data"]) if "data" in e else None
             emit_file(e.get("src"), e["dst"], e["mode"], e["own"], data)
@@ -167,6 +178,12 @@ def rewrite(dst, data, rules, args):
             n = data.count(old)
             data = data.replace(old, new)
             n >= 1 or die(f"{dst}: rule {rule} matched nothing")
+        elif rule.startswith("sub:"):
+            name = rule[4:]
+            old, new = args[f"old_{name}"].encode(), args[f"new_{name}"].encode()
+            n = data.count(old)
+            data = data.replace(old, new)
+            n >= 1 or die(f"{dst}: rule {rule} matched nothing")
         else:
             die(f"unknown rule {rule}")
         notes.append(f"{rule} x{n}")
@@ -182,7 +199,7 @@ def place(dst, mode, own, write):
     parent = os.path.dirname(dst)
     if not os.path.isdir(parent):
         os.makedirs(parent, mode=0o700)
-    tmp = os.path.join(parent, f".{os.path.basename(dst)}.loyal-main-config")
+    tmp = os.path.join(parent, f".{os.path.basename(dst)}.box-copy")
     write(tmp)
     user, group = own.split(":")
     os.chown(tmp, pwd.getpwnam(user).pw_uid, grp.getgrnam(group).gr_gid)
@@ -214,6 +231,21 @@ def recv(params):
             os.chmod(dst, int(mode, 8))
             changes += 1
             print(f"changed: {dst} dir {mode} {own}")
+            continue
+        if h["k"] == "link":
+            seen.add(dst)
+            user, group = own.split(":")
+            if os.path.islink(dst) and os.readlink(dst) == data.decode() and same_meta(dst, mode, own):
+                continue
+            os.makedirs(os.path.dirname(dst), mode=0o755, exist_ok=True)
+            tmp = os.path.join(os.path.dirname(dst), f".{os.path.basename(dst)}.box-copy")
+            if os.path.lexists(tmp):
+                os.remove(tmp)
+            os.symlink(data.decode(), tmp)
+            os.lchown(tmp, pwd.getpwnam(user).pw_uid, grp.getgrnam(group).gr_gid)
+            os.replace(tmp, dst)
+            changes += 1
+            print(f"changed: {dst} link -> {data.decode()} {own}")
             continue
         seen.add(dst)
         data, notes = rewrite(dst, data, rules.get(dst, []) + (cred_rules if h["k"] == "cred" else []), args)
@@ -273,6 +305,34 @@ def creds(params):
     sys.exit(0 if ok == n else 1)
 
 
+def sums(params):
+    def sha(b):
+        return hashlib.sha256(b).hexdigest()
+
+    for path in params.get("env", []):
+        last = {}
+        for line in open(path, "rb").read().split(b"\n"):
+            m = re.match(rb"\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$", line)
+            if m:
+                last[m.group(1).decode()] = m.group(2)
+        for key in sorted(last):
+            print(f"{path}:{key} {sha(last[key])}")
+    for path in params.get("files", []):
+        print(f"{path} {sha(open(path, 'rb').read()) if os.path.isfile(path) else 'MISSING'}")
+    for path, pattern in params.get("lines", []):
+        hit = [ln for ln in open(path, "rb").read().split(b"\n") if re.search(pattern.encode(), ln)]
+        digest = sha(b"\n".join(hit)) if hit else "MISSING"
+        print(f"{path}:{pattern} {digest}")
+    c = params.get("creds")
+    if c:
+        ids, only = cred_ids(), re.compile(c["only"])
+        for src in sorted(glob.glob(os.path.join(CRED_ROOT, "*"))):
+            if not os.path.isfile(src) or CLUTTER.search(src) or not only.search(os.path.basename(src)):
+                continue
+            name, data = decrypt(src, cred_id(src, ids, c.get("ids")))
+            print(f"{src} {sha(data) if name else 'UNDECRYPTABLE'}")
+
+
 mode = sys.argv[1] if len(sys.argv) > 1 else ""
 if mode in ("send", "local"):
     send(arg(2), mode == "local")
@@ -282,5 +342,7 @@ elif mode == "have":
     have()
 elif mode == "creds":
     creds(arg(2))
+elif mode == "sums":
+    sums(arg(2))
 else:
-    die("usage: send|local|recv|have|creds <base64 json>")
+    die("usage: send|local|recv|have|creds|sums <base64 json>")

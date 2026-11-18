@@ -4,7 +4,7 @@
 # credential re-sealed for loyal-main's host key. Enables, starts and activates nothing; runs daemon-reload only.
 # Run from the Mac: deploy/aws/loyal-main-config.sh [stage|proof <dir>]. Idempotent; a rerun prints 0 change(s).
 # Contents cross one boundary: an old host's read or `systemd-creds decrypt` piped straight into loyal-main's
-# writer (deploy/aws/loyal-main-copy.py recv), which prints paths and rewrite counts, never contents.
+# writer (deploy/aws/box-copy.py recv), which prints paths and rewrite counts, never contents.
 # The old hosts are only read. Env: RELEASE_SHA, ARTIFACTS (gh run download of its Production rollout run),
 # LAUNCHER (arm64 loyal-env-launcher built from the reviewed source), NEW (default loyal-main).
 set -euo pipefail
@@ -34,7 +34,7 @@ old() { ssh -o BatchMode=yes loyal-workers "$@"; }
 new() { ssh -o BatchMode=yes "$NEW" "$@"; }
 b64() { base64 | tr -d '\n'; }
 j64() { python3 -I -c 'import base64, json, sys; print(base64.b64encode(json.dumps(json.load(sys.stdin)).encode()).decode())'; }
-CODE=$(b64 <"$DIR/loyal-main-copy.py")
+CODE=$(b64 <"$DIR/box-copy.py")
 # shellcheck disable=SC2016 # expanded on the remote host
 py() { printf 'python3 -I -c "$(echo %s | base64 -d)"' "$CODE"; }
 total=0
@@ -120,7 +120,7 @@ stage_release() {
   find "$ARTIFACTS/web-arm64/arm64/web-assets" -type f | sed "s|^$ARTIFACTS/web-arm64/arm64/web-assets|/opt/loyal/releases/web/$RELEASE_SHA/assets|" |
     new "sudo $(py) have" >>"$have"
   spec=$(release_spec "$have")
-  recv '{}' < <(python3 -I -c "$(cat "$DIR/loyal-main-copy.py")" local "$(j64 <<<"$spec")")
+  recv '{}' < <(python3 -I -c "$(cat "$DIR/box-copy.py")" local "$(j64 <<<"$spec")")
 }
 
 stage_workers() {
