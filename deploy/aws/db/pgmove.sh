@@ -1560,7 +1560,7 @@ reverse_ready() {
     [[ -n $(q src "$db" "select 1 from pg_subscription where subname = $(lit "$sub")") ]] || { blocked "src $db: no reverse subscription $sub"; continue; }
     while :; do
       IFS='|' read -r counts total <<<"$(ready_count src "$db" "$sub")"
-      missing=$(only_in "$(q dst "$db" "$(pub_tables_sql "$REV_PUB")")" "$(q src "$db" "$(sub_tables_sql "$sub")")" | grep -c . || true)
+      missing=$(only_in "$(q dst "$db" "$(pub_tables_sql "$REV_PUB")")" "$(q src "$db" "$(sub_tables_sql "$sub")")" | awk 'NF { n++ } END { print n + 0 }')
       [[ $counts == 0 && $missing == 0 ]] && break
       left=$((deadline - SECONDS))
       if ((DRY || left <= 0)); then
@@ -1638,7 +1638,9 @@ cmd_fence() {
 # primary, so the source takes over again as it was; after a switch only the reverse path is safe.
 # The target may hold writes the source lacks: a switch reached its first LOGIN grant on the target
 # and no switch --reverse has reached its first on the source since. Each restamps its file.
-target_primary() { [[ -s $WORK/switched ]] && ! { [[ -s $WORK/reversed ]] && (($(cat "$WORK/reversed") >= $(cat "$WORK/switched"))); }; }
+target_primary() { [[ -s $WORK/switched ]] && ! { [[ -s $WORK/reversed ]] && (($(cat "$WORK/reversed") > $(cat "$WORK/switched"))); }; }
+# switched and reversed order the switches: each is written above the other, even in one second.
+switch_stamp() { local t o; t=$(date +%s) o=$(cat "$WORK/$2" 2>/dev/null || echo 0); ((t > o)) || t=$((o + 1)); state "$WORK/$1" "$t"; }
 
 cmd_thaw() {
   local role roles spec db fenced=$WORK/fenced
@@ -1778,7 +1780,7 @@ cmd_switch() {
   ((blocks == 0)) || finish
   # From the first grant on, TO may take writes: recovery treats it as primary, FROM's fence is over.
   if ((DRY == 0)); then
-    if ((REVERSE)); then unfence fwd; state "$WORK/reversed" "$(date +%s)"; else unfence rev; state "$WORK/switched" "$(date +%s)"; fi
+    if ((REVERSE)); then unfence fwd; switch_stamp reversed switched; else unfence rev; switch_stamp switched reversed; fi
   fi
   # A superuser on either side keeps the LOGIN it has there: the switch grants nothing a superuser holds.
   for role in $roles; do
@@ -1958,7 +1960,7 @@ drop_pub() {
 
 cmd_retire() {
   local stamp=$WORK/switched age spec db
-  [[ -s $WORK/reversed ]] && stamp=$WORK/reversed
+  [[ -s $WORK/reversed ]] && (($(cat "$WORK/reversed") > $(cat "$WORK/switched" 2>/dev/null || echo 0))) && stamp=$WORK/reversed
   if [[ -s $stamp ]]; then
     age=$(($(date +%s) - $(cat "$stamp")))
     ((age >= REVERSE_HOURS * 3600 || FORCE)) || die "retire: $((age / 3600)) h since $(basename "$stamp"), the window is $REVERSE_HOURS h (--force overrides)"

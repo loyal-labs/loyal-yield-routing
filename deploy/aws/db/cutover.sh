@@ -65,7 +65,7 @@ pg() { local sub=$1; shift; "$HERE/remote.sh" run "$sub" "$CLUSTER" "$@"; }
 stamped() { [[ $(on "$BOX" "test -e $STATE/$1 && echo yes || echo no") == yes ]]; }
 # yes once a switch reached its first LOGIN on the target and no switch --reverse has reached its
 # first on the source since (pgmove.sh target_primary); no otherwise; anything else is no answer.
-target_primary() { on "$BOX" "if test -s $STATE/switched && ! { test -s $STATE/reversed && [ \$(cat $STATE/reversed) -ge \$(cat $STATE/switched) ]; }; then echo yes; else echo no; fi"; }
+target_primary() { on "$BOX" "if test -s $STATE/switched && ! { test -s $STATE/reversed && [ \$(cat $STATE/reversed) -gt \$(cat $STATE/switched) ]; }; then echo yes; else echo no; fi"; }
 
 # A step runs in an OR-list here, where bash turns errexit off for everything it calls: every
 # command in a step function carries its own || die or || return 1.
