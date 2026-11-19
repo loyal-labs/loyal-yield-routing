@@ -43,6 +43,42 @@ test.afterEach(async ({ page }) => {
   expect(await page.pageErrors()).toEqual([]);
 });
 
+for (const [rewardsActive, headline] of [
+  [true, "Earn $300"],
+  [false, "Invite friends"],
+] as const) {
+  test(`invite page waits for referral status before revealing "${headline}"`, async ({ page }) => {
+    const address = "11111111111111111111111111111111";
+    await page.route("**/api/auth/session", (route) =>
+      route.fulfill({ json: {
+        user: { authMethod: "wallet", subjectAddress: address, walletAddress: address, displayAddress: address },
+        session: {
+          expiresAt: new Date(Date.now() + 3600000).toISOString(),
+          refreshAfter: new Date(Date.now() + 600000).toISOString(),
+        },
+      } })
+    );
+    const requested = page.waitForRequest("**/api/referrals");
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await page.route("**/api/referrals", async (route) => {
+      await pending;
+      await route.fulfill({
+        json: { link: "https://askloyal.com/i/TEST123", rewards_active: rewardsActive, friends: [] },
+      });
+    });
+    await page.goto("/app/invite");
+    await requested;
+    const pageContent = page.getByRole("main");
+    await expect(pageContent.getByRole("status")).toHaveAttribute("aria-busy", "true");
+    await expect(pageContent.getByRole("heading", { level: 1 })).toHaveCount(0);
+    release();
+    await expect(pageContent.getByRole("heading", { level: 1 })).toHaveText(headline);
+  });
+}
+
 for (const scenario of [
   "success",
   "fresh_user",

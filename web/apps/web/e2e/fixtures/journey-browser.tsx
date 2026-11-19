@@ -20,6 +20,7 @@ import {
 import { initJourneyDatadog } from "../../src/features/observability/datadog.client";
 import { isDepositVisible } from "../../src/features/observability/deposit-visibility";
 import { classifyTransactionFailure } from "../../src/features/observability/transaction-failure";
+import { InvitePage } from "../../src/features/referrals/invite-page";
 
 // Browser contract fixture: wallet, RPC and Privy are controlled boundaries.
 // No product route, key material or network transaction is exposed here.
@@ -85,6 +86,7 @@ createRoot(document.getElementById("auth")!).render(
         </SignInModalProvider>
       )}
       {window.location.pathname === "/swap" && <SwapProbe />}
+      {window.location.pathname === "/app/invite" && <InvitePage onBack={() => history.back()} />}
     </AuthSessionProvider>
   </PublicEnvProvider>
 );
