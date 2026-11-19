@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -99,7 +100,33 @@ func TestReferralCapitalCheckpointIsMonotonicAndRetainsProvenEarnings(t *testing
 	}
 	mustSave(140, "", "attribution_conflict")
 	check(140, 120, "17", "incomplete")
+	if ids, active, err := store.capitalBatchIDs(ctx, false); err != nil || active || len(ids) != 0 {
+		t.Fatalf("unlaunched batch %+v active=%v err=%v", ids, active, err)
+	}
 	exec("INSERT INTO loyal_yield.referral_earn_max_program(launch_slot,launched_at) VALUES(100,now())")
+	t.Run("round robin includes failed or unmapped referrals without starving the next page", func(t *testing.T) {
+		exec(`INSERT INTO loyal_yield.referral_bindings(referee_app_user_id,referee_wallet,referrer_app_user_id,source,referee_signed_up_at) SELECT md5(i::text)::uuid, 'wallet'||i,'00000000-0000-0000-0000-000000000002','link',now() FROM generate_series(1,5) i`)
+		next := func(dry bool) []string {
+			t.Helper()
+			rows, active, err := store.capitalBatchIDs(ctx, dry)
+			if !active || err != nil {
+				t.Fatalf("active=%v err=%v", active, err)
+			}
+			return rows
+		}
+		preview := next(true)
+		first := next(false)
+		second := next(false)
+		again := next(false)
+		if len(first) != 4 || len(second) != 2 || !slices.Equal(first, preview) || !slices.Equal(first, again) {
+			t.Fatalf("pages %v,%v,%v preview %v", first, second, again, preview)
+		}
+		for _, id := range second {
+			if slices.Contains(first, id) {
+				t.Fatal("attempted the same referral twice before finishing a cycle")
+			}
+		}
+	})
 	if _, err := db.Exec(ctx, "UPDATE loyal_yield.referral_earn_max_program SET launch_slot=50"); err == nil {
 		t.Fatal("launch allowed mutation")
 	}

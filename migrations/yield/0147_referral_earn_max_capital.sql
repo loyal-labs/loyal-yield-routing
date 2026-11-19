@@ -40,3 +40,11 @@ CREATE TABLE loyal_yield.referral_earn_max_capital_status (
   CHECK ((earned_micro_usdc IS NULL) = (replay IS NULL) AND
          (earned_through_slot IS NULL) = (replay IS NULL) AND (earned_through_at IS NULL) = (replay IS NULL))
 );
+
+-- A bounded batch resumes after its last selected binding. Failed attempts are
+-- revisited on the next pass without blocking the other bound wallets.
+CREATE TABLE loyal_yield.referral_earn_max_batch_cursor (
+  singleton boolean PRIMARY KEY DEFAULT true CHECK (singleton),
+  after_referee uuid
+);
+INSERT INTO loyal_yield.referral_earn_max_batch_cursor DEFAULT VALUES;
