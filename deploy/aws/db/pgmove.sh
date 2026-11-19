@@ -1385,15 +1385,30 @@ def new_leaves():
                 index.add((s, name.split(" ", 1)[1]))
     keys |= {k for k in a if kind_of(k) == "INDEX ATTACH" and info[k][1:] in index}
     return sorted(leaves), keys
+# The column list is cut at its top-level commas as psql reads it, so a default or check that holds
+# a newline, a comma or a parenthesis inside a literal stays one element.
 def table_parts(t):
-    lines = t.split("\n")
-    m = re.match(r"CREATE (?:UNLOGGED )?TABLE (\S+) \($", lines[0])
-    end = next((i for i, l in enumerate(lines) if l.startswith(")")), None)
-    if not m or end is None:
+    m = re.match(rf"CREATE (?:UNLOGGED )?TABLE ({QN}) \(\n", t)
+    if not m:
         return None
-    body = [l.strip().rstrip(",") for l in lines[1:end]]
-    cons = [l for l in body if l.startswith("CONSTRAINT ")]
-    return m.group(1), [l for l in body if l not in cons], cons, "\n".join(lines[:1] + lines[end:])
+    pos, start, paren, body = m.end(), m.end(), 0, []
+    while pos < len(t):
+        tok = TOK.match(t, pos).group(0)
+        if tok == "/*" or tok.startswith("--") or (tok[0] == "$" and len(tok) > 1):
+            return None
+        pos += len(tok)
+        if tok == "(":
+            paren += 1
+        elif tok == ")" and paren:
+            paren -= 1
+        elif tok in (",", ")"):
+            body.append(t[start:pos - 1].strip())
+            start = pos
+            if tok == ")":
+                body = [e for e in body if e]
+                cons = [e for e in body if e.startswith("CONSTRAINT ")]
+                return m.group(1), [e for e in body if e not in cons], cons, t[:m.end()] + t[pos - 1:]
+    return None
 def table_adds(x, y):
     p, q = table_parts(x), table_parts(y)
     if not p or not q or p[0] != q[0] or not same(p[3], q[3]):
