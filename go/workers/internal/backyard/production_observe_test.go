@@ -332,38 +332,61 @@ func TestProductionPerformanceFeeTermsHold(t *testing.T) {
 	}
 }
 
-// The approved admin fee is the vault's. The looping vault's is 0, so its
-// zero chain term passes M7 and the selector's fee baseline (live
-// 2026-10-13: every sample held as fee_hwm_baseline_unavailable). rwa's
-// 2000 bps on that vault still stops it.
+// The RWA observer feeds the currently approved chain rate into every fee forecast.
 func TestProductionFeeTermsAreTheVaults(t *testing.T) {
-	for _, approvedBPS := range []int64{0, 1500} {
-		v := *rwa
-		v.AdminPerformanceFeeBPS = approvedBPS
-		manifest := readyWorkerManifest(t)
-		manifest.vault = &v
-		for _, chainBPS := range []uint16{0, 1500} {
-			state := productionObserveState{
-				routeKey: "rwa-multiply:test",
-				journal:  &stubProductionJournal{journal: reconciledJournal()},
-				batch: productionConfirmedBatchForManifest(t, manifest, 77, func(accounts []ConfirmedAccount) {
-					vault := accountAt(accounts, bridgeVoltrVault).Data
-					binary.LittleEndian.PutUint16(vault[514:516], chainBPS)
-					putScaledFraction(vault[624:640], new(big.Int).Lsh(big.NewInt(1), 48))
-				}),
-				identity: pinnedIdentityObservation,
+	v := *rwa
+	v.AdminPerformanceFeeBPS = transitionAdminPerformanceFeeBPS
+	manifest := readyWorkerManifest(t)
+	manifest.vault = &v
+	for _, chainBPS := range []uint16{0, 1500, 1501} {
+		state := productionObserveState{
+			routeKey: v.RouteKey,
+			journal:  &stubProductionJournal{journal: reconciledJournal()},
+			batch: productionConfirmedBatchForManifest(t, manifest, 77, func(accounts []ConfirmedAccount) {
+				vault := accountAt(accounts, bridgeVoltrVault).Data
+				binary.LittleEndian.PutUint16(vault[514:516], chainBPS)
+				putScaledFraction(vault[624:640], new(big.Int).Lsh(big.NewInt(1), 48))
+			}),
+			identity: pinnedIdentityObservation,
+		}
+		o, err := state.observe(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, approved := Decide(o.Snapshot), chainBPS == 0 || chainBPS == 1500
+		if approved {
+			if got.Action == HoldManualRecovery || o.Snapshot.ApprovedAdminPerformanceFeeBPS != int64(chainBPS) {
+				t.Fatalf("RWA rate %d: action %s/%s, forecast rate %d", chainBPS, got.Action, got.Reason, o.Snapshot.ApprovedAdminPerformanceFeeBPS)
 			}
-			o, err := state.observe(context.Background())
-			if err != nil {
-				t.Fatal(err)
+		} else if got.Action != HoldManualRecovery || got.Reason != "voltr_fee_terms_unapproved" {
+			t.Fatalf("RWA accepted rate %d: %+v", chainBPS, got)
+		}
+		if selectorFeeBaselineKnown(o.Snapshot) != approved {
+			t.Fatalf("RWA rate %d: selector baseline approval should be %v", chainBPS, approved)
+		}
+	}
+}
+
+func TestLoopingFeeTransitionGuardsRoutineNAV(t *testing.T) {
+	v := looping.manifest.vault
+	for _, tc := range []struct {
+		admin, manager, issuance uint16
+		approved                 bool
+	}{{0, 0, 0, true}, {1500, 0, 0, true}, {1499, 0, 0, false}, {1500, 1, 0, false}, {0, 0, 40, false}} {
+		s := feePolicySnapshot(t, 514, tc.admin)
+		s.Trustful = v.trustful()
+		s.ManagerPerformanceFeeBPS = int64(tc.manager)
+		s.IssuanceFeeBPS = int64(tc.issuance)
+		s.ApprovedAdminPerformanceFeeBPS = v.approvedAdminFeeBPS(tc.admin)
+		s.ApprovedIssuanceFeeBPS = v.IssuanceFeeBPS
+		s.LastReportAgeSeconds = int64(routineNAVReportInterval.Seconds())
+		got := Decide(s)
+		if tc.approved {
+			if got.Action != ReportNAV || s.ApprovedAdminPerformanceFeeBPS != int64(tc.admin) {
+				t.Fatalf("Looping tuple %+v: action %s/%s, forecast rate %d", tc, got.Action, got.Reason, s.ApprovedAdminPerformanceFeeBPS)
 			}
-			got, approved := Decide(o.Snapshot), int64(chainBPS) == approvedBPS
-			if held := got.Action == HoldManualRecovery && got.Reason == "voltr_fee_terms_unapproved"; held == approved {
-				t.Fatalf("chain fee %d bps on a vault approved at %d: %+v", chainBPS, approvedBPS, got)
-			}
-			if selectorFeeBaselineKnown(o.Snapshot) != approved {
-				t.Fatalf("chain fee %d bps on a vault approved at %d: selector baseline %v", chainBPS, approvedBPS, !approved)
-			}
+		} else if got.Action != HoldManualRecovery || got.Reason != "voltr_fee_terms_unapproved" {
+			t.Fatalf("Looping accepted fee tuple %+v: %+v", tc, got)
 		}
 	}
 }

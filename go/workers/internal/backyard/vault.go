@@ -38,19 +38,29 @@ type Vault struct {
 	manifest                                   RouteManifest
 }
 
+// Both vaults may transition between zero and this rate without stopping the worker.
+const transitionAdminPerformanceFeeBPS = 1500
+
 var rwa = newVault(Vault{Name: "rwa", VoltrVault: "HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA",
 	Strategy: "DCpR24Eb6xCWxDyaZvCBTkadkxCB2vkqJN1EfYNWtLxY", Adaptor: fsj27Program, SquadsIndex: 0,
-	RouteKey: "rwa-multiply:ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh", AdminPerformanceFeeBPS: 1500, IssuanceFeeBPS: 40,
+	RouteKey: "rwa-multiply:ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh", AdminPerformanceFeeBPS: transitionAdminPerformanceFeeBPS, IssuanceFeeBPS: 40,
 	IdleBufferRaw: 5_000_000_000, IdleBufferBPS: 1000, IdleBufferCapRaw: 25_000_000_000, EconomicHorizon: 7 * 24 * time.Hour, DiversifyNewCash: true, ProtectExecution: true, CheckInvestmentExits: true})
 
 var looping = newVault(Vault{Name: "looping", VoltrVault: "GrHZD15bMiUwrVPsmBwz8GRoQeDZN6wNEQVdW8k8SxV1",
 	Strategy: "GUCvzfn1hqThWp5uQNF7CqoxC1XckCPTjsRGKVXHPxu1", Adaptor: voltr.TrustfulProgramID.String(), SquadsIndex: 2,
-	RouteKey: "backyard:6HTfVjwk5FfW4GH67hmEen7VHeURdB5EJj6E429qTrUY", AdminPerformanceFeeBPS: 1500, IssuanceFeeBPS: 0,
+	RouteKey: "backyard:6HTfVjwk5FfW4GH67hmEen7VHeURdB5EJj6E429qTrUY", AdminPerformanceFeeBPS: transitionAdminPerformanceFeeBPS, IssuanceFeeBPS: 0,
 	IdleBufferBPS: 1000, IdleBufferCapRaw: 25_000_000_000, EconomicHorizon: 90 * 24 * time.Hour,
 	TargetPortfolioAPYBPS: 1200, LeverageSlippageBPS: 10,
 	ProtectExecution: true, CheckInvestmentExits: true})
 
 var vaults = []*Vault{rwa, looping}
+
+func (v *Vault) approvedAdminFeeBPS(observed uint16) int64 {
+	if v.AdminPerformanceFeeBPS == transitionAdminPerformanceFeeBPS && observed == 0 {
+		return 0
+	}
+	return v.AdminPerformanceFeeBPS
+}
 
 func (v *Vault) selectorPolicy() SelectorPolicy {
 	p := DefaultSelectorPolicy()

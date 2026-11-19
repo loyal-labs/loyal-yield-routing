@@ -120,20 +120,21 @@ func projectedBorrowAPR(e LaneEconomics, additionalDebt debtMintRaw) (float64, e
 }
 
 type SelectorPolicy struct {
-	Horizon               time.Duration `json:"horizon"`
-	Persistence           time.Duration `json:"persistence"`
-	MaxSampleGap          time.Duration `json:"maxSampleGap"`
-	MarketMaxAge          time.Duration `json:"marketMaxAge"`
-	NativeMaxAge          time.Duration `json:"nativeMaxAge"`
-	QuoteMaxAge           time.Duration `json:"quoteMaxAge"`
-	MinimumBenefitRaw     int64         `json:"minimumBenefitRaw"`
-	UncertaintyBPS        int64         `json:"uncertaintyBps"`
-	IdleBufferRaw         int64         `json:"idleBufferRaw"`
-	IdleBufferBPS         int64         `json:"idleBufferBps,omitempty"`
-	IdleBufferCapRaw      int64         `json:"idleBufferCapRaw,omitempty"`
-	DiversifyNewCash      bool          `json:"diversifyNewCash,omitempty"`
-	UnleveredNewCash      bool          `json:"unleveredNewCash,omitempty"`
-	TargetPortfolioAPYBPS int64         `json:"targetPortfolioApyBps,omitempty"`
+	AdminPerformanceFeeBPS int64         `json:"adminPerformanceFeeBps,omitempty"`
+	Horizon                time.Duration `json:"horizon"`
+	Persistence            time.Duration `json:"persistence"`
+	MaxSampleGap           time.Duration `json:"maxSampleGap"`
+	MarketMaxAge           time.Duration `json:"marketMaxAge"`
+	NativeMaxAge           time.Duration `json:"nativeMaxAge"`
+	QuoteMaxAge            time.Duration `json:"quoteMaxAge"`
+	MinimumBenefitRaw      int64         `json:"minimumBenefitRaw"`
+	UncertaintyBPS         int64         `json:"uncertaintyBps"`
+	IdleBufferRaw          int64         `json:"idleBufferRaw"`
+	IdleBufferBPS          int64         `json:"idleBufferBps,omitempty"`
+	IdleBufferCapRaw       int64         `json:"idleBufferCapRaw,omitempty"`
+	DiversifyNewCash       bool          `json:"diversifyNewCash,omitempty"`
+	UnleveredNewCash       bool          `json:"unleveredNewCash,omitempty"`
+	TargetPortfolioAPYBPS  int64         `json:"targetPortfolioApyBps,omitempty"`
 }
 
 const selectorHorizon = 30 * 24 * time.Hour
@@ -398,6 +399,7 @@ const completeEntryQuoteUnavailable = "complete_entry_quote_unavailable"
 
 func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult {
 	s, p := in.Snapshot, in.Policy
+	p.AdminPerformanceFeeBPS = s.ApprovedAdminPerformanceFeeBPS
 	out := SelectorResult{Action: SelectorKeep, Reason: "no_worthwhile_move", SourceLane: s.RouteLane, SampledAt: in.Now}
 	hold := func(reason string) SelectorResult { out.Reason = reason; out.State = SelectorState{}; return out }
 	if err := p.validate(); err != nil || in.Now.IsZero() {

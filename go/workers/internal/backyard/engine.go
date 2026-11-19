@@ -181,7 +181,7 @@ func (p *selectorSampler) sample(ctx, feedCtx context.Context, markets []LaneEco
 		return
 	}
 	p.lastEvaluateFailure = ""
-	for _, line := range p.levWatch.observe(markets, result.SourceLane, result.EquityRaw, time.Since(p.levWatchSummary) >= time.Hour, worker.manifest.vault.AdminPerformanceFeeBPS, &observed.Snapshot) {
+	for _, line := range p.levWatch.observe(markets, result.SourceLane, result.EquityRaw, time.Since(p.levWatchSummary) >= time.Hour, observed.Snapshot.AdminPerformanceFeeBPS, &observed.Snapshot) {
 		_, _ = fmt.Fprintln(e.out, line)
 	}
 	if time.Since(p.levWatchSummary) >= time.Hour {
@@ -192,6 +192,7 @@ func (p *selectorSampler) sample(ctx, feedCtx context.Context, markets []LaneEco
 	}
 	var leverageSummary *LeverageDecisionSummary
 	policy := worker.manifest.vault.selectorPolicy()
+	policy.AdminPerformanceFeeBPS = observed.Snapshot.ApprovedAdminPerformanceFeeBPS
 	portfolio := currentPortfolioAPY(observed, markets, time.Now())
 	for _, lane := range observed.lanes {
 		decision, ok := decideLeverageTarget(portfolio, lane, result, markets, policy, productionLeverageStepPricer(feedCtx, rpc, view, e.runtime.Jupiter, worker.manifest, observed, lane),

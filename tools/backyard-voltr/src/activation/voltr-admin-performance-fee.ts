@@ -1,3 +1,5 @@
+import { pathToFileURL } from "node:url";
+
 import {
   findAssociatedTokenPda,
   getCreateAssociatedTokenIdempotentInstructionAsync,
@@ -40,9 +42,10 @@ import {
 //   bun src/activation/voltr-admin-performance-fee.ts --vault rwa --bps 1500
 //   CONFIRM_MAINNET=1 bun src/activation/voltr-admin-performance-fee.ts --vault rwa --bps 1500 --send
 //
-// The worker holds a vault whose chain fee differs from its approved
-// AdminPerformanceFeeBPS (go/workers/internal/backyard/vault.go), so deploy the
-// approval first and send this right after.
+// Deploy the worker that accepts 0 and 1500 bps and verify both vaults are healthy.
+// Simulate both updates before activation. Change one vault at a time and verify
+// its finalized fee and worker health before changing the next. Enforce 1500 bps
+// alone after both vaults have been verified.
 
 const route = RWA_MULTIPLY_ROUTE;
 const ADMIN = route.setupAdmin;
@@ -114,12 +117,12 @@ function checkResult(before: VaultState, after: VaultState, ata: AccountSnapshot
   invariant(token.mint === lpMint && token.owner === ADMIN, "admin LP ATA has the wrong mint or owner");
 }
 
-async function buildInstructions(admin: TransactionSigner, vault: Address, lpMint: Address, adminLpAta: Address, bps: number): Promise<Instruction[]> {
+export async function buildInstructions(admin: TransactionSigner, vault: Address, lpMint: Address, adminLpAta: Address, bps: number): Promise<Instruction[]> {
   return [
     await getCreateAssociatedTokenIdempotentInstructionAsync({
       payer: admin,
       ata: adminLpAta,
-      owner: ADMIN,
+      owner: admin.address,
       mint: lpMint,
       systemProgram: route.programs.system,
       tokenProgram: route.assets.tokenProgram,
@@ -228,7 +231,9 @@ async function main() {
   process.exitCode = settled.err === null && finalState?.fees.adminPerformanceFee === bps ? 0 : 1;
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exit(1);
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((error) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  });
+}
