@@ -10,6 +10,7 @@ import { usePublicEnv } from "@/contexts/public-env-context";
 import { useSignInModal } from "@/contexts/sign-in-modal-context";
 import { useCherryRuntime } from "@/features/cherry/client/runtime-context";
 import { SettingsCodeField } from "@/features/referrals/code-field";
+import { InvitedFriends } from "@/features/referrals/invited-friends";
 import { useInviteLink } from "@/features/referrals/use-invite-link";
 import { useEscapeOverlay } from "./escape-owner";
 import { useSessionDisconnect } from "./use-session-disconnect";
@@ -242,6 +243,7 @@ export function SettingsSheet({
               <TextSwap text={invite.copied ? "Copied!" : !invite.link && invite.error ? "Try again" : "Copy link"} />
             </span>
           </SettingsRow>
+          {invite.friends && <InvitedFriends friends={invite.friends} />}
           {invite.error ? <p className="px-4 pb-2 text-[13px] text-destructive leading-4" role="alert">{invite.error}</p> : null}
         </>
       ) : null}
