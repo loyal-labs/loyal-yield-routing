@@ -5,13 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 	"math"
 	"math/big"
 	"sync"
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
@@ -38,6 +38,7 @@ const unpricedExitDustFloorRaw = uint64(bridgeUSDCDollarRaw)
 type ExitCost struct {
 	scope               *exitQuoteScope
 	Lane                string
+	ProceedsMint        string `json:",omitempty"`
 	BPS                 microBPS
 	QuotedCollateralRaw uint64
 	MarkSF              kamino.ScaledFraction
@@ -142,14 +143,15 @@ func (e exitCosts) withQuote(c ExitCost) exitCosts {
 }
 
 type exitQuoter struct {
-	mu        sync.Mutex
-	cached    exitCosts
-	price     func(context.Context, heldExitBasis, int64, time.Time) (ExitCost, error)
-	record    func(context.Context, ExitCost) (bool, error)
-	now       func() time.Time
-	events    *events
-	attempted map[string]time.Time
-	inflight  map[string]*exitQuoteFlight
+	mu            sync.Mutex
+	cached        exitCosts
+	price         func(context.Context, heldExitBasis, int64, time.Time) (ExitCost, error)
+	record        func(context.Context, ExitCost) (bool, error)
+	referenceSale func(context.Context, ExitCost) (ExitCost, error)
+	now           func() time.Time
+	events        *events
+	attempted     map[string]time.Time
+	inflight      map[string]*exitQuoteFlight
 }
 
 type exitQuoteFlight struct {
@@ -185,6 +187,8 @@ func (q *exitQuoter) quote(ctx context.Context, m RouteManifest, slot int64, acc
 		}
 	}
 	owners := collateralValuationOwners(m.vault, accounts, routes)
+	var comparisons []exitQuoteComparison
+heldQuotes:
 	for _, lane := range lanes {
 		route, err := m.route(lane)
 		if err != nil {
@@ -228,7 +232,7 @@ func (q *exitQuoter) quote(ctx context.Context, m RouteManifest, slot int64, acc
 			q.mu.Unlock()
 			select {
 			case <-ctx.Done():
-				return costs
+				break heldQuotes
 			case <-flight.done:
 				if flight.cost != nil {
 					costs = costs.withQuote(*flight.cost)
@@ -272,11 +276,17 @@ func (q *exitQuoter) quote(ctx context.Context, m RouteManifest, slot int64, acc
 			q.events.exitQuoteFailed(lane, err)
 			continue
 		}
-		if err == nil {
-			if cost.outlier(costs[lane].Realized) {
-				q.events.exitQuoteOutlier(cost, *costs[lane].Realized)
-			}
-			costs = costs.withQuote(cost)
+		if realized := costs[lane].Realized; q.events != nil && realized != nil {
+			comparisons = append(comparisons, exitQuoteComparison{basis, cost, *realized})
+		}
+		costs = costs.withQuote(cost)
+	}
+	// A historical-lot check shares one short background budget after every held valuation.
+	if len(comparisons) > 0 {
+		checkCtx, cancel := context.WithTimeout(jupiter.Background(ctx), 1500*time.Millisecond)
+		defer cancel()
+		for _, check := range comparisons {
+			q.compareExitQuote(checkCtx, m, slot, check)
 		}
 	}
 	return costs
@@ -307,12 +317,77 @@ func exitQuoteFailureCode(err error) string {
 	return errorCode(err)
 }
 
-func (e *events) exitQuoteOutlier(quote, realized ExitCost) {
-	if e == nil {
+type exitQuoteComparison struct {
+	basis          heldExitBasis
+	full, realized ExitCost
+}
+
+// Reprice the realized quantity against the held quote's oracle marks and route.
+func (q *exitQuoter) historicalLotQuote(ctx context.Context, m RouteManifest, slot int64, basis heldExitBasis, raw uint64) (ExitCost, error) {
+	if err := ctx.Err(); err != nil {
+		return ExitCost{}, err
+	}
+	value, err := centralValue(raw, basis.st.collateral.mintDecimals, basis.mark, basis.usdc)
+	if err != nil || value <= 0 {
+		return ExitCost{}, staleHoldFrom(err, "exit_comparison_invalid_mark")
+	}
+	basis.heldRaw, basis.markValue = raw, uint64(value)
+	matched, err := q.price(ctx, basis, slot, q.now())
+	if err != nil {
+		return ExitCost{}, err
+	}
+	if !matched.scopedTo(m, basis.st.route.Lane) || !matched.fresh(raw, basis.mark) || matched.scope.usdc != basis.usdc ||
+		!matched.validAt(q.now(), max(slot, matched.Slot)) || matched.Slot-slot > min(observationLagSlots(), adaptorMaxReportAgeSlots) || matched.BPS >= microBPSWhole {
+		return ExitCost{}, staleHold("exit_comparison_invalid_quote")
+	}
+	return matched, nil
+}
+
+func (q *exitQuoter) compareExitQuote(ctx context.Context, m RouteManifest, slot int64, check exitQuoteComparison) {
+	basis, full, realized := check.basis, check.full, check.realized
+	var err error
+	if q.referenceSale != nil {
+		realized, err = q.referenceSale(ctx, check.realized)
+	}
+	if err == nil && (realized.Source != exitCostRealized || realized.Lane != full.Lane || realized.Slot <= 0 || realized.Slot > min(full.Slot, check.realized.Slot) || realized.QuotedCollateralRaw == 0 || realized.BPS >= microBPSWhole) {
+		err = staleHold("exit_comparison_invalid_reference")
+	}
+	if err != nil {
+		// A failed lookup cannot erase an anomaly against the available sale.
+		realized = check.realized
+	}
+	if !full.outlier(&realized) {
 		return
 	}
-	e.log.Error("backyard_exit_quote_outlier", "lane", quote.Lane, "quote_micro_bps", uint64(quote.BPS), "realized_micro_bps", uint64(realized.BPS), "slot", quote.Slot)
-	e.selectorSampleFailed("exit_quote_outlier")
+	fields := []any{"lane", full.Lane, "quote_micro_bps", uint64(full.BPS), "quote_raw", full.QuotedCollateralRaw, "slot", full.Slot, "quote_proceeds_mint", fleet.USDCMint,
+		"realized_micro_bps", uint64(realized.BPS), "realized_raw", realized.QuotedCollateralRaw, "realized_slot", realized.Slot, "realized_proceeds_mint", realized.ProceedsMint}
+	matched := full
+	if err == nil {
+		switch {
+		case realized.ProceedsMint == "":
+			err = staleHold("exit_comparison_unknown_proceeds_mint")
+		case realized.ProceedsMint != fleet.USDCMint:
+			if realized.ProceedsMint == basis.st.route.Kamino.DebtMint {
+				q.events.log.Warn("backyard_exit_quote_different_pair", fields...)
+				return
+			}
+			err = staleHold("exit_comparison_invalid_proceeds_mint")
+		case full.QuotedCollateralRaw != realized.QuotedCollateralRaw:
+			matched, err = q.historicalLotQuote(ctx, m, slot, basis, realized.QuotedCollateralRaw)
+		}
+	}
+	if err != nil {
+		q.events.log.Error("backyard_exit_quote_comparison_unavailable", append(fields, "code", exitQuoteFailureCode(err))...)
+		q.events.selectorSampleFailed("exit_quote_comparison_unavailable")
+		return
+	}
+	fields = append(fields, "matched_micro_bps", uint64(matched.BPS), "matched_raw", matched.QuotedCollateralRaw, "matched_slot", matched.Slot)
+	if matched.outlier(&realized) {
+		q.events.log.Error("backyard_exit_quote_outlier", fields...)
+		q.events.selectorSampleFailed("exit_quote_outlier")
+		return
+	}
+	q.events.log.Info("backyard_exit_quote_size_difference", fields...)
 }
 
 type heldExitBasis struct {
@@ -550,6 +625,7 @@ func newExitQuoter(database *Database, client *jupiter.Client, m RouteManifest, 
 	}}
 	if database != nil {
 		q.record = database.RecordExitCost
+		q.referenceSale = database.exitReferenceReader(m)
 	}
 	return q
 }
