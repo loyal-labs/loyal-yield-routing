@@ -128,8 +128,16 @@ end_masters() {
 RUN_ID=''
 # REV_FENCED: a switch --reverse that stops now leaves the target the primary with its roles NOLOGIN.
 REV_FENCED=0
+# MARKER_LEFT: subscribe wrote or found the freeze marker, so a run that stops leaves it behind.
+MARKER_LEFT=0
+marker_holds() { [[ -n $FREEZE_MARKER && $FREEZE_MARKER == "$MIGRATE_MARKER" ]]; }
+marker_note() {
+  if marker_holds; then echo "the source's freeze marker $FREEZE_MARKER stays, so its deploy refuses migrations"
+  else echo "the freeze marker $FREEZE_MARKER stays as a record only, since nothing on the source refuses migrations under it (MIGRATE_MARKER=${MIGRATE_MARKER:-unset})"; fi
+}
+marker_hint() { ((MARKER_LEFT == 0 || $1 == 0 || $1 == 3)) || echo "pgmove: $CMD stopped and $(marker_note): fix the cause above and rerun $CMD $CLUSTER, or lift the marker with retire $CLUSTER --force" >&2; }
 rev_fenced_hint() { ((REV_FENCED == 0 || $1 == 0 || $1 == 3)) || echo "pgmove: switch --reverse refused; the target stays the primary with no LOGIN and no source role got LOGIN: run thaw $CLUSTER --reverse to reopen the target (cutover.sh rollback runs it)" >&2; }
-trap 'rc=$?; [[ -z $RUN_ID ]] || echo "$CMD: run $RUN_ID ended rc=$rc"; rm -f "$QFAIL"; end_masters; ((REOPEN == 0)) || reopen_target $rc; rev_fenced_hint $rc' EXIT
+trap 'rc=$?; [[ -z $RUN_ID ]] || echo "$CMD: run $RUN_ID ended rc=$rc"; rm -f "$QFAIL"; end_masters; ((REOPEN == 0)) || reopen_target $rc; rev_fenced_hint $rc; marker_hint $rc' EXIT
 # PROBE names the reverse verify, so a query that fails there never reads as a difference.
 PROBE=0
 query_stopped() {
@@ -263,7 +271,7 @@ apply() {
     printf '  on %s %s: %s\n' "$(host_of "$side")" "$db" "$(printf '%s' "$text" | mask | tr '\n' ' ')"
     return 0
   fi
-  printf '%s\n' "$text" | sql "$side" rw "$db" >/dev/null || query_failed "$side $db: $*: the statement failed"
+  printf '%s\n' "$text" | sql "$side" rw "$db" >/dev/null || query_failed "$side $db: $*: the statement failed${apply_hint:+; $apply_hint}"
 }
 
 run() {
@@ -698,10 +706,60 @@ src_dump() {
   fi
 }
 
+ANY_ROWS="select count(*) from pg_class c join pg_namespace n on n.oid = c.relnamespace where c.relkind = 'r' and $NS and $NOT_EXT and (xpath('/table/row/e/text()', query_to_xml(format('select exists (select 1 from only %I.%I) as e', n.nspname, c.relname), false, false, '')))[1]::text = 'true'"
+
+# The source migrates after the target's restore. Until the target holds a subscription or a row,
+# what the source made since is added here; once it does, the schema is the subscription's.
+catch_up_schema() {
+  local db=$1 subs rows tmp kind what adds=() b0=$blocks c0=$changes
+  local flags="--schema-only --no-publications --no-subscriptions --exclude-schema='_timescaledb*' --exclude-schema='timescaledb_*'"
+  local apply_hint="$db: the schema catch-up failed and rolled back, so none of it was applied; run pgmove.sh schema $CLUSTER to see the difference, fix it on the target by hand and rerun $CMD $CLUSTER"
+  subs=$(q dst "$db" "select count(*) from pg_subscription s join pg_database d on d.oid = s.subdbid where d.datname = current_database()")
+  [[ $subs == 0 ]] || return 0
+  rows=$(q dst "$db" "$ANY_ROWS")
+  [[ $rows == 0 ]] || return 0
+  [[ $CMD != subscribe ]] || marker_holds || echo "$CMD: $db: nothing on the source refuses migrations under a marker (MIGRATE_MARKER=${MIGRATE_MARKER:-unset}), so a migration there after this catch-up's dump and before CREATE PUBLICATION goes unseen until replication fails on it"
+  tmp=$(mktemp -d)
+  dump src "$db" "$flags" >"$tmp/src.sql"
+  dump dst "$db" "$flags" >"$tmp/dst.sql"
+  schema_diff "$tmp/src.sql" "$tmp/dst.sql" "$tmp/add.sql" >"$tmp/out" || die "$CMD: $db: the dump comparator failed, so the schemas were not compared"
+  while read -r kind what; do
+    case $kind in
+      A) adds+=("$what") ;;
+      P) echo "$CMD: $db: $what is a new partition of a table the target has; sync_partitions makes it below" ;;
+      B) if [[ $what == *"only on the target;"* ]]; then blocked "$db schema: $what"; else blocked "$db schema: $what; the target has no subscription and no rows, so it can be restored afresh by hand"; fi ;;
+    esac
+  done <"$tmp/out"
+  if ((blocks == b0 && ${#adds[@]})); then
+    printf -v what '%s, ' "${adds[@]}"
+    apply dst "$db" "BEGIN; SET LOCAL check_function_bodies = false; SELECT pg_catalog.set_config('search_path', '', true);
+$(<"$tmp/add.sql")
+COMMIT;" "$db: ${#adds[@]} schema object(s) the source made after the target's restore: ${what%, }"
+  fi
+  apply_hint=''
+  # A dry run makes nothing, so the partitions of a table it would add are not there to read.
+  if ((blocks == b0 && DRY && ${#adds[@]})); then
+    echo "$CMD: $db: the dry run skips sync_partitions, which reads partitions of tables the adds make; the real run makes them"
+  elif ((blocks == b0)); then
+    sync_partitions src dst "$db" "$(sub_name fwd "$db")" "$PUB"
+  fi
+  # The adds cover the cases they know; this check covers the rest, so a stale target never passes.
+  if ((blocks == b0 && changes > c0 && DRY == 0)); then
+    flags="--schema-only --no-owner --no-privileges --no-publications --no-subscriptions --exclude-schema='_timescaledb*' --exclude-schema='timescaledb_*'"
+    dump src "$db" "$flags" >"$tmp/src.sql"
+    dump dst "$db" "$flags" >"$tmp/dst.sql"
+    schema_diff "$tmp/src.sql" "$tmp/dst.sql" --left >"$tmp/out" || die "$CMD: $db: the dump comparator failed, so the catch-up was not checked"
+    while read -r kind what; do
+      [[ $kind != B ]] || blocked "$db schema: $what; the adds above are committed"
+    done <"$tmp/out"
+  fi
+  rm -rf "$tmp"
+}
+
 ensure_schema() {
   local db=$1 n dump=$WORK/schema-$1.dump list=$WORK/schema-$1.list
   n=$(q dst "$db" "$USER_OBJECTS")
-  [[ -z $n || $n == 0 ]] || return 0
+  [[ -z $n || $n == 0 ]] || { catch_up_schema "$db"; return 0; }
   [[ $(q src "$db" "$USER_OBJECTS") != 0 ]] || return 0
   local fetch restore
   fetch="$(src_dump "$db" "--schema-only -Fc --no-publications --no-subscriptions --exclude-schema='_timescaledb*' --exclude-schema='timescaledb_*'")"
@@ -985,6 +1043,15 @@ cmd_subscribe() {
   done
   ((blocks == 0 || DRY)) || finish
   ensure_marker
+  [[ -z $FREEZE_MARKER ]] || ((DRY)) || MARKER_LEFT=1
+  # After the marker: where MIGRATE_MARKER is that path, the source's deploy refuses migrations from the dump the catch-up compares on.
+  for spec in "${DATABASES[@]}"; do
+    db=$(db_of "$spec") shape=$(shape_of "$spec")
+    [[ $shape == upstream=* ]] && continue
+    ensure_extensions "$db"
+    ensure_schema "$db"
+  done
+  ((blocks == 0 || DRY)) || finish "no publication, slot or subscription was made"
   if via_forward; then
     ensure_repl_role src
   elif [[ -n $FWD_PORT ]]; then
@@ -1187,27 +1254,95 @@ cmd_grants() {
   finish_check
 }
 
+# schema_diff <src.sql> <dst.sql>: prints each object whose definition differs.
+# schema_diff <src.sql> <dst.sql> <add.sql>: writes the DDL that brings dst up to src and prints
+# "A <object>" per object it adds, "P <table>" per new partition of a table dst has (sync_partitions
+# makes those) and "B <object>: <why>" per difference it cannot add.
+# schema_diff <src.sql> <dst.sql> --left: "B <object>: <why>" per difference left, P as above.
 schema_diff() {
-  python3 -I - "$1" "$2" <<'PY'
+  python3 -I - "$@" <<'PY'
 import re, sys
-def blocks(path):
-    out, key, body = {}, "preamble", []
-    def flush():
-        text = "\n".join(l for l in body if l.strip() and not l.startswith("--"))
-        if text:
-            out.setdefault(key, []).append(text)
-    for line in open(path):
-        line = line.rstrip("\n")
-        if line.startswith(("\\restrict", "\\unrestrict", "SET ", "SELECT pg_catalog.set_config")):
-            continue
-        m = re.match(r"-- Name: (.*); Type: (.*); Schema: (.*); Owner: .*", line)
+# The dump is split into statements as psql reads it (quotes, dollar quotes, comments and BEGIN
+# ATOMIC bodies), so only what lies between statements is dropped: blank lines, comment headers,
+# psql's \restrict lines and the session SETs, which differ by pg_dump version.
+TOK = re.compile(r"""[ \t\r\f\n]+|--[^\n]*|/\*|[Ee]'(?:[^'\\]|\\.|'')*'|'(?:[^']|'')*'|"(?:[^"]|"")*"|\$(?:[A-Za-z_\x80-￿][\w\x80-￿]*)?\$|[A-Za-z_\x80-￿][\w$\x80-￿]*|.""", re.S)
+GAP = re.compile(r"[ \t\r\f\n]+")
+def statements(text):
+    pos, n = 0, len(text)
+    while pos < n:
+        m = GAP.match(text, pos)
         if m:
-            flush()
-            key, body = f"{m.group(2)} {m.group(3)}.{m.group(1)}", []
+            pos = m.end()
+            continue
+        if text.startswith(("--", "\\"), pos):
+            end = text.find("\n", pos)
+            end = n if end < 0 else end
+            yield "line", text[pos:end]
+            pos = end
+            continue
+        start, words, paren, depth, last = pos, [], 0, 0, ["", "", ""]
+        while pos < n:
+            t = TOK.match(text, pos).group(0)
+            pos += len(t)
+            c = t[0]
+            if not GAP.fullmatch(t) and not t.startswith("--") and t != "/*":
+                last = last[1:] + [t.lower()]
+            if t == "/*":
+                level = 1
+                while level and pos < n:
+                    if text.startswith("/*", pos): level, pos = level + 1, pos + 2
+                    elif text.startswith("*/", pos): level, pos = level - 1, pos + 2
+                    else: pos += 1
+            elif c == "$" and len(t) > 1:
+                end = text.find(t, pos)
+                pos = n if end < 0 else end + len(t)
+            elif (c.isalpha() or c == "_") and not (len(t) > 1 and t[1] == "'"):
+                w = t.lower()
+                words.append(w)
+                fn = words[0] == "create" and (words[1:2] in (["function"], ["procedure"]) or (words[1:3] == ["or", "replace"] and words[3:4] in (["function"], ["procedure"])))
+                # Only pg_dump's SQL-standard body opens with BEGIN ATOMIC; a name or column called begin does not.
+                if fn and paren == 0:
+                    if depth == 0 and last[1:] == ["begin", "atomic"] and last[0] != ".": depth = 1
+                    elif depth and w == "case": depth += 1
+                    elif depth and w == "end": depth -= 1
+            elif t == "(":
+                paren += 1
+            elif t == ")" and paren:
+                paren -= 1
+            elif t == ";" and paren == 0 and depth == 0:
+                break
+        yield "sql", text[start:pos]
+HDR = re.compile(r"-- Name: (.*); Type: (.*); Schema: (.*); Owner: .*")
+SESSION = re.compile(r"SET (\w+) = (.*);", re.S)
+# pg_dump sets these between entries, before the entry that needs a new value, and only on a change.
+WHERE = {"default_table_access_method": ("TABLE", "MATERIALIZED VIEW"), "default_tablespace": ("TABLE", "MATERIALIZED VIEW", "INDEX", "CONSTRAINT")}
+DEFAULT = {"default_table_access_method": "heap", "default_tablespace": "''"}
+info, ddl = {}, {}
+def blocks(path):
+    out, own = {}, {}
+    key, kind, body, at, state = "preamble", "", [], dict(DEFAULT), dict(DEFAULT)
+    def flush():
+        if not body:
+            return
+        names = [n for n, kinds in WHERE.items() if kind in kinds]
+        out.setdefault(key, []).append("\n".join([f"SET {n} = {at[n]};" for n in names if at[n] != DEFAULT[n]] + body))
+        own.setdefault(key, []).append("\n".join([f"SET LOCAL {n} = {at[n]};" for n in names] + body))
+    for what, text in statements(open(path).read()):
+        if what == "line":
+            m = HDR.fullmatch(text)
+            if m:
+                flush()
+                key, kind, body, at = f"{m.group(2)} {m.group(3)}.{m.group(1)}", m.group(2), [], dict(state)
+                info[key] = (m.group(2), m.group(3), m.group(1))
+        elif (m := SESSION.fullmatch(text)) or text.startswith("SELECT pg_catalog.set_config("):
+            if m and m.group(1) in state:
+                state[m.group(1)] = m.group(2)
         else:
-            body.append(line)
+            body.append(text)
     flush()
-    return {k: "\n".join(sorted(v)) for k, v in out.items() if not k.startswith(("EXTENSION ", "COMMENT -.EXTENSION "))}
+    skip = ("EXTENSION ", "COMMENT -.EXTENSION ")
+    ddl[path] = {k: v for k, v in own.items() if not k.startswith(skip)}
+    return {k: "\n".join(sorted(v)) for k, v in out.items() if not k.startswith(skip)}
 a, b = blocks(sys.argv[1]), blocks(sys.argv[2])
 # Only whitespace outside literals, quoted names and dollar-quoted bodies is ignored: parentheses carry precedence.
 lit = re.compile(r"'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\"|\$([A-Za-z_0-9]*)\$.*?\$\1\$", re.S)
@@ -1217,9 +1352,145 @@ def bare(t):
         out += [re.sub(r"\s", "", t[pos:m.start()]), m.group(0)]
         pos = m.end()
     return "".join(out) + re.sub(r"\s", "", t[pos:])
+def same(x, y):
+    return x == y or (x is not None and y is not None and bare(x) == bare(y))
+QI = r'(?:"(?:[^"]|"")*"|[^\s."(),;]+)'
+QN = rf"{QI}\.{QI}"
+def kind_of(k):
+    return info.get(k, ("", "", ""))[0]
+def stmt(t):
+    return re.sub(r"\A(?:SET [^\n]*\n)+", "", t)
+def tables(d):
+    names = {}
+    for k in d:
+        m = kind_of(k) == "TABLE" and re.match(rf"CREATE (?:UNLOGGED )?TABLE ({QN}) ", stmt(d[k]))
+        if m:
+            names[m.group(1)] = k
+    return names
+ON_TABLE = ("CONSTRAINT", "FK CONSTRAINT", "CHECK CONSTRAINT", "TRIGGER", "DEFAULT", "POLICY", "ROW SECURITY", "RULE")
+def owned(t, name, rn):
+    if t in ON_TABLE:
+        return name == rn or name.startswith(rn + " ")
+    return t in ("ACL", "COMMENT", "SECURITY LABEL") and (name == "TABLE " + rn or name.startswith("COLUMN " + rn + ".") or (name.startswith(("CONSTRAINT ", "TRIGGER ", "RULE ", "POLICY ")) and name.endswith(" ON " + rn)))
+# A new partition of a table dst has, with what hangs off it, is sync_partitions' to make: its
+# indexes come from the parent at ATTACH, so replaying the source's would collide with them.
+def new_leaves():
+    src, dst, parent = tables(a), tables(b), {}
+    for k in a:
+        m = kind_of(k) == "TABLE ATTACH" and re.match(rf"ALTER TABLE ONLY ({QN}) ATTACH PARTITION ({QN}) ", a[k])
+        if m:
+            parent[m.group(2)] = m.group(1)
+    leaves, grew = set(), True
+    while grew:
+        grew = False
+        for child, up in parent.items():
+            if child not in leaves and child in src and child not in dst and (up in dst or up in leaves):
+                leaves.add(child)
+                grew = True
+    raw = {info[src[c]][1:] for c in leaves}
+    keys, index, stats = set(), set(), set()
+    for k in a:
+        t, s, name = info.get(k, ("", "", ""))
+        m = t == "INDEX" and re.match(rf"CREATE (?:UNIQUE )?INDEX {QI} ON (?:ONLY )?({QN}) ", stmt(a[k]))
+        if m and m.group(1) in leaves:
+            keys.add(k)
+            index.add((s, name))
+        elif t in ("TABLE", "TABLE ATTACH") and (s, name) in raw:
+            keys.add(k)
+        elif t == "STATISTICS" and (m := re.search(rf"^CREATE STATISTICS .* FROM ({QN});$", stmt(a[k]), re.M)) and m.group(1) in leaves:
+            keys.add(k)
+            stats.add((s, name))
+        elif (rn := next((rn for rs, rn in raw if rs == s and owned(t, name, rn)), None)) is not None:
+            keys.add(k)
+            if t == "CONSTRAINT":
+                index.add((s, name[len(rn) + 1:]))
+    keys |= {k for k in a if kind_of(k) == "INDEX ATTACH" and info[k][1:] in index}
+    on_leaf = {"INDEX": index, "STATISTICS": stats}
+    for k in a:
+        if kind_of(k) in ("COMMENT", "SECURITY LABEL"):
+            what, _, obj = info[k][2].partition(" ")
+            if (info[k][1], obj) in on_leaf.get(what, ()):
+                keys.add(k)
+    return sorted(leaves), keys
+# The column list is cut at its top-level commas as psql reads it, so a default or check that holds
+# a newline, a comma or a parenthesis inside a literal stays one element.
+def table_parts(t):
+    m = re.match(rf"CREATE (?:UNLOGGED )?TABLE ({QN}) \(\n", t)
+    if not m:
+        return None
+    pos, start, paren, body = m.end(), m.end(), 0, []
+    while pos < len(t):
+        tok = TOK.match(t, pos).group(0)
+        if tok == "/*" or tok.startswith("--") or (tok[0] == "$" and len(tok) > 1):
+            return None
+        pos += len(tok)
+        if tok == "(":
+            paren += 1
+        elif tok == ")" and paren:
+            paren -= 1
+        elif tok in (",", ")"):
+            body.append(t[start:pos - 1].strip())
+            start = pos
+            if tok == ")":
+                body = [e for e in body if e]
+                cons = [e for e in body if e.startswith("CONSTRAINT ")]
+                return m.group(1), [e for e in body if e not in cons], cons, t[:m.end()] + t[pos - 1:]
+    return None
+def table_adds(x, y):
+    p, q = table_parts(x), table_parts(y)
+    if not p or not q or p[0] != q[0] or not same(p[3], q[3]):
+        return None
+    cols, cons = p[1][len(q[1]):], [c for c in p[2] if c not in q[2]]
+    if p[1][:len(q[1])] != q[1] or any(c not in p[2] for c in q[2]):
+        return None
+    return p[0], [f"ALTER TABLE {p[0]} ADD COLUMN {c};" for c in cols] + [f"ALTER TABLE {p[0]} ADD {c};" for c in cons]
+def target_only(k):
+    return f"B {k}: only on the target; the catch-up never drops, so drop {k} there by hand (a table only while it holds no rows) and rerun"
+if len(sys.argv) > 3:
+    leaves, theirs = new_leaves()
+    for leaf in leaves:
+        print(f"P {leaf}")
+    if sys.argv[3] == "--left":
+        for k in sorted(a.keys() | b.keys()):
+            if k in theirs or same(a.get(k), b.get(k)):
+                continue
+            print(target_only(k) if k not in a else f"B {k}: still differs from the source after the catch-up (pgmove schema shows it)")
+        sys.exit(0)
+    sql, src = [], ddl[sys.argv[1]]
+    parent = {}
+    for k in a:
+        if kind_of(k) == "TABLE ATTACH":
+            m = re.match(r"ALTER TABLE ONLY (\S+) ATTACH PARTITION", a[k])
+            parent[info[k][1] + "." + info[k][2]] = m and m.group(1)
+    for k in (k for k in src if k in a and k not in theirs):
+        x, y = a[k], b.get(k)
+        acl = k.startswith(("ACL ", "DEFAULT ACL ")) and len(src[k]) == 1
+        if k == "preamble" or same(x, y) or (acl and y is not None and set(x.split("\n")) == set(y.split("\n"))):
+            continue
+        if y is None:
+            sql += src[k]
+            print(f"A {k}")
+        elif k.startswith("TABLE ") and (got := table_adds(x, y)):
+            name = k[len("TABLE "):]
+            # ADD COLUMN and ADD CONSTRAINT on the parent reach its partitions; what is left the check after the adds finds.
+            if name in parent and parent[name] and not same(a.get(f"TABLE {parent[name]}"), b.get(f"TABLE {parent[name]}")):
+                continue
+            sql += got[1]
+            print(f"A {k}: {len(got[1])} column(s) or check(s) added")
+        elif acl and set(y.split("\n")) <= set(x.split("\n")):
+            sql += [l for l in src[k][0].split("\n") if l not in y.split("\n")]
+            print(f"A {k}: grants added")
+        else:
+            print(f"B {k}: differs from the source in a way init does not add (pgmove schema shows it)")
+    for k in sorted(b.keys() - a.keys()):
+        if k != "preamble":
+            print(target_only(k))
+    with open(sys.argv[3], "w") as f:
+        f.write("\n".join(sql) + ("\n" if sql else ""))
+    sys.exit(0)
 for k in sorted(a.keys() | b.keys()):
     x, y = a.get(k), b.get(k)
-    if x == y or (x is not None and y is not None and bare(x) == bare(y)):
+    if same(x, y):
         continue
     print(f"{k}: {'only on src' if y is None else 'only on dst' if x is None else 'definition differs'}")
     for side, t in (("<", x), (">", y)):
