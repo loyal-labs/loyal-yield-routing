@@ -18,68 +18,70 @@ function rewardValue(amount: string, minimum: boolean) {
   return `${minimum ? "≥ " : ""}${formatUnits(BigInt(amount), 6)} USDC`;
 }
 
+const columns = "sm:grid-cols-[minmax(0,1.4fr)_repeat(3,minmax(0,1fr))]";
+
 export function InvitedFriends({ friends }: { friends: ReferralFriend[] }) {
   const hasEarnings = friends.some((friend) => friend.earnings);
+
   return (
-    <section
-      aria-label="Invited friends"
-      className="mx-6 border-border border-t pt-5 pb-3"
-    >
-      <h3 className="font-semibold text-base leading-5">
-        Invited friends{friends.length > 0 ? ` (${friends.length})` : ""}
-      </h3>
+    <section aria-labelledby="invited-friends-title" className="mt-8 border-t border-border pt-6 sm:mt-10">
+      <h2 id="invited-friends-title" className="text-xl leading-7 font-semibold tracking-tight">
+        Invited friends <span className="text-foreground/60">({friends.length})</span>
+      </h2>
       {friends.length === 0 ? (
-        <p className="mt-2 text-muted-foreground text-sm">
-          No friends have joined yet.
+        <p className="mt-2 text-sm leading-5 text-foreground/70">
+          Friends appear here once they sign up with your link.
         </p>
       ) : (
         <>
-          <p className="mt-1 text-muted-foreground text-sm">
-            {hasEarnings
-              ? "Rewards are paid in Earn Max shares. Amounts shown in USDC."
-              : "Referral earnings are unavailable."}
+          <p className="mt-1 text-sm leading-5 text-foreground/70">
+            {hasEarnings ? "Lifetime rewards, shown in USDC." : "Referral earnings are unavailable."}
           </p>
-          <ul className="mt-2 max-h-48 overflow-y-auto divide-y divide-border">
+          <div aria-hidden="true" className={`mt-5 hidden gap-x-3 border-b border-border pb-2 text-sm text-foreground/65 sm:grid ${columns}`}>
+            <span>Wallet</span>
+            <span className="text-right">Earned</span>
+            <span className="text-right">Paid</span>
+            <span className="text-right">Still owed</span>
+          </div>
+          <ul className="mt-3 divide-y divide-border sm:mt-0">
             {friends.map((friend) => {
               const wallet = walletLabel(friend);
+              const earnings = friend.earnings;
               return (
-                <li
-                  className="py-2.5 font-medium text-[15px] leading-5"
-                  key={`${friend.bound_at}:${wallet}`}
-                >
-                  <span>{wallet}</span>
-                  {friend.earnings ? (
+                <li className={`grid gap-x-3 gap-y-3 py-4 text-[15px] sm:items-baseline ${columns}`} key={`${friend.bound_at}:${wallet}`}>
+                  <div className="min-w-0">
+                    <span className="font-semibold">{wallet}</span>
+                    {earnings && (
+                      <p className="mt-1 text-xs leading-4 text-foreground/65">
+                        Earned through{" "}
+                        <time dateTime={earnings.through}>{throughDate.format(new Date(earnings.through))}</time>
+                      </p>
+                    )}
+                  </div>
+                  {earnings ? (
                     <>
-                      <dl className="mt-2 grid grid-cols-3 gap-x-2 text-xs">
+                      <dl className="grid grid-cols-3 gap-x-2 sm:contents">
                         {([
-                          ["Earned", friend.earnings.earned_micro_usdc],
-                          ["Paid", friend.earnings.paid_micro_usdc],
-                          ["Still owed", friend.earnings.outstanding_micro_usdc],
+                          ["Earned", earnings.earned_micro_usdc],
+                          ["Paid", earnings.paid_micro_usdc],
+                          ["Still owed", earnings.outstanding_micro_usdc],
                         ] as const).map(([label, amount]) => (
-                          <div key={label}>
-                            <dt className="font-normal text-muted-foreground">{label}</dt>
-                            <dd className="tabular-nums">
-                              {rewardValue(amount, Boolean(friend.earnings?.has_history_gap) && label !== "Paid")}
+                          <div className="min-w-0 sm:text-right" key={label}>
+                            <dt className="text-xs text-foreground/65 sm:sr-only">{label}</dt>
+                            <dd className="mt-0.5 break-words font-medium tabular-nums sm:mt-0">
+                              {rewardValue(amount, Boolean(earnings.has_history_gap) && label !== "Paid")}
                             </dd>
                           </div>
                         ))}
                       </dl>
-                      {friend.earnings.has_history_gap && (
-                        <p className="mt-2 font-normal text-muted-foreground text-xs">
+                      {earnings.has_history_gap && (
+                        <p className="text-xs leading-4 text-foreground/65 sm:col-span-4">
                           Some deposit history is missing. Earned and still owed show verified minimums.
                         </p>
                       )}
-                      <p className="mt-2 font-normal text-muted-foreground text-xs">
-                        Earned through{" "}
-                        <time dateTime={friend.earnings.through}>
-                          {throughDate.format(new Date(friend.earnings.through))}
-                        </time>
-                      </p>
                     </>
                   ) : hasEarnings ? (
-                    <p className="mt-1 font-normal text-muted-foreground text-xs">
-                      Earnings unavailable
-                    </p>
+                    <p className="text-sm text-foreground/65 sm:col-span-3 sm:text-right">Earnings unavailable</p>
                   ) : null}
                 </li>
               );

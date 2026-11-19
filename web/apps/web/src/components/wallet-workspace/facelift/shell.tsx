@@ -1,5 +1,6 @@
 "use client";
 
+import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { WalletReconnectPrompt } from "@/components/auth/wallet-reconnect-prompt";
@@ -67,7 +68,7 @@ import {
 import { usePublicEnv } from "@/contexts/public-env-context";
 import { useSignInModal } from "@/contexts/sign-in-modal-context";
 import { useEarnMax } from "@/features/earn-max";
-import { InviteDialog } from "@/features/referrals/invite-dialog";
+import { InvitePage } from "@/features/referrals/invite-page";
 import { useAuthSession } from "@/contexts/auth-session-context";
 import { useAuthCapability } from "@/lib/auth/capability";
 import type { EarnTransactionItem } from "@/lib/yield-optimization/earn-transactions.client";
@@ -92,12 +93,6 @@ const WORKSPACE_PAGES: WorkspacePage[] = [
   "invite",
   "wallet",
 ];
-
-export function storeWorkspacePage(page: WorkspacePage) {
-  try {
-    localStorage.setItem(PAGE_STORAGE_KEY, page);
-  } catch {}
-}
 
 function readStoredPage(): WorkspacePage | null {
   if (typeof window === "undefined") {
@@ -128,16 +123,21 @@ export function WorkspaceFaceliftShell() {
   const [isChartExpanded, setIsChartExpanded] = useState(false);
   // Settings shares the desktop rail overlay and mobile sheet entrypoints.
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [isInviteOpen, setIsInviteOpen] = useState(false);
+  const router = useRouter();
+  const pathname = usePathname();
+  const inviteRoute = pathname === "/app/invite" || pathname === "/app/invite/";
+  const openedInviteHere = useRef(false);
   const [settingsView, setSettingsView] = useState<"settings" | "policies">("settings");
   const openSettings = () => { setSettingsView("settings"); setIsSettingsOpen(true); };
   const openPolicies = () => { setSettingsView("policies"); setIsSettingsOpen(true); };
   // One shared tab choice for every chart card (compact right pane, mobile
   // inline card, enlarged overlay) — enlarging must not reset the tab.
   const [chartTab, setChartTab] = useState<ChartTab | null>(null);
-  const [activePage, setActivePage] = useState<WorkspacePage>("earn");
+  const [workspacePage, setActivePage] =
+    useState<Exclude<WorkspacePage, "invite">>("earn");
   const { isHydrated, isSignedIn } = useAuthCapability();
-  const { launched } = useAuthSession();
+  const { launched, launchChecked } = useAuthSession();
+  const activePage = inviteRoute && isSignedIn && launched ? "invite" : workspacePage;
   const { open: openSignIn } = useSignInModal();
   const [storedPage] = useState(readStoredPage);
   const hasRestoredPageRef = useRef(false);
@@ -156,17 +156,22 @@ export function WorkspaceFaceliftShell() {
       return;
     }
     if (storedPage === "invite") {
-      setIsInviteOpen(true);
+      if (!inviteRoute) router.replace("/app/invite");
     } else {
       setActivePage(storedPage);
     }
-  }, [isHydrated, isSignedIn, launched, storedPage]);
+  }, [inviteRoute, isHydrated, isSignedIn, launched, router, storedPage]);
   useEffect(() => {
-    if (!isSignedIn || !launched) setIsInviteOpen(false);
-  }, [isSignedIn, launched]);
+    if (
+      inviteRoute && isHydrated &&
+      (!isSignedIn || (launchChecked && !launched))
+    ) {
+      router.replace("/app");
+    }
+  }, [inviteRoute, isHydrated, isSignedIn, launchChecked, launched, router]);
   useEffect(() => {
-    localStorage.setItem(PAGE_STORAGE_KEY, activePage);
-  }, [activePage]);
+    localStorage.setItem(PAGE_STORAGE_KEY, workspacePage);
+  }, [workspacePage]);
   useEffect(() => {
     if (
       isHydrated &&
@@ -277,9 +282,13 @@ export function WorkspaceFaceliftShell() {
       return;
     }
     if (page === "invite") {
-      if (launched) setIsInviteOpen(true);
+      if (launched && !inviteRoute) {
+        openedInviteHere.current = true;
+        router.push("/app/invite");
+      }
       return;
     }
+    if (inviteRoute) router.push("/app");
     setActivePage(
       page === "activity" && activePage === "activity" ? "earn" : page
     );
@@ -299,7 +308,6 @@ export function WorkspaceFaceliftShell() {
         return;
       }
       if (
-        isInviteOpen ||
         event.metaKey ||
         event.ctrlKey ||
         event.altKey ||
@@ -399,7 +407,9 @@ export function WorkspaceFaceliftShell() {
     };
   }, [showEarnBanners, isHydrated]);
 
-  if (!isHydrated) return <WorkspaceSkeleton />;
+  if (!isHydrated || (inviteRoute && isSignedIn && !launchChecked)) {
+    return <WorkspaceSkeleton />;
+  }
 
   return (
     <BalanceVisibilityProvider>
@@ -415,10 +425,6 @@ export function WorkspaceFaceliftShell() {
         />
         <EarnApprovalSheet approval={earnData.actions.pendingApproval} />
         <EarnToastHost />
-        <InviteDialog
-          isOpen={isInviteOpen && isSignedIn && launched}
-          onClose={() => setIsInviteOpen(false)}
-        />
         <ReceiveSheet
           isOpen={isReceiveOpen}
           onClose={() => {
@@ -433,6 +439,10 @@ export function WorkspaceFaceliftShell() {
           initialView={settingsView}
           isOpen={isSettingsOpen}
           onClose={() => setIsSettingsOpen(false)}
+          onOpenInvites={() => {
+            setIsSettingsOpen(false);
+            handleSelectPage("invite");
+          }}
         />
         <LifecycleOnboardingHost
           hasAutodeposit={earnData.autodepositConfig !== null}
@@ -498,7 +508,14 @@ export function WorkspaceFaceliftShell() {
               />
             </div>
           ) : null}
-          {activePage === "wallet" ? (
+          {activePage === "invite" ? (
+            <InvitePage
+              onBack={() => {
+                if (openedInviteHere.current) router.back();
+                else router.replace("/app");
+              }}
+            />
+          ) : activePage === "wallet" ? (
             <WalletHomePage
               earnBalanceUsd={earnData.earnBalanceUsd}
               earnEarned30dUsd={earnEarned30dUsd}
