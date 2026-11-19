@@ -1353,7 +1353,11 @@ def tables(d):
         if m:
             names[m.group(1)] = k
     return names
-ON_TABLE = ("CONSTRAINT", "FK CONSTRAINT", "CHECK CONSTRAINT", "TRIGGER", "DEFAULT", "POLICY", "ROW SECURITY")
+ON_TABLE = ("CONSTRAINT", "FK CONSTRAINT", "CHECK CONSTRAINT", "TRIGGER", "DEFAULT", "POLICY", "ROW SECURITY", "RULE")
+def owned(t, name, rn):
+    if t in ON_TABLE:
+        return name == rn or name.startswith(rn + " ")
+    return t in ("ACL", "COMMENT", "SECURITY LABEL") and (name == "TABLE " + rn or name.startswith("COLUMN " + rn + ".") or (name.startswith(("CONSTRAINT ", "TRIGGER ", "RULE ", "POLICY ")) and name.endswith(" ON " + rn)))
 # A new partition of a table dst has, with what hangs off it, is sync_partitions' to make: its
 # indexes come from the parent at ATTACH, so replaying the source's would collide with them.
 def new_leaves():
@@ -1370,7 +1374,7 @@ def new_leaves():
                 leaves.add(child)
                 grew = True
     raw = {info[src[c]][1:] for c in leaves}
-    keys, index = set(), set()
+    keys, index, stats = set(), set(), set()
     for k in a:
         t, s, name = info.get(k, ("", "", ""))
         m = t == "INDEX" and re.match(rf"CREATE (?:UNIQUE )?INDEX {QI} ON (?:ONLY )?({QN}) ", stmt(a[k]))
@@ -1379,11 +1383,20 @@ def new_leaves():
             index.add((s, name))
         elif t in ("TABLE", "TABLE ATTACH") and (s, name) in raw:
             keys.add(k)
-        elif any(s == rs and (t in ON_TABLE and name.startswith(rn + " ") or t in ("ACL", "COMMENT") and (name == "TABLE " + rn or name.startswith("COLUMN " + rn + "."))) for rs, rn in raw):
+        elif t == "STATISTICS" and (m := re.search(rf"^CREATE STATISTICS .* FROM ({QN});$", stmt(a[k]), re.M)) and m.group(1) in leaves:
+            keys.add(k)
+            stats.add((s, name))
+        elif (rn := next((rn for rs, rn in raw if rs == s and owned(t, name, rn)), None)) is not None:
             keys.add(k)
             if t == "CONSTRAINT":
-                index.add((s, name.split(" ", 1)[1]))
+                index.add((s, name[len(rn) + 1:]))
     keys |= {k for k in a if kind_of(k) == "INDEX ATTACH" and info[k][1:] in index}
+    on_leaf = {"INDEX": index, "STATISTICS": stats}
+    for k in a:
+        if kind_of(k) in ("COMMENT", "SECURITY LABEL"):
+            what, _, obj = info[k][2].partition(" ")
+            if (info[k][1], obj) in on_leaf.get(what, ()):
+                keys.add(k)
     return sorted(leaves), keys
 # The column list is cut at its top-level commas as psql reads it, so a default or check that holds
 # a newline, a comma or a parenthesis inside a literal stays one element.
