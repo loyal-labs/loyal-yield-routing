@@ -17,3 +17,12 @@ func (c *Client) BlockTime(ctx context.Context, slot uint64) (time.Time, error) 
 	}
 	return out.Time().UTC(), nil
 }
+
+// FirstAvailableBlock returns the oldest confirmed block retained by this RPC.
+func (c *Client) FirstAvailableBlock(ctx context.Context) (uint64, error) {
+	slot, err := c.rpc.GetFirstAvailableBlock(ctx)
+	if err != nil {
+		return 0, failed("getFirstAvailableBlock", err)
+	}
+	return slot, nil
+}
