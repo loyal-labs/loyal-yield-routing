@@ -50,6 +50,9 @@ function InviteArtwork() {
 export function InvitePage({ onBack }: { onBack: () => void }) {
   const { link, rewardsActive, friends, error, copied, copy, retry } = useInviteLink(true);
   const codeStart = (link?.lastIndexOf("/") ?? -1) + 1;
+  const isLoading = !link && !error;
+  const inviteTitle = link ? "Invite friends" : "Your invite";
+  const inviteDescription = link ? "Share your link to invite someone to Loyal." : error;
 
   return (
     <main aria-labelledby="invite-title" className="h-full min-h-0 flex-1 overflow-y-auto bg-card text-foreground">
@@ -63,71 +66,83 @@ export function InvitePage({ onBack }: { onBack: () => void }) {
           Back
         </button>
 
-        <StaggerReveal>
-          <header
-            className="relative isolate overflow-hidden rounded-3xl bg-[#51031b] bg-cover bg-center px-5 py-7 text-white @xl:px-8 @xl:py-9"
-            style={{ backgroundImage: `url(${ASSET_BASE}/banner-dark-bg.png)` }}
-          >
-            <StaggerLine index={0}>
-              <h1
-                aria-describedby="invite-example-condition"
-                className="pr-16 text-[clamp(2rem,12cqi,3rem)] leading-none font-bold tracking-[-0.045em] whitespace-nowrap @xl:pr-48 @xl:text-[clamp(3rem,9cqi,4.5rem)]"
-                id="invite-title"
-              >
-                {rewardsActive ? <>Earn <span className="text-[#ffd41b]">$300</span></> : "Invite friends"}
-              </h1>
-            </StaggerLine>
-            <StaggerLine index={1}>
-              <p id="invite-example-condition" className="mt-3 max-w-[30rem] text-pretty text-lg leading-6 @xl:mr-48 @xl:text-[22px] @xl:leading-7">
-                {rewardsActive ? <>when your friends keep <strong>$100,000</strong> in Earn MAX for a full year.</> : "Share your link to invite someone to Loyal."}
-              </p>
-            </StaggerLine>
-            <div className="pointer-events-none absolute top-6 right-4 origin-top-right scale-[0.42] @xl:top-1/2 @xl:right-6 @xl:-translate-y-1/2 @xl:scale-100" aria-hidden="true">
-              <StaggerLine index={2}>
-                <InviteArtwork />
-              </StaggerLine>
+        {isLoading ? (
+          <div aria-busy="true" role="status">
+            <span className="sr-only" id="invite-title">Loading invitation</span>
+            <div aria-hidden="true" className="space-y-6">
+              <div className="rounded-3xl bg-[#51031b] bg-cover bg-center px-5 py-7 @xl:px-8 @xl:py-9" style={{ backgroundImage: `url(${ASSET_BASE}/banner-dark-bg.png)` }}>
+                <div className="h-[clamp(2rem,12cqi,3rem)] w-2/5 rounded-lg bg-white/10 motion-safe:animate-pulse @xl:h-[clamp(3rem,9cqi,4.5rem)]" />
+                <div className="mt-3 h-12 w-3/4 max-w-[30rem] rounded-lg bg-white/10 motion-safe:animate-pulse @xl:h-14" />
+              </div>
+              <div className="h-32 rounded-3xl bg-secondary @xl:h-[88px]" />
             </div>
-          </header>
-
-          <section aria-labelledby="invite-link-title" className="mt-6">
-            <div className="grid items-center gap-4 rounded-3xl bg-secondary p-4 @xl:grid-cols-[minmax(0,1fr)_12rem] @xl:px-6 @xl:py-5">
-              <div className="min-w-0">
-                <StaggerLine index={3}>
-                  <h2 id="invite-link-title" className="text-sm leading-5 text-foreground/70">Your invite link</h2>
-                </StaggerLine>
-                <StaggerLine index={4}>
-                  <p className="mt-1 w-fit max-w-full select-all text-base leading-5 font-medium [overflow-wrap:anywhere]" data-invite-link>
-                    {link ? (
-                      <>
-                        {link.slice(0, codeStart)}
-                        <wbr />
-                        <span className="whitespace-nowrap">{link.slice(codeStart)}</span>
-                      </>
-                    ) : error ? "Link unavailable" : "Loading invitation link…"}
-                  </p>
+          </div>
+        ) : (
+          <StaggerReveal>
+            <header
+              className="relative isolate overflow-hidden rounded-3xl bg-[#51031b] bg-cover bg-center px-5 py-7 text-white @xl:px-8 @xl:py-9"
+              style={{ backgroundImage: `url(${ASSET_BASE}/banner-dark-bg.png)` }}
+            >
+              <StaggerLine index={0}>
+                <h1
+                  aria-describedby="invite-example-condition"
+                  className="pr-16 text-[clamp(2rem,12cqi,3rem)] leading-none font-bold tracking-[-0.045em] whitespace-nowrap @xl:pr-48 @xl:text-[clamp(3rem,9cqi,4.5rem)]"
+                  id="invite-title"
+                >
+                  {rewardsActive ? <>Earn <span className="text-[#ffd41b]">$300</span></> : inviteTitle}
+                </h1>
+              </StaggerLine>
+              <StaggerLine index={1}>
+                <p id="invite-example-condition" role={link ? undefined : "alert"} className="mt-3 max-w-[30rem] text-pretty text-lg leading-6 @xl:mr-48 @xl:text-[22px] @xl:leading-7">
+                  {rewardsActive ? <>when your friends keep <strong>$100,000</strong> in Earn MAX for a full year.</> : inviteDescription}
+                </p>
+              </StaggerLine>
+              <div className="pointer-events-none absolute top-6 right-4 origin-top-right scale-[0.42] @xl:top-1/2 @xl:right-6 @xl:-translate-y-1/2 @xl:scale-100" aria-hidden="true">
+                <StaggerLine index={2}>
+                  <InviteArtwork />
                 </StaggerLine>
               </div>
-              <StaggerLine index={5}>
-                <button
-                  className="t-hover flex h-12 w-full items-center justify-center rounded-full bg-foreground px-4 text-base leading-5 font-medium whitespace-nowrap text-background enabled:hover:bg-foreground/90 disabled:opacity-40"
-                  disabled={!link && !error}
-                  onClick={!link && error ? retry : copy}
-                  type="button"
-                >
-                  <span aria-live="polite">
-                    <TextSwap text={copied ? "Copied!" : !link && error ? "Try again" : "Copy invitation link"} />
-                  </span>
-                </button>
-              </StaggerLine>
-            </div>
-            {error && <p className="mt-2 text-sm text-destructive" role="alert">{error}</p>}
-            {rewardsActive && <StaggerLine index={6}>
-              <p className="mt-3 max-w-2xl text-sm leading-5 text-foreground/70">
-                You earn 0.3% a year on each friend’s deposits after the entry fee. Their performance fees fund your payouts in Earn MAX shares. Unpaid rewards carry over for that friend.
-              </p>
-            </StaggerLine>}
-          </section>
-        </StaggerReveal>
+            </header>
+
+            <section aria-labelledby="invite-link-title" className="mt-6">
+              <div className="grid items-center gap-4 rounded-3xl bg-secondary p-4 @xl:grid-cols-[minmax(0,1fr)_12rem] @xl:px-6 @xl:py-5">
+                <div className="min-w-0">
+                  <StaggerLine index={3}>
+                    <h2 id="invite-link-title" className="text-sm leading-5 text-foreground/70">Your invite link</h2>
+                  </StaggerLine>
+                  <StaggerLine index={4}>
+                    <p className="mt-1 w-fit max-w-full select-all text-base leading-5 font-medium [overflow-wrap:anywhere]" data-invite-link>
+                      {link ? (
+                        <>
+                          {link.slice(0, codeStart)}
+                          <wbr />
+                          <span className="whitespace-nowrap">{link.slice(codeStart)}</span>
+                        </>
+                      ) : "Link unavailable"}
+                    </p>
+                  </StaggerLine>
+                </div>
+                <StaggerLine index={5}>
+                  <button
+                    className="t-hover flex h-12 w-full items-center justify-center rounded-full bg-foreground px-4 text-base leading-5 font-medium whitespace-nowrap text-background enabled:hover:bg-foreground/90 disabled:opacity-40"
+                    onClick={link ? copy : retry}
+                    type="button"
+                  >
+                    <span aria-live="polite">
+                      <TextSwap text={copied ? "Copied!" : link ? "Copy invitation link" : "Try again"} />
+                    </span>
+                  </button>
+                </StaggerLine>
+              </div>
+              {link && error && <p className="mt-2 text-sm text-destructive" role="alert">{error}</p>}
+              {rewardsActive && <StaggerLine index={6}>
+                <p className="mt-3 max-w-2xl text-sm leading-5 text-foreground/70">
+                  You earn 0.3% a year on each friend’s deposits after the entry fee. Their performance fees fund your payouts in Earn MAX shares. Unpaid rewards carry over for that friend.
+                </p>
+              </StaggerLine>}
+            </section>
+          </StaggerReveal>
+        )}
 
         {friends && (
           <StaggerReveal>
