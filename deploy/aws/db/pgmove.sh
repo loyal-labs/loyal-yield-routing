@@ -1270,11 +1270,13 @@ def statements(text):
             yield "line", text[pos:end]
             pos = end
             continue
-        start, words, paren, depth = pos, [], 0, 0
+        start, words, paren, depth, last = pos, [], 0, 0, ["", "", ""]
         while pos < n:
             t = TOK.match(text, pos).group(0)
             pos += len(t)
             c = t[0]
+            if not GAP.fullmatch(t) and not t.startswith("--") and t != "/*":
+                last = last[1:] + [t.lower()]
             if t == "/*":
                 level = 1
                 while level and pos < n:
@@ -1288,9 +1290,11 @@ def statements(text):
                 w = t.lower()
                 words.append(w)
                 fn = words[0] == "create" and (words[1:2] in (["function"], ["procedure"]) or (words[1:3] == ["or", "replace"] and words[3:4] in (["function"], ["procedure"])))
+                # Only pg_dump's SQL-standard body opens with BEGIN ATOMIC; a name or column called begin does not.
                 if fn and paren == 0:
-                    if w == "begin" or (w == "case" and depth): depth += 1
-                    elif w == "end" and depth: depth -= 1
+                    if depth == 0 and last[1:] == ["begin", "atomic"] and last[0] != ".": depth = 1
+                    elif depth and w == "case": depth += 1
+                    elif depth and w == "end": depth -= 1
             elif t == "(":
                 paren += 1
             elif t == ")" and paren:
