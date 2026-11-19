@@ -17,6 +17,7 @@ const (
 
 type Friend struct {
 	Label          string
+	WalletLabel    string
 	Status         FriendStatus
 	DepositedMicro int64
 	BoundAt        time.Time
@@ -81,7 +82,8 @@ ORDER BY b.bound_at DESC, b.referee_app_user_id`, referrer)
 	}
 	friends := make([]Friend, len(bound))
 	for i, f := range bound {
-		f.Label = maskedLabel(emails[f.id], f.wallet)
+		f.WalletLabel = maskedWallet(f.wallet)
+		f.Label = maskedLabel(emails[f.id], f.WalletLabel)
 		friends[i] = f.Friend
 	}
 	return friends, nil
@@ -109,7 +111,7 @@ func (s *Store) emails(ctx context.Context, ids []string) (map[string]string, er
 
 const minLocalForInitial = 3
 
-func maskedLabel(email, wallet string) string {
+func maskedLabel(email, walletLabel string) string {
 	local, domain, ok := strings.Cut(email, "@")
 	if ok && local != "" && domain != "" {
 		if utf8.RuneCountInString(local) < minLocalForInitial {
@@ -118,6 +120,10 @@ func maskedLabel(email, wallet string) string {
 		initial, _ := utf8.DecodeRuneInString(local)
 		return string(initial) + "…@" + domain
 	}
+	return walletLabel
+}
+
+func maskedWallet(wallet string) string {
 	if len(wallet) <= 8 {
 		return wallet
 	}

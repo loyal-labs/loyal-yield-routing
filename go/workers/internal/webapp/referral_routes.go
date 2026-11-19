@@ -36,13 +36,14 @@ var referralLookupBudget = budget{every: 10 * time.Second, burst: 60}
 const (
 	referralsPath       = "/api/referrals"
 	referralClaimPath   = "/api/referrals/claim"
-	defaultInviteBase   = "https://next.askloyal.com"
+	defaultInviteBase   = "https://askloyal.com"
 	referralsDownCode   = "referrals_unavailable"
 	referralsDownReason = "Referrals are temporarily unavailable."
 )
 
 type ReferralFriend struct {
 	Label          string                `json:"label"`
+	WalletLabel    string                `json:"wallet_label"`
 	Status         referral.FriendStatus `json:"status" enum:"joined,deposited,withdrawn"`
 	DepositedMicro int64                 `json:"deposited_micro"`
 	BoundAt        time.Time             `json:"bound_at"`
@@ -183,7 +184,7 @@ func (h referralRoutes) referrals(ctx context.Context, in *sessionRequest) (*ref
 		Friends:  make([]ReferralFriend, len(friends)),
 	}
 	for i, f := range friends {
-		body.Friends[i] = ReferralFriend{Label: f.Label, Status: f.Status, DepositedMicro: f.DepositedMicro, BoundAt: f.BoundAt}
+		body.Friends[i] = ReferralFriend{Label: f.Label, WalletLabel: f.WalletLabel, Status: f.Status, DepositedMicro: f.DepositedMicro, BoundAt: f.BoundAt}
 		body.DepositedMicro += f.DepositedMicro
 		switch f.Status {
 		case referral.Joined:
