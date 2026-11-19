@@ -24,7 +24,7 @@ export const referralCopy = {
   placeholder: "Invite code (optional)",
   apply: "Apply",
   applying: "Applying…",
-  visibility: "Your inviter will see your deposit total.",
+  visibility: "Your inviter can see your shortened wallet address and deposit total.",
 };
 
 const closesAtFormat = new Intl.DateTimeFormat("en-US", {

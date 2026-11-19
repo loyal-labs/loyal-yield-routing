@@ -1622,6 +1622,14 @@ export type EarnWithdrawVault = {
     usdcAta: string;
 };
 
+export type EarnedReward = {
+    earned_micro_usdc: string;
+    has_history_gap?: boolean;
+    outstanding_micro_usdc: string;
+    paid_micro_usdc: string;
+    through: string;
+};
+
 export type Earnings = {
     days: Array<EarningsDay>;
     netEarnedUsd: number;
@@ -2133,8 +2141,10 @@ export type ReferralCounts = {
 export type ReferralFriend = {
     bound_at: string;
     deposited_micro: number;
+    earnings?: EarnedReward;
     label: string;
     status: 'joined' | 'deposited' | 'withdrawn';
+    wallet_label: string;
 };
 
 export type Referrals = {
