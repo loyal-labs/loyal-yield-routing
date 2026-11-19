@@ -3,15 +3,64 @@ package referral
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnmax"
 	"github.com/solana-foundation/solana-go/v2"
 )
+
+func TestFeeCheckpointTime(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		firstError error
+		failures   int
+		cancel     bool
+		wantCalls  int
+		wantWait   time.Duration
+		wantError  error
+	}{
+		{"history catches up", chain.ErrUnavailable, 2, false, 3, 3 * time.Second, nil},
+		{"history stays unavailable", chain.ErrUnavailable, 5, false, 5, 15 * time.Second, chain.ErrUnavailable},
+		{"no timestamp recorded", chain.ErrNotFound, 1, false, 1, 0, chain.ErrNotFound},
+		{"cancel during backoff", chain.ErrUnavailable, 5, true, 1, time.Millisecond, context.Canceled},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				if tc.cancel {
+					time.AfterFunc(time.Millisecond, cancel)
+				}
+				start := time.Now()
+				stamp := time.Unix(1795119734, 0)
+				calls := 0
+				at, err := feeCheckpointTime(ctx, 471467876, func(_ context.Context, slot uint64) (time.Time, error) {
+					if slot != 471467876 {
+						t.Fatalf("retried different slot %d", slot)
+					}
+					calls++
+					if calls <= tc.failures {
+						return time.Time{}, tc.firstError
+					}
+					return stamp, nil
+				})
+				if !errors.Is(err, tc.wantError) || calls != tc.wantCalls || time.Since(start) != tc.wantWait {
+					t.Fatalf("got %v after %d calls and %s", err, calls, time.Since(start))
+				}
+				if err == nil && !at.Equal(stamp) {
+					t.Fatalf("got block time %v, want %v", at, stamp)
+				}
+			})
+		})
+	}
+}
 
 func TestFeeLedgerKeepsInviteeInventorySeparate(t *testing.T) {
 	dsn := os.Getenv("REFERRAL_FEE_LEDGER_TEST_DATABASE_URL")
