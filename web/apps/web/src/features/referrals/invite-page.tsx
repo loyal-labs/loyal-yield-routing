@@ -54,44 +54,48 @@ export function InvitePage({ onBack }: { onBack: () => void }) {
   return (
     <main aria-labelledby="invite-title" className="h-full min-h-0 flex-1 overflow-y-auto bg-card text-foreground">
       <div className="@container mx-auto w-full max-w-[900px] px-4 pt-4 pb-12 sm:px-8 sm:pt-6 lg:px-12">
-        <StaggerReveal>
-          <StaggerLine index={0}>
-            <div className="mb-4 flex items-center gap-2">
-              <button
-                aria-label="Back"
-                className="t-hover -ml-2 flex size-11 items-center justify-center rounded-full hover:bg-accent"
-                onClick={onBack}
-                type="button"
-              >
-                <ThemedIcon className="size-6" src={`${ASSET_BASE}/icon-arrow-left.svg`} />
-              </button>
-              <span className="text-xl leading-6 font-semibold">Invite friends</span>
-            </div>
-          </StaggerLine>
+        <button
+          className="t-hover -ml-2 mb-4 inline-flex min-h-11 items-center gap-1.5 rounded-full px-2.5 text-sm font-medium hover:bg-accent"
+          onClick={onBack}
+          type="button"
+        >
+          <ThemedIcon className="size-5" src={`${ASSET_BASE}/icon-arrow-left.svg`} />
+          Back
+        </button>
 
-          <StaggerLine index={1}>
-            <header
-              className="relative isolate overflow-hidden rounded-3xl bg-[#51031b] bg-cover bg-center px-5 py-7 text-white @xl:px-8 @xl:py-9"
-              style={{ backgroundImage: `url(${ASSET_BASE}/banner-dark-bg.png)` }}
-            >
-              <div className="absolute top-6 right-4 origin-top-right scale-[0.42] @xl:top-1/2 @xl:right-6 @xl:-translate-y-1/2 @xl:scale-100" aria-hidden="true">
-                <InviteArtwork />
-              </div>
-              <h1 aria-describedby="invite-example-condition" id="invite-title" className="relative flex flex-wrap items-baseline gap-x-2 pr-16 font-bold tracking-tight @xl:gap-x-3 @xl:pr-48">
-                <span className="text-[32px] leading-none @xl:text-[44px]">Earn</span>
-                <span className="text-[clamp(3rem,17cqi,3.75rem)] leading-none tracking-[-0.055em] text-[#ffd41b] @xl:text-[88px]">$300</span>
+        <StaggerReveal>
+          <header
+            className="relative isolate overflow-hidden rounded-3xl bg-[#51031b] bg-cover bg-center px-5 py-7 text-white @xl:px-8 @xl:py-9"
+            style={{ backgroundImage: `url(${ASSET_BASE}/banner-dark-bg.png)` }}
+          >
+            <StaggerLine index={0}>
+              <h1
+                aria-describedby="invite-example-condition"
+                className="pr-16 text-[clamp(2rem,12cqi,3rem)] leading-none font-bold tracking-[-0.045em] whitespace-nowrap @xl:pr-48 @xl:text-[clamp(3rem,9cqi,4.5rem)]"
+                id="invite-title"
+              >
+                Earn <span className="text-[#ffd41b]">$300</span>
               </h1>
-              <p id="invite-example-condition" className="relative mt-3 max-w-[30rem] text-pretty text-lg leading-6 @xl:mr-48 @xl:text-[22px] @xl:leading-7">
+            </StaggerLine>
+            <StaggerLine index={1}>
+              <p id="invite-example-condition" className="mt-3 max-w-[30rem] text-pretty text-lg leading-6 @xl:mr-48 @xl:text-[22px] @xl:leading-7">
                 when your friends keep <strong>$100,000</strong> in Earn MAX for a full year.
               </p>
-            </header>
-          </StaggerLine>
+            </StaggerLine>
+            <div className="pointer-events-none absolute top-6 right-4 origin-top-right scale-[0.42] @xl:top-1/2 @xl:right-6 @xl:-translate-y-1/2 @xl:scale-100" aria-hidden="true">
+              <StaggerLine index={2}>
+                <InviteArtwork />
+              </StaggerLine>
+            </div>
+          </header>
 
-          <StaggerLine index={2}>
-            <section aria-labelledby="invite-link-title" className="mt-6">
-              <div className="grid items-center gap-4 rounded-3xl bg-secondary p-4 @xl:grid-cols-[minmax(0,1fr)_12rem] @xl:px-6 @xl:py-5">
-                <div className="min-w-0">
+          <section aria-labelledby="invite-link-title" className="mt-6">
+            <div className="grid items-center gap-4 rounded-3xl bg-secondary p-4 @xl:grid-cols-[minmax(0,1fr)_12rem] @xl:px-6 @xl:py-5">
+              <div className="min-w-0">
+                <StaggerLine index={3}>
                   <h2 id="invite-link-title" className="text-sm leading-5 text-foreground/70">Your invite link</h2>
+                </StaggerLine>
+                <StaggerLine index={4}>
                   <p className="mt-1 w-fit max-w-full select-all text-base leading-5 font-medium [overflow-wrap:anywhere]" data-invite-link>
                     {link ? (
                       <>
@@ -101,7 +105,9 @@ export function InvitePage({ onBack }: { onBack: () => void }) {
                       </>
                     ) : error ? "Link unavailable" : "Loading invitation link…"}
                   </p>
-                </div>
+                </StaggerLine>
+              </div>
+              <StaggerLine index={5}>
                 <button
                   className="t-hover flex h-12 w-full items-center justify-center rounded-full bg-foreground px-4 text-base leading-5 font-medium whitespace-nowrap text-background enabled:hover:bg-foreground/90 disabled:opacity-40"
                   disabled={!link && !error}
@@ -112,18 +118,20 @@ export function InvitePage({ onBack }: { onBack: () => void }) {
                     <TextSwap text={copied ? "Copied!" : !link && error ? "Try again" : "Copy invitation link"} />
                   </span>
                 </button>
-              </div>
-              {error && <p className="mt-2 text-sm text-destructive" role="alert">{error}</p>}
+              </StaggerLine>
+            </div>
+            {error && <p className="mt-2 text-sm text-destructive" role="alert">{error}</p>}
+            <StaggerLine index={6}>
               <p className="mt-3 max-w-2xl text-sm leading-5 text-foreground/70">
                 You earn 0.3% a year on each friend’s deposits after the entry fee. Their performance fees fund your payouts in Earn MAX shares. Unpaid rewards carry over for that friend.
               </p>
-            </section>
-          </StaggerLine>
+            </StaggerLine>
+          </section>
         </StaggerReveal>
 
         {friends && (
           <StaggerReveal>
-            <StaggerLine index={3}>
+            <StaggerLine index={7}>
               <InvitedFriends friends={friends} />
             </StaggerLine>
           </StaggerReveal>
