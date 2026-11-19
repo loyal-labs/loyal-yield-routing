@@ -41,6 +41,7 @@ CRONS = {
     'earn-yield-joy': 'WEB_APP_DATABASE_URL WEB_YIELD_DATABASE_URL TIMESCALEDB_URL WEB_SOLANA_RPC_URL ONESIGNAL_APP_ID ONESIGNAL_REST_API_KEY MIXPANEL_PROJECT_TOKEN',
     'earn-events-mixpanel': 'WEB_APP_DATABASE_URL WEB_YIELD_DATABASE_URL MIXPANEL_PROJECT_TOKEN',
     'earn-max-referral-facts': 'WEB_APP_DATABASE_URL WEB_YIELD_DATABASE_URL WEB_SOLANA_RPC_URL',
+    'earn-max-referral-fees': 'WEB_APP_DATABASE_URL WEB_YIELD_DATABASE_URL WEB_SOLANA_RPC_URL',
 }
 
 
@@ -105,9 +106,10 @@ def cron_jobs():
     optional = unit_properties('loyal-web-cron-earn-events-mixpanel.timer', 'LoadState')
     if optional.get('LoadState') != 'not-found':
         jobs.append('earn-events-mixpanel')
-    referral = unit_properties('loyal-web-cron-earn-max-referral-facts.timer', 'UnitFileState,ActiveState')
-    if referral.get('UnitFileState') == 'enabled' or referral.get('ActiveState') == 'active':
-        jobs.append('earn-max-referral-facts')
+    for job in ('earn-max-referral-facts', 'earn-max-referral-fees'):
+        referral = unit_properties(f'loyal-web-cron-{job}.timer', 'UnitFileState,ActiveState')
+        if referral.get('UnitFileState') == 'enabled' or referral.get('ActiveState') == 'active':
+            jobs.append(job)
     return jobs
 
 
