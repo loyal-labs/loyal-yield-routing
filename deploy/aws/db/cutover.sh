@@ -263,6 +263,16 @@ halt_src_writers() {
   src_writers_off || die "a superuser writer on the source still runs or starts at boot"
 }
 
+# start_script <unit>...: the remote command that starts the units. A timer with only OnBootSec and
+# OnUnitActiveSec has no next elapse after a stop and start until its service has run once, so
+# the service runs once, and a failed run is no failure here: it arms the timer all the same, and a
+# check service can fail honestly right after an outage. The timer must then show a next elapse, or
+# the command fails naming it.
+start_script() {
+  # shellcheck disable=SC2016
+  echo 'armed() { r=$(systemctl show -p NextElapseUSecRealtime --value $1) && m=$(systemctl show -p NextElapseUSecMonotonic --value $1) || return 1; [ -n "$r" ] || case $m in "" | infinity) false ;; esac; }; systemctl start '"$*"' || exit 1; for t in '"$*"'; do case $t in *.timer) armed $t || systemctl start "$(systemctl show -p Unit --value $t)" || :; for i in 1 2 3 4 5 6 7 8 9 10; do armed $t && continue 2; sleep 1; done; armed $t && continue; echo "cutover: $t has no next elapse after its service ran" >&2; exit 1 ;; esac; done'
+}
+
 # The source's own timers and services again, once it is the primary, enabled and running as freeze
 # found them.
 start_src_timers() {
@@ -271,7 +281,7 @@ start_src_timers() {
   restore_boot src
   ran=$(ran_before src "$SRCSTARTS")
   [[ -n ${ran// /} ]] || { echo "source: none of $SRCSTARTS ran before freeze; none started"; return 0; }
-  on_src "systemctl start $ran" || die "source: starting $ran failed"
+  on_src "$(start_script "$ran")" || die "source: starting $ran failed"
   echo "source: started $ran"
 }
 
@@ -297,7 +307,7 @@ start_timers() {
   local timers
   timers=${*:3}
   [[ -n ${timers// /} ]] || { echo "$1: no timers to start"; return 0; }
-  on "$1" "$([[ $2 == enable ]] && echo "systemctl enable $timers && ")systemctl start $timers" || die "$1: starting $timers failed"
+  on "$1" "$([[ $2 == enable ]] && echo "systemctl enable $timers || exit 1; ")$(start_script "$timers")" || die "$1: starting $timers failed"
   echo "$1: started$([[ $2 == enable ]] && echo ' and enabled') $timers"
 }
 
