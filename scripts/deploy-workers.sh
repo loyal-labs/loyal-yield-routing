@@ -161,8 +161,7 @@ if [[ $web_family == yes && ${LOYAL_DEPLOY_DRY_RUN:-} == 1 ]]; then
 fi
 
 # The cutover tool disables cloudflared on the retired box and enables it on the live one.
-live=$(ssh -o BatchMode=yes -o ConnectTimeout=10 "$host" systemctl is-enabled cloudflared.service) || true
-if [[ $live != enabled ]]; then
+if ! live=$(ssh -o BatchMode=yes -o ConnectTimeout=10 "$host" systemctl is-enabled cloudflared.service) || [[ $live != enabled ]]; then
   echo "$host is not the live Loyal box (cloudflared.service read: '${live//$'\n'/ }'); set LOYAL_WORKERS_SSH to the live box (loyal-main after the move)" >&2
   exit 1
 fi
