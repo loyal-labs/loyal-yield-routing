@@ -521,7 +521,8 @@ mkdir -p /etc/systemd/system/w20-live.service.d
 printf '[Unit]\nConditionPathExists=/nonexistent-moved-to-aws\n' >/etc/systemd/system/w20-live.service.d/zz-s3-moved.conf
 systemctl daemon-reload
 systemctl stop w20-live.service
-systemctl disable --now w20-scorecard.timer weather-reward-pilot-rotate.timer weather-reward-pilot-segments-archive.timer >/dev/null 2>&1
+systemctl disable --now w20-scorecard.timer weather-reward-pilot-rotate.timer >/dev/null 2>&1
+systemctl disable --now weather-reward-pilot-segments-archive.timer >/dev/null 2>&1
 systemctl stop weather-reward-pilot-rotate.service w20-scorecard.service weather-reward-pilot.service weather-reward-pilot-segments-archive.service
 systemctl disable --now w2-weather.service w20-record.service >/dev/null 2>&1
 bad=0
@@ -529,9 +530,10 @@ for u in w20-live w20-record w2-weather w20-scorecard.timer weather-reward-pilot
   a=$(systemctl is-active "$u"); e=$(systemctl is-enabled "$u" 2>&1)
   echo "  $u active=$a enabled=$e"
   case $a in inactive | failed) ;; *) bad=1 ;; esac
-  case $e in enabled | enabled-runtime) bad=1 ;; esac
+  case $e in disabled | static | masked | indirect | not-found | *"No such file or directory"*) ;; *) bad=1 ;; esac
 done
-pgrep -af '/srv/w20/bin/w20|rewardcollect' && bad=1
+pgrep -af '/srv/w20/bin/w20|rewardcollect'
+[ $? -eq 1 ] || bad=1
 exit $bad
 EOF
 }
@@ -541,7 +543,8 @@ stop_new() {
   newsh 'sudo bash -s' <<'EOF'
 set -u
 systemctl stop w20-live.service
-systemctl disable --now w20-scorecard.timer weather-reward-pilot-rotate.timer weather-reward-pilot-segments-archive.timer >/dev/null 2>&1
+systemctl disable --now w20-scorecard.timer weather-reward-pilot-rotate.timer >/dev/null 2>&1
+systemctl disable --now weather-reward-pilot-segments-archive.timer >/dev/null 2>&1
 systemctl stop weather-reward-pilot-rotate.service w20-scorecard.service weather-reward-pilot.service weather-reward-pilot-segments-archive.service
 systemctl disable --now w2-weather.service w20-record.service >/dev/null 2>&1
 bad=0
@@ -549,9 +552,10 @@ for u in w20-live w20-record w2-weather w20-scorecard.timer weather-reward-pilot
   a=$(systemctl is-active "$u"); e=$(systemctl is-enabled "$u" 2>&1)
   echo "  $u active=$a enabled=$e"
   case $a in inactive | failed) ;; *) bad=1 ;; esac
-  case $e in enabled | enabled-runtime) bad=1 ;; esac
+  case $e in disabled | static | masked | indirect | not-found | *"No such file or directory"*) ;; *) bad=1 ;; esac
 done
-pgrep -af '/srv/w20/bin/w20|rewardcollect' && bad=1
+pgrep -af '/srv/w20/bin/w20|rewardcollect'
+[ $? -eq 1 ] || bad=1
 exit $bad
 EOF
 }
@@ -562,7 +566,8 @@ set -e
 systemctl daemon-reload
 systemctl enable --now w2-weather.service w20-record.service
 systemctl enable --now w20-scorecard.timer weather-reward-pilot-rotate.timer
-systemctl enable --now weather-reward-pilot-segments-archive.timer || echo "WARN: weather-reward-pilot-segments-archive.timer did not start here; the bot start goes on, enable it by hand"
+for t in w20-scorecard.timer weather-reward-pilot-rotate.timer; do [ "$(systemctl is-active "$t")" = active ] || { echo "$t did not start"; exit 1; }; done
+{ systemctl enable --now weather-reward-pilot-segments-archive.timer && [ "$(systemctl is-active weather-reward-pilot-segments-archive.timer)" = active ]; } || echo "WARN: weather-reward-pilot-segments-archive.timer did not start here; the bot start goes on, enable it by hand"
 EOF
 }
 
@@ -574,7 +579,8 @@ rmdir /etc/systemd/system/w20-live.service.d 2>/dev/null || true
 systemctl daemon-reload
 systemctl enable --now w2-weather.service w20-record.service
 systemctl enable --now w20-scorecard.timer weather-reward-pilot-rotate.timer
-systemctl enable --now weather-reward-pilot-segments-archive.timer || echo "WARN: weather-reward-pilot-segments-archive.timer did not start here; the bot start goes on, enable it by hand"
+for t in w20-scorecard.timer weather-reward-pilot-rotate.timer; do [ "$(systemctl is-active "$t")" = active ] || { echo "$t did not start"; exit 1; }; done
+{ systemctl enable --now weather-reward-pilot-segments-archive.timer && [ "$(systemctl is-active weather-reward-pilot-segments-archive.timer)" = active ]; } || echo "WARN: weather-reward-pilot-segments-archive.timer did not start here; the bot start goes on, enable it by hand"
 EOF
 }
 
