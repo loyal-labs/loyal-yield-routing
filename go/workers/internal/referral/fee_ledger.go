@@ -76,7 +76,7 @@ func (s *Store) CollectFees(ctx context.Context, c *chain.Client, anchor, dry bo
 		return s.holdFees(ctx, out, dry, err)
 	}
 	out.AdminAccruedLP = strconv.FormatUint(observed.Accrued, 10)
-	at, err := c.BlockTime(ctx, target)
+	at, err := feeCheckpointTime(ctx, target, c.BlockTime)
 	if err != nil {
 		return s.holdFees(ctx, out, dry, err)
 	}
@@ -138,6 +138,24 @@ func (s *Store) CollectFees(ctx context.Context, c *chain.Client, anchor, dry bo
 	}
 	out.VerifiedSlot = target
 	return out, nil
+}
+
+// The RPC's block history can briefly trail its finalized account snapshot.
+func feeCheckpointTime(ctx context.Context, slot uint64, blockTime func(context.Context, uint64) (time.Time, error)) (time.Time, error) {
+	for delay := time.Second; ; delay *= 2 {
+		if err := ctx.Err(); err != nil {
+			return time.Time{}, err
+		}
+		at, err := blockTime(ctx, slot)
+		if !errors.Is(err, chain.ErrUnavailable) || delay > 8*time.Second {
+			return at, err
+		}
+		select {
+		case <-ctx.Done():
+			return time.Time{}, ctx.Err()
+		case <-time.After(delay):
+		}
+	}
 }
 
 // The cursor continues to describe the last fully reconciled inventory.
