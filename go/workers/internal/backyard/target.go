@@ -537,6 +537,9 @@ func decideSnapshot(s Snapshot, initializationReady func(Snapshot) bool) Decisio
 		}
 		return decision
 	}
+	if s.MonitorsArmed && s.Nonterminal == "" && !approvedVoltrFeeTerms(s) {
+		return monitorHold(s, "voltr_fee_terms_unapproved")
+	}
 	if s.Nonterminal != "" {
 		reason := "resume_nonterminal_operation"
 		if s.HasAmbiguousSubmission {

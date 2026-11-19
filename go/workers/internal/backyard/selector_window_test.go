@@ -101,3 +101,17 @@ func TestAdvantageWindowSurvivesQuoteOutages(t *testing.T) {
 	}
 	t.Logf("live sequence: ENTER after %v", entered)
 }
+
+func TestFeeTransitionStartsFreshAdvantageWindow(t *testing.T) {
+	in := autoWindowFixture()
+	key := advantageKey{lane: onreONycUSDC, unlevered: true}
+	var state SelectorState
+	for _, fee := range []int64{0, 1500, 0} {
+		in.Snapshot.ApprovedAdminPerformanceFeeBPS = fee
+		state = sampleWindow(t, in, state, true).State
+		if got := state.Advantages[key].Since; got != in.Now {
+			t.Fatalf("rate %d reused advantage window starting %v, want %v", fee, got, in.Now)
+		}
+		advanceSelectorFixture(&in, time.Minute)
+	}
+}

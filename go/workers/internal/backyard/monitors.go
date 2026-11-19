@@ -48,9 +48,6 @@ func bridgeMonitorHold(s Snapshot) (Decision, bool) {
 	if s.FeeAccumulatorRaw < 0 || s.LPSupplyInclFeesRaw < 0 || s.FeeAccumulatorRaw > s.LPSupplyInclFeesRaw {
 		return monitorHold(s, "fee_accounting_invalid"), true
 	}
-	if !approvedVoltrFeeTerms(s) {
-		return monitorHold(s, "voltr_fee_terms_unapproved"), true
-	}
 	if !s.JournalSequenceKnown {
 		if s.TicketLastConsumedSequenceRaw != 0 {
 			return monitorHold(s, "out_of_band_crank"), true

@@ -45,6 +45,11 @@ func TestEconomicReductionNeedsNetBenefitAndPersistence(t *testing.T) {
 			t.Fatalf("persistence at minute %d: %+v", minute, got)
 		}
 	}
+	feeOn := p
+	feeOn.AdminPerformanceFeeBPS = transitionAdminPerformanceFeeBPS
+	if got := sampler.persistDown(approved, feeOn, now.Add(31*time.Minute)); got.Next != got.Current {
+		t.Fatal("new fee inherited a mature repayment window", got)
+	}
 	if got := sampler.persistDown(approved, p, now.Add(time.Hour)); got.Next != got.Current {
 		t.Fatal("stale observation window survived", got)
 	}

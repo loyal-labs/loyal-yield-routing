@@ -211,7 +211,8 @@ func productionLeverageDownPricer(ctx context.Context, rpc *chain.Client, view *
 }
 
 type leverageDownWindow struct {
-	Current, Next float64
+	Current, Next          float64
+	AdminPerformanceFeeBPS int64
 	AdvantageWindow
 }
 
@@ -224,8 +225,8 @@ func (p *selectorSampler) persistDown(d leverageDecision, policy SelectorPolicy,
 		return d
 	}
 	old, ok := p.downWindows[d.Lane]
-	w := leverageDownWindow{d.Current, d.Next, AdvantageWindow{Since: now, LastSample: now}}
-	if ok && old.Current == d.Current && old.Next == d.Next && !old.Since.After(old.LastSample) &&
+	w := leverageDownWindow{Current: d.Current, Next: d.Next, AdminPerformanceFeeBPS: policy.AdminPerformanceFeeBPS, AdvantageWindow: AdvantageWindow{Since: now, LastSample: now}}
+	if ok && old.AdminPerformanceFeeBPS == policy.AdminPerformanceFeeBPS && old.Current == d.Current && old.Next == d.Next && !old.Since.After(old.LastSample) &&
 		!old.LastSample.After(now) && now.Sub(old.LastSample) <= policy.MaxSampleGap {
 		w.Since = old.Since
 	}

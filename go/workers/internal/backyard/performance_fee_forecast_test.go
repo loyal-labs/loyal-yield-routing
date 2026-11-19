@@ -142,6 +142,7 @@ func TestPerformanceFeeMoneyBoundCoversPinnedDilutionAndRounding(t *testing.T) {
 func TestPerformanceFeeLegacyHWMBlocksOnlyEconomicSelector(t *testing.T) {
 	t.Parallel()
 	in := coherentFeeSelectorFixture(t, 1_000_000, 1_000_000, new(big.Int).Lsh(big.NewInt(1), 47))
+	in.Policy.AdminPerformanceFeeBPS = in.Snapshot.ApprovedAdminPerformanceFeeBPS
 	previous := SelectorState{Policy: &in.Policy, Advantages: map[advantageKey]AdvantageWindow{
 		{lane: in.Markets[0].Lane}: {Since: in.Now.Add(-time.Hour), LastSample: in.Now},
 	}}
@@ -330,6 +331,7 @@ func TestPerformanceFeeUnarmedCannotWriteSelectorAuthority(t *testing.T) {
 	in.Quotes[0].EquityRaw, in.Quotes[0].BorrowReceiveRaw = 10_000_000, 5_000_000
 	in.Quotes[0] = parBorrow(in.Quotes[0])
 	in.Quotes[0].EvidenceID = sha256Bytes([]byte("unarmed-quoted-projection"))
+	in.Policy.AdminPerformanceFeeBPS = in.Snapshot.ApprovedAdminPerformanceFeeBPS
 	previous := SelectorState{Policy: &in.Policy, Advantages: map[advantageKey]AdvantageWindow{
 		{lane: in.Markets[0].Lane}: {Since: in.Now.Add(-time.Hour), LastSample: in.Now.Add(-time.Second)},
 	}}
