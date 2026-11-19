@@ -528,8 +528,8 @@ bad=0
 for u in w20-live w20-record w2-weather w20-scorecard.timer weather-reward-pilot-rotate.timer weather-reward-pilot weather-reward-pilot-rotate w20-scorecard weather-reward-pilot-segments-archive.timer weather-reward-pilot-segments-archive; do
   a=$(systemctl is-active "$u"); e=$(systemctl is-enabled "$u" 2>&1)
   echo "  $u active=$a enabled=$e"
-  [ "$a" = active ] || [ "$a" = activating ] && bad=1
-  [ "$e" = enabled ] && bad=1
+  case $a in inactive | failed) ;; *) bad=1 ;; esac
+  case $e in enabled | enabled-runtime) bad=1 ;; esac
 done
 pgrep -af '/srv/w20/bin/w20|rewardcollect' && bad=1
 exit $bad
@@ -545,11 +545,11 @@ systemctl disable --now w20-scorecard.timer weather-reward-pilot-rotate.timer we
 systemctl stop weather-reward-pilot-rotate.service w20-scorecard.service weather-reward-pilot.service weather-reward-pilot-segments-archive.service
 systemctl disable --now w2-weather.service w20-record.service >/dev/null 2>&1
 bad=0
-for u in w20-live w20-record w2-weather w20-scorecard.timer weather-reward-pilot-rotate.timer weather-reward-pilot weather-reward-pilot-segments-archive.timer weather-reward-pilot-segments-archive; do
+for u in w20-live w20-record w2-weather w20-scorecard.timer weather-reward-pilot-rotate.timer weather-reward-pilot weather-reward-pilot-rotate w20-scorecard weather-reward-pilot-segments-archive.timer weather-reward-pilot-segments-archive; do
   a=$(systemctl is-active "$u"); e=$(systemctl is-enabled "$u" 2>&1)
   echo "  $u active=$a enabled=$e"
-  [ "$a" = active ] || [ "$a" = activating ] && bad=1
-  [ "$e" = enabled ] && bad=1
+  case $a in inactive | failed) ;; *) bad=1 ;; esac
+  case $e in enabled | enabled-runtime) bad=1 ;; esac
 done
 pgrep -af '/srv/w20/bin/w20|rewardcollect' && bad=1
 exit $bad
@@ -561,7 +561,8 @@ start_new() {
 set -e
 systemctl daemon-reload
 systemctl enable --now w2-weather.service w20-record.service
-systemctl enable --now w20-scorecard.timer weather-reward-pilot-rotate.timer weather-reward-pilot-segments-archive.timer
+systemctl enable --now w20-scorecard.timer weather-reward-pilot-rotate.timer
+systemctl enable --now weather-reward-pilot-segments-archive.timer || echo "WARN: weather-reward-pilot-segments-archive.timer did not start here; the bot start goes on, enable it by hand"
 EOF
 }
 
@@ -572,7 +573,8 @@ rm -f /etc/systemd/system/w20-live.service.d/zz-s3-moved.conf
 rmdir /etc/systemd/system/w20-live.service.d 2>/dev/null || true
 systemctl daemon-reload
 systemctl enable --now w2-weather.service w20-record.service
-systemctl enable --now w20-scorecard.timer weather-reward-pilot-rotate.timer weather-reward-pilot-segments-archive.timer
+systemctl enable --now w20-scorecard.timer weather-reward-pilot-rotate.timer
+systemctl enable --now weather-reward-pilot-segments-archive.timer || echo "WARN: weather-reward-pilot-segments-archive.timer did not start here; the bot start goes on, enable it by hand"
 EOF
 }
 
