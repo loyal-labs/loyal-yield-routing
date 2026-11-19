@@ -338,6 +338,7 @@ $(verify_body)"
 
 # ---- checks shared by preflight and switch
 BLOCKERS=()
+IN_SWITCH=0 # 1 only for the preflight call inside cmd_switch, never read from the environment
 block() { BLOCKERS+=("$1"); echo "  BLOCKER $1"; }
 okl() { echo "  ok      $1"; }
 
@@ -496,6 +497,7 @@ preflight_checks() {
 
   echo "owed from others"
   if [[ -s $PROOF ]]; then okl "resting-order proof on file: $PROOF"
+  elif [[ $IN_SWITCH == 1 ]]; then okl "resting-order proof: owed by step 7 of this switch, which --go allows (resting_usd > 0 from $NEW's own venue journal, or back)"
   else block "PARKED resting-order proof from $NEW, not on file ($PROOF). No order-free proof exists (an unsigned POST gets 401 from every region, a signed FAK never rests). One order from the wallet is needed, so only the owner can allow it. The command that produces it is: $0 switch --go (step 7 reads resting_usd > 0 from $NEW's own venue journal and fails into back); save that line to the file"; fi
 
   echo
@@ -587,7 +589,7 @@ $(sync_body)"
 cmd_switch() {
   [[ ${1:-} == --go ]] || die "switch needs --go (owner's go; the peer session that owns w20-live must be present)"
   say "1/7 preflight"
-  cmd_preflight || die "preflight failed, nothing was touched"
+  IN_SWITCH=1 cmd_preflight || die "preflight failed, nothing was touched"
   say "2/7 pre-pass copy with the old bot still running"
   cmd_sync || die "pre-pass copy failed, nothing was touched"
   say "3/7 stop and disable the old units"
