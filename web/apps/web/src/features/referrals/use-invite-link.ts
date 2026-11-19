@@ -10,16 +10,17 @@ export function useInviteLink(enabled: boolean) {
   const { user } = useAuthSession();
   const walletAddress = user?.walletAddress;
   const [result, setResult] = useState<{
-    link: string;
+    data: Get["/api/referrals"];
     walletAddress: string;
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [attempt, setAttempt] = useState(0);
-  const link =
+  const data =
     enabled && result?.walletAddress === walletAddress
-      ? result?.link
+      ? result?.data
       : undefined;
+  const link = data?.link;
 
   useEffect(() => {
     setResult(null);
@@ -35,7 +36,7 @@ export function useInviteLink(enabled: boolean) {
           throw new Error("Missing invitation link");
         }
         if (!controller.signal.aborted)
-          setResult({ link: data.link, walletAddress });
+          setResult({ data, walletAddress });
       })
       .catch(() => {
         if (!controller.signal.aborted)
@@ -65,6 +66,7 @@ export function useInviteLink(enabled: boolean) {
 
   return {
     link,
+    friends: data?.friends,
     error,
     copied,
     copy,

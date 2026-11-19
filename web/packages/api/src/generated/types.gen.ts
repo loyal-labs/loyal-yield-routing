@@ -2135,6 +2135,7 @@ export type ReferralFriend = {
     deposited_micro: number;
     label: string;
     status: 'joined' | 'deposited' | 'withdrawn';
+    wallet_label: string;
 };
 
 export type Referrals = {

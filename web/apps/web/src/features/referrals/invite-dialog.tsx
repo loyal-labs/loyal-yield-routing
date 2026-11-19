@@ -13,6 +13,7 @@ import { useEscapeOverlay } from "@/components/wallet-workspace/facelift/escape-
 import { TextSwap } from "@/components/wallet-workspace/facelift/text-swap";
 import { ThemedIcon } from "@/components/wallet-workspace/facelift/themed-icon";
 
+import { InvitedFriends } from "./invited-friends";
 import { useInviteLink } from "./use-invite-link";
 
 /* eslint-disable @next/next/no-img-element -- Preserve the Figma SVGs’ fractional dimensions. */
@@ -25,7 +26,7 @@ export function InviteDialog({
   isOpen: boolean;
   onClose: () => void;
 }) {
-  const { link, error, copied, copy, retry } = useInviteLink(isOpen);
+  const { link, friends, error, copied, copy, retry } = useInviteLink(isOpen);
   const codeStart = (link?.lastIndexOf("/") ?? -1) + 1;
   const triggerRef = useRef<HTMLElement | null>(null);
   useEscapeOverlay(isOpen, onClose);
@@ -147,6 +148,7 @@ export function InviteDialog({
             ) : null}
           </div>
         </div>
+        {friends ? <InvitedFriends friends={friends} /> : null}
         <div className="px-4 pt-2 pb-4">
           <button
             className="t-hover flex h-12 w-full items-center justify-center rounded-full bg-foreground px-5 font-medium text-[16px] text-background leading-5 enabled:hover:bg-foreground/90 disabled:opacity-40"
