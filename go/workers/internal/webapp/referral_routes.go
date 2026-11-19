@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -63,6 +64,7 @@ type ReferralCounts struct {
 type Referrals struct {
 	Code           string           `json:"code"`
 	Link           string           `json:"link"`
+	RewardsActive  bool             `json:"rewards_active"`
 	CanClaim       bool             `json:"can_claim"`
 	ClosesAt       time.Time        `json:"closes_at"`
 	Counts         ReferralCounts   `json:"counts"`
@@ -179,16 +181,24 @@ func (h referralRoutes) referrals(ctx context.Context, in *sessionRequest) (*ref
 	if err != nil {
 		return nil, earnUnavailable("referrals binding", err, referralsDownCode, referralsDownReason)
 	}
-	friends, err := h.store.Friends(ctx, user.ID, h.earnings)
+	var rewardsActive bool
+	if h.earnings {
+		rewardsActive, err = h.store.RewardsActive(ctx)
+		if err != nil {
+			slog.Warn("referral reward launch unavailable", "error", err)
+		}
+	}
+	friends, err := h.store.Friends(ctx, user.ID, rewardsActive)
 	if err != nil {
 		return nil, earnUnavailable("referrals friends", err, referralsDownCode, referralsDownReason)
 	}
 	body := Referrals{
-		Code:     string(code),
-		Link:     h.inviteBase + "/i/" + string(code),
-		CanClaim: canClaim,
-		ClosesAt: closesAt,
-		Friends:  make([]ReferralFriend, len(friends)),
+		Code:          string(code),
+		Link:          h.inviteBase + "/i/" + string(code),
+		RewardsActive: rewardsActive,
+		CanClaim:      canClaim,
+		ClosesAt:      closesAt,
+		Friends:       make([]ReferralFriend, len(friends)),
 	}
 	for i, f := range friends {
 		body.Friends[i] = ReferralFriend{Label: f.Label, WalletLabel: f.WalletLabel, Earnings: f.Earnings, Status: f.Status, DepositedMicro: f.DepositedMicro, BoundAt: f.BoundAt}

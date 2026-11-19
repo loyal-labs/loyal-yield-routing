@@ -1,5 +1,7 @@
 # Earn Max referral capital
 
+The signed-in invite page shows the Earn MAX reward offer once the web role can read the reward tables and the configured launch time has arrived. Include `SELECT` on `loyal_yield.referral_earn_max_program` in that role’s optional referral earnings grants. The web service checks grants at startup. Invite links and signup lists are available before launch.
+
 Apply the referral identity migration 0146 before capital migration 0147. The collector reads the identity conflict view under its shared transaction lock. Deploy the matching loyal-web binary with app database, yield database and archival mainnet RPC access.
 
 An empty `loyal_yield.referral_earn_max_program` keeps the program inactive. At the approved go-live, record one finalized mainnet slot and its matching chain time in `launch_slot` and `launched_at`. The row is immutable. The collector starts at the later of go-live and binding. It processes the bound wallet’s verified Earn Max smart account. A newly eligible deposit requires the bound wallet’s signature on the finalized deposit transaction. Delegated-only deposits without historical ownership proof hold coverage for review.

@@ -48,7 +48,7 @@ function InviteArtwork() {
 }
 
 export function InvitePage({ onBack }: { onBack: () => void }) {
-  const { link, friends, error, copied, copy, retry } = useInviteLink(true);
+  const { link, rewardsActive, friends, error, copied, copy, retry } = useInviteLink(true);
   const codeStart = (link?.lastIndexOf("/") ?? -1) + 1;
 
   return (
@@ -74,12 +74,12 @@ export function InvitePage({ onBack }: { onBack: () => void }) {
                 className="pr-16 text-[clamp(2rem,12cqi,3rem)] leading-none font-bold tracking-[-0.045em] whitespace-nowrap @xl:pr-48 @xl:text-[clamp(3rem,9cqi,4.5rem)]"
                 id="invite-title"
               >
-                Earn <span className="text-[#ffd41b]">$300</span>
+                {rewardsActive ? <>Earn <span className="text-[#ffd41b]">$300</span></> : "Invite friends"}
               </h1>
             </StaggerLine>
             <StaggerLine index={1}>
               <p id="invite-example-condition" className="mt-3 max-w-[30rem] text-pretty text-lg leading-6 @xl:mr-48 @xl:text-[22px] @xl:leading-7">
-                when your friends keep <strong>$100,000</strong> in Earn MAX for a full year.
+                {rewardsActive ? <>when your friends keep <strong>$100,000</strong> in Earn MAX for a full year.</> : "Share your link to invite someone to Loyal."}
               </p>
             </StaggerLine>
             <div className="pointer-events-none absolute top-6 right-4 origin-top-right scale-[0.42] @xl:top-1/2 @xl:right-6 @xl:-translate-y-1/2 @xl:scale-100" aria-hidden="true">
@@ -121,18 +121,18 @@ export function InvitePage({ onBack }: { onBack: () => void }) {
               </StaggerLine>
             </div>
             {error && <p className="mt-2 text-sm text-destructive" role="alert">{error}</p>}
-            <StaggerLine index={6}>
+            {rewardsActive && <StaggerLine index={6}>
               <p className="mt-3 max-w-2xl text-sm leading-5 text-foreground/70">
                 You earn 0.3% a year on each friend’s deposits after the entry fee. Their performance fees fund your payouts in Earn MAX shares. Unpaid rewards carry over for that friend.
               </p>
-            </StaggerLine>
+            </StaggerLine>}
           </section>
         </StaggerReveal>
 
         {friends && (
           <StaggerReveal>
             <StaggerLine index={7}>
-              <InvitedFriends friends={friends} />
+              <InvitedFriends friends={friends} rewardsActive={rewardsActive} />
             </StaggerLine>
           </StaggerReveal>
         )}

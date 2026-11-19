@@ -2155,6 +2155,7 @@ export type Referrals = {
     deposited_micro: number;
     friends: Array<ReferralFriend>;
     link: string;
+    rewards_active: boolean;
 };
 
 export type RefundPrepareRequest = {

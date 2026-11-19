@@ -2,10 +2,21 @@ package referral
 
 import (
 	"context"
+	"log/slog"
 	"strings"
 	"time"
 	"unicode/utf8"
 )
+
+func (s *Store) RewardsActive(ctx context.Context) (bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, queryTimeout)
+	defer cancel()
+	var active bool
+	err := s.yield.QueryRow(ctx, `SELECT EXISTS (
+		SELECT FROM loyal_yield.referral_earn_max_program WHERE singleton AND launched_at <= now()
+	)`).Scan(&active)
+	return active, err
+}
 
 type FriendStatus string
 
@@ -94,7 +105,7 @@ ORDER BY b.bound_at DESC, b.referee_app_user_id`, referrer)
 	if withEarnings && len(bound) != 0 {
 		earnings, err = s.friendEarnings(ctx, referrer)
 		if err != nil {
-			return nil, err
+			slog.Warn("referral earnings unavailable; returning invited friends", "error", err)
 		}
 	}
 	friends := make([]Friend, len(bound))

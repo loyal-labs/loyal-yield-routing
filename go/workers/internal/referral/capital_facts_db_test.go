@@ -48,6 +48,9 @@ func TestReferralCapitalCheckpointIsMonotonicAndRetainsProvenEarnings(t *testing
 	const auth = "account"
 	exec("INSERT INTO loyal_yield.referral_bindings(referee_app_user_id,referee_wallet,referrer_app_user_id,source,referee_signed_up_at) VALUES($1,'wallet','00000000-0000-0000-0000-000000000002','link',now())", id)
 	store := NewStore(db, nil, nil)
+	if active, err := store.RewardsActive(ctx); err != nil || active {
+		t.Fatalf("before launch: active=%v err=%v", active, err)
+	}
 	fact := capitalFact{solana.Signature{1}, 105, time.Unix(105, 0), earnmax.CapitalMovement{FreeAfter: 2}}
 	save := func(slot uint64, earned, reason string, f capitalFact, account string) error {
 		out := CapitalReport{Coverage: "incomplete", At: time.Unix(int64(slot), 0), Slot: slot, Reason: reason}
@@ -135,6 +138,9 @@ func TestReferralCapitalCheckpointIsMonotonicAndRetainsProvenEarnings(t *testing
 		t.Fatalf("unlaunched batch %+v active=%v err=%v", ids, active, err)
 	}
 	exec("INSERT INTO loyal_yield.referral_earn_max_program(launch_slot,launched_at) VALUES(100,now())")
+	if active, err := store.RewardsActive(ctx); err != nil || !active {
+		t.Fatalf("after launch: active=%v err=%v", active, err)
+	}
 	t.Run("round robin includes failed or unmapped referrals without starving the next page", func(t *testing.T) {
 		exec(`INSERT INTO loyal_yield.referral_bindings(referee_app_user_id,referee_wallet,referrer_app_user_id,source,referee_signed_up_at) SELECT md5(i::text)::uuid, 'wallet'||i,'00000000-0000-0000-0000-000000000002','link',now() FROM generate_series(1,5) i`)
 		next := func(dry bool) []string {

@@ -20,8 +20,9 @@ function rewardValue(amount: string, minimum: boolean) {
 
 const columns = "sm:grid-cols-[minmax(0,1.4fr)_repeat(3,minmax(0,1fr))]";
 
-export function InvitedFriends({ friends }: { friends: ReferralFriend[] }) {
+export function InvitedFriends({ friends, rewardsActive }: { friends: ReferralFriend[]; rewardsActive: boolean }) {
   const hasEarnings = friends.some((friend) => friend.earnings);
+  const showRewards = rewardsActive || hasEarnings;
 
   return (
     <section aria-labelledby="invited-friends-title" className="mt-8 border-t border-border pt-6 sm:mt-10">
@@ -34,14 +35,16 @@ export function InvitedFriends({ friends }: { friends: ReferralFriend[] }) {
         </p>
       ) : (
         <>
-          <p className="mt-1 text-sm leading-5 text-foreground/70">
+          {showRewards && <p className="mt-1 text-sm leading-5 text-foreground/70">
             {hasEarnings ? "Lifetime rewards, shown in USDC." : "Referral earnings are unavailable."}
-          </p>
+          </p>}
           <div aria-hidden="true" className={`mt-5 hidden gap-x-3 border-b border-border pb-2 text-sm text-foreground/65 sm:grid ${columns}`}>
             <span>Wallet</span>
-            <span className="text-right">Earned</span>
-            <span className="text-right">Paid</span>
-            <span className="text-right">Still owed</span>
+            {showRewards && <>
+              <span className="text-right">Earned</span>
+              <span className="text-right">Paid</span>
+              <span className="text-right">Still owed</span>
+            </>}
           </div>
           <ul className="mt-3 divide-y divide-border sm:mt-0">
             {friends.map((friend) => {

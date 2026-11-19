@@ -19,7 +19,7 @@ test("a partially paid referral shows earned, paid and outstanding from the ledg
     outstanding_micro_usdc: "6000000",
     through: friend.bound_at,
   };
-  const render = (row: ReferralFriend) => renderToStaticMarkup(<InvitedFriends friends={[row]} />);
+  const render = (row: ReferralFriend) => renderToStaticMarkup(<InvitedFriends friends={[row]} rewardsActive />);
   const html = render({ ...friend, earnings });
   for (const [label, amount] of [["Earned", "15"], ["Paid", "9"], ["Still owed", "6"]]) {
     expect(html).toMatch(new RegExp(label + "</dt><dd[^>]*>" + amount + " USDC"));
@@ -33,4 +33,11 @@ test("a partially paid referral shows earned, paid and outstanding from the ledg
   expect(incomplete).toContain("≥ 9 USDC");
   expect(incomplete).toContain("Unverified");
   expect(incomplete).toContain("verified minimums");
+});
+
+test("before reward launch the signup list shows the wallet without promising rewards", () => {
+  const html = renderToStaticMarkup(<InvitedFriends friends={[friend]} rewardsActive={false} />);
+  expect(html).toContain(friend.wallet_label);
+  expect(html).not.toContain("Still owed");
+  expect(html).not.toContain("earnings are unavailable");
 });

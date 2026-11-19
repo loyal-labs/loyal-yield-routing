@@ -66,6 +66,7 @@ export function useInviteLink(enabled: boolean) {
 
   return {
     link,
+    rewardsActive: data?.rewards_active === true,
     friends: data?.friends,
     error,
     copied,
