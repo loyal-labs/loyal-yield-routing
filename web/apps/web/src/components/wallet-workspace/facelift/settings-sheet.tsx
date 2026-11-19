@@ -10,7 +10,6 @@ import { usePublicEnv } from "@/contexts/public-env-context";
 import { useSignInModal } from "@/contexts/sign-in-modal-context";
 import { useCherryRuntime } from "@/features/cherry/client/runtime-context";
 import { SettingsCodeField } from "@/features/referrals/code-field";
-import { InvitedFriends } from "@/features/referrals/invited-friends";
 import { useInviteLink } from "@/features/referrals/use-invite-link";
 import { useEscapeOverlay } from "./escape-owner";
 import { useSessionDisconnect } from "./use-session-disconnect";
@@ -116,12 +115,14 @@ function policyTitle(
 export function SettingsSheet({
   isOpen,
   onClose,
+  onOpenInvites,
   initialView = "settings",
   data,
   updates,
 }: {
   isOpen: boolean;
   onClose: () => void;
+  onOpenInvites: () => void;
   initialView?: "settings" | "policies";
   data: EarnPositionData;
   updates: PolicyUpdates;
@@ -232,18 +233,25 @@ export function SettingsSheet({
       {policyRow}
       {launched ? (
         <>
-          <SettingsRow
-            icon="icon-user-add.svg"
-            title="Invite a friend"
-            subtitle="Share a link to invite someone"
-            disabled={!invite.link && !invite.error}
-            onClick={invite.link ? invite.copy : invite.retry}
-          >
-            <span className={`${smallButton} ml-3`} aria-live="polite">
-              <TextSwap text={invite.copied ? "Copied!" : !invite.link && invite.error ? "Try again" : "Copy link"} />
-            </span>
-          </SettingsRow>
-          {invite.friends && <InvitedFriends friends={invite.friends} />}
+          <div className="flex items-center pr-4">
+            <SettingsRow
+              icon="icon-user-add.svg"
+              title="Invite a friend"
+              subtitle="View referrals and rewards"
+              onClick={onOpenInvites}
+            />
+            <button
+              aria-label={!invite.link && invite.error ? "Retry loading invitation link" : "Copy invitation link"}
+              className={smallButton}
+              disabled={!invite.link && !invite.error}
+              onClick={invite.link ? invite.copy : invite.retry}
+              type="button"
+            >
+              <span aria-live="polite">
+                <TextSwap text={invite.copied ? "Copied!" : !invite.link && invite.error ? "Try again" : "Copy link"} />
+              </span>
+            </button>
+          </div>
           {invite.error ? <p className="px-4 pb-2 text-[13px] text-destructive leading-4" role="alert">{invite.error}</p> : null}
         </>
       ) : null}

@@ -623,7 +623,8 @@ export function FaceliftSidebar({
         <div className="w-full py-2">
           {isSignedOutNav || !launched ? null : (
             <button
-              className="t-hover flex min-h-11 w-full items-center rounded-2xl px-4 text-left text-muted-foreground hover:bg-accent"
+              aria-current={activePage === "invite" ? "page" : undefined}
+              className={`t-hover flex min-h-11 w-full items-center rounded-2xl px-4 text-left hover:bg-accent ${activePage === "invite" ? "bg-accent text-foreground" : "text-muted-foreground"}`}
               onClick={() => onSelectPage("invite")}
               type="button"
             >
