@@ -265,10 +265,12 @@ halt_src_writers() {
 
 # start_script <unit>...: the remote command that starts the units. A timer with only OnBootSec and
 # OnUnitActiveSec has no next elapse after a stop and start until its service has run once, so
-# the service runs once and the timer must then show one, or the command fails naming the timer.
+# the service runs once, and a failed run is no failure here: it arms the timer all the same, and a
+# check service can fail honestly right after an outage. The timer must then show a next elapse, or
+# the command fails naming it.
 start_script() {
   # shellcheck disable=SC2016
-  echo 'armed() { [ -n "$(systemctl show -p NextElapseUSecRealtime --value $1)" ] || [ "$(systemctl show -p NextElapseUSecMonotonic --value $1)" != infinity ]; }; systemctl start '"$*"' || exit 1; for t in '"$*"'; do case $t in *.timer) armed $t || systemctl start "$(systemctl show -p Unit --value $t)" || exit 1; for i in 1 2 3 4 5 6 7 8 9 10; do armed $t && continue 2; sleep 1; done; echo "cutover: $t has no next elapse after its service ran" >&2; exit 1 ;; esac; done'
+  echo 'armed() { [ -n "$(systemctl show -p NextElapseUSecRealtime --value $1)" ] || [ "$(systemctl show -p NextElapseUSecMonotonic --value $1)" != infinity ]; }; systemctl start '"$*"' || exit 1; for t in '"$*"'; do case $t in *.timer) armed $t || systemctl start "$(systemctl show -p Unit --value $t)" || :; for i in 1 2 3 4 5 6 7 8 9 10; do armed $t && continue 2; sleep 1; done; echo "cutover: $t has no next elapse after its service ran" >&2; exit 1 ;; esac; done'
 }
 
 # The source's own timers and services again, once it is the primary, enabled and running as freeze
