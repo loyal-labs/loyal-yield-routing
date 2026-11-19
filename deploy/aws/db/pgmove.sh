@@ -1113,6 +1113,13 @@ ts_cutoff() {
   echo "$c"
 }
 
+# ht_since: a hash's lower time bound for hypertables, the later of the backfill cutoff and retain_edge,
+# read once on the side being left and sent as one literal to both sides: the cutoff alone stops being
+# the oldest day both sides hold at the source's next retention run.
+ht_since() {
+  q "$FROM" "$HT_DB" "select greatest($(lit "$(ts_cutoff)")::date, $(retain_edge))::timestamp at time zone 'UTC'"
+}
+
 ht_state() { echo "$WORK/backfill/${1//./_}"; }
 
 cmd_backfill() {
@@ -1569,7 +1576,7 @@ hash_table() {
     ht_bound "$db" "$table" || return 0
     bound=$HT_BOUND
     HASH_BOUNDS+="$table $bound"$'\n'
-    [[ -n $since ]] || since=$(ts_cutoff)
+    [[ -n $since ]] || since=$(ht_since)
     bexpr="(t.$HT_KEY / $HASH_BUCKET)" where="where t.$HT_TIME >= $(lit "$since") and t.$HT_KEY <= $bound"
   elif [[ -z $pk ]]; then
     bexpr=0::int
@@ -1825,14 +1832,11 @@ check_tables() {
 
 # The reverse catchup carries only hypertable rows above the switch's floor, and the tail check reads
 # only rows above the last hash bound: an UPDATE or DELETE below it on the target during its tenure
-# would pass both. So the reverse hashes every hypertable row from the backfill cutoff, or from
-# retain_edge once retention has moved past it: no retention job on either side has dropped those.
+# would pass both. So the reverse hashes every hypertable row from ht_since.
 hash_hypertables() {
-  local table since
+  local table
   for table in ${HYPERTABLES[@]+"${HYPERTABLES[@]}"}; do
-    since=$(q dst "$HT_DB" "select greatest($(lit "$(ts_cutoff)")::date, $(retain_edge))::timestamp at time zone 'UTC'")
-    [[ -n $since ]] || die "hash: $table: the target answered no lower time bound"
-    hash_table "$HT_DB" "$table" "$HT_KEY" bigint 1 "$since"
+    hash_table "$HT_DB" "$table" "$HT_KEY" bigint 1
   done
 }
 
