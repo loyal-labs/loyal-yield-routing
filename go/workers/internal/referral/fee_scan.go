@@ -78,52 +78,66 @@ func (s *feeState) apply(e feeEvent) error {
 }
 
 func feeSnapshot(ctx context.Context, c *chain.Client, minSlot uint64) (uint64, feeState, error) {
+	slot, state, _, err := feeSnapshotWithAccounts(ctx, c, minSlot, nil)
+	return slot, state, err
+}
+
+// Capture any additional harvest accounts in the same finalized bank as the
+// certified executable, vault and LP mint.
+func feeSnapshotWithAccounts(ctx context.Context, c *chain.Client, minSlot uint64, extra []solana.PublicKey) (uint64, feeState, []*chain.Account, error) {
 	var out feeState
 	genesis, err := c.GenesisHash(ctx)
 	if err != nil {
-		return 0, out, err
+		return 0, out, nil, err
 	}
 	if genesis.String() != "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d" {
-		return 0, out, errors.New("not Solana mainnet")
+		return 0, out, nil, errors.New("not Solana mainnet")
 	}
 	dataKey := solana.MustPublicKeyFromBase58(voltr.FeeProgramDataAddress)
-	slot, acs, err := c.Accounts(ctx, []solana.PublicKey{earnmax.Vault, earnmax.LPMint, voltr.ProgramID, dataKey}, rpc.CommitmentFinalized, minSlot)
+	keys := append([]solana.PublicKey{earnmax.Vault, earnmax.LPMint, voltr.ProgramID, dataKey}, extra...)
+	slot, acs, err := c.Accounts(ctx, keys, rpc.CommitmentFinalized, minSlot)
 	if err != nil {
-		return 0, out, err
+		return 0, out, nil, err
 	}
-	if len(acs) != 4 || acs[0] == nil || acs[1] == nil || acs[2] == nil || acs[3] == nil {
-		return slot, out, errors.New("fee checkpoint accounts missing")
+	if len(acs) != len(keys) || acs[0] == nil || acs[1] == nil || acs[2] == nil || acs[3] == nil {
+		return slot, out, nil, errors.New("fee checkpoint accounts missing")
 	}
 	program, data := acs[2], acs[3]
 	loader := solana.BPFLoaderUpgradeableProgramID
 	if program.Owner != loader || !program.Executable || len(program.Data) != 36 || binary.LittleEndian.Uint32(program.Data) != 2 || !bytes.Equal(program.Data[4:], dataKey[:]) ||
 		data.Owner != loader || len(data.Data) < 45 || binary.LittleEndian.Uint32(data.Data) != 3 || binary.LittleEndian.Uint64(data.Data[4:12]) != voltr.FeeProgramDeploySlot {
-		return slot, out, errors.New("Voltr executable identity changed")
+		return slot, out, nil, errors.New("Voltr executable identity changed")
 	}
 	digest := sha256.Sum256(data.Data[45:])
 	if hex.EncodeToString(digest[:]) != voltr.FeeProgramDataSHA256 {
-		return slot, out, errors.New("Voltr executable hash changed")
+		return slot, out, nil, errors.New("Voltr executable hash changed")
 	}
-	v, err := voltr.DecodeVault(acs[0])
+	out, err = certifiedFeeInventory(acs[0], acs[1])
+	return slot, out, acs, err
+}
+
+func certifiedFeeInventory(vaultAccount, mintAccount *chain.Account) (feeState, error) {
+	var out feeState
+	v, err := voltr.DecodeVault(vaultAccount)
 	if err != nil {
-		return slot, out, err
+		return out, err
 	}
-	if len(acs[0].Data) != voltr.VaultSize || v.Admin != feeAdmin || v.AssetMint != earnmax.AssetMint || v.LPMint != earnmax.LPMint || v.AdminPerformanceFeeBPS != 1500 || v.ManagerPerformanceFeeBPS != 0 || v.ProtocolPerformanceFeeBPS != 0 || v.AdminManagementFeeBPS != 0 || v.ManagerManagementFeeBPS != 0 || v.ProtocolManagementFeeBPS != 0 || v.IssuanceFeeBPS != 40 || v.RedemptionFeeBPS != 0 || v.FeeAccumulatorManagerRaw != 0 || v.FeeAccumulatorProtocolRaw != 0 {
-		return slot, out, errors.New("fee recipient or certified fee configuration changed")
+	if len(vaultAccount.Data) != voltr.VaultSize || v.Admin != feeAdmin || v.AssetMint != earnmax.AssetMint || v.LPMint != earnmax.LPMint || v.AdminPerformanceFeeBPS != 1500 || v.ManagerPerformanceFeeBPS != 0 || v.ProtocolPerformanceFeeBPS != 0 || v.AdminManagementFeeBPS != 0 || v.ManagerManagementFeeBPS != 0 || v.ProtocolManagementFeeBPS != 0 || v.IssuanceFeeBPS != 40 || v.RedemptionFeeBPS != 0 || v.FeeAccumulatorManagerRaw != 0 || v.FeeAccumulatorProtocolRaw != 0 {
+		return out, errors.New("fee recipient or certified fee configuration changed")
 	}
-	mint, err := spl.DecodeMint(acs[1])
+	mint, err := spl.DecodeMint(mintAccount)
 	if err != nil || mint.Program != solana.TokenProgramID {
-		return slot, out, errors.New("invalid RWA LP mint")
+		return out, errors.New("invalid RWA LP mint")
 	}
 	auth, _, err := solana.FindProgramAddress([][]byte{[]byte("vault_lp_mint_auth"), earnmax.Vault[:]}, voltr.ProgramID)
-	if err != nil || binary.LittleEndian.Uint32(acs[1].Data[:4]) != 1 || !bytes.Equal(acs[1].Data[4:36], auth[:]) {
-		return slot, out, errors.New("LP mint authority mismatch")
+	if err != nil || binary.LittleEndian.Uint32(mintAccount.Data[:4]) != 1 || !bytes.Equal(mintAccount.Data[4:36], auth[:]) {
+		return out, errors.New("LP mint authority mismatch")
 	}
-	out.Minted = binary.LittleEndian.Uint64(acs[1].Data[36:44])
+	out.Minted = binary.LittleEndian.Uint64(mintAccount.Data[36:44])
 	out.Accrued = v.FeeAccumulatorAdminRaw
 	out.Dead = v.LPSupplyDeadWeightRaw
 	_, err = out.total()
-	return slot, out, err
+	return out, err
 }
 
 func feeOpeningMarker(ctx context.Context, c *chain.Client, at uint64) (string, error) {

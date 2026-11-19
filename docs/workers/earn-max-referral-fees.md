@@ -2,6 +2,8 @@
 
 The collector reads finalized Solana mainnet RWA vault and LP mint accounts and successful transactions. It stores raw Earn Max LP shares. Annual rewards in USDC are computed by the separate capital collector.
 
+Once the opening checkpoint exists, the [Earn MAX harvest job](earn-max-referral-harvest.md) can collect eligible fees into Loyal’s treasury. It runs under a separate fee-paying wallet.
+
 ## Starting a period
 
 1. Apply migrations 0146–0148 and configure the already approved program launch in `referral_earn_max_program`. The collector stays idle until a launch exists.
