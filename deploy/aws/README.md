@@ -1,5 +1,7 @@
 # deploy/aws
 
+Team members: to sign in, reach `loyal-main`, and deploy, read [`TEAM.md`](TEAM.md).
+
 ## box.sh
 
 `deploy/aws/box.sh <box> [--dry-run]` builds one AWS box from `deploy/aws/boxes/<box>.conf` and converges on rerun. A second run prints `<box>: 0 change(s)`. Boxes: `robinx-main`, `loyal-main`, `xstock-live`, `weather-live`.

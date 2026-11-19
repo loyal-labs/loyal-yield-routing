@@ -28,6 +28,8 @@ The workers run on the Go engine in `go/workers`, deployed to Hetzner from `depl
 
 SQL migrations live in `migrations/yield` and `migrations/timescale`; apply them with `go/workers/cmd/loyal-migrate` and never edit an applied file.
 
+The Hetzner host moves to the AWS box `loyal-main`. `deploy/aws/TEAM.md` says how to sign in, reach that box, and tell which side is live.
+
 ## Architecture
 
 This project should follow Loyal's vertical-slice architecture style as it grows.
