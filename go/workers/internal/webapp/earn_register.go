@@ -73,6 +73,19 @@ func CheckEarnGrants(ctx context.Context, appDB, yieldDB *pgxpool.Pool) map[stri
 			mu.Unlock()
 		})
 	}
+	// Invite links and signups also work before the rewards migrations are installed.
+	wg.Go(func() {
+		ok := familyGranted(ctx, referralEarningsGrant, yieldDB, []Grant{
+			TableGrant("loyal_yield.referral_earn_max_program", "SELECT"),
+			TableGrant("loyal_yield.referral_earn_max_capital_status", "SELECT"),
+			TableGrant("loyal_yield.referral_earn_max_capital_resets", "SELECT"),
+			TableGrant("loyal_yield.referral_attribution_conflicts", "SELECT"),
+			TableGrant("loyal_yield.referral_earn_max_paid", "SELECT"),
+		})
+		mu.Lock()
+		granted[referralEarningsGrant] = ok
+		mu.Unlock()
+	})
 	wg.Wait()
 	return granted
 }

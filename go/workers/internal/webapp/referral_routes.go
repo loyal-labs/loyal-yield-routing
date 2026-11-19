@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -24,6 +25,8 @@ var earnReferralsFamily = earnFamily{
 		TableGrant("loyal_yield.referral_codes", "INSERT"),
 		TableGrant("loyal_yield.referral_bindings", "SELECT"),
 		TableGrant("loyal_yield.referral_bindings", "INSERT"),
+		TableGrant("loyal_yield.referral_wallet_identities", "SELECT"),
+		TableGrant("loyal_yield.referral_wallet_identities", "INSERT"),
 		TableGrant("loyal_yield.user_yield_positions", "SELECT"),
 		TableGrant("loyal_yield.earn_max_cash_flows", "SELECT"),
 	},
@@ -31,21 +34,25 @@ var earnReferralsFamily = earnFamily{
 	register: earnRoutes.registerReferrals,
 }
 
+const referralEarningsGrant = "referral-earnings"
+
 var referralLookupBudget = budget{every: 10 * time.Second, burst: 60}
 
 const (
 	referralsPath       = "/api/referrals"
 	referralClaimPath   = "/api/referrals/claim"
-	defaultInviteBase   = "https://next.askloyal.com"
+	defaultInviteBase   = "https://askloyal.com"
 	referralsDownCode   = "referrals_unavailable"
 	referralsDownReason = "Referrals are temporarily unavailable."
 )
 
 type ReferralFriend struct {
-	Label          string                `json:"label"`
-	Status         referral.FriendStatus `json:"status" enum:"joined,deposited,withdrawn"`
-	DepositedMicro int64                 `json:"deposited_micro"`
-	BoundAt        time.Time             `json:"bound_at"`
+	Label          string                 `json:"label"`
+	WalletLabel    string                 `json:"wallet_label"`
+	Earnings       *referral.EarnedReward `json:"earnings,omitempty"`
+	Status         referral.FriendStatus  `json:"status" enum:"joined,deposited,withdrawn"`
+	DepositedMicro int64                  `json:"deposited_micro"`
+	BoundAt        time.Time              `json:"bound_at"`
 }
 
 type ReferralCounts struct {
@@ -57,6 +64,7 @@ type ReferralCounts struct {
 type Referrals struct {
 	Code           string           `json:"code"`
 	Link           string           `json:"link"`
+	RewardsActive  bool             `json:"rewards_active"`
 	CanClaim       bool             `json:"can_claim"`
 	ClosesAt       time.Time        `json:"closes_at"`
 	Counts         ReferralCounts   `json:"counts"`
@@ -99,6 +107,7 @@ type referralRoutes struct {
 	auth       *Auth
 	store      *referral.Store
 	inviteBase string
+	earnings   bool
 	tries      *inviteAttempts
 	lookups    *limiters
 	wallets    TestWallets
@@ -107,11 +116,12 @@ type referralRoutes struct {
 func (h earnRoutes) registerReferrals(api huma.API) {
 	routes := referralRoutes{
 		auth:       h.auth,
-		store:      referral.NewStore(h.YieldDB, h.appDB),
+		store:      referral.NewStore(h.YieldDB, h.appDB, h.referralIdentity),
 		inviteBase: strings.TrimRight(cmp.Or(os.Getenv("LOYAL_INVITE_BASE_URL"), defaultInviteBase), "/"),
 		tries:      newInviteAttempts(),
 		lookups:    newLimiters(),
 		wallets:    h.TestWallets,
+		earnings:   h.Granted[referralEarningsGrant],
 	}
 	huma.Register(api, huma.Operation{
 		OperationID: "get-referrals",
@@ -125,7 +135,7 @@ func (h earnRoutes) registerReferrals(api huma.API) {
 		Method:      http.MethodPost,
 		Path:        referralClaimPath,
 		Summary:     "Bind the signed-in user to the inviter who owns a referral code",
-		Responses:   errorResponses[routeError](api, 400, 401, 403, 429, 503),
+		Responses:   errorResponses[routeError](api, 400, 401, 403, 409, 429, 503),
 	}, routes.claim)
 	documentJSONBody[ReferralClaimRequest](api, referralClaimPath)
 	huma.Register(api, huma.Operation{
@@ -167,23 +177,31 @@ func (h referralRoutes) referrals(ctx context.Context, in *sessionRequest) (*ref
 	if err != nil {
 		return nil, earnUnavailable("referrals code", err, referralsDownCode, referralsDownReason)
 	}
-	bound, err := h.store.Bound(ctx, user)
+	canClaim, closesAt, err := h.store.ClaimWindowFor(ctx, user)
 	if err != nil {
 		return nil, earnUnavailable("referrals binding", err, referralsDownCode, referralsDownReason)
 	}
-	friends, err := h.store.Friends(ctx, user.ID)
+	var rewardsActive bool
+	if h.earnings {
+		rewardsActive, err = h.store.RewardsActive(ctx)
+		if err != nil {
+			slog.Warn("referral reward launch unavailable", "error", err)
+		}
+	}
+	friends, err := h.store.Friends(ctx, user.ID, rewardsActive)
 	if err != nil {
 		return nil, earnUnavailable("referrals friends", err, referralsDownCode, referralsDownReason)
 	}
 	body := Referrals{
-		Code:     string(code),
-		Link:     h.inviteBase + "/i/" + string(code),
-		CanClaim: !bound && !time.Now().After(user.ClaimClosesAt()),
-		ClosesAt: user.ClaimClosesAt(),
-		Friends:  make([]ReferralFriend, len(friends)),
+		Code:          string(code),
+		Link:          h.inviteBase + "/i/" + string(code),
+		RewardsActive: rewardsActive,
+		CanClaim:      canClaim,
+		ClosesAt:      closesAt,
+		Friends:       make([]ReferralFriend, len(friends)),
 	}
 	for i, f := range friends {
-		body.Friends[i] = ReferralFriend{Label: f.Label, Status: f.Status, DepositedMicro: f.DepositedMicro, BoundAt: f.BoundAt}
+		body.Friends[i] = ReferralFriend{Label: f.Label, WalletLabel: f.WalletLabel, Earnings: f.Earnings, Status: f.Status, DepositedMicro: f.DepositedMicro, BoundAt: f.BoundAt}
 		body.DepositedMicro += f.DepositedMicro
 		switch f.Status {
 		case referral.Joined:
@@ -218,6 +236,9 @@ func (h referralRoutes) claim(ctx context.Context, in *redeemRequest) (*referral
 		return nil, earnError(http.StatusBadRequest, "invalid_source", "")
 	}
 	result, err := h.store.Bind(ctx, user, code, source)
+	if errors.Is(err, referral.ErrIdentityConflict) {
+		return nil, earnError(http.StatusConflict, "referral_identity_conflict", "This referral needs review because linked wallets have conflicting records.")
+	}
 	if err != nil {
 		return nil, earnUnavailable("referrals bind", err, referralsDownCode, referralsDownReason)
 	}

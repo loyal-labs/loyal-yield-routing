@@ -1,0 +1,11 @@
+[Unit]
+Description=Check Earn MAX for a referral fee harvest hourly
+
+[Timer]
+OnCalendar=*-*-* *:36:00 UTC
+RandomizedDelaySec=30s
+Persistent=true
+Unit=loyal-referral-harvest.service
+
+[Install]
+WantedBy=timers.target

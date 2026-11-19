@@ -2,10 +2,21 @@ package referral
 
 import (
 	"context"
+	"log/slog"
 	"strings"
 	"time"
 	"unicode/utf8"
 )
+
+func (s *Store) RewardsActive(ctx context.Context) (bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, queryTimeout)
+	defer cancel()
+	var active bool
+	err := s.yield.QueryRow(ctx, `SELECT EXISTS (
+		SELECT FROM loyal_yield.referral_earn_max_program WHERE singleton AND launched_at <= now()
+	)`).Scan(&active)
+	return active, err
+}
 
 type FriendStatus string
 
@@ -15,8 +26,19 @@ const (
 	Withdrawn FriendStatus = "withdrawn"
 )
 
+// EarnedReward reports lifetime amounts in USDC micro-units. Through dates the accrual checkpoint.
+type EarnedReward struct {
+	EarnedMicroUSDC      string    `json:"earned_micro_usdc"`
+	PaidMicroUSDC        string    `json:"paid_micro_usdc"`
+	OutstandingMicroUSDC string    `json:"outstanding_micro_usdc"`
+	HasHistoryGap        bool      `json:"has_history_gap,omitempty"`
+	Through              time.Time `json:"through"`
+}
+
 type Friend struct {
 	Label          string
+	WalletLabel    string
+	Earnings       *EarnedReward
 	Status         FriendStatus
 	DepositedMicro int64
 	BoundAt        time.Time
@@ -37,7 +59,7 @@ type boundFriend struct {
 	Friend
 }
 
-func (s *Store) Friends(ctx context.Context, referrer string) ([]Friend, error) {
+func (s *Store) Friends(ctx context.Context, referrer string, withEarnings bool) ([]Friend, error) {
 	ctx, cancel := context.WithTimeout(ctx, queryTimeout)
 	defer cancel()
 	rows, err := s.yield.Query(ctx, `WITH earn_max AS (
@@ -79,12 +101,46 @@ ORDER BY b.bound_at DESC, b.referee_app_user_id`, referrer)
 	if err != nil {
 		return nil, err
 	}
+	var earnings map[string]*EarnedReward
+	if withEarnings && len(bound) != 0 {
+		earnings, err = s.friendEarnings(ctx, referrer)
+		if err != nil {
+			slog.Warn("referral earnings unavailable; returning invited friends", "error", err)
+		}
+	}
 	friends := make([]Friend, len(bound))
 	for i, f := range bound {
-		f.Label = maskedLabel(emails[f.id], f.wallet)
+		f.Earnings = earnings[f.id]
+		f.WalletLabel = maskedWallet(f.wallet)
+		f.Label = maskedLabel(emails[f.id], f.WalletLabel)
 		friends[i] = f.Friend
 	}
 	return friends, nil
+}
+
+func (s *Store) friendEarnings(ctx context.Context, referrer string) (map[string]*EarnedReward, error) {
+	rows, err := s.yield.Query(ctx, `SELECT b.referee_app_user_id::text, c.earned_micro_usdc::text, p.paid_micro_usdc::text,
+       (c.earned_micro_usdc - p.paid_micro_usdc)::text, c.earned_through_at,
+       EXISTS (SELECT 1 FROM loyal_yield.referral_earn_max_capital_resets r WHERE r.referee_app_user_id = b.referee_app_user_id)
+FROM loyal_yield.referral_bindings b
+JOIN loyal_yield.referral_earn_max_capital_status c USING (referee_app_user_id)
+JOIN loyal_yield.referral_earn_max_paid p USING (referee_app_user_id)
+WHERE b.referrer_app_user_id = $1 AND p.paid_micro_usdc BETWEEN 0 AND c.earned_micro_usdc
+  AND NOT EXISTS (SELECT 1 FROM loyal_yield.referral_attribution_conflicts x WHERE x.referee_app_user_id = b.referee_app_user_id)`, referrer)
+	if err != nil {
+		return nil, err
+	}
+	earnings := make(map[string]*EarnedReward)
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		var amount EarnedReward
+		if err := rows.Scan(&id, &amount.EarnedMicroUSDC, &amount.PaidMicroUSDC, &amount.OutstandingMicroUSDC, &amount.Through, &amount.HasHistoryGap); err != nil {
+			return nil, err
+		}
+		earnings[id] = &amount
+	}
+	return earnings, rows.Err()
 }
 
 func (s *Store) emails(ctx context.Context, ids []string) (map[string]string, error) {
@@ -109,7 +165,7 @@ func (s *Store) emails(ctx context.Context, ids []string) (map[string]string, er
 
 const minLocalForInitial = 3
 
-func maskedLabel(email, wallet string) string {
+func maskedLabel(email, walletLabel string) string {
 	local, domain, ok := strings.Cut(email, "@")
 	if ok && local != "" && domain != "" {
 		if utf8.RuneCountInString(local) < minLocalForInitial {
@@ -118,6 +174,10 @@ func maskedLabel(email, wallet string) string {
 		initial, _ := utf8.DecodeRuneInString(local)
 		return string(initial) + "…@" + domain
 	}
+	return walletLabel
+}
+
+func maskedWallet(wallet string) string {
 	if len(wallet) <= 8 {
 		return wallet
 	}

@@ -13,17 +13,31 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnmax"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/referral"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/webapp"
 )
 
-const cronUsage = "usage: loyal-web cron smart-account-reconcile | earn-yield-joy [--dry-run] | earn-events-mixpanel [--dry-run]"
+const cronUsage = "usage: loyal-web cron smart-account-reconcile | earn-yield-joy [--dry-run] | earn-events-mixpanel [--dry-run] | earn-max-referral-facts [referee-app-user-id] [--dry-run] | earn-max-referral-fees [--anchor] [--dry-run]"
 
 // runCron runs one of the jobs vercel.json used to schedule and prints the
 // summary the Next route answered with. A job that cannot start, or that is
 // refused the lock, exits non-zero so the timer's unit shows failed.
 func runCron(ctx context.Context, args []string) error {
+	anchor := false
+	if len(args) > 1 && args[0] == "earn-max-referral-fees" && args[1] == "--anchor" {
+		anchor = true
+		args = append([]string{args[0]}, args[2:]...)
+	}
+	var referee string
+	if len(args) > 1 && args[0] == "earn-max-referral-facts" && args[1] != "--dry-run" {
+		if len(args) > 3 || (len(args) == 3 && args[2] != "--dry-run") {
+			return errors.New(cronUsage)
+		}
+		referee = args[1]
+		args = append([]string{args[0]}, args[2:]...)
+	}
 	dryRun := len(args) == 2 && args[1] == "--dry-run"
-	if len(args) == 0 || (len(args) == 2 && !dryRun) || len(args) > 2 || (dryRun && args[0] != "earn-yield-joy" && args[0] != "earn-events-mixpanel") {
+	if len(args) == 0 || (len(args) == 2 && !dryRun) || len(args) > 2 || (dryRun && args[0] != "earn-yield-joy" && args[0] != "earn-events-mixpanel" && args[0] != "earn-max-referral-facts" && args[0] != "earn-max-referral-fees") {
 		return errors.New(cronUsage)
 	}
 	appDB := openDB(ctx, "cron", "WEB_APP_DATABASE_URL")
@@ -46,6 +60,42 @@ func runCron(ctx context.Context, args []string) error {
 		if rpcClient, err = chain.New(endpoint, 10*time.Second); err != nil {
 			return errors.New("WEB_SOLANA_RPC_URL is not a usable RPC URL")
 		}
+	}
+	if args[0] == "earn-max-referral-fees" {
+		if rpcClient == nil || yieldDB == nil {
+			return errors.New("earn-max-referral-fees requires a Solana RPC and Yield database")
+		}
+		report, err := referral.NewStore(yieldDB, appDB, nil).CollectFees(ctx, rpcClient, anchor, dryRun)
+		if err != nil {
+			return err
+		}
+		if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {
+			return err
+		}
+		if report.Status == "held" {
+			return errors.New("Earn Max referral fee evidence is held")
+		}
+		return nil
+	}
+	if args[0] == "earn-max-referral-facts" {
+		if rpcClient == nil || yieldDB == nil {
+			return errors.New("earn-max-referral-facts needs WEB_SOLANA_RPC_URL and WEB_YIELD_DATABASE_URL")
+		}
+		store := referral.NewStore(yieldDB, appDB, nil)
+		var summary any
+		var err error
+		if referee == "" {
+			summary, err = store.CollectCapitalBatch(ctx, rpcClient, dryRun)
+		} else {
+			summary, err = store.CollectCapital(ctx, rpcClient, referee, dryRun)
+		}
+		if encodeErr := json.NewEncoder(os.Stdout).Encode(summary); encodeErr != nil && err == nil {
+			return encodeErr
+		}
+		if err != nil {
+			return fmt.Errorf("cron earn-max-referral-facts: %w", err)
+		}
+		return nil
 	}
 	webEarn := earn(ctx, prometheus.NewRegistry(), rpcClient, appDB, yieldDB, timescaleDB)
 	if webEarn == nil {

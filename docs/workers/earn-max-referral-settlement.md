@@ -1,0 +1,57 @@
+# Settle a funded Earn Max referral
+
+The settlement operator delivers raw Earn Max LP shares from the vault admin’s canonical LP account to the inviter’s Earn Max account. Each reservation names a single harvested fee lot, its referee and its inviter. A lot can fund that referee’s accrued rewards across multiple settlements. Other friends’ earnings and lots are independent, including friends of the same inviter.
+
+The operator needs migrations 0129 and 0146–0149, a launched program, a positive fee lot, and a proved lifetime earnings checkpoint covering the lot’s harvest slot. The last proved checkpoint remains usable after a later gap if the attribution is still clear. The app database must identify one ready mainnet account for the inviter, who must have full signing permissions at threshold one. The destination is the LP associated token account for that account’s Earn Max authority.
+
+## Settlement value and remaining balances
+
+The operator fixes the USDC value when it reserves the shares. It reads the program-owned vault, mint, custody and Solana clock at one finalized slot. The published NAV report must be at most one hour old. The operator divides published vault value in USDC micros by effective raw LP supply, including fee accumulators and pending management fees. This values the delivered LP at published NAV. Immediate redemption proceeds can differ because redemption uses unlocked profit and any redemption fee. The signed memo binds the settlement ID, lot, price numerator, denominator, quote slot and credited USDC amount.
+
+The maximum whole LP amount fits all three limits.
+
+- The referee’s proved lifetime USDC earnings less previously delivered settlements.
+- The remaining raw LP in that referee’s specified harvested lot.
+- The treasury’s available LP after other open reservations and transfers that finalized after the custody snapshot.
+
+If treasury custody cannot cover the combined verified raw lots and the remaining assessed entitlements, all new plans hold. Fully resolved assessments reserve the sum of their referees’ actual shares, including fractional amounts. An assessment with unresolved owners temporarily reserves its entire performance fee. When those owners are resolved, the required backing falls to the actual eligible proportion.
+
+The ledger rounds the fixed USDC value of the delivered shares up to a whole micro. This can reduce the remaining amount by less than one micro-USDC per settlement. When even one raw share exceeds the unpaid balance, that balance carries forward. For example, USD 15 earned with a harvested lot currently worth USD 9 produces a USD 9 settlement and USD 6 carried forward. Lifetime paid changes only on a finalized, matching debit and credit. The paid view records the original fixed quote and the actual delivery slot separately.
+
+## Operator commands
+
+Configure an authorized settlement database connection in `REFERRAL_SETTLEMENT_DATABASE_URL`, a read-only app connection in `REFERRAL_APP_DATABASE_URL`, and a mainnet RPC with finalized history and transaction submission in `SOLANA_RPC_URL`. Use the approved credential provider for the operator environment. The treasury wallet approves each payout on the signer’s device. The operator CLI records and submits the signed bytes. It needs no treasury private key.
+
+1. Run `loyal-referral-settlement prepare LOT_ID`. Review the wallet, recipient ATA, source treasury ATA, mint, share quantity, fixed USDC amount, timestamps and blockhash lifetime. The output’s `unsigned_wire` is base64 binary Solana transaction data. Repeating the command returns the same open reservation.
+2. Use the treasury wallet’s sign-only action and save the binary signed transaction on the trusted operator workstation. The prepared transaction contains the exact transfer, settlement memo and a recent blockhash. Registration accepts a quote up to 32 finalized slots and 30 seconds old. Have the wallet connected before preparing the quote.
+3. Run `loyal-referral-settlement submit ID SIGNED_WIRE_FILE`. It checks the treasury signature, destination, fee lot, available balance and quote, then records the signed bytes before sending them once with RPC preflight. `submission: submitted` means the RPC accepted the transaction. `unknown` and `already_registered` mean the operator should proceed to reconciliation using the recorded signature. Retrying the command cannot send a second transaction. The existing `register` command is available for a separately managed submitter. Choose one path before registration.
+4. Run `loyal-referral-settlement reconcile ID`. A finalized success requires the saved signature and wire and an exact decrease and increase at the expected treasury and recipient LP accounts. A matching finalized on-chain failure releases the reservation. An unknown signature, provider error, or different balance effect keeps the amount reserved.
+5. Run `loyal-referral-settlement recover ID` after finalized blockheight exceeds the saved last valid height. Recovery checks that the exact blockhash is invalid and the archive covers the quote. It reads finalized history of the writable source LP account back to an entry at or before the quote, checking messages for all receipts between the quote and the finalized expiry observation. This also finds an exported draft that landed before registration. One exact matching transfer is reconciled. An empty complete interval releases the reservation as expired, after which prepare can generate a new quote. Missing receipts, inconsistent history, multiple matching wires or a scan exceeding 512 history entries leave the original reservation in place. Restore archive coverage to retry a held recovery. For a busy treasury and a delayed recovery, supply a third argument containing a finalized source-account transaction signature just after expiry. The operator validates its account, signature and finalized blockheight before using it as the exclusive starting cursor. If the expiry interval itself exceeds the scan cap, the reservation stays held for investigation. Preserve the signed bytes for direct reconciliation whenever they exist.
+
+Each signed transaction has one direct treasury signer and uses an idempotent ATA create, SPL TransferChecked and a memo. Database state cannot revoke a previously shared signed transaction. There is no scheduled payout or bundled key provisioning in this operator.
+
+The dashboard reads `loyal_yield.referral_earn_max_paid`. It provides lifetime confirmed `paid_micro_usdc`, `last_paid_slot` and `has_open_settlement` per bound referee.
+
+## Wallet sign-only handoff
+
+Use the treasury’s trusted local wallet integration. The following Wallet Standard example takes the selected `wallet` and the JSON `plan` returned by `prepare`. Check the inviter’s displayed recipient account, LP mint and share amount against the reservation in the wallet confirmation. The exact settlement ID appears in the memo. The Loyal extension exposes the same [sign-only feature](../../web/apps/extension/entrypoints/loyal-wallet-provider.content.ts).
+
+```js
+const treasury = "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ";
+const account = wallet.accounts.find(a => a.address === treasury);
+if (!account || plan.treasury_owner !== treasury) throw new Error("Wrong treasury account");
+const original = Uint8Array.from(atob(plan.unsigned_wire), c => c.charCodeAt(0));
+const [{ signedTransaction }] = await wallet.features["solana:signTransaction"]
+  .signTransaction({ account, chain: "solana:mainnet", transaction: original.slice() });
+if (original[0] !== 1 || signedTransaction[0] !== 1 ||
+    signedTransaction.length !== original.length ||
+    original.subarray(65).some((b, i) => signedTransaction[i + 65] !== b)) {
+  throw new Error("Wallet changed the payout message");
+}
+const download = document.createElement("a");
+download.href = URL.createObjectURL(new Blob([signedTransaction]));
+download.download = plan.settlement_id + ".signed";
+download.click();
+```
+
+Use a private download directory. Pass the downloaded file directly to `submit`. If approval took too long, reconcile the existing reservation and use `recover` after finalized expiry before preparing a new quote.

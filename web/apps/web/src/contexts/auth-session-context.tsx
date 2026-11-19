@@ -26,6 +26,7 @@ type AuthSessionContextValue = {
   user: AuthSessionUser | null;
   session: WalletSessionResponse["session"] | null;
   launched: boolean;
+  launchChecked: boolean;
   refreshSession: () => Promise<WalletSessionResponse | null>;
   logout: () => Promise<void>;
 };
@@ -51,7 +52,8 @@ export function AuthSessionProvider({ children }: { children: ReactNode }) {
     subject: string | null;
     launched: boolean;
   } | null>(null);
-  const launched = launch !== null && launch.subject === subject && launch.launched;
+  const launchChecked = launch !== null && launch.subject === subject;
+  const launched = launchChecked && launch.launched;
 
   const launchReadRef = useRef(0);
   const loadLaunched = useCallback(
@@ -65,7 +67,16 @@ export function AuthSessionProvider({ children }: { children: ReactNode }) {
           }
           return;
         } catch {
-          if (attempt === LAUNCH_READ_TRIES - 1) return;
+          if (attempt === LAUNCH_READ_TRIES - 1) {
+            if (launchReadRef.current === readId) {
+              setLaunch((previous) =>
+                previous?.subject === readSubject
+                  ? previous
+                  : { subject: readSubject, launched: false }
+              );
+            }
+            return;
+          }
           await new Promise((resolve) =>
             setTimeout(resolve, LAUNCH_RETRY_BASE_MS * 2 ** attempt)
           );
@@ -237,10 +248,11 @@ export function AuthSessionProvider({ children }: { children: ReactNode }) {
       session,
       user,
       launched,
+      launchChecked,
       refreshSession,
       logout,
     }),
-    [isHydrated, launched, logout, refreshSession, session, user]
+    [isHydrated, launchChecked, launched, logout, refreshSession, session, user]
   );
 
   return (
