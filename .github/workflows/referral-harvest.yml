@@ -1,0 +1,63 @@
+name: Earn MAX referral harvest
+
+on:
+  pull_request:
+    paths: &harvest_paths
+      - '.github/workflows/referral-harvest.yml'
+      - 'go/workers/**'
+      - 'deploy/hetzner/systemd/loyal-referral-harvest.*'
+  push:
+    branches: [main]
+    paths: *harvest_paths
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.6'
+          cache-dependency-path: go/workers/go.sum
+      - name: Verify fee collection and recovery
+        working-directory: go/workers
+        run: |
+          set -euo pipefail
+          pg="$(pg_config --bindir)"
+          socket="$(mktemp -d /tmp/referral-harvest.XXXXXXXX)"
+          "$pg/initdb" -D "$socket/data" -U runner --auth-local=trust --auth-host=reject >/dev/null
+          "$pg/pg_ctl" -D "$socket/data" -l "$socket/log" -o "-h '' -k $socket" -w start
+          trap '"$pg/pg_ctl" -D "$socket/data" -m fast -w stop' EXIT
+          "$pg/createdb" -h "$socket" -U runner referral_harvest_test
+          export REFERRAL_HARVEST_TEST_DATABASE_URL="postgresql:///referral_harvest_test?host=$socket&user=runner"
+          go test -count=1 ./internal/referral ./cmd/loyal-referral-harvest
+      - name: Build and seal the standalone job
+        working-directory: go/workers
+        run: |
+          set -euo pipefail
+          release="$RUNNER_TEMP/harvest"
+          for arch in amd64 arm64; do
+            mkdir -p "$release/$arch"
+            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath -buildvcs=true \
+              -o "$release/$arch/loyal-referral-harvest" ./cmd/loyal-referral-harvest
+          done
+          cp ../../deploy/hetzner/systemd/loyal-referral-harvest.{service,timer} "$release/"
+          cd "$release"
+          printf '%s\n' "$GITHUB_SHA" > COMMIT
+          sha256sum COMMIT {amd64,arm64}/loyal-referral-harvest loyal-referral-harvest.{service,timer} > SHA256SUMS
+          sha256sum --check SHA256SUMS
+      - name: Publish the sealed main artifact
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: referral-harvest-${{ github.sha }}
+          path: ${{ runner.temp }}/harvest/
+          if-no-files-found: error
+          overwrite: true
