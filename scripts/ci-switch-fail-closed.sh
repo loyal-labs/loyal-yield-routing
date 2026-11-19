@@ -3,6 +3,8 @@
 # preflights that printed "identical" for two failed checksum reads and "both (no answer)" for an architecture read that failed.
 # Round 8 added the quiet-grep pipe: xstock's S2 switch aborted on a healthy Prometheus because `curl | grep -qx` under pipefail fails when grep
 # exits at the first match and curl dies on the closed pipe.
+# The weather switch's round 2 added two more: `pgrep ... && bad=1` read a pgrep error (exit 2 or 3) as "no process", and `systemctl enable --now`
+# exits 0 when the unit was enabled but its start job failed.
 # Usage: scripts/ci-switch-fail-closed.sh [script...]   (default: every shell script under deploy/aws that a switch runs; run it on the xbots S2 scripts by path)
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
@@ -25,6 +27,12 @@ TWO_SUBS_OK = [
 
 def flag(f, n, fn, what, use):
     bad.append(f"{f}:{n} ({fn or 'top level'}): {what}; instead {use}")
+
+# `systemctl enable --now` lines whose start is proven another way (exact repo path, the whole stripped line, why).
+ENABLE_OK = [
+    ('deploy/aws/db/pgmove.sh', r'''run "$DST_SSH" "pg_createcluster $PG_MAJOR $DST_CLUSTER$data --port $DST_PORT --encoding $ENCODING --locale $LOCALE -- --locale-provider=$LOCALE_PROVIDER$extra && systemctl enable --now postgresql@$PG_MAJOR-$DST_CLUSTER"''', 'init goes on to query this cluster through psql and stops when it does not answer; pgmove.sh is frozen on the boxes until the Loyal switch'),
+    ('deploy/aws/db/pgmove.sh', r'''run "$DST_SSH" "systemctl enable --now pg-forward@$CLUSTER" "pg-forward@$CLUSTER started"''', 'forward_wait two lines down polls the port the unit opens and fails when it never answers'),
+]
 
 # Pipe stages that stop reading early (exact repo path, the whole stripped line, why the writer ends on its own or the cut is harmless).
 EARLY_OK = []
@@ -195,7 +203,8 @@ for f in sys.argv[1:]:
         rel = str(p)
     fn = ""
     open_pipe = False
-    for n, line in enumerate(p.read_text().split("\n"), 1):
+    lines = p.read_text().split("\n")
+    for n, line in enumerate(lines, 1):
         stripped = line.strip()
         carry = open_pipe
         m = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)\(\)\s*\{", line)
@@ -223,6 +232,12 @@ for f in sys.argv[1:]:
         if box_pipe(line):
             flag(f, n, fn, "a test on a pipeline that starts with a read of a box: when ssh or docker fails, the filter sees nothing and the test reads it as the answer no",
                  "read the answer into a variable under `|| { echo ...; exit 1; }` (loyal-clickstack-copy.sh final does), then test the variable")
+        if re.search(r"(?:^|[\s;&|({!])pgrep\s", line) and (re.search(r"&&|\|\|", line) or re.match(r"(?:if|elif|while|until|!)\s", stripped)):
+            flag(f, n, fn, "pgrep used as a yes or no: it exits 1 for no process and 2 or 3 for an error, so an error reads as no process",
+                 "run pgrep on its own line and compare its status with 1 on the next (`[ $? -eq 1 ] || bad=1`, stop_old in s3-weather.sh)")
+        if re.search(r"systemctl\s+enable\s+--now\b", line) and not any("is-active" in l for l in lines[n - 1:n + 3]) and not allowed(ENABLE_OK, rel, stripped.rstrip("\\").rstrip()):
+            flag(f, n, fn, "systemctl enable --now with no is-active check on it or the three lines after: it exits 0 when the unit was enabled but its start job failed",
+                 "read `systemctl is-active UNIT` after it and fail unless it prints active (start_new in s3-weather.sh); a start proven another way goes on ENABLE_OK with that reason")
         if f.endswith("s1-mnemonic.sh") and re.search(r"\$\{\w+:-0\}", line):
             flag(f, n, fn, "a missing statistic defaults to zero", "rsync_stats, which fails on a missing line")
 for b in bad:

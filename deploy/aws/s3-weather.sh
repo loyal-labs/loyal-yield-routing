@@ -566,7 +566,7 @@ set -e
 systemctl daemon-reload
 systemctl enable --now w2-weather.service w20-record.service
 systemctl enable --now w20-scorecard.timer weather-reward-pilot-rotate.timer
-for t in w20-scorecard.timer weather-reward-pilot-rotate.timer; do [ "$(systemctl is-active "$t")" = active ] || { echo "$t did not start"; exit 1; }; done
+for t in w2-weather.service w20-record.service w20-scorecard.timer weather-reward-pilot-rotate.timer; do [ "$(systemctl is-active "$t")" = active ] || { echo "$t did not start"; exit 1; }; done
 { systemctl enable --now weather-reward-pilot-segments-archive.timer && [ "$(systemctl is-active weather-reward-pilot-segments-archive.timer)" = active ]; } || echo "WARN: weather-reward-pilot-segments-archive.timer did not start here; the bot start goes on, enable it by hand"
 EOF
 }
@@ -579,7 +579,7 @@ rmdir /etc/systemd/system/w20-live.service.d 2>/dev/null || true
 systemctl daemon-reload
 systemctl enable --now w2-weather.service w20-record.service
 systemctl enable --now w20-scorecard.timer weather-reward-pilot-rotate.timer
-for t in w20-scorecard.timer weather-reward-pilot-rotate.timer; do [ "$(systemctl is-active "$t")" = active ] || { echo "$t did not start"; exit 1; }; done
+for t in w2-weather.service w20-record.service w20-scorecard.timer weather-reward-pilot-rotate.timer; do [ "$(systemctl is-active "$t")" = active ] || { echo "$t did not start"; exit 1; }; done
 { systemctl enable --now weather-reward-pilot-segments-archive.timer && [ "$(systemctl is-active weather-reward-pilot-segments-archive.timer)" = active ]; } || echo "WARN: weather-reward-pilot-segments-archive.timer did not start here; the bot start goes on, enable it by hand"
 EOF
 }
