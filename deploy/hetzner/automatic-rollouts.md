@@ -15,17 +15,20 @@ command package and binary, including its package initialization; changes to
 that shared dependency graph select all three. Go tests also verify each
 selected service's shared packages.
 
-Production scope includes every intermediate change since the last successful
-production workflow, so a failed rollout followed by a revert cannot silently
-drop a service. Renames and deletions include the previous dependency graph.
+Production scope includes every intermediate change since the last confirmed
+rollout, so a failed rollout followed by a revert cannot silently drop a
+service. Renames and deletions include the previous dependency graph.
 Tests can select checks without deployment; documentation selects neither.
 CI orchestration changes run regression gates without restarting unchanged
 applications. Each run uploads `scope.json` and lists its checks and deployments
 in the job summary. Empty deployment selections never connect to production.
 
-The final `verified` job requires every selected check to succeed and every
-unselected job to be skipped deliberately. Per-service verification receipts,
-binaries and assets belong to that exact main SHA and workflow run. PR jobs
+The `verified` job checks that every selected check passed. On main,
+`rollout-result` confirms that the selected services received verification
+receipts and passed deployment, or that the selection was empty. The next run
+uses that result as its baseline. For older workflows, a successful deployment
+with receipts for every service establishes the baseline. Per-service receipts,
+binaries and assets belong to the exact main SHA and workflow run. PR jobs
 receive no production SSH credentials.
 
 ## Activate once
