@@ -31,6 +31,8 @@ var earnReferralsFamily = earnFamily{
 	register: earnRoutes.registerReferrals,
 }
 
+const referralEarningsGrant = "referral-earnings"
+
 var referralLookupBudget = budget{every: 10 * time.Second, burst: 60}
 
 const (
@@ -42,11 +44,12 @@ const (
 )
 
 type ReferralFriend struct {
-	Label          string                `json:"label"`
-	WalletLabel    string                `json:"wallet_label"`
-	Status         referral.FriendStatus `json:"status" enum:"joined,deposited,withdrawn"`
-	DepositedMicro int64                 `json:"deposited_micro"`
-	BoundAt        time.Time             `json:"bound_at"`
+	Label          string                 `json:"label"`
+	WalletLabel    string                 `json:"wallet_label"`
+	Earnings       *referral.EarnedReward `json:"earnings,omitempty"`
+	Status         referral.FriendStatus  `json:"status" enum:"joined,deposited,withdrawn"`
+	DepositedMicro int64                  `json:"deposited_micro"`
+	BoundAt        time.Time              `json:"bound_at"`
 }
 
 type ReferralCounts struct {
@@ -100,6 +103,7 @@ type referralRoutes struct {
 	auth       *Auth
 	store      *referral.Store
 	inviteBase string
+	earnings   bool
 	tries      *inviteAttempts
 	lookups    *limiters
 	wallets    TestWallets
@@ -113,6 +117,7 @@ func (h earnRoutes) registerReferrals(api huma.API) {
 		tries:      newInviteAttempts(),
 		lookups:    newLimiters(),
 		wallets:    h.TestWallets,
+		earnings:   h.Granted[referralEarningsGrant],
 	}
 	huma.Register(api, huma.Operation{
 		OperationID: "get-referrals",
@@ -172,7 +177,7 @@ func (h referralRoutes) referrals(ctx context.Context, in *sessionRequest) (*ref
 	if err != nil {
 		return nil, earnUnavailable("referrals binding", err, referralsDownCode, referralsDownReason)
 	}
-	friends, err := h.store.Friends(ctx, user.ID)
+	friends, err := h.store.Friends(ctx, user.ID, h.earnings)
 	if err != nil {
 		return nil, earnUnavailable("referrals friends", err, referralsDownCode, referralsDownReason)
 	}
@@ -184,7 +189,7 @@ func (h referralRoutes) referrals(ctx context.Context, in *sessionRequest) (*ref
 		Friends:  make([]ReferralFriend, len(friends)),
 	}
 	for i, f := range friends {
-		body.Friends[i] = ReferralFriend{Label: f.Label, WalletLabel: f.WalletLabel, Status: f.Status, DepositedMicro: f.DepositedMicro, BoundAt: f.BoundAt}
+		body.Friends[i] = ReferralFriend{Label: f.Label, WalletLabel: f.WalletLabel, Earnings: f.Earnings, Status: f.Status, DepositedMicro: f.DepositedMicro, BoundAt: f.BoundAt}
 		body.DepositedMicro += f.DepositedMicro
 		switch f.Status {
 		case referral.Joined:
