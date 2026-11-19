@@ -30,8 +30,10 @@ OWNER_FILE=/srv/w20/.s3-owner
 HERE=$(cd "$(dirname "$0")" && pwd)
 
 UNITS=(w20-live.service w20-record.service w2-weather.service w20-scorecard.service w20-scorecard.timer
-  weather-reward-pilot-rotate.service weather-reward-pilot-rotate.timer weather-reward-pilot.service)
-WATCHED_OLD=(w20-live.service w20-record.service w2-weather.service w20-scorecard.timer weather-reward-pilot-rotate.timer)
+  weather-reward-pilot-rotate.service weather-reward-pilot-rotate.timer weather-reward-pilot.service
+  weather-reward-pilot-segments-archive.service weather-reward-pilot-segments-archive.timer)
+WATCHED_OLD=(w20-live.service w20-record.service w2-weather.service w20-scorecard.timer weather-reward-pilot-rotate.timer
+  weather-reward-pilot-segments-archive.timer)
 
 die() { echo "s3-weather: $*" >&2; exit 1; }
 say() { echo "s3-weather: $*"; }
@@ -131,7 +133,7 @@ UL=""
 for u in $ulist; do UL="\$UL /etc/systemd/system/\$u"; done
 rs -R --no-implied-dirs --checksum --out-format='%i %n' \$UL /etc/systemd/system/w20-record.service.d \
   /srv/w20/policy/hc_final.json /srv/w20/ref /srv/w20/scorecard/scorecard.py /srv/w20/w2-weather/*.py \
-  /srv/w20/reward-pilot/rotate.py /etc/w20/live.env /etc/w20/reward-pilot/observer.env $bins \
+  /srv/w20/reward-pilot/rotate.py /etc/w20/live.env /etc/w20/reward-pilot/observer.env /etc/w20/reward-pilot/gcs-hmac.env $bins \
   "ubuntu@\$NEWIP:/"
 EOF
   out=$(hop <<<"$script") || die "code copy failed: $out"
@@ -179,6 +181,7 @@ pairs=(
   "/var/lib/private/weather-reward-pilot/|/var/lib/private/weather-reward-pilot/"
   "/var/lib/weather-reward-pilot-rotate/|/var/lib/weather-reward-pilot-rotate/|--exclude=segments/ --exclude=rotate.lock"
   "/var/lib/weather-reward-pilot.rotate-hold/|/var/lib/weather-reward-pilot.rotate-hold/"
+  "/var/lib/weather-reward-pilot-archive/|/var/lib/weather-reward-pilot-archive/"
   "/var/lib/weather-reward-pilot-rotate/segments/|/var/lib/weather-reward-pilot-rotate/segments/"
 )
 for d in /srv/w20/behind*/; do pairs+=("$d|$d"); done
@@ -450,7 +453,7 @@ preflight_checks() {
   fi
 
   echo "copies match (sha256 by name)"
-  list="/etc/w20/live.env /etc/w20/reward-pilot/observer.env /srv/w20/policy/hc_final.json /srv/w20/reward-pilot/rotate.py /srv/w20/reward-pilot/config.json /srv/w20/scorecard/scorecard.py /srv/w20/w2-weather/recorder.py /etc/systemd/system/w20-record.service.d/weather-ahead.conf"
+  list="/etc/w20/live.env /etc/w20/reward-pilot/observer.env /etc/w20/reward-pilot/gcs-hmac.env /srv/w20/policy/hc_final.json /srv/w20/reward-pilot/rotate.py /srv/w20/reward-pilot/config.json /srv/w20/scorecard/scorecard.py /srv/w20/w2-weather/recorder.py /etc/systemd/system/w20-record.service.d/weather-ahead.conf"
   for u in "${UNITS[@]}"; do list="$list /etc/systemd/system/$u"; done
   list="$list $(tr '\n' ' ' <<<"$bins")"
   # shellcheck disable=SC2086
@@ -519,16 +522,18 @@ printf '[Unit]\nConditionPathExists=/nonexistent-moved-to-aws\n' >/etc/systemd/s
 systemctl daemon-reload
 systemctl stop w20-live.service
 systemctl disable --now w20-scorecard.timer weather-reward-pilot-rotate.timer >/dev/null 2>&1
-systemctl stop weather-reward-pilot-rotate.service w20-scorecard.service weather-reward-pilot.service
+systemctl disable --now weather-reward-pilot-segments-archive.timer >/dev/null 2>&1
+systemctl stop weather-reward-pilot-rotate.service w20-scorecard.service weather-reward-pilot.service weather-reward-pilot-segments-archive.service
 systemctl disable --now w2-weather.service w20-record.service >/dev/null 2>&1
 bad=0
-for u in w20-live w20-record w2-weather w20-scorecard.timer weather-reward-pilot-rotate.timer weather-reward-pilot weather-reward-pilot-rotate w20-scorecard; do
+for u in w20-live w20-record w2-weather w20-scorecard.timer weather-reward-pilot-rotate.timer weather-reward-pilot weather-reward-pilot-rotate w20-scorecard weather-reward-pilot-segments-archive.timer weather-reward-pilot-segments-archive; do
   a=$(systemctl is-active "$u"); e=$(systemctl is-enabled "$u" 2>&1)
   echo "  $u active=$a enabled=$e"
-  [ "$a" = active ] || [ "$a" = activating ] && bad=1
-  [ "$e" = enabled ] && bad=1
+  case $a in inactive | failed) ;; *) bad=1 ;; esac
+  case $e in disabled | static | masked | indirect | not-found | *"No such file or directory"*) ;; *) bad=1 ;; esac
 done
-pgrep -af '/srv/w20/bin/w20|rewardcollect' && bad=1
+pgrep -af '/srv/w20/bin/w20|rewardcollect'
+[ $? -eq 1 ] || bad=1
 exit $bad
 EOF
 }
@@ -539,16 +544,18 @@ stop_new() {
 set -u
 systemctl stop w20-live.service
 systemctl disable --now w20-scorecard.timer weather-reward-pilot-rotate.timer >/dev/null 2>&1
-systemctl stop weather-reward-pilot-rotate.service w20-scorecard.service weather-reward-pilot.service
+systemctl disable --now weather-reward-pilot-segments-archive.timer >/dev/null 2>&1
+systemctl stop weather-reward-pilot-rotate.service w20-scorecard.service weather-reward-pilot.service weather-reward-pilot-segments-archive.service
 systemctl disable --now w2-weather.service w20-record.service >/dev/null 2>&1
 bad=0
-for u in w20-live w20-record w2-weather w20-scorecard.timer weather-reward-pilot-rotate.timer weather-reward-pilot; do
+for u in w20-live w20-record w2-weather w20-scorecard.timer weather-reward-pilot-rotate.timer weather-reward-pilot weather-reward-pilot-rotate w20-scorecard weather-reward-pilot-segments-archive.timer weather-reward-pilot-segments-archive; do
   a=$(systemctl is-active "$u"); e=$(systemctl is-enabled "$u" 2>&1)
   echo "  $u active=$a enabled=$e"
-  [ "$a" = active ] || [ "$a" = activating ] && bad=1
-  [ "$e" = enabled ] && bad=1
+  case $a in inactive | failed) ;; *) bad=1 ;; esac
+  case $e in disabled | static | masked | indirect | not-found | *"No such file or directory"*) ;; *) bad=1 ;; esac
 done
-pgrep -af '/srv/w20/bin/w20|rewardcollect' && bad=1
+pgrep -af '/srv/w20/bin/w20|rewardcollect'
+[ $? -eq 1 ] || bad=1
 exit $bad
 EOF
 }
@@ -559,6 +566,8 @@ set -e
 systemctl daemon-reload
 systemctl enable --now w2-weather.service w20-record.service
 systemctl enable --now w20-scorecard.timer weather-reward-pilot-rotate.timer
+for t in w20-scorecard.timer weather-reward-pilot-rotate.timer; do [ "$(systemctl is-active "$t")" = active ] || { echo "$t did not start"; exit 1; }; done
+{ systemctl enable --now weather-reward-pilot-segments-archive.timer && [ "$(systemctl is-active weather-reward-pilot-segments-archive.timer)" = active ]; } || echo "WARN: weather-reward-pilot-segments-archive.timer did not start here; the bot start goes on, enable it by hand"
 EOF
 }
 
@@ -570,6 +579,8 @@ rmdir /etc/systemd/system/w20-live.service.d 2>/dev/null || true
 systemctl daemon-reload
 systemctl enable --now w2-weather.service w20-record.service
 systemctl enable --now w20-scorecard.timer weather-reward-pilot-rotate.timer
+for t in w20-scorecard.timer weather-reward-pilot-rotate.timer; do [ "$(systemctl is-active "$t")" = active ] || { echo "$t did not start"; exit 1; }; done
+{ systemctl enable --now weather-reward-pilot-segments-archive.timer && [ "$(systemctl is-active weather-reward-pilot-segments-archive.timer)" = active ]; } || echo "WARN: weather-reward-pilot-segments-archive.timer did not start here; the bot start goes on, enable it by hand"
 EOF
 }
 
