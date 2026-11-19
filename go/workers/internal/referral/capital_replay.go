@@ -41,7 +41,8 @@ func costPortion(cost *big.Rat, shares, total uint64) *big.Rat {
 }
 
 func (r *capitalReplay) apply(m earnmax.CapitalMovement, start time.Time) error {
-	if r.Free != m.FreeBefore || r.Escrow != m.EscrowBefore {
+	freeSeen, escrowSeen := capitalBalancesSeen(m)
+	if (freeSeen && r.Free != m.FreeBefore) || (escrowSeen && r.Escrow != m.EscrowBefore) {
 		return errors.New("opening_share_balance_unknown")
 	}
 	for _, e := range m.Events {
@@ -117,8 +118,30 @@ func (r *capitalReplay) apply(m earnmax.CapitalMovement, start time.Time) error 
 			return errors.New("unknown_capital_event")
 		}
 	}
-	if r.Free != m.FreeAfter || r.Escrow != m.EscrowAfter {
+	if (freeSeen && r.Free != m.FreeAfter) || (escrowSeen && r.Escrow != m.EscrowAfter) {
 		return errors.New("closing_share_balance_mismatch")
 	}
 	return nil
+}
+
+// Solana receipts omit token accounts that the transaction never referenced.
+// In particular a deposit can top up free LP while a withdrawal stays escrowed,
+// and a claim can burn escrow while untouched free LP remains in the wallet.
+func capitalBalancesSeen(m earnmax.CapitalMovement) (bool, bool) {
+	free := m.FreeBefore != 0 || m.FreeAfter != 0
+	escrow := m.EscrowBefore != 0 || m.EscrowAfter != 0
+	for _, e := range m.Events {
+		switch e.Kind {
+		case "deposit", "transfer_in", "transfer_out":
+			free = true
+		case "request":
+			free, escrow = true, true
+		case "claim":
+			escrow = true
+		case "cancel":
+			escrow = true
+			free = free || e.LP > 0
+		}
+	}
+	return free, escrow
 }

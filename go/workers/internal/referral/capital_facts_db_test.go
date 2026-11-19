@@ -2,6 +2,7 @@ package referral
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"slices"
@@ -100,6 +101,36 @@ func TestReferralCapitalCheckpointIsMonotonicAndRetainsProvenEarnings(t *testing
 	}
 	mustSave(140, "", "attribution_conflict")
 	check(140, 120, "17", "incomplete")
+	t.Run("zero reset preserves earlier checkpoint and rejects stale concurrent recovery", func(t *testing.T) {
+		exec("DELETE FROM loyal_yield.referral_wallet_identities")
+		var prior []byte
+		var priorSlot uint64
+		var priorAt time.Time
+		if err := db.QueryRow(ctx, "SELECT replay,earned_through_slot,earned_through_at FROM loyal_yield.referral_earn_max_capital_status WHERE referee_app_user_id=$1", id).Scan(&prior, &priorSlot, &priorAt); err != nil {
+			t.Fatal(err)
+		}
+		value := "17"
+		zeroAt := time.Unix(145, 0).UTC()
+		tmp := capitalReplay{At: zeroAt.Unix(), LastEventAt: zeroAt.Unix()}
+		tmp.Earned.SetInt64(17)
+		raw, err := json.Marshal(&tmp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		reset := &capitalReset{priorSlot: &priorSlot, priorAt: &priorAt, priorReplay: prior, slot: 145, at: zeroAt, replay: raw, reason: "mixed_share_origin"}
+		out := CapitalReport{Slot: 145, At: zeroAt, Coverage: "incomplete", Reason: "historical_gap", Earned: &value, checkedReset: true, reset: reset}
+		if err := store.storeCapital(ctx, id, "wallet", auth, out, &tmp, nil); err != nil {
+			t.Fatal(err)
+		}
+		check(145, 145, "17", "incomplete")
+		var begin, end int
+		if err := db.QueryRow(ctx, "SELECT prior_through_slot,zero_slot FROM loyal_yield.referral_earn_max_capital_resets WHERE referee_app_user_id=$1", id).Scan(&begin, &end); err != nil || begin != 120 || end != 145 {
+			t.Fatalf("gap=(%d,%d] err=%v", begin, end, err)
+		}
+		if err := store.storeCapital(ctx, id, "wallet", auth, out, &tmp, nil); err == nil {
+			t.Fatal("stale concurrent reset admitted")
+		}
+	})
 	if ids, active, err := store.capitalBatchIDs(ctx, false); err != nil || active || len(ids) != 0 {
 		t.Fatalf("unlaunched batch %+v active=%v err=%v", ids, active, err)
 	}

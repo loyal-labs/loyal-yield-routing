@@ -48,3 +48,27 @@ CREATE TABLE loyal_yield.referral_earn_max_batch_cursor (
   after_referee uuid
 );
 INSERT INTO loyal_yield.referral_earn_max_batch_cursor DEFAULT VALUES;
+
+-- Each row bounds a period of unresolved principal. Retain the last proven
+-- checkpoint before it and restart from finalized zero free and escrowed LP.
+CREATE TABLE loyal_yield.referral_earn_max_capital_resets (
+  referee_app_user_id uuid NOT NULL REFERENCES loyal_yield.referral_bindings(referee_app_user_id),
+  authority text NOT NULL,
+  prior_through_slot bigint,
+  prior_through_at timestamptz,
+  prior_replay jsonb,
+  zero_slot bigint NOT NULL CHECK (zero_slot > 0),
+  zero_at timestamptz NOT NULL,
+  zero_replay jsonb NOT NULL,
+  reason text NOT NULL,
+  PRIMARY KEY(referee_app_user_id,zero_slot),
+  CHECK (prior_through_slot IS NULL OR (prior_through_slot>0 AND prior_through_slot<zero_slot AND prior_through_at<=zero_at)),
+  CHECK ((prior_through_slot IS NULL)=(prior_through_at IS NULL) AND (prior_through_at IS NULL)=(prior_replay IS NULL))
+);
+CREATE FUNCTION loyal_yield.protect_referral_capital_reset() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  RAISE EXCEPTION 'Finalized referral capital recovery boundaries are immutable';
+END;
+$$;
+CREATE TRIGGER protect_referral_capital_reset BEFORE UPDATE OR DELETE ON loyal_yield.referral_earn_max_capital_resets
+FOR EACH ROW EXECUTE FUNCTION loyal_yield.protect_referral_capital_reset();

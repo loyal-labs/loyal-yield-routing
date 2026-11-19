@@ -27,6 +27,9 @@ type CapitalReport struct {
 	At           time.Time `json:"asOf"`
 	Transactions int       `json:"verifiedMovements"`
 	Earned       *string   `json:"earnedMicroUsdc,omitempty"`
+	checkedReset bool
+	lastReset    *uint64
+	reset        *capitalReset
 }
 
 type capitalFact struct {
@@ -176,7 +179,11 @@ func (s *Store) CollectCapital(ctx context.Context, c *chain.Client, id string, 
 	var saved []byte
 	var priorAuthority string
 	var priorSlot *uint64
-	err = s.yield.QueryRow(ctx, `SELECT authority,earned_through_slot,replay FROM loyal_yield.referral_earn_max_capital_status WHERE referee_app_user_id=$1`, id).Scan(&priorAuthority, &priorSlot, &saved)
+	var priorAt *time.Time
+	out.checkedReset = true
+	err = s.yield.QueryRow(ctx, `SELECT authority,earned_through_slot,earned_through_at,replay,
+	(SELECT max(zero_slot) FROM loyal_yield.referral_earn_max_capital_resets WHERE referee_app_user_id=$1)
+	FROM loyal_yield.referral_earn_max_capital_status WHERE referee_app_user_id=$1`, id).Scan(&priorAuthority, &priorSlot, &priorAt, &saved, &out.lastReset)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return out, err
 	}
@@ -299,9 +306,12 @@ func (s *Store) CollectCapital(ctx context.Context, c *chain.Client, id string, 
 		}
 	}
 	out.Transactions = len(facts)
+	earnedBefore := new(big.Rat).Set(&state.Earned)
+	failed := -1
 	if out.Reason == "" {
-		for _, f := range facts {
+		for i, f := range facts {
 			if err := state.apply(f.movement, start); err != nil {
+				failed = i
 				out.Reason = err.Error()
 				break
 			}
@@ -310,11 +320,23 @@ func (s *Store) CollectCapital(ctx context.Context, c *chain.Client, id string, 
 	if out.Reason == "" && (state.Free != free || state.Escrow != held) {
 		out.Reason = "finalized_balances_disagree"
 	}
+	if resettableOrigin(out.Reason) && slot > from {
+		reset, recovered := recoverCapital(facts, failed, free, held, slot, out.At, start, earnedBefore)
+		if reset != nil && reset.slot > from && (priorAt == nil || !reset.at.Before(*priorAt)) {
+			reset.reason, reset.priorSlot, reset.priorAt, reset.priorReplay = out.Reason, priorSlot, priorAt, saved
+			out.reset = reset
+			state = *recovered
+			out.Reason = ""
+		}
+	}
 	if out.Reason == "" {
 		if err := state.accrue(out.At.Unix()); err != nil {
 			out.Reason = err.Error()
 		} else {
 			out.Coverage = "complete"
+			if out.lastReset != nil || out.reset != nil {
+				out.Coverage, out.Reason = "incomplete", "historical_gap"
+			}
 			v := new(big.Int).Quo(state.Earned.Num(), state.Earned.Denom()).String()
 			out.Earned = &v
 		}
@@ -341,8 +363,32 @@ func (s *Store) storeCapital(ctx context.Context, id, wallet, authority string, 
 	if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM loyal_yield.referral_attribution_conflicts c WHERE c.referee_app_user_id=b.referee_app_user_id) FROM loyal_yield.referral_bindings b WHERE b.referee_app_user_id=$1 AND b.referee_wallet=$2 FOR UPDATE OF b`, id, wallet).Scan(&conflict); err != nil {
 		return err
 	}
-	if conflict && out.Coverage == "complete" {
+	if conflict && out.Earned != nil {
 		return errors.New("attribution changed while verifying the account")
+	}
+	if out.checkedReset && (out.Earned != nil || out.reset != nil) {
+		var same bool
+		err = tx.QueryRow(ctx, `SELECT max(zero_slot) IS NOT DISTINCT FROM $2::bigint FROM loyal_yield.referral_earn_max_capital_resets WHERE referee_app_user_id=$1`, id, out.lastReset).Scan(&same)
+		if err != nil {
+			return err
+		}
+		if !same {
+			return errors.New("capital recovery advanced concurrently; retry")
+		}
+	}
+	if r := out.reset; r != nil {
+		var same bool
+		err = tx.QueryRow(ctx, `SELECT (SELECT earned_through_slot FROM loyal_yield.referral_earn_max_capital_status WHERE referee_app_user_id=$1) IS NOT DISTINCT FROM $2::bigint`, id, r.priorSlot).Scan(&same)
+		if err != nil {
+			return err
+		}
+		if !same {
+			return errors.New("capital checkpoint advanced before recovery; retry")
+		}
+		_, err = tx.Exec(ctx, `INSERT INTO loyal_yield.referral_earn_max_capital_resets(referee_app_user_id,authority,prior_through_slot,prior_through_at,prior_replay,zero_slot,zero_at,zero_replay,reason) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`, id, authority, r.priorSlot, r.priorAt, r.priorReplay, r.slot, r.at, r.replay, r.reason)
+		if err != nil {
+			return err
+		}
 	}
 	for _, f := range facts {
 		body, err := json.Marshal(f.movement)
@@ -367,7 +413,7 @@ func (s *Store) storeCapital(ctx context.Context, id, wallet, authority string, 
 	var state []byte
 	var earnedAt *time.Time
 	var earnedSlot *uint64
-	if out.Coverage == "complete" {
+	if out.Earned != nil {
 		state, err = json.Marshal(replay)
 		if err != nil {
 			return err
