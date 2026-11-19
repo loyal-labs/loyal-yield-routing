@@ -1,0 +1,11 @@
+[Unit]
+Description=Reconcile finalized Earn Max referral performance fees every five minutes
+
+[Timer]
+Unit=loyal-web-cron@earn-max-referral-fees.service
+OnCalendar=*:2/5
+RandomizedDelaySec=15
+Persistent=true
+
+[Install]
+WantedBy=timers.target
