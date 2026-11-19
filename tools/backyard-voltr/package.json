@@ -5,6 +5,7 @@
   "type": "module",
   "packageManager": "bun@1.2.17",
   "scripts": {
+    "audit:earn-max-fee-receipts": "bun src/verify/audit-earn-max-fee-receipts.ts",
     "check": "tsc -p tsconfig.json --noEmit",
     "test:closeout": "bun test src/verify/backyard-rwa-closeout.test.ts",
     "test:phase2-runtime": "bun test src/verify/rwa-phase2-runtime.test.ts",
