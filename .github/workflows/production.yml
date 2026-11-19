@@ -104,12 +104,12 @@ jobs:
         run: python3 scripts/production_scope_test.py
       - run: python3 scripts/clickstack-vault-alerts_test.py
       - run: python3 scripts/clickstack-looping-alerts_test.py
-      - name: Deployment refusals, observation and rollback
-        run: python3 -B -m unittest discover -s scripts -p '*rollout_test.py'
       - name: Install offline alert validators
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends prometheus prometheus-alertmanager python3-yaml wireguard-tools nftables
+      - name: Deployment refusals, observation and rollback
+        run: /usr/bin/python3 -B -m unittest discover -s scripts -p '*rollout_test.py'
       - name: Private deployment network isolation and cleanup
         run: sudo bash scripts/ci-worker-network_test.sh
       - name: Verify paging decisions, routing and Telegram rendering
@@ -154,24 +154,41 @@ jobs:
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Every selected check passed
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
         run: |
           python3 - <<'PYTHON'
-          import json, os
+          import json, os, runpy
           needs = json.loads(os.environ['NEEDS_JSON'])
           assert needs['scope']['result'] == 'success', 'service selection failed'
           assert needs['merge-checks']['result'] == ('skipped' if os.environ['GITHUB_EVENT_NAME'] == 'pull_request' else 'success'), 'merged PR checks are not green'
+          outputs = needs['scope']['outputs']
+          services = json.loads(outputs['services'])
+          allowed = runpy.run_path('scripts/production-scope.py')['SERVICES']
+          assert isinstance(services, list) and all(s in allowed for s in services) and len(services) == len(set(services)), 'invalid deployment services'
+          checked = set()
+          for job, matrix in [('workers', 'worker_services'), ('web', 'web_services')]:
+              if outputs[job] == 'true':
+                  members = json.loads(outputs[matrix])
+                  assert isinstance(members, list), f'invalid {job} verification matrix'
+                  checked.update(members)
+          if outputs['realtime'] == 'true':
+              checked.add('realtime')
+          assert set(services) <= checked, 'selected service has no verification job'
           for job in ('contracts', 'workers', 'web', 'journeys', 'realtime'):
-              selected = needs['scope']['outputs'][job] == 'true'
+              assert outputs[job] in ('true', 'false'), f'invalid selection for {job}'
+              selected = outputs[job] == 'true'
               expected = 'success' if selected else 'skipped'
               assert needs[job]['result'] == expected, f"{job}: expected {expected}, got {needs[job]['result']}"
           PYTHON
 
   receipts:
     needs: [scope, verified]
-    if: github.ref == 'refs/heads/main' && needs.scope.outputs.services != '[]'
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && needs.scope.result == 'success' && needs.verified.result == 'success' && needs.scope.outputs.services != '[]' }}
     runs-on: ubuntu-24.04
     strategy:
       matrix:
@@ -186,7 +203,7 @@ jobs:
 
   deploy:
     needs: [scope, verified, receipts]
-    if: github.ref == 'refs/heads/main' && needs.scope.outputs.services != '[]'
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && needs.scope.result == 'success' && needs.verified.result == 'success' && needs.receipts.result == 'success' && needs.scope.outputs.services != '[]' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     environment: production
@@ -252,3 +269,19 @@ jobs:
           trap 'bash scripts/ci-worker-network.sh down' EXIT
           if [ -n "${SSH_AGENT_PID:-}" ]; then ssh-agent -k >/dev/null; fi
           rm -f "$HOME/.ssh/config" "$HOME/.ssh/known_hosts"
+
+  rollout-result:
+    needs: [scope, verified, receipts, deploy]
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Confirm all selected services deployed
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          jq -e '
+            (.scope.outputs.services | fromjson) as $services |
+            (if ($services | length) > 0 then "success" else "skipped" end) as $expected |
+            .scope.result == "success" and .verified.result == "success" and
+            ($services | type) == "array" and .receipts.result == $expected and .deploy.result == $expected
+          ' <<< "$NEEDS_JSON"
