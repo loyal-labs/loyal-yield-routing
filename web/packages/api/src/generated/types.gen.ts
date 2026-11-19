@@ -4003,6 +4003,10 @@ export type PostReferralsClaimErrors = {
      */
     403: RouteError;
     /**
+     * Conflict
+     */
+    409: RouteError;
+    /**
      * Too Many Requests
      */
     429: RouteError;
