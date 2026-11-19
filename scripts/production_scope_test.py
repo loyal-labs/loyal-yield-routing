@@ -18,6 +18,56 @@ db_tests = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(db_tests)
 
 
+class ProductionBaselineTest(unittest.TestCase):
+    repository = 'loyal-labs/loyal-yield-routing'
+
+    def run_record(self, number):
+        return {'id': number, 'run_attempt': 2, 'head_sha': f'{number:040x}', 'event': 'push',
+                'head_repository': {'full_name': self.repository}}
+
+    def job_pages(self, run, outcomes):
+        jobs = [dict(run_id=run['id'], head_sha=run['head_sha'], status='completed', name=name, conclusion=result)
+                for name, result in outcomes.items()]
+        return [{'total_count': len(jobs), 'jobs': jobs}]
+
+    def page_output(self, pages):
+        return '\n'.join(json.dumps(page) for page in pages)
+
+    def test_green_empty_and_partial_legacy_runs_cannot_hide_missed_service(self):
+        complete = {'deploy': 'success', **{f'receipts ({service})': 'success' for service in scope.SERVICES}}
+        # A selected worker was skipped, an unrelated service deployed, then a
+        # documentation-only run passed. Recompute cumulatively from the full release.
+        outcomes = {1: complete, 2: {'deploy': 'skipped', 'receipts': 'skipped'},
+                    3: {'deploy': 'success', 'receipts (web)': 'success'},
+                    4: {'deploy': 'skipped', 'receipts': 'skipped'}}
+        runs = [self.run_record(number) for number in reversed(outcomes)]
+        responses = {'repos/' + self.repository + '/actions/workflows/production.yml/runs?branch=main&status=success&per_page=100&page=1':
+                     json.dumps({'workflow_runs': runs})}
+        for run in runs:
+            responses[f"repos/{self.repository}/actions/runs/{run['id']}/attempts/2/jobs?per_page=100"] = self.page_output(self.job_pages(run, outcomes[run['id']]))
+        with patch.dict(os.environ, GITHUB_REPOSITORY=self.repository), \
+                patch.object(subprocess, 'check_output', side_effect=lambda args, **kw: responses[args[-1]]), \
+                patch.object(subprocess, 'run', return_value=subprocess.CompletedProcess([], 0)):
+            self.assertEqual(scope.production_base(self.run_record(5)['head_sha']), self.run_record(1)['head_sha'])
+
+    def test_modern_outcome_is_authoritative_and_incomplete_job_history_is_rejected(self):
+        run = self.run_record(5)
+        complete = {'deploy': 'success', **{f'receipts ({service})': 'success' for service in scope.SERVICES}}
+        for outcome, expected in (({'deploy': 'skipped', 'rollout-result': 'success'}, True),
+                                  ({**complete, 'rollout-result': 'skipped'}, False)):
+            with patch.object(subprocess, 'check_output', return_value=self.page_output(self.job_pages(run, outcome))):
+                self.assertEqual(scope.proves_release(self.repository, run), expected)
+
+        pages = self.job_pages(run, complete)
+        last_job = pages[0]['jobs'].pop()
+        with patch.object(subprocess, 'check_output', return_value=self.page_output(pages)):
+            with self.assertRaisesRegex(RuntimeError, 'incomplete job history'):
+                scope.proves_release(self.repository, run)
+        pages.append({'total_count': pages[0]['total_count'], 'jobs': [last_job]})
+        with patch.object(subprocess, 'check_output', return_value=self.page_output(pages)):
+            self.assertTrue(scope.proves_release(self.repository, run))
+
+
 class ScopeTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

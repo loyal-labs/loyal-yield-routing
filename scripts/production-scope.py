@@ -205,6 +205,35 @@ def plan(base, head, cumulative=False):
     }
 
 
+def proves_release(repository, run):
+    # Older workflows could finish green with selected deployments skipped.
+    # A complete legacy rollout anchors every service until the first certified
+    # run. Subsequent certificates also cover verified empty deployment scopes.
+    run_id = run['id']
+    endpoint = f"repos/{repository}/actions/runs/{run_id}/attempts/{run['run_attempt']}/jobs?per_page=100"
+    fields = '{total_count, jobs: [.jobs[] | {name,run_id,head_sha,status,conclusion}]} | @json'
+    output = subprocess.check_output(['gh', 'api', '--paginate', '--jq', fields, endpoint], text=True)
+    pages = [json.loads(line) for line in output.splitlines()]
+    jobs = [job for page in pages for job in page['jobs']]
+    if not jobs or any(page['total_count'] != len(jobs) for page in pages):
+        raise RuntimeError(f'incomplete job history for production run {run_id}')
+    results = {}
+    for job in jobs:
+        if (job['run_id'] != run_id or job['head_sha'] != run['head_sha'] or
+                job['status'] != 'completed' or not job['conclusion']):
+            raise RuntimeError(f'inconsistent job evidence for production run {run_id}')
+        name = job['name']
+        if name in ('rollout-result', 'deploy') or name.startswith('receipts ('):
+            if name in results:
+                raise RuntimeError(f'ambiguous {name} result in production run {run_id}')
+            results[name] = job['conclusion']
+    if 'rollout-result' in results:
+        return results['rollout-result'] == 'success'
+    if 'deploy' not in results:
+        raise RuntimeError(f'missing deploy result in legacy production run {run_id}')
+    return results['deploy'] == 'success' and all(results.get(f'receipts ({service})') == 'success' for service in SERVICES)
+
+
 def production_base(head):
     repository = os.environ['GITHUB_REPOSITORY']
     page = 1
@@ -218,10 +247,13 @@ def production_base(head):
             sha = run['head_sha']
             if sha == head:
                 continue
-            if subprocess.run(['git', 'merge-base', '--is-ancestor', sha, head], capture_output=True).returncode == 0:
+            ancestor = subprocess.run(['git', 'merge-base', '--is-ancestor', sha, head], capture_output=True)
+            if ancestor.returncode != 1:
+                ancestor.check_returncode()
+            if ancestor.returncode == 0 and proves_release(repository, run):
                 return sha
         if len(runs) < 100:
-            raise RuntimeError('no successful ancestor production run; establish the deployment baseline explicitly')
+            raise RuntimeError('no certified production baseline or complete legacy deployment in main history')
         page += 1
 
 
