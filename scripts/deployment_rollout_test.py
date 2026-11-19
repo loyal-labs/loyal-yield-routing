@@ -38,6 +38,11 @@ elif name == 'gh':
     else:
         print(1 if mode == 'failed-ci' else 0)
 elif name == 'ssh':
+    if args[-2:] == ['is-enabled', 'cloudflared.service']:
+        print('disabled' if mode == 'retired-box' else 'enabled')
+        sys.exit(1 if mode == 'retired-box' else 0)
+    if args[-1] == 'id' or args[-2:] == ['id', '-u']:
+        print(0)
     if args[1:5] == ['sh', '-s', '--', '/etc/prometheus/loyal.rules.yml']:
         print('0\nx86_64\nrules ' + 'f' * 40)
         print(f'ExecStart=/opt/loyal/releases/{family}/{old}/{binary}')
@@ -157,6 +162,12 @@ class DeploymentTest(unittest.TestCase):
                 result, calls = self.deploy(family, mode)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertFalse(any(call[0] == 'scp' for call in calls), result.stdout + result.stderr)
+
+    def test_a_box_that_is_not_live_is_refused_before_any_other_remote_call(self):
+        result, calls = self.deploy('retail', 'retired-box')
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn('not the live Loyal box', result.stderr)
+        self.assertEqual([call[0] for call in calls if call[0] in ('ssh', 'scp')], ['ssh'])
 
     def test_main_verification_can_be_reused_after_a_rollout_failure(self):
         result, calls = self.deploy('retail')

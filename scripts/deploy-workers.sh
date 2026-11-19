@@ -150,7 +150,7 @@ if [[ $web_family == yes && ${LOYAL_DEPLOY_DRY_RUN:-} == 1 ]]; then
   build_web_release "$goarch"
   sum=$(shasum -a 256 "$binary" | cut -d' ' -f1)
   echo "built $binary_name sha256 $sum"
-  found=$(LC_ALL=C strings "$binary" 2>/dev/null | grep -a -m1 -o ".\{0,40\}$sha.\{0,40\}" || true)
+  found=$(LC_ALL=C strings "$binary" 2>/dev/null | grep -a -o ".\{0,40\}$sha.\{0,40\}" | sed -n 1p || true)
   if [[ -n $found ]]; then
     echo "release string found in the binary: $found"
   else
@@ -160,7 +160,16 @@ if [[ $web_family == yes && ${LOYAL_DEPLOY_DRY_RUN:-} == 1 ]]; then
   exit 0
 fi
 
-facts=$(ssh "$host" sh -s -- "$rules_file" "$dropin" <<'REMOTE'
+# The cutover tool disables cloudflared on the retired box and enables it on the live one.
+if ! live=$(ssh -o BatchMode=yes -o ConnectTimeout=10 "$host" systemctl is-enabled cloudflared.service) || [[ $live != enabled ]]; then
+  echo "$host is not the live Loyal box (cloudflared.service read: '${live//$'\n'/ }'); set LOYAL_WORKERS_SSH to the live box (loyal-main after the move)" >&2
+  exit 1
+fi
+remote_uid=$(ssh -o BatchMode=yes -o ConnectTimeout=10 "$host" id -u) || { echo "cannot read the login uid on $host" >&2; exit 1; }
+rsudo=()
+[[ $remote_uid == 0 ]] || rsudo=(sudo -n)
+
+facts=$(ssh "$host" ${rsudo[@]+"${rsudo[@]}"} sh -s -- "$rules_file" "$dropin" <<'REMOTE'
 blob() {
   [ -f "$1" ] || return 0
   { printf 'blob %d\0' "$(wc -c <"$1")"; cat "$1"; } | sha1sum | cut -d' ' -f1
@@ -169,13 +178,9 @@ id -u; uname -m; echo rules $(blob "$1"); cat "$2"
 REMOTE
 )
 {
-  read -r uid
+  read -r _
   read -r arch
 } <<<"$facts"
-if [[ $uid != 0 ]]; then
-  echo "$host logs in as uid $uid; the deploy needs root" >&2
-  exit 1
-fi
 goarch_of "$arch"
 if [[ -n ${LOYAL_DEPLOY_GOARCH:-} ]]; then
   want=$goarch
@@ -304,26 +309,35 @@ if [[ $running != "$sha" || $mode == stopped ]]; then
   fi
 
   dir=$releases/$sha
-  ssh "$host" mkdir -p "$dir"
-  scp -q "$binary" "$host:$dir/$binary_name.tmp"
-  scp -q "$tree/deploy/hetzner/activate.sh" "$host:$dir/activate.sh.tmp"
+  ssh "$host" ${rsudo[@]+"${rsudo[@]}"} mkdir -p "$dir"
+  put=$dir
+  if [[ ${#rsudo[@]} -gt 0 ]]; then
+    put=$(ssh "$host" "mktemp -d /tmp/loyal-stage.XXXXXX")
+  fi
+  scp -q "$binary" "$host:$put/$binary_name.tmp"
+  scp -q "$tree/deploy/hetzner/activate.sh" "$host:$put/activate.sh.tmp"
   if [[ $family == web && -f $tree/deploy/hetzner/retain-web-assets.sh ]]; then
     assets=$tree/go/workers/cmd/loyal-web/dist/assets
     if [[ -n ${LOYAL_DEPLOY_ARTIFACT_DIR:-} ]]; then
       assets=$build/assets
       cp -a "$artifacts/web-assets" "$assets"
     fi
-    scp -q -r "$assets" "$host:$dir/"
-    scp -q "$tree/deploy/hetzner/retain-web-assets.sh" "$host:$dir/"
+    scp -q -r "$assets" "$host:$put/"
+    scp -q "$tree/deploy/hetzner/retain-web-assets.sh" "$host:$put/"
   fi
-  ssh "$host" sh -s -- "$dir" "$binary_name" <<'REMOTE'
+  if [[ $put != "$dir" ]]; then
+    ssh "$host" sudo -n sh -s -- "$put" "$dir" <<'REMOTE'
+cp -R "$1"/. "$2"/ && rm -r "$1"
+REMOTE
+  fi
+  ssh "$host" ${rsudo[@]+"${rsudo[@]}"} sh -s -- "$dir" "$binary_name" <<'REMOTE'
 chmod 555 "$1/$2.tmp" "$1/activate.sh.tmp" &&
   mv -f "$1/$2.tmp" "$1/$2" &&
   mv -f "$1/activate.sh.tmp" "$1/activate.sh"
 REMOTE
 
   set +e
-  ssh "$host" systemd-run --unit="loyal-deploy-$family-${sha:0:12}" --quiet --wait --pipe --collect \
+  ssh "$host" ${rsudo[@]+"${rsudo[@]}"} systemd-run --unit="loyal-deploy-$family-${sha:0:12}" --quiet --wait --pipe --collect \
     --setenv="LOYAL_DEPLOY_EXPECTED_RELEASE=${LOYAL_DEPLOY_EXPECTED_RELEASE:-}" \
     /bin/sh "$dir/activate.sh" "$family" "$sha" "$sum" "$mode"
   status=$?
@@ -340,7 +354,7 @@ fi
 upload=$(ssh "$host" "mktemp -d /tmp/loyal-monitoring.XXXXXX")
 scp -q -r "$tree/deploy/hetzner/monitoring" "$tree/deploy/hetzner/install-rules.sh" "$host:$upload/"
 set +e
-ssh "$host" systemd-run --unit="loyal-deploy-rules-${sha:0:12}" --quiet --wait --pipe --collect \
+ssh "$host" ${rsudo[@]+"${rsudo[@]}"} systemd-run --unit="loyal-deploy-rules-${sha:0:12}" --quiet --wait --pipe --collect \
   /bin/sh "$upload/install-rules.sh" "$sha" "${host_blob:-none}" "$upload"
 status=$?
 set -e
