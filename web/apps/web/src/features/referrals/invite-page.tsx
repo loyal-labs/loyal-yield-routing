@@ -1,5 +1,6 @@
 "use client";
 
+import { StaggerLine, StaggerReveal } from "@/components/wallet-workspace/facelift/stagger-reveal";
 import { TextSwap } from "@/components/wallet-workspace/facelift/text-swap";
 import { ThemedIcon } from "@/components/wallet-workspace/facelift/themed-icon";
 import { InvitedFriends } from "./invited-friends";
@@ -52,71 +53,81 @@ export function InvitePage({ onBack }: { onBack: () => void }) {
 
   return (
     <main aria-labelledby="invite-title" className="h-full min-h-0 flex-1 overflow-y-auto bg-card text-foreground">
-      <div className="mx-auto w-full max-w-[900px] px-4 pt-4 pb-12 sm:px-8 sm:pt-6 lg:px-12">
-        <button
-          className="t-hover mb-4 inline-flex min-h-11 items-center gap-1.5 rounded-full pr-3 pl-2 text-sm font-medium hover:bg-accent"
-          onClick={onBack}
-          type="button"
-        >
-          <ThemedIcon className="size-5" src={`${ASSET_BASE}/icon-arrow-left.svg`} />
-          Back
-        </button>
+      <div className="@container mx-auto w-full max-w-[900px] px-4 pt-4 pb-12 sm:px-8 sm:pt-6 lg:px-12">
+        <StaggerReveal>
+          <StaggerLine index={0}>
+            <div className="mb-4 flex items-center gap-2">
+              <button
+                aria-label="Back"
+                className="t-hover -ml-2 flex size-11 items-center justify-center rounded-full hover:bg-accent"
+                onClick={onBack}
+                type="button"
+              >
+                <ThemedIcon className="size-6" src={`${ASSET_BASE}/icon-arrow-left.svg`} />
+              </button>
+              <span className="text-xl leading-6 font-semibold">Invite friends</span>
+            </div>
+          </StaggerLine>
 
-        <section aria-labelledby="invite-title" className="rounded-3xl bg-secondary p-5 sm:p-8">
-          <header className="grid grid-cols-[minmax(0,1fr)_64px] items-center gap-x-2 sm:grid-cols-[minmax(0,1fr)_144px] sm:gap-x-6">
-            <h1 id="invite-title" className="text-[28px] leading-8 font-bold tracking-[-0.28px] sm:text-[36px] sm:leading-10">
-              Invite friends. <span className="block">Earn 0.3% a year.</span>
-            </h1>
-            <div className="relative h-14 sm:row-span-2 sm:h-24" aria-hidden="true">
-              <div className="absolute top-1/2 right-0 origin-right -translate-y-1/2 scale-[0.36] sm:scale-75">
+          <StaggerLine index={1}>
+            <header
+              className="relative isolate overflow-hidden rounded-3xl bg-[#51031b] bg-cover bg-center px-5 py-7 text-white @xl:px-8 @xl:py-9"
+              style={{ backgroundImage: `url(${ASSET_BASE}/banner-dark-bg.png)` }}
+            >
+              <div className="absolute top-6 right-4 origin-top-right scale-[0.42] @xl:top-1/2 @xl:right-6 @xl:-translate-y-1/2 @xl:scale-100" aria-hidden="true">
                 <InviteArtwork />
               </div>
-            </div>
-            <div className="col-span-2 mt-3 max-w-xl space-y-2 text-base leading-[22px] tracking-[-0.16px] sm:col-span-1">
-              <p>Your reward is based on what each friend keeps in Earn MAX after the entry fee.</p>
-              <p>If your friends keep $100,000 deposited for a full year, <strong>you earn $300.</strong></p>
-            </div>
-          </header>
+              <h1 aria-describedby="invite-example-condition" id="invite-title" className="relative flex flex-wrap items-baseline gap-x-2 pr-16 font-bold tracking-tight @xl:gap-x-3 @xl:pr-48">
+                <span className="text-[32px] leading-none @xl:text-[44px]">Earn</span>
+                <span className="text-[clamp(3rem,17cqi,3.75rem)] leading-none tracking-[-0.055em] text-[#ffd41b] @xl:text-[88px]">$300</span>
+              </h1>
+              <p id="invite-example-condition" className="relative mt-3 max-w-[30rem] text-pretty text-lg leading-6 @xl:mr-48 @xl:text-[22px] @xl:leading-7">
+                when your friends keep <strong>$100,000</strong> in Earn MAX for a full year.
+              </p>
+            </header>
+          </StaggerLine>
 
-          <h2 className="mt-6 text-base leading-5 font-semibold">Your invite link</h2>
-          <div className="mt-2 flex flex-col gap-2 min-[540px]:flex-row">
-            <button
-              aria-describedby="invite-url"
-              aria-label="Copy invitation URL"
-              className="t-hover flex min-h-12 min-w-0 flex-1 items-center gap-3 rounded-2xl bg-card px-4 py-3 text-left enabled:hover:bg-accent-selected disabled:cursor-default"
-              disabled={!link}
-              onClick={copy}
-              type="button"
-            >
-              <span id="invite-url" className="min-w-0 flex-1 text-base leading-5 tracking-[-0.16px] [overflow-wrap:anywhere]" data-invite-link>
-                {link ? (
-                  <>
-                    {link.slice(0, codeStart)}
-                    <wbr />
-                    <span className="whitespace-nowrap">{link.slice(codeStart)}</span>
-                  </>
-                ) : error ? "Link unavailable" : "Loading invitation link…"}
-              </span>
-              <ThemedIcon className="size-6 shrink-0 text-muted-foreground" src={`${ASSET_BASE}/${copied ? "icon-check.svg" : "invite-copy.svg"}`} />
-            </button>
-            <button
-              className="t-hover flex min-h-12 items-center justify-center rounded-full bg-foreground px-5 text-base leading-5 font-medium text-background enabled:hover:bg-foreground/90 disabled:opacity-40 min-[540px]:w-48"
-              disabled={!link && !error}
-              onClick={!link && error ? retry : copy}
-              type="button"
-            >
-              <span aria-live="polite">
-                <TextSwap text={copied ? "Copied!" : !link && error ? "Try again" : "Copy invitation link"} />
-              </span>
-            </button>
-          </div>
-          {error && <p className="mt-2 text-sm text-destructive" role="alert">{error}</p>}
-          <p className="mt-3 max-w-2xl text-sm leading-5 text-foreground/70">
-            Rewards are paid in Earn MAX shares from each friend’s performance fees. Any unpaid amount carries over for that friend.
-          </p>
-        </section>
+          <StaggerLine index={2}>
+            <section aria-labelledby="invite-link-title" className="mt-6">
+              <div className="grid items-center gap-4 rounded-3xl bg-secondary p-4 @xl:grid-cols-[minmax(0,1fr)_12rem] @xl:px-6 @xl:py-5">
+                <div className="min-w-0">
+                  <h2 id="invite-link-title" className="text-sm leading-5 text-foreground/70">Your invite link</h2>
+                  <p className="mt-1 w-fit max-w-full select-all text-base leading-5 font-medium [overflow-wrap:anywhere]" data-invite-link>
+                    {link ? (
+                      <>
+                        {link.slice(0, codeStart)}
+                        <wbr />
+                        <span className="whitespace-nowrap">{link.slice(codeStart)}</span>
+                      </>
+                    ) : error ? "Link unavailable" : "Loading invitation link…"}
+                  </p>
+                </div>
+                <button
+                  className="t-hover flex h-12 w-full items-center justify-center rounded-full bg-foreground px-4 text-base leading-5 font-medium whitespace-nowrap text-background enabled:hover:bg-foreground/90 disabled:opacity-40"
+                  disabled={!link && !error}
+                  onClick={!link && error ? retry : copy}
+                  type="button"
+                >
+                  <span aria-live="polite">
+                    <TextSwap text={copied ? "Copied!" : !link && error ? "Try again" : "Copy invitation link"} />
+                  </span>
+                </button>
+              </div>
+              {error && <p className="mt-2 text-sm text-destructive" role="alert">{error}</p>}
+              <p className="mt-3 max-w-2xl text-sm leading-5 text-foreground/70">
+                You earn 0.3% a year on each friend’s deposits after the entry fee. Their performance fees fund your payouts in Earn MAX shares. Unpaid rewards carry over for that friend.
+              </p>
+            </section>
+          </StaggerLine>
+        </StaggerReveal>
 
-        {friends && <InvitedFriends friends={friends} />}
+        {friends && (
+          <StaggerReveal>
+            <StaggerLine index={3}>
+              <InvitedFriends friends={friends} />
+            </StaggerLine>
+          </StaggerReveal>
+        )}
       </div>
     </main>
   );
