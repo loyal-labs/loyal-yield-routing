@@ -1,5 +1,6 @@
 "use client";
 
+import { TextSwap } from "@/components/wallet-workspace/facelift/text-swap";
 import { ThemedIcon } from "@/components/wallet-workspace/facelift/themed-icon";
 import { InvitedFriends } from "./invited-friends";
 import { useInviteLink } from "./use-invite-link";
@@ -47,6 +48,7 @@ function InviteArtwork() {
 
 export function InvitePage({ onBack }: { onBack: () => void }) {
   const { link, friends, error, copied, copy, retry } = useInviteLink(true);
+  const codeStart = (link?.lastIndexOf("/") ?? -1) + 1;
 
   return (
     <main aria-labelledby="invite-title" className="h-full min-h-0 flex-1 overflow-y-auto bg-card text-foreground">
@@ -60,46 +62,57 @@ export function InvitePage({ onBack }: { onBack: () => void }) {
           Back
         </button>
 
-        <header className="rounded-3xl bg-violet-50 px-5 py-6 sm:px-8 sm:py-8 dark:bg-violet-950/35">
-          <div className="relative grid grid-cols-[minmax(0,1fr)_72px] items-center gap-x-2 sm:grid-cols-[minmax(0,1fr)_152px] sm:gap-x-5">
-            <h1 id="invite-title" className="max-w-lg text-balance text-[32px] leading-[1.06] font-bold tracking-[-0.045em] sm:text-[42px]">
-              Invite friends. Earn 0.3% a year.
+        <section aria-labelledby="invite-title" className="rounded-3xl bg-secondary p-5 sm:p-8">
+          <header className="grid grid-cols-[minmax(0,1fr)_64px] items-center gap-x-2 sm:grid-cols-[minmax(0,1fr)_144px] sm:gap-x-6">
+            <h1 id="invite-title" className="text-[28px] leading-8 font-bold tracking-[-0.28px] sm:text-[36px] sm:leading-10">
+              Invite friends. <span className="block">Earn 0.3% a year.</span>
             </h1>
-            <div className="relative h-14 w-[72px] sm:row-span-2 sm:h-[105px] sm:w-[152px]" aria-hidden="true">
-              <div className="absolute top-1/2 right-0 origin-right -translate-y-1/2 scale-[0.4] sm:scale-[0.83]">
+            <div className="relative h-14 sm:row-span-2 sm:h-24" aria-hidden="true">
+              <div className="absolute top-1/2 right-0 origin-right -translate-y-1/2 scale-[0.36] sm:scale-75">
                 <InviteArtwork />
               </div>
             </div>
-            <p className="col-span-2 mt-3 max-w-xl text-base leading-6 sm:col-span-1">
-              You earn rewards on the amount each friend keeps in Earn Max after the entry fee.
-            </p>
-          </div>
-          <p className="mt-4 max-w-xl border-l-2 border-violet-400 pl-3 text-[15px] leading-6">
-            If your friends keep <strong>$100,000</strong> deposited for a full year, you earn <strong>$300</strong>.
-          </p>
-        </header>
-
-        <section aria-labelledby="invite-link-title" className="mt-7 sm:mt-8">
-          <h2 id="invite-link-title" className="text-lg leading-6 font-semibold tracking-tight">Your invite link</h2>
-          <div className="mt-3 flex flex-col gap-2 min-[540px]:flex-row">
-            <div className="flex min-h-12 min-w-0 flex-1 items-center rounded-xl border border-border bg-accent px-4">
-              <span className="select-all break-all text-[15px]" data-invite-link>
-                {link ?? (error ? "Link unavailable" : "Loading invitation link…")}
-              </span>
+            <div className="col-span-2 mt-3 max-w-xl space-y-2 text-base leading-[22px] tracking-[-0.16px] sm:col-span-1">
+              <p>Your reward is based on what each friend keeps in Earn MAX after the entry fee.</p>
+              <p>If your friends keep $100,000 deposited for a full year, <strong>you earn $300.</strong></p>
             </div>
+          </header>
+
+          <h2 className="mt-6 text-base leading-5 font-semibold">Your invite link</h2>
+          <div className="mt-2 flex flex-col gap-2 min-[540px]:flex-row">
             <button
-              className="t-hover inline-flex min-h-12 items-center justify-center gap-2 rounded-full bg-foreground px-5 text-[15px] font-medium text-background enabled:hover:bg-foreground/90 disabled:opacity-40"
+              aria-describedby="invite-url"
+              aria-label="Copy invitation URL"
+              className="t-hover flex min-h-12 min-w-0 flex-1 items-center gap-3 rounded-2xl bg-card px-4 py-3 text-left enabled:hover:bg-accent-selected disabled:cursor-default"
+              disabled={!link}
+              onClick={copy}
+              type="button"
+            >
+              <span id="invite-url" className="min-w-0 flex-1 text-base leading-5 tracking-[-0.16px] [overflow-wrap:anywhere]" data-invite-link>
+                {link ? (
+                  <>
+                    {link.slice(0, codeStart)}
+                    <wbr />
+                    <span className="whitespace-nowrap">{link.slice(codeStart)}</span>
+                  </>
+                ) : error ? "Link unavailable" : "Loading invitation link…"}
+              </span>
+              <ThemedIcon className="size-6 shrink-0 text-muted-foreground" src={`${ASSET_BASE}/${copied ? "icon-check.svg" : "invite-copy.svg"}`} />
+            </button>
+            <button
+              className="t-hover flex min-h-12 items-center justify-center rounded-full bg-foreground px-5 text-base leading-5 font-medium text-background enabled:hover:bg-foreground/90 disabled:opacity-40 min-[540px]:w-48"
               disabled={!link && !error}
               onClick={!link && error ? retry : copy}
               type="button"
             >
-              <ThemedIcon className="size-[18px]" src={`${ASSET_BASE}/${copied ? "icon-check.svg" : "invite-copy.svg"}`} />
-              <span aria-live="polite">{copied ? "Copied!" : !link && error ? "Try again" : "Copy invite link"}</span>
+              <span aria-live="polite">
+                <TextSwap text={copied ? "Copied!" : !link && error ? "Try again" : "Copy invitation link"} />
+              </span>
             </button>
           </div>
           {error && <p className="mt-2 text-sm text-destructive" role="alert">{error}</p>}
           <p className="mt-3 max-w-2xl text-sm leading-5 text-foreground/70">
-            You’re paid in Earn Max shares as Loyal collects performance fees from each friend’s deposit. Anything still owed carries over for that friend.
+            Rewards are paid in Earn MAX shares from each friend’s performance fees. Any unpaid amount carries over for that friend.
           </p>
         </section>
 
