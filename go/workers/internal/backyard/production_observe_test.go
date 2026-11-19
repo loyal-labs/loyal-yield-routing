@@ -337,31 +337,33 @@ func TestProductionPerformanceFeeTermsHold(t *testing.T) {
 // 2026-10-13: every sample held as fee_hwm_baseline_unavailable). rwa's
 // 2000 bps on that vault still stops it.
 func TestProductionFeeTermsAreTheVaults(t *testing.T) {
-	v := *rwa
-	v.AdminPerformanceFeeBPS = looping.AdminPerformanceFeeBPS
-	manifest := readyWorkerManifest(t)
-	manifest.vault = &v
-	for _, chainBPS := range []uint16{0, uint16(rwa.AdminPerformanceFeeBPS)} {
-		state := productionObserveState{
-			routeKey: "rwa-multiply:test",
-			journal:  &stubProductionJournal{journal: reconciledJournal()},
-			batch: productionConfirmedBatchForManifest(t, manifest, 77, func(accounts []ConfirmedAccount) {
-				vault := accountAt(accounts, bridgeVoltrVault).Data
-				binary.LittleEndian.PutUint16(vault[514:516], chainBPS)
-				putScaledFraction(vault[624:640], new(big.Int).Lsh(big.NewInt(1), 48))
-			}),
-			identity: pinnedIdentityObservation,
-		}
-		o, err := state.observe(context.Background())
-		if err != nil {
-			t.Fatal(err)
-		}
-		got, approved := Decide(o.Snapshot), chainBPS == 0
-		if held := got.Action == HoldManualRecovery && got.Reason == "voltr_fee_terms_unapproved"; held == approved {
-			t.Fatalf("chain fee %d bps on a vault approved at 0: %+v", chainBPS, got)
-		}
-		if selectorFeeBaselineKnown(o.Snapshot) != approved {
-			t.Fatalf("chain fee %d bps on a vault approved at 0: selector baseline %v", chainBPS, !approved)
+	for _, approvedBPS := range []int64{0, 1500} {
+		v := *rwa
+		v.AdminPerformanceFeeBPS = approvedBPS
+		manifest := readyWorkerManifest(t)
+		manifest.vault = &v
+		for _, chainBPS := range []uint16{0, 1500} {
+			state := productionObserveState{
+				routeKey: "rwa-multiply:test",
+				journal:  &stubProductionJournal{journal: reconciledJournal()},
+				batch: productionConfirmedBatchForManifest(t, manifest, 77, func(accounts []ConfirmedAccount) {
+					vault := accountAt(accounts, bridgeVoltrVault).Data
+					binary.LittleEndian.PutUint16(vault[514:516], chainBPS)
+					putScaledFraction(vault[624:640], new(big.Int).Lsh(big.NewInt(1), 48))
+				}),
+				identity: pinnedIdentityObservation,
+			}
+			o, err := state.observe(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, approved := Decide(o.Snapshot), int64(chainBPS) == approvedBPS
+			if held := got.Action == HoldManualRecovery && got.Reason == "voltr_fee_terms_unapproved"; held == approved {
+				t.Fatalf("chain fee %d bps on a vault approved at %d: %+v", chainBPS, approvedBPS, got)
+			}
+			if selectorFeeBaselineKnown(o.Snapshot) != approved {
+				t.Fatalf("chain fee %d bps on a vault approved at %d: selector baseline %v", chainBPS, approvedBPS, !approved)
+			}
 		}
 	}
 }
