@@ -128,8 +128,16 @@ end_masters() {
 RUN_ID=''
 # REV_FENCED: a switch --reverse that stops now leaves the target the primary with its roles NOLOGIN.
 REV_FENCED=0
+# MARKER_LEFT: subscribe wrote or found the freeze marker, so a run that stops leaves it behind.
+MARKER_LEFT=0
+marker_holds() { [[ -n $FREEZE_MARKER && $FREEZE_MARKER == "$MIGRATE_MARKER" ]]; }
+marker_note() {
+  if marker_holds; then echo "the source's freeze marker $FREEZE_MARKER stays, so its deploy refuses migrations"
+  else echo "the freeze marker $FREEZE_MARKER stays as a record only, since nothing on the source refuses migrations under it (MIGRATE_MARKER=${MIGRATE_MARKER:-unset})"; fi
+}
+marker_hint() { ((MARKER_LEFT == 0 || $1 == 0 || $1 == 3)) || echo "pgmove: $CMD stopped and $(marker_note): fix the cause above and rerun $CMD $CLUSTER, or lift the marker with retire $CLUSTER --force" >&2; }
 rev_fenced_hint() { ((REV_FENCED == 0 || $1 == 0 || $1 == 3)) || echo "pgmove: switch --reverse refused; the target stays the primary with no LOGIN and no source role got LOGIN: run thaw $CLUSTER --reverse to reopen the target (cutover.sh rollback runs it)" >&2; }
-trap 'rc=$?; [[ -z $RUN_ID ]] || echo "$CMD: run $RUN_ID ended rc=$rc"; rm -f "$QFAIL"; end_masters; ((REOPEN == 0)) || reopen_target $rc; rev_fenced_hint $rc' EXIT
+trap 'rc=$?; [[ -z $RUN_ID ]] || echo "$CMD: run $RUN_ID ended rc=$rc"; rm -f "$QFAIL"; end_masters; ((REOPEN == 0)) || reopen_target $rc; rev_fenced_hint $rc; marker_hint $rc' EXIT
 # PROBE names the reverse verify, so a query that fails there never reads as a difference.
 PROBE=0
 query_stopped() {
@@ -710,6 +718,7 @@ catch_up_schema() {
   [[ $subs == 0 ]] || return 0
   rows=$(q dst "$db" "$ANY_ROWS")
   [[ $rows == 0 ]] || return 0
+  [[ $CMD != subscribe ]] || marker_holds || echo "$CMD: $db: nothing on the source refuses migrations under a marker (MIGRATE_MARKER=${MIGRATE_MARKER:-unset}), so a migration there after this catch-up's dump and before CREATE PUBLICATION goes unseen until replication fails on it"
   tmp=$(mktemp -d)
   dump src "$db" "$flags" >"$tmp/src.sql"
   dump dst "$db" "$flags" >"$tmp/dst.sql"
@@ -1034,14 +1043,15 @@ cmd_subscribe() {
   done
   ((blocks == 0 || DRY)) || finish
   ensure_marker
-  # After the marker, so the source's migrations refuse from the dump the catch-up compares on.
+  [[ -z $FREEZE_MARKER ]] || ((DRY)) || MARKER_LEFT=1
+  # After the marker: where MIGRATE_MARKER is that path, the source's deploy refuses migrations from the dump the catch-up compares on.
   for spec in "${DATABASES[@]}"; do
     db=$(db_of "$spec") shape=$(shape_of "$spec")
     [[ $shape == upstream=* ]] && continue
     ensure_extensions "$db"
     ensure_schema "$db"
   done
-  ((blocks == 0 || DRY)) || finish "no publication, slot or subscription was made; the source's freeze marker${FREEZE_MARKER:+ $FREEZE_MARKER} stays, so its migrations refuse: fix the target and rerun subscribe, or lift the marker with retire $CLUSTER --force"
+  ((blocks == 0 || DRY)) || finish "no publication, slot or subscription was made"
   if via_forward; then
     ensure_repl_role src
   elif [[ -n $FWD_PORT ]]; then
