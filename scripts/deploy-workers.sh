@@ -56,16 +56,6 @@ releases=/opt/loyal/releases/$family
 rules_file=/etc/prometheus/loyal.rules.yml
 rules_path=deploy/hetzner/monitoring/loyal.rules.yml
 
-# The cutover tool disables cloudflared on the retired box and enables it on the live one.
-live=$(ssh -o BatchMode=yes -o ConnectTimeout=10 "$host" systemctl is-enabled cloudflared.service 2>&1) || true
-if [[ $live != enabled ]]; then
-  echo "$host is not the live Loyal box (cloudflared.service read: '${live//$'\n'/ }'); set LOYAL_WORKERS_SSH to the live box (loyal-main after the move)" >&2
-  exit 1
-fi
-remote_uid=$(ssh -o BatchMode=yes -o ConnectTimeout=10 "$host" id -u) || { echo "cannot read the login uid on $host" >&2; exit 1; }
-rsudo=()
-[[ $remote_uid == 0 ]] || rsudo=(sudo -n)
-
 cd "$(dirname "$0")/.."
 git fetch -q origin main
 sha=$(git rev-parse --verify --quiet "${target}^{commit}") || {
@@ -169,6 +159,16 @@ if [[ $web_family == yes && ${LOYAL_DEPLOY_DRY_RUN:-} == 1 ]]; then
   echo "dry run ok: stopping before any change on $host"
   exit 0
 fi
+
+# The cutover tool disables cloudflared on the retired box and enables it on the live one.
+live=$(ssh -o BatchMode=yes -o ConnectTimeout=10 "$host" systemctl is-enabled cloudflared.service) || true
+if [[ $live != enabled ]]; then
+  echo "$host is not the live Loyal box (cloudflared.service read: '${live//$'\n'/ }'); set LOYAL_WORKERS_SSH to the live box (loyal-main after the move)" >&2
+  exit 1
+fi
+remote_uid=$(ssh -o BatchMode=yes -o ConnectTimeout=10 "$host" id -u) || { echo "cannot read the login uid on $host" >&2; exit 1; }
+rsudo=()
+[[ $remote_uid == 0 ]] || rsudo=(sudo -n)
 
 facts=$(ssh "$host" ${rsudo[@]+"${rsudo[@]}"} sh -s -- "$rules_file" "$dropin" <<'REMOTE'
 blob() {
