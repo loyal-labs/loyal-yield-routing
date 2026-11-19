@@ -338,7 +338,7 @@ $(verify_body)"
 
 # ---- checks shared by preflight and switch
 BLOCKERS=()
-IN_SWITCH=0 # set only by cmd_switch, never read from the environment
+IN_SWITCH=0 # 1 only for the preflight call inside cmd_switch, never read from the environment
 block() { BLOCKERS+=("$1"); echo "  BLOCKER $1"; }
 okl() { echo "  ok      $1"; }
 
@@ -589,8 +589,7 @@ $(sync_body)"
 cmd_switch() {
   [[ ${1:-} == --go ]] || die "switch needs --go (owner's go; the peer session that owns w20-live must be present)"
   say "1/7 preflight"
-  IN_SWITCH=1
-  cmd_preflight || die "preflight failed, nothing was touched"
+  IN_SWITCH=1 cmd_preflight || die "preflight failed, nothing was touched"
   say "2/7 pre-pass copy with the old bot still running"
   cmd_sync || die "pre-pass copy failed, nothing was touched"
   say "3/7 stop and disable the old units"
