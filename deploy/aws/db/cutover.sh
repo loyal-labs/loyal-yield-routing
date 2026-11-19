@@ -270,7 +270,7 @@ halt_src_writers() {
 # the command fails naming it.
 start_script() {
   # shellcheck disable=SC2016
-  echo 'armed() { [ -n "$(systemctl show -p NextElapseUSecRealtime --value $1)" ] || case $(systemctl show -p NextElapseUSecMonotonic --value $1) in "" | infinity) false ;; esac; }; systemctl start '"$*"' || exit 1; for t in '"$*"'; do case $t in *.timer) armed $t || systemctl start "$(systemctl show -p Unit --value $t)" || :; for i in 1 2 3 4 5 6 7 8 9 10; do armed $t && continue 2; sleep 1; done; armed $t && continue; echo "cutover: $t has no next elapse after its service ran" >&2; exit 1 ;; esac; done'
+  echo 'armed() { r=$(systemctl show -p NextElapseUSecRealtime --value $1) && m=$(systemctl show -p NextElapseUSecMonotonic --value $1) || return 1; [ -n "$r" ] || case $m in "" | infinity) false ;; esac; }; systemctl start '"$*"' || exit 1; for t in '"$*"'; do case $t in *.timer) armed $t || systemctl start "$(systemctl show -p Unit --value $t)" || :; for i in 1 2 3 4 5 6 7 8 9 10; do armed $t && continue 2; sleep 1; done; armed $t && continue; echo "cutover: $t has no next elapse after its service ran" >&2; exit 1 ;; esac; done'
 }
 
 # The source's own timers and services again, once it is the primary, enabled and running as freeze
