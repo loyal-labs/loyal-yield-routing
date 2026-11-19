@@ -24,6 +24,8 @@ var earnReferralsFamily = earnFamily{
 		TableGrant("loyal_yield.referral_codes", "INSERT"),
 		TableGrant("loyal_yield.referral_bindings", "SELECT"),
 		TableGrant("loyal_yield.referral_bindings", "INSERT"),
+		TableGrant("loyal_yield.referral_wallet_identities", "SELECT"),
+		TableGrant("loyal_yield.referral_wallet_identities", "INSERT"),
 		TableGrant("loyal_yield.user_yield_positions", "SELECT"),
 		TableGrant("loyal_yield.earn_max_cash_flows", "SELECT"),
 	},
@@ -107,7 +109,7 @@ type referralRoutes struct {
 func (h earnRoutes) registerReferrals(api huma.API) {
 	routes := referralRoutes{
 		auth:       h.auth,
-		store:      referral.NewStore(h.YieldDB, h.appDB),
+		store:      referral.NewStore(h.YieldDB, h.appDB, h.referralIdentity),
 		inviteBase: strings.TrimRight(cmp.Or(os.Getenv("LOYAL_INVITE_BASE_URL"), defaultInviteBase), "/"),
 		tries:      newInviteAttempts(),
 		lookups:    newLimiters(),
@@ -125,7 +127,7 @@ func (h earnRoutes) registerReferrals(api huma.API) {
 		Method:      http.MethodPost,
 		Path:        referralClaimPath,
 		Summary:     "Bind the signed-in user to the inviter who owns a referral code",
-		Responses:   errorResponses[routeError](api, 400, 401, 403, 429, 503),
+		Responses:   errorResponses[routeError](api, 400, 401, 403, 409, 429, 503),
 	}, routes.claim)
 	documentJSONBody[ReferralClaimRequest](api, referralClaimPath)
 	huma.Register(api, huma.Operation{
@@ -167,7 +169,7 @@ func (h referralRoutes) referrals(ctx context.Context, in *sessionRequest) (*ref
 	if err != nil {
 		return nil, earnUnavailable("referrals code", err, referralsDownCode, referralsDownReason)
 	}
-	bound, err := h.store.Bound(ctx, user)
+	canClaim, closesAt, err := h.store.ClaimWindowFor(ctx, user)
 	if err != nil {
 		return nil, earnUnavailable("referrals binding", err, referralsDownCode, referralsDownReason)
 	}
@@ -178,8 +180,8 @@ func (h referralRoutes) referrals(ctx context.Context, in *sessionRequest) (*ref
 	body := Referrals{
 		Code:     string(code),
 		Link:     h.inviteBase + "/i/" + string(code),
-		CanClaim: !bound && !time.Now().After(user.ClaimClosesAt()),
-		ClosesAt: user.ClaimClosesAt(),
+		CanClaim: canClaim,
+		ClosesAt: closesAt,
 		Friends:  make([]ReferralFriend, len(friends)),
 	}
 	for i, f := range friends {
@@ -218,6 +220,9 @@ func (h referralRoutes) claim(ctx context.Context, in *redeemRequest) (*referral
 		return nil, earnError(http.StatusBadRequest, "invalid_source", "")
 	}
 	result, err := h.store.Bind(ctx, user, code, source)
+	if errors.Is(err, referral.ErrIdentityConflict) {
+		return nil, earnError(http.StatusConflict, "referral_identity_conflict", "This referral needs review because linked wallets have conflicting records.")
+	}
 	if err != nil {
 		return nil, earnUnavailable("referrals bind", err, referralsDownCode, referralsDownReason)
 	}

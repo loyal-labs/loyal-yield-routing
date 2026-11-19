@@ -498,8 +498,27 @@ no GRANT runs.
 | earn withdraw prepare (wprep) | SELECT on `managed_vaults`, `route_policies` |
 | earn withdraw (confirm, cleanup prepare and confirm) | SELECT on `user_yield_position_withdrawals`, `balance_sweep_executions`, `balance_sweep_wallet_balance_events`, `balance_sweep_lot_claim_items`, `managed_vaults`, `route_policies`; SELECT, UPDATE on `balance_sweep_policies`, `balance_sweep_targets`, `balance_sweep_surplus_lots`, `balance_sweep_lot_claims` |
 | Earn MAX reads | SELECT on `multiply_operations`, `multiply_route_current_apy_days`, `multiply_route_states` |
-| referrals | SELECT, INSERT on `referral_codes`, `referral_bindings`; SELECT on `user_yield_positions`, `earn_max_cash_flows` (and SELECT on `app_users` on App Neon) |
+| referrals | SELECT, INSERT on `referral_codes`, `referral_bindings`, `referral_wallet_identities`; SELECT on `user_yield_positions`, `earn_max_cash_flows` (and SELECT on `app_users` on App Neon) |
 | Earn MAX cash-flow writer (the observer, not proven by `CheckEarnGrants`) | INSERT on `earn_max_cash_flows` |
+
+Referral claims from invite links, typed codes and mobile installs share one
+seven-day window from the earliest known Loyal signup across verified linked
+Solana wallets. The claim checks the inviter and invitee with the app's Privy
+wallet lookup. A wallet without a match can claim using its authenticated
+Loyal wallet. Repeated claims keep the original inviter, code ownership and
+referee wallet. A provider outage leaves the dashboard readable and a new
+claim retryable. On a wallet-only installation, existing local evidence applies.
+
+Later links observed during a claim can expose earlier duplicate signups, a
+self-referral or a wallet reassignment. Migration 0146 preserves attributed
+rows and exposes each affected referee in
+`loyal_yield.referral_attribution_conflicts`. Consumers of monetary rewards
+need SELECT on that view to hold future credits for review. Before checking
+the view and posting a credit in a read-committed transaction, obtain
+`pg_advisory_xact_lock_shared(hashtextextended('referral-identity-evidence', 0))`
+in a separate statement. Identity observations take the exclusive lock. The web process
+refreshes identity evidence when processing claims. Independent wallets that
+have never shared a verified Loyal or Privy identity cannot be associated.
 
 Earn MAX activity includes an optional `earnings` breakdown: investment
 performance after actual trading costs, changes in estimated selling costs
