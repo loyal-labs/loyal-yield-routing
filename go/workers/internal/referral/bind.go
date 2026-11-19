@@ -3,7 +3,7 @@ package referral
 import (
 	"context"
 	"errors"
-	"fmt"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -41,6 +41,7 @@ const (
 func (s *Store) Bind(ctx context.Context, caller User, code Code, source Source) (Result, error) {
 	ctx, cancel := context.WithTimeout(ctx, queryTimeout)
 	defer cancel()
+
 	var referrer string
 	err := s.yield.QueryRow(ctx, `SELECT app_user_id::text FROM loyal_yield.referral_codes WHERE code = $1`, string(code)).Scan(&referrer)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -52,49 +53,85 @@ func (s *Store) Bind(ctx context.Context, caller User, code Code, source Source)
 	if referrer == caller.ID {
 		return OwnCode, nil
 	}
-	if result, found, err := s.existing(ctx, caller, referrer); found || err != nil {
-		return result, err
-	}
-	var referrerSignedUpAt time.Time
-	err = s.app.QueryRow(ctx, `SELECT created_at FROM app_users WHERE id = $1`, referrer).Scan(&referrerSignedUpAt)
+	var referrerWallet string
+	err = s.app.QueryRow(ctx, `SELECT subject_address FROM app_users WHERE id = $1 AND provider = 'solana'`, referrer).Scan(&referrerWallet)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return UnknownCode, nil
 	}
 	if err != nil {
 		return "", err
 	}
-	if referrerSignedUpAt.After(caller.SignedUpAt) {
-		return ReferrerNewer, nil
+	for _, wallet := range []string{caller.Wallet, referrerWallet} {
+		if err := s.observe(ctx, wallet); err != nil {
+			return "", err
+		}
 	}
-	if time.Now().After(caller.ClaimClosesAt()) {
-		return WindowClosed, nil
-	}
-	tag, err := s.yield.Exec(ctx, `INSERT INTO loyal_yield.referral_bindings (referee_app_user_id, referee_wallet, referrer_app_user_id, source, referee_signed_up_at)
-VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING`, caller.ID, caller.Wallet, referrer, string(source), caller.SignedUpAt)
+	claimant, err := knownIdentity(ctx, s.yield, caller.Wallet)
 	if err != nil {
 		return "", err
 	}
-	if tag.RowsAffected() == 1 {
-		return Bound, nil
+	inviter, err := knownIdentity(ctx, s.yield, referrerWallet)
+	if err != nil {
+		return "", err
 	}
-	result, found, err := s.existing(ctx, caller, referrer)
-	if err == nil && !found {
-		err = fmt.Errorf("referral: binding for %s conflicted but is not visible", caller.ID)
+	if slices.Contains(claimant.Wallets, referrerWallet) {
+		return OwnCode, nil
 	}
-	return result, err
-}
+	firstSignup, _, err := s.members(ctx, claimant)
+	if err != nil {
+		return "", err
+	}
+	inviterSignup, inviterUsers, err := s.members(ctx, inviter)
+	if err != nil {
+		return "", err
+	}
 
-func (s *Store) existing(ctx context.Context, caller User, referrer string) (Result, bool, error) {
-	var bound string
-	err := s.yield.QueryRow(ctx, `SELECT referrer_app_user_id::text FROM loyal_yield.referral_bindings WHERE referee_app_user_id = $1 OR referee_wallet = $2 LIMIT 1`,
-		caller.ID, caller.Wallet).Scan(&bound)
-	switch {
-	case errors.Is(err, pgx.ErrNoRows):
-		return "", false, nil
-	case err != nil:
-		return "", false, err
-	case bound == referrer:
-		return Bound, true, nil
+	tx, err := s.yield.Begin(ctx)
+	if err != nil {
+		return "", err
 	}
-	return AlreadyBound, true, nil
+	defer tx.Rollback(ctx)
+	if err := lockIdentities(ctx, tx, claimant, inviter); err != nil {
+		return "", err
+	}
+	for _, old := range []struct {
+		wallet   string
+		identity Identity
+	}{{caller.Wallet, claimant}, {referrerWallet, inviter}} {
+		current, err := knownIdentity(ctx, tx, old.wallet)
+		if err != nil {
+			return "", err
+		}
+		if old.identity.Subject != current.Subject || !slices.Equal(old.identity.Wallets, current.Wallets) {
+			return "", errors.New("referral: verified wallet links changed during claim; retry")
+		}
+	}
+
+	var count int
+	var sameInviter bool
+	err = tx.QueryRow(ctx, `SELECT count(*), COALESCE(bool_and(referrer_app_user_id::text = ANY($4::text[])), false)
+FROM loyal_yield.referral_bindings WHERE referee_app_user_id = $1 OR referee_wallet = ANY($2::text[])
+OR referee_privy_subject = NULLIF($3,'')`, caller.ID, claimant.Wallets, claimant.Subject, inviterUsers).Scan(&count, &sameInviter)
+	if err != nil {
+		return "", err
+	}
+	switch {
+	case count > 1:
+		return "", ErrIdentityConflict
+	case count == 1 && sameInviter:
+		return Bound, nil
+	case count == 1:
+		return AlreadyBound, nil
+	case inviterSignup.After(firstSignup):
+		return ReferrerNewer, nil
+	case time.Now().After(firstSignup.Add(ClaimWindow)):
+		return WindowClosed, nil
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO loyal_yield.referral_bindings
+(referee_app_user_id, referee_wallet, referrer_app_user_id, source, referee_signed_up_at, referee_privy_subject)
+VALUES ($1,$2,$3,$4,$5,NULLIF($6,''))`, caller.ID, caller.Wallet, referrer, string(source), firstSignup, claimant.Subject)
+	if err != nil {
+		return "", err
+	}
+	return Bound, tx.Commit(ctx)
 }

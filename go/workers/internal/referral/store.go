@@ -17,12 +17,13 @@ const (
 )
 
 type Store struct {
-	yield *pgxpool.Pool
-	app   *pgxpool.Pool
+	yield  *pgxpool.Pool
+	app    *pgxpool.Pool
+	lookup LookupIdentity
 }
 
-func NewStore(yield, app *pgxpool.Pool) *Store {
-	return &Store{yield: yield, app: app}
+func NewStore(yield, app *pgxpool.Pool, lookup LookupIdentity) *Store {
+	return &Store{yield: yield, app: app, lookup: lookup}
 }
 
 type User struct {
@@ -83,10 +84,25 @@ func (s *Store) CodeExists(ctx context.Context, code Code) (bool, error) {
 	return exists, err
 }
 
-func (s *Store) Bound(ctx context.Context, user User) (bool, error) {
+// ClaimWindowFor uses known aliases when rendering the existing dashboard.
+func (s *Store) ClaimWindowFor(ctx context.Context, user User) (bool, time.Time, error) {
 	ctx, cancel := context.WithTimeout(ctx, queryTimeout)
 	defer cancel()
+	id, err := knownIdentity(ctx, s.yield, user.Wallet)
+	if errors.Is(err, ErrIdentityConflict) {
+		return false, user.ClaimClosesAt(), nil
+	}
+	if err != nil {
+		return false, time.Time{}, err
+	}
+	at, _, err := s.members(ctx, id)
+	if err != nil {
+		return false, time.Time{}, err
+	}
 	var bound bool
-	err := s.yield.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM loyal_yield.referral_bindings WHERE referee_app_user_id = $1 OR referee_wallet = $2)`, user.ID, user.Wallet).Scan(&bound)
-	return bound, err
+	err = s.yield.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM loyal_yield.referral_bindings
+WHERE referee_app_user_id = $1 OR referee_wallet = ANY($2::text[]) OR referee_privy_subject = NULLIF($3,''))`,
+		user.ID, id.Wallets, id.Subject).Scan(&bound)
+	closes := at.Add(ClaimWindow)
+	return !bound && !time.Now().After(closes), closes, err
 }
