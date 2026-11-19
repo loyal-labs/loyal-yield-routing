@@ -31,6 +31,7 @@ var settlementMemo = solana.MustPublicKeyFromBase58("MemoSq4gqABAXKb96qnH8TysNcW
 // the later finalized delivery slot are retained, even when the LP price moves.
 type Settlement struct {
 	NewRegistration   bool      `json:"new_registration,omitempty"`
+	Submission        string    `json:"submission,omitempty"`
 	ID                string    `json:"settlement_id"`
 	LotID             int64     `json:"lot_id,string"`
 	Referee           string    `json:"referee_app_user_id"`

@@ -20,14 +20,38 @@ The ledger rounds the fixed USDC value of the delivered shares up to a whole mic
 
 ## Operator commands
 
-Configure an authorized settlement database connection in `REFERRAL_SETTLEMENT_DATABASE_URL`, a read-only app connection in `REFERRAL_APP_DATABASE_URL`, and a mainnet read RPC in `SOLANA_RPC_URL`. Use the approved credential provider for the operator environment. The CLI reads public chain state and writes the settlement ledger. A separate authorized treasury signer owns signing and submission.
+Configure an authorized settlement database connection in `REFERRAL_SETTLEMENT_DATABASE_URL`, a read-only app connection in `REFERRAL_APP_DATABASE_URL`, and a mainnet RPC with finalized history and transaction submission in `SOLANA_RPC_URL`. Use the approved credential provider for the operator environment. The treasury wallet approves each payout on the signer’s device. The operator CLI records and submits the signed bytes. It needs no treasury private key.
 
 1. Run `loyal-referral-settlement prepare LOT_ID`. Review the wallet, recipient ATA, source treasury ATA, mint, share quantity, fixed USDC amount, timestamps and blockhash lifetime. The output’s `unsigned_wire` is base64 binary Solana transaction data. Repeating the command returns the same open reservation.
-2. Have the authorized external signer sign the exact message and save the binary signed transaction to an access-restricted file. Run `loyal-referral-settlement register ID SIGNED_WIRE_FILE` before any submission. Registration checks the exact message and signature, current account and custody, the live blockhash, and a quote age of at most 32 finalized slots and 30 seconds. Its input must be the original compiled transaction with its treasury signature. Adding a priority instruction, changing the recipient, or refreshing its blockhash changes the message.
-3. After a successful registration response with `new_registration: true`, the authorized external submitter can submit those exact bytes within the quote and blockhash lifetime. A duplicate registration returns the stored state without renewing authorization. Reconcile an uncertain submission. Check the original quote timestamp and state before any first submission. A previously registered transaction can have expired by the time a caller retries.
+2. Use the treasury wallet’s sign-only action and save the binary signed transaction on the trusted operator workstation. The prepared transaction contains the exact transfer, settlement memo and a recent blockhash. Registration accepts a quote up to 32 finalized slots and 30 seconds old. Have the wallet connected before preparing the quote.
+3. Run `loyal-referral-settlement submit ID SIGNED_WIRE_FILE`. It checks the treasury signature, destination, fee lot, available balance and quote, then records the signed bytes before sending them once with RPC preflight. `submission: submitted` means the RPC accepted the transaction. `unknown` and `already_registered` mean the operator should proceed to reconciliation using the recorded signature. Retrying the command cannot send a second transaction. The existing `register` command is available for a separately managed submitter. Choose one path before registration.
 4. Run `loyal-referral-settlement reconcile ID`. A finalized success requires the saved signature and wire and an exact decrease and increase at the expected treasury and recipient LP accounts. A matching finalized on-chain failure releases the reservation. An unknown signature, provider error, or different balance effect keeps the amount reserved.
 5. Run `loyal-referral-settlement recover ID` after finalized blockheight exceeds the saved last valid height. Recovery checks that the exact blockhash is invalid and the archive covers the quote. It reads finalized history of the writable source LP account back to an entry at or before the quote, checking messages for all receipts between the quote and the finalized expiry observation. This also finds an exported draft that landed before registration. One exact matching transfer is reconciled. An empty complete interval releases the reservation as expired, after which prepare can generate a new quote. Missing receipts, inconsistent history, multiple matching wires or a scan exceeding 512 history entries leave the original reservation in place. Restore archive coverage to retry a held recovery. For a busy treasury and a delayed recovery, supply a third argument containing a finalized source-account transaction signature just after expiry. The operator validates its account, signature and finalized blockheight before using it as the exclusive starting cursor. If the expiry interval itself exceeds the scan cap, the reservation stays held for investigation. Preserve the signed bytes for direct reconciliation whenever they exist.
 
-Each signed transaction has one direct treasury signer and uses an idempotent ATA create, SPL TransferChecked and a memo. Retry submission only with the persisted signed bytes. Database state cannot revoke a previously shared signed transaction. There is no scheduled payout or bundled key provisioning in this operator.
+Each signed transaction has one direct treasury signer and uses an idempotent ATA create, SPL TransferChecked and a memo. Database state cannot revoke a previously shared signed transaction. There is no scheduled payout or bundled key provisioning in this operator.
 
 The dashboard reads `loyal_yield.referral_earn_max_paid`. It provides lifetime confirmed `paid_micro_usdc`, `last_paid_slot` and `has_open_settlement` per bound referee.
+
+## Wallet sign-only handoff
+
+Use the treasury’s trusted local wallet integration. The following Wallet Standard example takes the selected `wallet` and the JSON `plan` returned by `prepare`. Check the inviter’s displayed recipient account, LP mint and share amount against the reservation in the wallet confirmation. The exact settlement ID appears in the memo. The Loyal extension exposes the same [sign-only feature](../../web/apps/extension/entrypoints/loyal-wallet-provider.content.ts).
+
+```js
+const treasury = "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ";
+const account = wallet.accounts.find(a => a.address === treasury);
+if (!account || plan.treasury_owner !== treasury) throw new Error("Wrong treasury account");
+const original = Uint8Array.from(atob(plan.unsigned_wire), c => c.charCodeAt(0));
+const [{ signedTransaction }] = await wallet.features["solana:signTransaction"]
+  .signTransaction({ account, chain: "solana:mainnet", transaction: original.slice() });
+if (original[0] !== 1 || signedTransaction[0] !== 1 ||
+    signedTransaction.length !== original.length ||
+    original.subarray(65).some((b, i) => signedTransaction[i + 65] !== b)) {
+  throw new Error("Wallet changed the payout message");
+}
+const download = document.createElement("a");
+download.href = URL.createObjectURL(new Blob([signedTransaction]));
+download.download = plan.settlement_id + ".signed";
+download.click();
+```
+
+Use a private download directory. Pass the downloaded file directly to `submit`. If approval took too long, reconcile the existing reservation and use `recover` after finalized expiry before preparing a new quote.

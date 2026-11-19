@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"math/big"
 	"strconv"
 	"time"
@@ -301,6 +302,44 @@ func (s *Store) RegisterSettlement(ctx context.Context, c *chain.Client, id stri
 	p, _, err = settlementByID(ctx, s.yield, id)
 	p.NewRegistration = newRegistration && err == nil && p.State == "signed"
 	return p, err
+}
+
+// Only the caller which commits the first registration can broadcast. After a
+// crash or an ambiguous response, every subsequent call must reconcile.
+func (s *Store) SubmitSettlement(ctx context.Context, c *chain.Client, id string, wire []byte) (Settlement, error) {
+	p, err := s.RegisterSettlement(ctx, c, id, wire)
+	if err != nil {
+		return p, err
+	}
+	if !p.NewRegistration {
+		p.Submission = "already_registered"
+		return p, nil
+	}
+	current, registered, err := settlementByID(ctx, s.yield, id)
+	if err != nil {
+		return p, err
+	}
+	current.Submission = "not_sent"
+	if current.State != "signed" || current.Signature == nil || !bytes.Equal(registered, wire) {
+		return current, errors.New("settlement no longer available for submission")
+	}
+	tx, err := solana.TransactionFromBytes(registered)
+	if err != nil {
+		return current, err
+	}
+	valid, slot, err := c.BlockhashValid(ctx, tx.Message.RecentBlockhash, rpc.CommitmentFinalized, current.QuoteSlot)
+	if err != nil {
+		return current, err
+	}
+	if !valid || !quoteCurrent(slot, time.Now().UTC(), current.QuoteSlot, current.QuoteAt) {
+		return current, errors.New("registered payout expired before submission; reconcile or recover its reservation")
+	}
+	if err = c.SendWire(ctx, registered, false); err != nil {
+		current.Submission = "unknown"
+		return current, fmt.Errorf("submission outcome unknown; reconcile settlement %s with signature %s: %w", id, *current.Signature, err)
+	}
+	current.Submission = "submitted"
+	return current, nil
 }
 
 func (s *Store) ReconcileSettlement(ctx context.Context, c *chain.Client, id string) (Settlement, error) {

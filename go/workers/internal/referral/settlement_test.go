@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -146,6 +147,8 @@ func TestSettlementLifecycle(t *testing.T) {
 	var wire []byte
 	var landed *solana.Transaction
 	var fixturePlan Settlement
+	var submissions atomic.Int32
+	var loseSubmissionReply atomic.Bool
 	var expired, missingHistory, withLanding, badCredit, failed bool
 	at := time.Now().UTC().Unix()
 	acct := func(owner solana.PublicKey, b []byte) map[string]any {
@@ -189,6 +192,26 @@ func TestSettlementLifecycle(t *testing.T) {
 			result = wrap([]any{acct(solana.SysVarPubkey, clock), acct(voltr.ProgramID, vault), acct(solana.TokenProgramID, mint), acct(squads.ProgramID, settingsData), acct(solana.TokenProgramID, src), nil})
 		case "getLatestBlockhash":
 			result = wrap(map[string]any{"blockhash": solana.Hash{2}.String(), "lastValidBlockHeight": 200})
+		case "sendTransaction":
+			submissions.Add(1)
+			var sent []byte
+			var opts struct {
+				SkipPreflight bool `json:"skipPreflight"`
+				MaxRetries    *int `json:"maxRetries"`
+			}
+			if len(req.Params) != 2 || json.Unmarshal(req.Params[0], &sent) != nil || json.Unmarshal(req.Params[1], &opts) != nil ||
+				opts.SkipPreflight || opts.MaxRetries == nil || *opts.MaxRetries != 0 || !bytes.Equal(sent, wire) {
+				t.Error("wrong payout wire, preflight or RPC retry settings")
+			}
+			persisted, registered, err := settlementByID(ctx, pool, fixturePlan.ID)
+			if err != nil || persisted.State != "signed" || persisted.Signature == nil || *persisted.Signature != landed.Signatures[0].String() || !bytes.Equal(sent, registered) {
+				t.Errorf("broadcast preceded durable registration of these bytes: %v", err)
+			}
+			if loseSubmissionReply.Load() {
+				http.Error(w, "reply lost", http.StatusBadGateway)
+				return
+			}
+			result = landed.Signatures[0].String()
 		case "isBlockhashValid":
 			result = wrap(true)
 			if expired {
@@ -288,7 +311,7 @@ func TestSettlementLifecycle(t *testing.T) {
 		t.Fatalf("second reservation %v %d", err, p2.LPRaw)
 	}
 	tx2, signed2 := signSettlementTestWire(t, p2.UnsignedWire, treasuryKey)
-	if _, err = s.RegisterSettlement(ctx, client, p1.ID, signed2); err == nil {
+	if _, err = s.SubmitSettlement(ctx, client, p1.ID, signed2); err == nil || submissions.Load() != 0 {
 		t.Fatal("accepted another friend's signed transaction")
 	}
 	landed, wire = signSettlementTestWire(t, p1.UnsignedWire, treasuryKey)
@@ -296,12 +319,18 @@ func TestSettlementLifecycle(t *testing.T) {
 	if len(landed.Message.Instructions) != 3 || landed.Message.AccountKeys[landed.Message.Instructions[1].ProgramIDIndex] != solana.TokenProgramID || !bytes.Contains(landed.Message.Instructions[2].Data, []byte(p1.ID)) {
 		t.Fatal("invalid payout transaction shape")
 	}
-	signedPlan, err := s.RegisterSettlement(ctx, client, p1.ID, wire)
-	if err != nil || signedPlan.State != "signed" || !signedPlan.NewRegistration {
-		t.Fatalf("register %v", err)
+	transfer := landed.Message.Instructions[1]
+	if len(transfer.Accounts) != 4 || landed.Message.AccountKeys[transfer.Accounts[0]] != source ||
+		landed.Message.AccountKeys[transfer.Accounts[1]] != earnmax.LPMint || landed.Message.AccountKeys[transfer.Accounts[2]].String() != p1.RecipientATA ||
+		landed.Message.AccountKeys[transfer.Accounts[3]] != treasury || len(transfer.Data) != 10 || transfer.Data[0] != 12 || binary.LittleEndian.Uint64(transfer.Data[1:9]) != p1.LPRaw {
+		t.Fatal("payout does not transfer the reserved shares to the inviter")
 	}
-	if duplicate, err := s.RegisterSettlement(ctx, client, p1.ID, wire); err != nil || duplicate.NewRegistration {
-		t.Fatalf("duplicate authorization %v", err)
+	signedPlan, err := s.SubmitSettlement(ctx, client, p1.ID, wire)
+	if err != nil || signedPlan.State != "signed" || signedPlan.Submission != "submitted" || submissions.Load() != 1 {
+		t.Fatalf("submit %v", err)
+	}
+	if duplicate, err := s.SubmitSettlement(ctx, client, p1.ID, wire); err != nil || duplicate.Submission != "already_registered" || submissions.Load() != 1 {
+		t.Fatalf("duplicate submission %v", err)
 	}
 	if _, err = s.ReconcileSettlement(ctx, client, p1.ID); err == nil {
 		t.Fatal("unknown transaction should stay reserved")
@@ -368,8 +397,12 @@ func TestSettlementLifecycle(t *testing.T) {
 	}
 	landed, wire = signSettlementTestWire(t, again.UnsignedWire, treasuryKey)
 	fixturePlan = again
-	if _, err = s.RegisterSettlement(ctx, client, again.ID, wire); err != nil {
-		t.Fatal(err)
+	loseSubmissionReply.Store(true)
+	if unknown, err := s.SubmitSettlement(ctx, client, again.ID, wire); err == nil || unknown.Submission != "unknown" || unknown.Signature == nil || submissions.Load() != 2 {
+		t.Fatalf("lost submission response: %+v %v", unknown, err)
+	}
+	if retry, err := s.SubmitSettlement(ctx, client, again.ID, wire); err != nil || retry.Submission != "already_registered" || submissions.Load() != 2 {
+		t.Fatalf("resent payout after ambiguous outcome: %+v %v", retry, err)
 	}
 	withLanding, failed = true, true
 	rejected, err := s.ReconcileSettlement(ctx, client, again.ID)

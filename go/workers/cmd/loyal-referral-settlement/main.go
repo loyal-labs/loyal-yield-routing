@@ -20,7 +20,7 @@ import (
 )
 
 func run(args []string) error {
-	const usage = "usage: loyal-referral-settlement prepare LOT_ID | register ID SIGNED_WIRE_FILE | reconcile ID | recover ID [AFTER_EXPIRY_TREASURY_SIGNATURE]"
+	const usage = "usage: loyal-referral-settlement prepare LOT_ID | submit ID SIGNED_WIRE_FILE | register ID SIGNED_WIRE_FILE | reconcile ID | recover ID [AFTER_EXPIRY_TREASURY_SIGNATURE]"
 	if len(args) < 2 {
 		return errors.New(usage)
 	}
@@ -38,11 +38,11 @@ func run(args []string) error {
 		if err != nil || lot <= 0 {
 			return errors.New("invalid fee lot ID")
 		}
-	case "register", "reconcile", "recover":
+	case "register", "submit", "reconcile", "recover":
 		if _, err = uuid.Parse(id); err != nil {
 			return errors.New("invalid settlement ID")
 		}
-		if action == "register" {
+		if action == "register" || action == "submit" {
 			if len(args) != 3 {
 				return errors.New(usage)
 			}
@@ -92,15 +92,19 @@ func run(args []string) error {
 		plan, err = store.PrepareSettlement(ctx, c, lot)
 	case "register":
 		plan, err = store.RegisterSettlement(ctx, c, id, wire)
+	case "submit":
+		plan, err = store.SubmitSettlement(ctx, c, id, wire)
 	case "reconcile":
 		plan, err = store.ReconcileSettlement(ctx, c, id)
 	case "recover":
 		plan, err = store.RecoverSettlement(ctx, c, id, afterExpiry)
 	}
-	if err != nil {
-		return err
+	if err == nil || plan.Submission != "" {
+		if writeErr := json.NewEncoder(os.Stdout).Encode(plan); writeErr != nil {
+			return writeErr
+		}
 	}
-	return json.NewEncoder(os.Stdout).Encode(plan)
+	return err
 }
 
 func main() {
