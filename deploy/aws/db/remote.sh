@@ -46,6 +46,8 @@ route_on() {
 set -euo pipefail
 ts=$(date -u +%Y%m%dT%H%M%SZ) n=0
 changed() { n=$((n + 1)); echo "changed: $(hostname -s): $*"; }
+fwd=local gw=no nolisten=', listener'
+[[ -z $listen ]] || { fwd=yes gw=clientspecified nolisten=; }
 # Backups stay out of sshd_config.d and authorized_keys.d, so nothing stray sits where sshd reads.
 bak=/root/pgmove-backup/route-$ts
 if ! id -u "$user" >/dev/null 2>&1; then
@@ -71,11 +73,11 @@ Match User $user
   AuthenticationMethods publickey
   PasswordAuthentication no
   KbdInteractiveAuthentication no
-  AllowTcpForwarding ${listen:+yes}${listen:-local}
+  AllowTcpForwarding $fwd
   AllowStreamLocalForwarding no
   PermitOpen $target
   PermitListen ${listen:-none}
-  GatewayPorts ${listen:+clientspecified}${listen:-no}
+  GatewayPorts $gw
   PermitTunnel no
   X11Forwarding no
   AllowAgentForwarding no
@@ -96,7 +98,7 @@ if [[ -n $old || $(cat "$conf" 2>/dev/null || true) != "$wantc" ]]; then
   sshd -t || revert "sshd -t failed"
   [[ $(sshd -T -C "user=root,$probe") == "$before" ]] || revert "root's effective sshd settings would change"
   systemctl reload ssh
-  changed "$conf: Match User $user, publickey only, -L to $target only, ${listen:+-R on $listen only, }no shell, pty, agent, X11${listen:-, listener} or unix socket${old:+; replaced $old}; sshd -t ok, root's settings unchanged, ssh reloaded"
+  changed "$conf: Match User $user, publickey only, -L to $target only, ${listen:+-R on $listen only, }no shell, pty, agent, X11$nolisten or unix socket${old:+; replaced $old}; sshd -t ok, root's settings unchanged, ssh reloaded"
 fi
 echo "route: $(hostname -s) effective for $user from the box:"
 sshd -T -C "user=$user,host=pgmove-check,addr=$box_ip" | grep -E '^(authorizedkeysfile|authenticationmethods|passwordauthentication|allowtcpforwarding|allowstreamlocalforwarding|permitopen|permitlisten|gatewayports|permittty|permittunnel|x11forwarding|allowagentforwarding|forcecommand) ' | sed 's/^/  /'

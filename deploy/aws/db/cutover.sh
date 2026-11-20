@@ -397,15 +397,22 @@ pg_counted() {
 }
 
 source_outside_reverse() {
-  local src dst
-  # The target first, then the source once the reverse slot carried everything the target took.
-  dst=$(pg_counted switch dst) || return 1
+  local src dst over try
+  # The source first: its only writer is the reverse copy, so each of its counts stays at or under
+  # a later read of the target. A backend reports its counters up to some seconds after its commit,
+  # so the target is read again before a higher source count is called a writer outside the reverse.
   src=$(pg_counted freeze src) || return 1
+  for try in 1 2 3 4; do
+    dst=$(pg_counted switch dst) || return 1
+    grep -q 'counters reset' <<<"$src$dst" && { echo "verify: FAIL counters reset on one side; writes cannot be compared"; return 1; }
+    over=$(awk '$1 == "DIFF" && $2 == "dst" { d[$3 " " $4] = $5 } $1 == "DIFF" && $2 == "src" { s[$3 " " $4] = $5 }
+      END { for (k in s) if (s[k] > d[k] + 0) print "verify: FAIL source " k " took " s[k] " writes since freeze, the target " d[k] + 0 " since switch" }' \
+      <(printf '%s\n%s\n' "$src" "$dst"))
+    [[ -n $over ]] || break
+    ((try == 4)) || sleep 8
+  done
   printf '%s\n%s\n' "$src" "$dst" | sed -n 's/^writes: /  /p'
-  grep -q 'counters reset' <<<"$src$dst" && { echo "verify: FAIL counters reset on one side; writes cannot be compared"; return 1; }
-  awk '$1 == "DIFF" && $2 == "dst" { d[$3 " " $4] = $5 } $1 == "DIFF" && $2 == "src" { s[$3 " " $4] = $5 }
-    END { for (k in s) if (s[k] > d[k] + 0) { print "verify: FAIL source " k " took " s[k] " writes since freeze, the target " d[k] + 0 " since switch"; bad = 1 } exit bad }' \
-    <(printf '%s\n%s\n' "$src" "$dst")
+  [[ -z $over ]] || { printf '%s\n' "$over"; return 1; }
 }
 
 cmd_preflight() {
