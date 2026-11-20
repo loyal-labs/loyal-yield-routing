@@ -235,6 +235,7 @@ dbcheck() {
     fail "$NEW: PgBouncer is not up on 6432, or the credentials did not read"
   echo "$out"
   grep -q '^loyal-realtime/' <<<"$out" || fail "loyal-realtime: no database login was tested; its realtime-envelope holds no postgres URL at 127.0.0.1"
+  grep -q '^loyal-referral-harvest/' <<<"$out" || fail "loyal-referral-harvest: no database login was tested; its unit holds no postgres URL at 127.0.0.1"
   n=$(grep -c '^  login ok$' <<<"$out")
   bad=$(grep -cE 'FAILED' <<<"$out")
   via=$(grep -cE '^[^ ]+ [^ ]+ [^ ]+ 6432$' <<<"$out")
@@ -288,7 +289,7 @@ c_cutover() {
 c_units() {
   local want listed u miss='' states bad
   want=$(awk -F'\t' '$3 == "loyal-main" && $4 == "move" { print $1 }' "$UNITS_TSV" | sed 's/\.service$//') || return 1
-  [[ $(wc -l <<<"$want") -eq 29 ]] || { echo "units.tsv lists $(wc -l <<<"$want") loyal-main rows, not 29"; return 1; }
+  [[ $(wc -l <<<"$want") -eq 32 ]] || { echo "units.tsv lists $(wc -l <<<"$want") loyal-main rows, not 32"; return 1; }
   listed=" $(conf CUT_TIMERS) $(conf CUT_ENGINES) $(conf CUT_SERVICES) $(conf CUT_FIRST) "
   for u in $want; do
     [[ $u == postgresql@18-main || $listed == *" $u "* ]] || miss+=" $u"
@@ -297,7 +298,7 @@ c_units() {
   states=$(new "for u in $listed $(conf CUT_ONESHOTS); do echo \$u \$(systemctl show -p LoadState --value \$u) \$(systemctl show -p ActiveState --value \$u) \$(systemctl show -p UnitFileState --value \$u); done") || { echo "$NEW did not answer"; return 1; }
   bad=$(grep -vE '^[^ ]+ loaded inactive (disabled|static)$' <<<"$states")
   [[ -z $bad ]] || { echo "on $NEW: $bad"; return 1; }
-  echo "28 of 29 rows in loyal.conf (postgresql@18-main moves by pgmove), plus loyal-squads-watch-firewall and wg-quick@loyal-ci; $(wc -l <<<"$states") units loaded, inactive and disabled or static on $NEW"
+  echo "31 of 32 rows in loyal.conf (postgresql@18-main moves by pgmove), plus loyal-squads-watch-firewall and wg-quick@loyal-ci; $(wc -l <<<"$states") units loaded, inactive and disabled or static on $NEW"
 }
 
 # The sides freeze records: abort and rollback restore exactly these.
@@ -515,7 +516,7 @@ preflight() {
   check services c_services
   check pgmove-preflight c_pgmove
   check cutover-preflight c_cutover
-  check units-29 c_units
+  check units c_units
   check old-sides c_old_sides
   check pgbouncer-path c_pgbouncer
   check pgbouncer-passwords c_passwords
