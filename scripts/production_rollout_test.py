@@ -36,6 +36,14 @@ def sample(release=OLD, invocation='old', at=1000):
             'vault': {'observed_at': at, 'intent_fingerprint': 'same', 'inflight': 0}}
 
 
+class RolloutTest(unittest.TestCase):
+    def test_deploy_dry_run_variable_is_refused_before_anything_runs(self):
+        with patch.dict(os.environ, {'LOYAL_DEPLOY_DRY_RUN': '1'}), patch.object(rollout, 'run') as run, \
+                self.assertRaisesRegex(RuntimeError, '--preflight-only'):
+            rollout.rollout(NEW)
+        run.assert_not_called()
+
+
 class HealthTest(unittest.TestCase):
     def test_unprovisioned_notification_credentials_block_before_decryption(self):
         installed = 'WEB_APP_DATABASE_URL WEB_YIELD_DATABASE_URL TIMESCALEDB_URL WEB_SOLANA_RPC_URL'

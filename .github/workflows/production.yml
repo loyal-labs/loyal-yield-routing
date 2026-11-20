@@ -257,7 +257,7 @@ jobs:
           umask 077
           mkdir -p "$HOME/.ssh"
           printf '%s\n' "$KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
-          printf 'Host loyal-workers\n  HostName 10.203.0.1\n  HostKeyAlias %s\n  User root\n  BatchMode yes\n  StrictHostKeyChecking yes\n  ConnectTimeout 10\n  ServerAliveInterval 15\n  ServerAliveCountMax 3\n' "$DEPLOY_HOST" > "$HOME/.ssh/config"
+          printf 'Host loyal-main\n  HostName 10.203.0.1\n  HostKeyAlias %s\n  User root\n  BatchMode yes\n  StrictHostKeyChecking yes\n  ConnectTimeout 10\n  ServerAliveInterval 15\n  ServerAliveCountMax 3\n' "$DEPLOY_HOST" > "$HOME/.ssh/config"
           eval "$(ssh-agent -s)" >/dev/null
           printf '%s\n' "$DEPLOY_KEY" | ssh-add - >/dev/null 2>&1
           printf 'SSH_AUTH_SOCK=%s\nSSH_AGENT_PID=%s\n' "$SSH_AUTH_SOCK" "$SSH_AGENT_PID" >> "$GITHUB_ENV"

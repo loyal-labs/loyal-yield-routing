@@ -103,6 +103,8 @@ class DeploymentTest(unittest.TestCase):
         scripts.mkdir()
         source = (ROOT / 'scripts/deploy-workers.sh').read_text().replace('$HOME/.loyal', str(root / 'build'))
         (scripts / 'deploy-workers.sh').write_text(source)
+        (root / 'deploy/aws/boxes').mkdir(parents=True)
+        (root / 'deploy/aws/boxes/loyal-main.conf').write_text((ROOT / 'deploy/aws/boxes/loyal-main.conf').read_text())
         (scripts / 'ci-tree-key.sh').write_text(
             '#!/bin/sh\nprintf \'["ci-tree-key"]\\n\' >> "$ROLLOUT_TEST_ROOT/calls"\n'
             + ('exit 1\n' if legacy_key_fails else 'echo workers-v2-verified-test\n'))

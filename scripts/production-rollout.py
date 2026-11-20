@@ -17,6 +17,8 @@ BINARY = dict.fromkeys(('backyard', 'earn-max', 'retail'), 'loyal-engine')
 BINARY.update({family: 'loyal-' + family for family in ('observer', 'telegram', 'web', 'admin', 'stats')})
 BINARY['realtime'] = 'loyal-yield-realtime'
 SHA = re.compile('[0-9a-f]{40}')
+BOX = re.search(r'^BOX_SSH=(\S+)$', (ROOT / 'deploy/aws/boxes/loyal-main.conf').read_text(), re.M).group(1)
+SUDO = {}
 
 
 def run(*args, capture=True, **kwargs):
@@ -25,9 +27,10 @@ def run(*args, capture=True, **kwargs):
     return result.stdout.strip() if capture else None
 
 
-def ssh(host, *args, **kwargs):
+def ssh(host, *args, login=False, **kwargs):
+    remote = args if login else (*SUDO.get(host, ()), *args)
     try:
-        return run('ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', host, shlex.join(args), **kwargs)
+        return run('ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', host, shlex.join(remote), **kwargs)
     except subprocess.CalledProcessError as error:
         if len(args) > 1 and args[0] == 'python3' and args[1].endswith('/rollout-health.py'):
             for line in (error.stdout or '').splitlines():
@@ -116,6 +119,8 @@ def verify_artifacts(services):
 
 
 def rollout(sha, preflight_only=False, services=FAMILIES):
+    if os.environ.get('LOYAL_DEPLOY_DRY_RUN'):
+        raise RuntimeError('LOYAL_DEPLOY_DRY_RUN does not make this script a dry run; unset it and use --preflight-only')
     if (not isinstance(services, (list, tuple)) or any(not isinstance(family, str) or family not in FAMILIES for family in services)
             or len(set(services)) != len(services)):
         raise RuntimeError('invalid production service selection')
@@ -125,7 +130,7 @@ def rollout(sha, preflight_only=False, services=FAMILIES):
     if not services:
         summary('No production services changed. No host access or deployment performed.')
         return
-    host = os.environ.get('LOYAL_WORKERS_SSH', 'loyal-workers')
+    host = os.environ.get('LOYAL_WORKERS_SSH') or BOX
     artifacts, digests = Path(), {}
     if not preflight_only:
         root = os.environ.get('LOYAL_DEPLOY_ARTIFACT_DIR')
@@ -135,11 +140,12 @@ def rollout(sha, preflight_only=False, services=FAMILIES):
         artifacts = Path(root) if goarch == 'amd64' else Path(root) / goarch
         digests = check_directory(artifacts, services)
         summary(f'{host} is {goarch}: deploying from {artifacts}')
-    stage = ssh(host, 'mktemp', '-d', '/tmp/loyal-rollout.XXXXXXXX')
+    SUDO[host] = () if ssh(host, 'id', '-u', login=True) == '0' else ('sudo', '-n')
+    stage = ssh(host, 'mktemp', '-d', '/tmp/loyal-rollout.XXXXXXXX', login=True)
     if not re.fullmatch(r'/tmp/loyal-rollout\.[a-zA-Z0-9]+', stage):
         raise RuntimeError('unexpected host staging directory')
     try:
-        ssh(host, 'chmod', '755', stage)
+        ssh(host, 'chmod', '755', stage, login=True)
         run('scp', '-q', *(str(ROOT / 'deploy/hetzner' / path) for path in
                           ('rollout-health.py', 'rollout-snapshot.sql', 'activate-realtime.sh')), host + ':' + stage + '/')
         # Finish every preflight before changing the first service.
@@ -162,8 +168,9 @@ def rollout(sha, preflight_only=False, services=FAMILIES):
             try:
                 if family == 'realtime':
                     directory = '/opt/loyal/releases/realtime/' + sha
+                    run('scp', '-q', str(artifacts / BINARY[family]), host + ':' + stage + '/loyal-yield-realtime')
                     ssh(host, 'mkdir', '-p', directory)
-                    run('scp', '-q', str(artifacts / BINARY[family]), host + ':' + directory + '/loyal-yield-realtime')
+                    ssh(host, 'cp', stage + '/loyal-yield-realtime', directory + '/loyal-yield-realtime')
                     ssh(host, 'systemd-run', '--quiet', '--wait', '--pipe', '--collect',
                         f'--setenv=LOYAL_DEPLOY_EXPECTED_RELEASE={before["release"]}',
                         '/bin/bash', stage + '/activate-realtime.sh', sha, digests[family], capture=False)

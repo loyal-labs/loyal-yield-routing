@@ -26,6 +26,8 @@ The first line reads `loyal-main is LIVE`.
 
 The role does not reach the `main` account, which holds robinX and mnemonic, or the management account. The owner holds the Hetzner project (the retired boxes), the Cloudflare DNS zone, and the 1Password Environments. Ask the owner for the `main@askloyal.com` password.
 
+The user `main@askloyal.com` was created without a password. The first time, whoever holds that mailbox opens the sign-in page, chooses "Forgot password", and sets one. Share it through the team's password manager.
+
 Every action you take with the role is recorded in `loyal-audit` under the shared user. Say in the team channel when you change something on the box.
 
 ## Sign in from your terminal
@@ -36,7 +38,7 @@ You need AWS CLI version 2 (`brew install awscli`) and `python3`.
 
 		aws configure set region us-east-1 --profile loyal-team
 
-2. Sign in. A browser opens. Sign in as `main@askloyal.com` and pick the role `loyal-team-admin`.
+2. Sign in. A browser opens. Sign in as `main@askloyal.com` and pick the role `loyal-team-admin`. A session lasts at most 12 hours, so expect to sign in once a day.
 
 		aws login --profile loyal-team
 
@@ -78,7 +80,32 @@ A merge to `main` is the deploy. The workflow `.github/workflows/production.yml`
 
 The workflow finds the box through two settings of the GitHub environment `production`: the variable `LOYAL_WORKERS_HOST` and the secret `LOYAL_WORKERS_KNOWN_HOSTS`. Both name `loyal-main`.
 
-The manual path, `bun run deploy <service> <sha>`, connects to the ssh alias in `LOYAL_WORKERS_SSH`, default `loyal-workers`, as root. That alias is the retired Hetzner box. Do not run the manual path against it. The manual path cannot install on `loyal-main` yet, because the login there is `ubuntu`.
+### Deploy by hand
+
+Deploy by hand only when the workflow cannot, and say so in the team channel first. The manual path takes one service at a time. Its services are `backyard`, `earn-max`, `retail`, `observer`, `telegram`, `web`, `admin` and `stats`. It deploys a commit that is already on `main` and that CI built and verified for that service. When the head of `main` changed no code of the service, `bun run deploy <service>` refuses with "no green Workers v2 verification". Then deploy the newest commit whose production run built that service. Find it with `gh run list --workflow production.yml` and read the build jobs of each run.
+
+If a deploy is cut off while it is switching a service (the box loses power, or the activation is killed), the service can be left stopped. A rerun then refuses with "is inactive before the deploy" or "already runs <sha> (inactive)". That refusal is on purpose: a stopped engine is never started by a deploy, because the deploy cannot tell an interrupted switch from a service someone stopped deliberately. Check the team channel that nobody stopped it, read `sudo journalctl -u loyal-<service> -n 50 --no-pager` and the log in `/var/log/loyal-deploy/`, then start it by hand with `deploy/aws/team.sh run 'systemctl start loyal-<service>'` and rerun the deploy.
+
+With your AWS sign-in, run it through `team.sh`:
+
+	deploy/aws/team.sh deploy <service> [sha] [--migrations-applied] [--stopped]
+
+`team.sh deploy` lets your key in with EC2 Instance Connect and opens one ssh connection to the box as `ubuntu`. Then it runs `scripts/deploy-workers.sh` (`bun run deploy`) over that connection. The connection is closed when the deploy ends. The `sha` defaults to the head of `main`.
+
+If your machine has an ssh alias `loyal-main` that logs in to the box, run `bun run deploy <service> [sha] [flags]` directly. The script reads the alias name from `deploy/aws/boxes/loyal-main.conf`. To use another alias, set `LOYAL_WORKERS_SSH`.
+
+The script reads the uid of the login. When the login is not root, every command that changes the box runs under `sudo -n`, and files are uploaded to a `/tmp` directory first. Before the first change it checks four things:
+
+- The box has `cloudflared.service` enabled, which means it is the live box.
+- The commit has a green verification on `main`.
+- The release it replaces is the one the box is running now.
+- The `migrations/` folder has not changed since that release. When it has, apply the migrations first, then rerun with `--migrations-applied`.
+
+The `web`, `admin` and `stats` services take neither `--migrations-applied` nor `--stopped`. For `web`, run the command under `op run --env-file=.env.1password --` so that the build can read the public settings.
+
+`LOYAL_DEPLOY_DRY_RUN=1` runs every read and check, then stops before the first change. For `web`, `admin` and `stats`, a dry run builds the binary on your machine and makes no change on the box.
+
+`realtime` has no `bun run deploy` path; CI deploys it. See the realtime section of [`../hetzner/README.md`](../hetzner/README.md).
 
 ## Read service state on the box
 
