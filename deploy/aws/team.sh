@@ -122,7 +122,8 @@ cmd_ssh() {
 # A deploy makes ssh and scp calls for minutes, past the 60 s the key is valid, so they share one connection opened
 # inside that window. Every other host keeps the user's own ssh config.
 cmd_deploy() {
-  local dir real_ssh real_scp status=0
+  local real_ssh real_scp status=0
+  # dir stays global: the EXIT trap runs after this function has returned.
   admit
   dir=$(mktemp -d "${TMPDIR:-/tmp}/loyal-deploy-ssh.XXXXXX")
   trap 'ssh -F "$dir/config" -O exit "$BOX" 2>/dev/null || true; rm -rf "$dir"' EXIT
