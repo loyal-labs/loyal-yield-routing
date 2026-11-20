@@ -38,4 +38,4 @@ Safety limits use the active lane's latest hourly Kamino reserve reading and the
 
 ## Deployment
 
-Deploy a merged commit with `bun run deploy stats <sha>`. This builds the Vite assets into `loyal-stats` and activates the service on `loyal-workers`. The host's Cloudflare tunnel must include the `backyard.askloyal.com` ingress from `deploy/hetzner/cloudflared/config.yml`.
+Deploy a merged commit with `bun run deploy stats <sha>`. This builds the Vite assets into `loyal-stats` and activates the service on `loyal-main`. The host's Cloudflare tunnel must include the `backyard.askloyal.com` ingress from `deploy/hetzner/cloudflared/config.yml`.

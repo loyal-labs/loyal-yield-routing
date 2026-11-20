@@ -1,4 +1,6 @@
-# Go workers on the Hetzner host
+# Go workers on loyal-main
+
+The Loyal services run on the AWS box `loyal-main` (login `ubuntu`, `sudo -n` for root work). Every `ssh loyal-main` and `scp` below that writes under `/etc` or `/opt` needs root: run it through `sudo`, or use `deploy/aws/team.sh run`. The Hetzner boxes `loyal-workers` and `loyal-db-primary` are retired, stay untouched until they are deleted.
 
 Each Go worker is one static binary run directly by systemd. There is no
 container, controller or env launcher. Secrets are `systemd-creds` files
@@ -106,7 +108,7 @@ Each unit runs its release through
 `/etc/systemd/system/<unit>.d/40-verified-release.conf`.
 
 `scripts/deploy-workers.sh` reaches the host through the ssh alias in
-`LOYAL_WORKERS_SSH` (default `loyal-workers`, logging in as root). It
+`LOYAL_WORKERS_SSH` (the ssh alias of the live box, `loyal-main` after the switch). It
 refuses a commit that is not on origin/main, and it refuses when
 `migrations/` differs between the running release and the target: apply
 them first, then rerun with `--migrations-applied`. It has two steps, the
@@ -204,7 +206,7 @@ deploys in this order. `--stopped` is what lets the deploy start a unit the
 operator stopped:
 
 ```sh
-ssh loyal-workers systemctl stop loyal-retail loyal-observer
+ssh loyal-main systemctl stop loyal-retail loyal-observer
 bun run yield:migrate        # and timescale:migrate when it changed
 bun run deploy retail <sha> --migrations-applied --stopped
 bun run deploy observer <sha> --migrations-applied --stopped
@@ -598,7 +600,7 @@ proxying, remove the drop-in, daemon-reload and restart.
 
 ### Cron jobs and push webhooks
 
-Both timers were installed and enabled on loyal-workers on Nov 5 2026 (14:00 PST).
+Both timers were installed and enabled on the Hetzner box loyal-workers on Nov 5 2026 (14:00 PST).
 The Vercel projects loyal-frontend and loyal-app are git-linked to the old
 loyal-app repository, so `vercel.json` in this repo does not deploy to them.
 Their cron jobs were disabled on Nov 5 2026 15:02 PST in each project's
@@ -705,17 +707,17 @@ git worktree remove --force /tmp/loyal-web-install
 Upload it, install the unit, write the first drop-in by hand, enable:
 
 ```sh
-ssh loyal-workers 'install -d -m 0755 /opt/loyal/releases/web/<sha>'
+ssh loyal-main 'install -d -m 0755 /opt/loyal/releases/web/<sha>'
 scp -q /tmp/loyal-web-bin \
-  loyal-workers:/opt/loyal/releases/web/<sha>/loyal-web.tmp
-scp -q deploy/hetzner/systemd/loyal-web.service loyal-workers:/etc/systemd/system/
-ssh loyal-workers 'chmod 555 /opt/loyal/releases/web/<sha>/loyal-web.tmp &&
+  loyal-main:/opt/loyal/releases/web/<sha>/loyal-web.tmp
+scp -q deploy/hetzner/systemd/loyal-web.service loyal-main:/etc/systemd/system/
+ssh loyal-main 'chmod 555 /opt/loyal/releases/web/<sha>/loyal-web.tmp &&
   mv /opt/loyal/releases/web/<sha>/loyal-web.tmp /opt/loyal/releases/web/<sha>/loyal-web &&
   install -d -m 0755 /etc/systemd/system/loyal-web.service.d &&
   printf "[Service]\nExecStart=\nExecStart=/opt/loyal/releases/web/<sha>/loyal-web\n" \
     > /etc/systemd/system/loyal-web.service.d/40-verified-release.conf &&
   systemctl daemon-reload && systemctl enable --now loyal-web'
-ssh loyal-workers 'curl -fsS -D- http://127.0.0.1:10080/readyz'   # 200, X-Loyal-Release: <sha>
+ssh loyal-main 'curl -fsS -D- http://127.0.0.1:10080/readyz'   # 200, X-Loyal-Release: <sha>
 ```
 
 ### Deploy and roll back
@@ -790,8 +792,8 @@ Direct loopback readiness probes without that header remain HTTP.
 as on robinx-prod. After a config change:
 
 ```sh
-scp -q deploy/hetzner/cloudflared/config.yml loyal-workers:/etc/cloudflared/config.yml.tmp
-ssh loyal-workers 'cloudflared tunnel --config /etc/cloudflared/config.yml.tmp ingress validate &&
+scp -q deploy/hetzner/cloudflared/config.yml loyal-main:/etc/cloudflared/config.yml.tmp
+ssh loyal-main 'cloudflared tunnel --config /etc/cloudflared/config.yml.tmp ingress validate &&
   mv /etc/cloudflared/config.yml.tmp /etc/cloudflared/config.yml && systemctl restart cloudflared'
 curl -fsS -D- https://next.askloyal.com/readyz    # 200, X-Loyal-Release: <sha>
 ```
@@ -850,8 +852,8 @@ The alerts are:
 | LoyalUnitDown | Any `loyal-*` unit is `failed`, or stuck `activating`, for 2m |
 | LoyalUnitRestartLoop | Any `loyal-*` unit restarts more than 3 times in 15m |
 | LoyalMonitoringDown | node_exporter, Prometheus or Alertmanager is not scrapeable for 2m |
-| LoyalDbVolumeLow | `/srv/postgresql` on loyal-db-primary has under 100 GiB free for 5m |
-| LoyalDbWalLarge | `pg_wal` on loyal-db-primary is over 60 GB for 5m |
+| LoyalDbVolumeLow | `/srv/postgresql` on the DB box has under 100 GiB free for 5m |
+| LoyalDbWalLarge | `pg_wal` on the DB box is over 60 GB for 5m |
 | LoyalDbMetricsStale | The pg_wal textfile has not been rewritten for 10m, or `loyal_db_pg_wal_bytes` is gone, so LoyalDbWalLarge is blind |
 | Watchdog | Always firing, but the heartbeat receiver is empty as of 2026-11-12. Whole-host outage coverage requires an external receiver |
 
@@ -877,7 +879,7 @@ python3 monitoring/verify-alert-messages.py  # requires python3-yaml and amtool
 systemd-analyze verify deploy/hetzner/systemd/*.service   # Linux only
 ```
 
-### DB guards (loyal-db-primary)
+### DB guards (Hetzner loyal-db-primary, retired at the switch)
 
 The DB box runs a node_exporter bound to `10.92.1.1:9100` with only the
 filesystem and textfile collectors. Prometheus scrapes it as a second target
@@ -901,7 +903,7 @@ so read the Neon one with `git show c063a59d2:deploy/hetzner/db/cutover.sh`.
 `cutover.sh pause-neon` dropped the
 subscriptions `loyal_hz_{app,yield,timescale}` and their Neon slots on Nov 5
 2026 (16:15 PST), and the subscription and Neon slot alerts and their metrics
-are gone from the rules. Apply migrations to loyal-db-primary only. The Neon
+are gone from the rules. Apply migrations to the Postgres on loyal-main only. The Neon
 projects are paused (endpoints disabled), not deleted, as the owner chose.
 
 ### Withdrawal attention
@@ -1151,7 +1153,7 @@ Both are required. They hold the same values as admin's App and Yield
 credentials, so seal them on the host from those without the value leaving it:
 
 ```sh
-ssh loyal-workers 'cd /etc/credstore.encrypted &&
+ssh loyal-main 'cd /etc/credstore.encrypted &&
   systemd-creds decrypt --name=ADMIN_APP_DATABASE_URL loyal-admin-app-db - |
     systemd-creds encrypt --name=STATS_APP_DATABASE_URL - loyal-stats-app-db &&
   systemd-creds decrypt --name=ADMIN_YIELD_DATABASE_URL loyal-admin-yield-db - |
