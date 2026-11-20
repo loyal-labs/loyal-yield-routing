@@ -2,13 +2,14 @@
 # Stages on loyal-main everything loyal-workers and loyal-db-primary run for Loyal: the arm64 release laid out as
 # scripts/deploy-workers.sh lays it out, the unit files, drop-ins, timers and config trees, and every sealed
 # credential re-sealed for loyal-main's host key. Enables, starts and activates nothing; runs daemon-reload only.
-# Run from the Mac: deploy/aws/loyal-main-config.sh [stage|proof <dir>]. Idempotent; a rerun prints 0 change(s).
+# Run from the Mac: deploy/aws/loyal-main-config.sh [stage|db-host|proof <dir>]. Idempotent; a rerun prints 0 change(s).
 # Contents cross one boundary: an old host's read or `systemd-creds decrypt` piped straight into loyal-main's
 # writer (deploy/aws/box-copy.py recv), which prints paths and rewrite counts, never contents.
 # Each release family is staged at the commit it runs on loyal-workers, or at one with identical service source.
 # The old hosts are only read. Env: ARTIFACTS (one directory per release sha, ARTIFACTS/<sha>/<artifact dir>, each
 # artifact dir a gh run download of that sha's Production rollout artifact, referral-harvest of its Earn MAX referral
 # harvest artifact), LAUNCHER (arm64 loyal-env-launcher built from the reviewed source), NEW (default loyal-main).
+# db-host writes only loyal-main's database identity and the checks that read it, and needs neither ARTIFACTS nor LAUNCHER.
 set -euo pipefail
 
 DIR=$(cd "$(dirname "$0")" && pwd)
@@ -17,8 +18,6 @@ REPO=$(cd "$DIR/../.." && pwd)
 source "$REPO/deploy/hetzner/db/remote.sh"
 
 NEW=${NEW:-loyal-main}
-ARTIFACTS=${ARTIFACTS:?ARTIFACTS holds one directory per release sha, ARTIFACTS/<sha>/<artifact dir>}
-LAUNCHER=${LAUNCHER:?LAUNCHER is the arm64 loyal-env-launcher}
 STAGED=/opt/loyal-db-staged
 # family binary artifact-dir
 FAMILIES=(
@@ -75,6 +74,8 @@ dropin_text() { # dropin_text <unit dir> <family> <binary> <sha>
 }
 
 preflight() {
+  ARTIFACTS=${ARTIFACTS:?ARTIFACTS holds one directory per release sha, ARTIFACTS/<sha>/<artifact dir>}
+  LAUNCHER=${LAUNCHER:?LAUNCHER is the arm64 loyal-env-launcher}
   [[ $(new uname -m) == aarch64 ]] || die "$NEW is not arm64"
   local fam bin art r s i drop sums want have units checked=' ' h arm
   drop=$(old "cd /etc/systemd/system && grep -H . loyal-*.service.d/40-verified-release.conf") || die "loyal-workers did not list its release drop-ins"
@@ -235,14 +236,15 @@ EOF
 }
 
 stage_db() {
-  local spec skip=''
+  # db_host installs the health and volume checks from this repo.
+  local spec skip='^/usr/local/sbin/loyal-db-(health|volume)-check$'
   # The receivers are re-pinned for the single-box layout (loyal-receivers-repin.sh); a restage must not put the
   # db-primary originals back over the nine files it rewrote.
   if [[ -n $(new "ls /opt/loyal/ops/receivers-repinned 2>/dev/null || true") ]]; then
-    skip='"skip": "^(/opt/loyal-observer-monitor/observer-monitor/push/private-tls/transport[.]py|/opt/loyal-squads-watch-recovery-v2/(transport[.]py|dependencies/transport[.]py|PINS[.]json)|/etc/loyal-squads-watch/(firewall[.]nft|policy[.]json)|/etc/loyal-observer-monitor/(monitor-ca[.]pem|monitor-server[.]pem|private-tls[.]json))$",'
+    skip+='|^(/opt/loyal-observer-monitor/observer-monitor/push/private-tls/transport[.]py|/opt/loyal-squads-watch-recovery-v2/(transport[.]py|dependencies/transport[.]py|PINS[.]json)|/etc/loyal-squads-watch/(firewall[.]nft|policy[.]json)|/etc/loyal-observer-monitor/(monitor-ca[.]pem|monitor-server[.]pem|private-tls[.]json))$'
   fi
   spec=$(cat <<EOF
-{$skip "entries": [
+{"skip": "$skip", "entries": [
   {"k": "glob", "src": "/etc/systemd/system/loyal-*"},
   {"src": "/etc/systemd/system/postgresql@18-main.service.d", "dst": "$STAGED/etc/systemd/system/postgresql@18-main.service.d"},
   {"src": "/etc/postgresql/18/main", "dst": "$STAGED/etc/postgresql/18/main"},
@@ -258,6 +260,45 @@ EOF
   recv "{\"rules\": {\"/etc/pgbouncer/loyal.ini\": [\"listen\"], \"$STAGED/etc/postgresql/18/main/conf.d/loyal.conf\": [\"listen\"]}, \"cred_rules\": [\"db\"]}" < <(box "$(py) send $(j64 <<<"$spec")")
 }
 
+# loyal-main's database identity, born from its own AWS facts: the instance, the EBS volume under /srv/postgresql and
+# the filesystem loyal-main-prepare.sh put in fstab there. loyal-db-primary's identity.json and backup schedule marker
+# name its Hetzner server and volume and are never copied. The marker is written once, beside the staged backup timers.
+db_host() {
+  local facts iid uuid serial state e=() x first=1 spec
+  facts=$(new 'sudo bash -s' <<'EOF'
+set -euo pipefail
+t=$(curl -fsS -m 5 -X PUT -H "X-aws-ec2-metadata-token-ttl-seconds: 60" http://169.254.169.254/latest/api/token)
+iid=$(curl -fsS -m 5 -H "X-aws-ec2-metadata-token: $t" http://169.254.169.254/latest/meta-data/instance-id)
+echo "$iid"
+f=$(findmnt --fstab -n -o UUID /srv/postgresql)
+[[ -n $f && $(findmnt -n -o UUID /srv/postgresql) == "$f" ]] || { echo "/srv/postgresql is not mounted from its fstab filesystem" >&2; exit 1; }
+echo "$f"
+lsblk -dno SERIAL "$(findmnt -n -o SOURCE /srv/postgresql)"
+# A marker that names another instance (a rebuild, a restored root disk) is written again.
+if grep -qsF "\"server_id\":\"$iid\"" /root/loyal-db/backup-schedule-installed.json; then echo marker
+elif [[ -f /etc/systemd/system/loyal-db-backup-full.timer && -f /etc/systemd/system/loyal-db-backup-diff.timer ]]; then echo timers
+else echo none; fi
+EOF
+) || die "$NEW did not report its database identity"
+  { read -r iid; read -r uuid; read -r serial; read -r state; } <<<"$facts"
+  [[ $iid =~ ^i-[0-9a-f]{8,17}$ ]] || die "$NEW instance id '$iid' is not an EC2 instance id"
+  [[ $uuid =~ ^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$ ]] || die "/srv/postgresql on $NEW has no filesystem UUID ('$uuid')"
+  [[ $serial =~ ^vol[0-9a-f]{17}$ ]] || die "/srv/postgresql on $NEW is not on an EBS volume (serial '$serial')"
+  [[ $state == marker || $state == timers ]] || die "$NEW has no staged loyal-db-backup-full.timer and loyal-db-backup-diff.timer; run stage first"
+  e+=('{"k":"dir","dst":"/root/loyal-db","mode":"0700","own":"root:root"}'
+    "{\"k\":\"file\",\"dst\":\"/root/loyal-db/identity.json\",\"mode\":\"0600\",\"own\":\"root:root\",\"data\":\"$(printf '{"server_id":"%s","volume_id":"vol-%s","volume_uuid":"%s"}\n' "$iid" "${serial#vol}" "$uuid" | b64)\"}")
+  [[ $state == marker ]] || e+=("{\"k\":\"file\",\"dst\":\"/root/loyal-db/backup-schedule-installed.json\",\"mode\":\"0600\",\"own\":\"root:root\",\"data\":\"$(
+    printf '{"schema_version":1,"kind":"loyal-db-backup-schedule-enabled","server_id":"%s","installed_at":"%s","required_after_install":true,"timers":["loyal-db-backup-full.timer","loyal-db-backup-diff.timer"],"failure_destination":"local systemd journal"}\n' \
+      "$iid" "$(date -u +%Y-%m-%dT%H:%M:%S+00:00)" | b64)\"}")
+  e+=('{"k":"dir","dst":"/var/lib/loyal-db-health","mode":"0750","own":"root:root"}'
+    "{\"k\":\"file\",\"src\":\"$DIR/db/loyal-db-health-check\",\"dst\":\"/usr/local/sbin/loyal-db-health-check\",\"mode\":\"0755\",\"own\":\"root:root\"}"
+    "{\"k\":\"file\",\"src\":\"$DIR/db/loyal-db-volume-check\",\"dst\":\"/usr/local/sbin/loyal-db-volume-check\",\"mode\":\"0755\",\"own\":\"root:root\"}")
+  spec='{"entries":['
+  for x in "${e[@]}"; do ((first)) || spec+=','; first=0; spec+=$x; done
+  spec+=']}'
+  recv '{}' < <(python3 -I -c "$(cat "$DIR/box-copy.py")" local "$(j64 <<<"$spec")")
+}
+
 stage() {
   local states i
   reload=0
@@ -269,6 +310,7 @@ stage() {
   new "sudo install -d -m 0700 -o root -g root $STAGED"
   stage_workers
   stage_db
+  db_host
   stage_release
   ((reload == 0)) || new "sudo systemctl daemon-reload"
   [[ -z $(new "systemctl list-unit-files 'loyal-*' --state=enabled --no-legend") ]] || die "a loyal-* unit is enabled on $NEW"
@@ -301,6 +343,7 @@ proof() { # proof <dir>: the evidence files, names and exit codes only
 
 case ${1:-stage} in
   stage) stage ;;
+  db-host) total=0; db_host; echo "$NEW: $total change(s)" ;;
   proof) proof "${2:?proof <dir>}" ;;
-  *) echo "usage: $0 [stage|proof <dir>]" >&2; exit 2 ;;
+  *) echo "usage: $0 [stage|db-host|proof <dir>]" >&2; exit 2 ;;
 esac

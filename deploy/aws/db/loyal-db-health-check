@@ -1,0 +1,346 @@
+#!/usr/bin/env python3
+"""Target-only database health metadata; no source credentials or user rows."""
+import argparse
+import datetime as dt
+import json
+import os
+import pathlib
+import re
+import shutil
+import ssl
+import stat
+import subprocess
+import sys
+import time
+
+GIB = 1024 ** 3
+SQL = """
+BEGIN READ ONLY;
+SET LOCAL statement_timeout='5s'; SET LOCAL lock_timeout='1s';
+SELECT json_build_object(
+ 'version',current_setting('server_version'),
+ 'archive_mode',current_setting('archive_mode'),
+ 'archive_command_expected',current_setting('archive_command')='pgbackrest --stanza=loyal archive-push %p',
+ 'archive_stats',(SELECT json_build_object('archived_count',archived_count,'failed_count',failed_count,
+   'last_archived_unix',extract(epoch FROM last_archived_time),
+   'last_failed_unix',extract(epoch FROM last_failed_time)) FROM pg_stat_archiver),
+ 'archive_pending',(SELECT json_build_object('ready_count',count(*),
+   'oldest_ready_age_seconds',COALESCE(extract(epoch FROM now()-min(modification)),0))
+   FROM pg_ls_archive_statusdir() WHERE name LIKE '%.ready'));
+ROLLBACK;
+"""
+
+
+BACKUP_TIMERS = {'full': 'loyal-db-backup-full.timer', 'diff': 'loyal-db-backup-diff.timer'}
+BACKUP_MARKER = pathlib.Path('/root/loyal-db/backup-schedule-installed.json')
+
+
+def epoch(value):
+    return type(value) is int and value > 0
+
+
+def trusted_artifact(path, mode=None):
+    """Missing differs from present but unsafe (including dangling symlinks)."""
+    try:
+        item = path.lstat()
+    except FileNotFoundError:
+        return False, False
+    except OSError:
+        return True, False
+    trusted = stat.S_ISREG(item.st_mode) and item.st_uid == 0 and not item.st_mode & 0o022
+    if mode is not None:
+        trusted = trusted and stat.S_IMODE(item.st_mode) == mode
+    return True, trusted
+
+
+def valid_schedule_marker(path, now, server_id):
+    present, trusted = trusted_artifact(path, 0o600)
+    if not present or not trusted:
+        return False
+    try:
+        parent = path.parent.lstat()
+        if not stat.S_ISDIR(parent.st_mode) or parent.st_uid != 0 or stat.S_IMODE(parent.st_mode) != 0o700:
+            return False
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(fd, 'r') as stream:
+            item = os.fstat(stream.fileno())
+            if not stat.S_ISREG(item.st_mode) or item.st_uid != 0 or stat.S_IMODE(item.st_mode) != 0o600 or item.st_size > 4096:
+                return False
+            value = json.loads(stream.read(4097))
+        expected = {'schema_version': 1, 'kind': 'loyal-db-backup-schedule-enabled',
+                    'server_id': server_id, 'required_after_install': True,
+                    'timers': list(BACKUP_TIMERS.values()), 'failure_destination': 'local systemd journal'}
+        if not isinstance(value, dict) or set(value) != set(expected) | {'installed_at'}:
+            return False
+        if any(type(value[key]) is not type(want) or value[key] != want for key, want in expected.items()):
+            return False
+        installed = dt.datetime.fromisoformat(value['installed_at'].replace('Z', '+00:00'))
+        return installed.utcoffset() == dt.timedelta(0) and 0 < installed.timestamp() <= now + 300
+    except Exception:
+        return False
+
+
+def parse_timer_states(raw):
+    if len(raw) > 16384:
+        raise ValueError('timer metadata oversized')
+    results = {}
+    for block in raw.strip().split('\n\n'):
+        values = {}
+        for line in block.splitlines():
+            key, separator, value = line.partition('=')
+            if not separator or key not in ('Id', 'LoadState', 'ActiveState', 'UnitFileState') or key in values:
+                raise ValueError('invalid timer metadata')
+            values[key] = value
+        if set(values) != {'Id', 'LoadState', 'ActiveState', 'UnitFileState'}:
+            raise ValueError('missing timer metadata')
+        kind = next((k for k, unit in BACKUP_TIMERS.items() if unit == values['Id']), None)
+        if kind is None or kind in results:
+            raise ValueError('unexpected timer identity')
+        # Return only comparisons, never arbitrary manager strings.
+        results[kind] = {'loaded': values['LoadState'] == 'loaded',
+                         'enabled': values['UnitFileState'] == 'enabled',
+                         'active': values['ActiveState'] == 'active'}
+    if set(results) != set(BACKUP_TIMERS):
+        raise ValueError('incomplete timer observation')
+    return results
+
+
+def parse_backup_info(raw):
+    if len(raw) > 2 * 1024 * 1024:
+        raise ValueError('backup metadata oversized')
+    values = json.loads(raw)
+    if not isinstance(values, list) or len(values) != 1 or values[0].get('name') != 'loyal':
+        raise ValueError('unexpected stanza')
+    stanza = values[0]
+    code = stanza.get('status', {}).get('code')
+    if type(code) is not int or not isinstance(stanza.get('backup'), list):
+        raise ValueError('missing repository metadata')
+    complete = []
+    for backup in stanza['backup']:
+        if not isinstance(backup, dict) or backup.get('type') not in ('full', 'diff', 'incr') or type(backup.get('error')) is not bool:
+            raise ValueError('invalid backup metadata')
+        if backup['error']:
+            continue
+        times = backup.get('timestamp', {})
+        start, stop = times.get('start'), times.get('stop')
+        if stop is None:  # An incomplete backup never supplies freshness.
+            continue
+        if not epoch(start) or not epoch(stop) or stop < start:
+            raise ValueError('invalid backup timestamp')
+        complete.append((backup['type'], stop))
+    return {'stanza': 'loyal', 'repository_status_ok': code == 0,
+            'successful_backup_count': len(complete),
+            'latest_full_stop_unix': max((stop for kind, stop in complete if kind == 'full'), default=None),
+            'latest_any_stop_unix': max((stop for _, stop in complete), default=None)}
+
+
+def gather_backup_schedule(clean_env, server_id, now=None):
+    now = time.time() if now is None else now
+    metrics = {'expected': False, 'marker_present': False, 'marker_valid': None,
+               'timer_files': {}, 'timer_files_trusted': {}}
+    errors = []
+    for kind, unit in BACKUP_TIMERS.items():
+        present, trusted = trusted_artifact(pathlib.Path('/etc/systemd/system') / unit)
+        metrics['timer_files'][kind] = present
+        metrics['timer_files_trusted'][kind] = trusted
+    metrics['marker_present'], _ = trusted_artifact(BACKUP_MARKER, 0o600)
+    metrics['expected'] = metrics['marker_present'] or any(metrics['timer_files'].values())
+    if not metrics['expected']:
+        return metrics, errors
+    metrics['marker_valid'] = valid_schedule_marker(BACKUP_MARKER, now, server_id)
+    commands = (
+        ('backup-timers', ['systemctl', 'show', '--no-pager', '--property=Id,LoadState,ActiveState,UnitFileState',
+                          *BACKUP_TIMERS.values()], 2, 'timers', parse_timer_states),
+        ('backup-freshness', ['runuser', '-u', 'postgres', '--', '/usr/bin/pgbackrest', '--stanza=loyal', '--output=json', 'info'],
+         8, 'backups', parse_backup_info))
+    for probe, command, timeout, key, parser in commands:
+        try:
+            result = subprocess.run(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                    stderr=subprocess.DEVNULL, text=True, timeout=timeout, env=clean_env)
+            if result.returncode:
+                raise RuntimeError('backup metadata command failed')
+            metrics[key] = parser(result.stdout)
+        except Exception as error:
+            errors.append({'probe': probe, 'exception_type': type(error).__name__})
+    return metrics, errors
+
+
+def evaluate(metrics, now=None, minimum_free_gib=50, minimum_free_percent=20,
+             certificate_days=30, maximum_ready_age_seconds=300):
+    now = time.time() if now is None else now
+    checks = []
+
+    def check(name, state, detail):
+        checks.append({'name': name, 'status': state, 'detail': detail})
+
+    def required(name, observed, expected=True):
+        matches = observed == expected and (type(expected) not in (bool, int) or type(observed) is type(expected))
+        state = 'BLOCKED' if observed is None else 'PASS' if matches else 'FAIL'
+        check(name, state, {'observed': observed, 'expected': expected})
+
+    required('data-volume-guard', metrics.get('volume_guard_ok'))
+    for name in ('postgresql', 'pgbouncer'):
+        required(name + '-active', metrics.get('services', {}).get(name), 'active')
+    filesystem = metrics.get('filesystem')
+    if not filesystem or not filesystem.get('total_bytes'):
+        check('disk-headroom', 'BLOCKED', 'Filesystem observation unavailable.')
+    else:
+        free = filesystem['free_bytes']
+        percent = 100 * free / filesystem['total_bytes']
+        state = 'PASS' if free >= minimum_free_gib * GIB and percent >= minimum_free_percent else 'FAIL'
+        check('disk-headroom', state, {'free_bytes': free, 'free_percent': round(percent, 2),
+                                     'minimum_free_gib': minimum_free_gib, 'minimum_free_percent': minimum_free_percent})
+    expiry = metrics.get('certificate', {}).get('expires_unix')
+    if expiry is None:
+        check('tls-certificate-expiry', 'BLOCKED', 'Public certificate observation unavailable.')
+    else:
+        remaining = (expiry - now) / 86400
+        check('tls-certificate-expiry', 'PASS' if remaining >= certificate_days else 'FAIL',
+              {'days_remaining': round(remaining, 2), 'minimum_days': certificate_days})
+    postgres = metrics.get('postgres')
+    if not postgres:
+        check('postgres-metadata', 'BLOCKED', 'Target control-database metadata query unavailable.')
+    else:
+        version = postgres.get('version')
+        required('postgres-pinned-version', bool(re.match(r'^18\.6(?:\s|$)', str(version))) if version else None)
+        mode = postgres.get('archive_mode')
+        check('wal-archiving-enabled', 'PASS' if mode == 'on' else 'BLOCKED' if mode in (None, 'off') else 'FAIL',
+              {'observed': mode, 'expected': 'on'})
+        if mode == 'on':
+            required('wal-archive-command', postgres.get('archive_command_expected'))
+            stats = postgres.get('archive_stats', {})
+            pending = postgres.get('archive_pending', {})
+            last = stats.get('last_archived_unix')
+            failed = stats.get('last_failed_unix')
+            if last is None:
+                check('wal-archive-success-observed', 'BLOCKED', 'No successful WAL archive observed yet.')
+            else:
+                age = now - float(last)
+                check('wal-archive-success-observed', 'PASS' if age >= -300 else 'FAIL',
+                      {'seconds_since_last_success': round(age, 2), 'historical_failed_count': stats.get('failed_count'),
+                       'age_alert_is_backlog_aware': True})
+            unrecovered = failed is not None and (last is None or float(failed) > float(last))
+            check('wal-archive-unrecovered-failure', 'FAIL' if unrecovered else 'PASS',
+                  {'unrecovered_failure': unrecovered})
+            ready, oldest = pending.get('ready_count'), pending.get('oldest_ready_age_seconds')
+            if ready is None or oldest is None:
+                check('wal-archive-backlog', 'BLOCKED', 'Archive-status directory metadata missing.')
+            else:
+                healthy = int(ready) == 0 or float(oldest) <= maximum_ready_age_seconds
+                check('wal-archive-backlog', 'PASS' if healthy else 'FAIL',
+                      {'ready_files': int(ready), 'oldest_ready_age_seconds': round(float(oldest), 2),
+                       'maximum_ready_age_seconds': maximum_ready_age_seconds})
+    schedule = metrics.get('backup_schedule', {})
+    if schedule.get('expected') or schedule.get('marker_present') or any(schedule.get('timer_files', {}).values()):
+        required('backup-schedule-marker', schedule.get('marker_valid'))
+        for kind in BACKUP_TIMERS:
+            required('backup-' + kind + '-timer-file', schedule.get('timer_files', {}).get(kind))
+            required('backup-' + kind + '-timer-file-trusted', schedule.get('timer_files_trusted', {}).get(kind))
+            for state in ('loaded', 'enabled', 'active'):
+                required('backup-' + kind + '-timer-' + state, schedule.get('timers', {}).get(kind, {}).get(state))
+        backups = schedule.get('backups')
+        if not isinstance(backups, dict):
+            check('backup-repository-metadata', 'BLOCKED', 'Native backup metadata unavailable.')
+        else:
+            required('backup-repository-stanza', backups.get('stanza'), 'loyal')
+            required('backup-repository-status', backups.get('repository_status_ok'))
+            count = backups.get('successful_backup_count')
+            required('backup-successful-completed-count', type(count) is int and count > 0)
+            for kind, key, limit in (('full', 'latest_full_stop_unix', 8 * 86400),
+                                     ('any', 'latest_any_stop_unix', 30 * 3600)):
+                stop = backups.get(key)
+                age = now - stop if epoch(stop) else None
+                check('backup-' + kind + '-freshness',
+                      'PASS' if age is not None and -300 <= age <= limit else 'FAIL',
+                      {'seconds_since_success': age, 'maximum_age_seconds': limit})
+    verdict = 'FAIL' if any(c['status'] == 'FAIL' for c in checks) else 'BLOCKED' if any(c['status'] == 'BLOCKED' for c in checks) else 'PASS'
+    return verdict, checks
+
+
+def gather(server_id):
+    metrics, errors = {}, []
+    clean_env = {'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LANG': 'C.UTF-8'}
+    try:
+        boot_id = pathlib.Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+        if not re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', boot_id):
+            raise ValueError('invalid boot identity')
+        metrics['boot_id'] = boot_id
+    except Exception as error:
+        errors.append({'probe': 'boot-identity', 'exception_type': type(error).__name__})
+    try:
+        metrics['volume_guard_ok'] = subprocess.run(['/usr/local/sbin/loyal-db-volume-check'],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10, env=clean_env).returncode == 0
+        if metrics['volume_guard_ok']:
+            usage = shutil.disk_usage('/srv/postgresql')
+            metrics['filesystem'] = {'total_bytes': usage.total, 'free_bytes': usage.free, 'used_bytes': usage.used}
+    except Exception as error:
+        errors.append({'probe': 'volume', 'exception_type': type(error).__name__})
+    metrics['services'] = {}
+    for name, unit in (('postgresql', 'postgresql@18-main'), ('pgbouncer', 'loyal-pgbouncer')):
+        try:
+            result = subprocess.run(['systemctl', 'is-active', unit], capture_output=True, text=True, timeout=5, env=clean_env)
+            metrics['services'][name] = result.stdout.strip()
+        except Exception as error:
+            errors.append({'probe': name, 'exception_type': type(error).__name__})
+    try:
+        cert = ssl._ssl._test_decode_cert('/etc/loyal-db/tls/server.crt')
+        expiry = ssl.cert_time_to_seconds(cert['notAfter'])
+        metrics['certificate'] = {'expires_unix': expiry,
+            'expires_at': dt.datetime.fromtimestamp(expiry, dt.timezone.utc).isoformat()}
+    except Exception as error:
+        errors.append({'probe': 'public-certificate', 'exception_type': type(error).__name__})
+    try:
+        result = subprocess.run(['runuser', '-u', 'postgres', '--', 'psql', '-X', '-qAt', '-w', '-v', 'ON_ERROR_STOP=1', '-d', 'postgres'],
+            input=SQL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=10, env=clean_env)
+        if result.returncode:
+            raise RuntimeError('target metadata command failed')
+        metrics['postgres'] = json.loads(result.stdout.strip())
+    except Exception as error:
+        errors.append({'probe': 'target-control-database', 'exception_type': type(error).__name__})
+    metrics['backup_schedule'], backup_errors = gather_backup_schedule(clean_env, server_id)
+    errors.extend(backup_errors)
+    return metrics, errors
+
+
+def atomic_write(path, data):
+    temporary = path.with_name(path.name + '.tmp')
+    temporary.write_text(json.dumps(data, separators=(',', ':')) + '\n')
+    temporary.chmod(0o640)
+    temporary.replace(path)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--state-directory', type=pathlib.Path, default=pathlib.Path('/var/lib/loyal-db-health'))
+    args = parser.parse_args()
+    if os.geteuid() != 0:
+        parser.error('Run on the scoped target guest as root')
+    identity_error = None
+    try:
+        identity = json.loads(pathlib.Path('/root/loyal-db/identity.json').read_text())
+    except Exception as error:
+        identity = {'server_id': None, 'volume_id': None}
+        identity_error = {'probe': 'target-identity', 'exception_type': type(error).__name__}
+    metrics, errors = gather(identity['server_id'])
+    verdict, checks = evaluate(metrics)
+    if identity_error is not None:
+        errors.append(identity_error)
+        checks.append({'name': 'target-identity', 'status': 'FAIL', 'detail': 'Scoped guest identity is unavailable.'})
+        verdict = 'FAIL'
+    report = {'schema_version': 1, 'observed_at': dt.datetime.now(dt.timezone.utc).isoformat(),
+              'server_id': identity['server_id'], 'volume_id': identity['volume_id'],
+              'scope': 'target_metadata_only', 'verdict': verdict, 'checks': checks,
+              'metrics': metrics, 'probe_errors': errors, 'external_notifications_sent': False}
+    args.state_directory.mkdir(mode=0o750, parents=True, exist_ok=True)
+    atomic_write(args.state_directory / 'latest.json', report)
+    if verdict == 'PASS':
+        atomic_write(args.state_directory / 'last-success.json', report)
+    print(json.dumps(report, separators=(',', ':')))
+    if verdict != 'PASS':
+        failed = ', '.join(c['name'] for c in checks if c['status'] != 'PASS')
+        print('ALERT Loyal database health ' + verdict + ': ' + failed, file=sys.stderr)
+    return {'PASS': 0, 'FAIL': 1, 'BLOCKED': 2}[verdict]
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())
