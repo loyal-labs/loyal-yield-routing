@@ -268,12 +268,14 @@ db_host() {
   facts=$(new 'sudo bash -s' <<'EOF'
 set -euo pipefail
 t=$(curl -fsS -m 5 -X PUT -H "X-aws-ec2-metadata-token-ttl-seconds: 60" http://169.254.169.254/latest/api/token)
-curl -fsS -m 5 -H "X-aws-ec2-metadata-token: $t" http://169.254.169.254/latest/meta-data/instance-id; echo
+iid=$(curl -fsS -m 5 -H "X-aws-ec2-metadata-token: $t" http://169.254.169.254/latest/meta-data/instance-id)
+echo "$iid"
 f=$(findmnt --fstab -n -o UUID /srv/postgresql)
 [[ -n $f && $(findmnt -n -o UUID /srv/postgresql) == "$f" ]] || { echo "/srv/postgresql is not mounted from its fstab filesystem" >&2; exit 1; }
 echo "$f"
 lsblk -dno SERIAL "$(findmnt -n -o SOURCE /srv/postgresql)"
-if [[ -e /root/loyal-db/backup-schedule-installed.json ]]; then echo marker
+# A marker that names another instance (a rebuild, a restored root disk) is written again.
+if grep -qsF "\"server_id\":\"$iid\"" /root/loyal-db/backup-schedule-installed.json; then echo marker
 elif [[ -f /etc/systemd/system/loyal-db-backup-full.timer && -f /etc/systemd/system/loyal-db-backup-diff.timer ]]; then echo timers
 else echo none; fi
 EOF
