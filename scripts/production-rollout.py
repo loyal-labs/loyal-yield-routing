@@ -119,6 +119,8 @@ def verify_artifacts(services):
 
 
 def rollout(sha, preflight_only=False, services=FAMILIES):
+    if os.environ.get('LOYAL_DEPLOY_DRY_RUN'):
+        raise RuntimeError('LOYAL_DEPLOY_DRY_RUN does not make this script a dry run; unset it and use --preflight-only')
     if (not isinstance(services, (list, tuple)) or any(not isinstance(family, str) or family not in FAMILIES for family in services)
             or len(set(services)) != len(services)):
         raise RuntimeError('invalid production service selection')
