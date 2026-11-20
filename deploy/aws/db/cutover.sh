@@ -135,7 +135,7 @@ halt_writers() {
     echo "$host: disabled and stopped timers $timers"
   fi
   if [[ -n ${oneshots// /} ]]; then
-    on "$host" "for i in \$(seq 300); do systemctl is-active $oneshots | grep -vxE 'inactive|failed' >/dev/null || exit 0; sleep 1; done; echo 'a timer run is still running after 300s' >&2; exit 1" || die "$host: a timer run of $oneshots did not end"
+    on "$host" "for i in \$(seq 420); do systemctl is-active $oneshots | grep -vxE 'inactive|failed' >/dev/null || exit 0; sleep 1; done; echo 'a timer run is still running after 420s' >&2; exit 1" || die "$host: a timer run of $oneshots did not end"
   fi
   for u in $engines; do
     on "$host" "systemctl disable --now $u; [ \"\$(systemctl show -p Result --value $u)\" = success ] || { echo '$u did not stop cleanly' >&2; exit 1; }" || die "$host: $u did not stop cleanly"

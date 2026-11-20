@@ -28,9 +28,9 @@ usage: $0 preflight|handover|handback|dbcheck
 preflight  Read-only. Runs s4-services-preflight.sh, pgmove preflight loyal, cutover.sh loyal preflight and the S4 checks,
            one line per check as ok, BLOCKER or PARKED, then "<n> ok, <m> blocker, <k> parked". Exit 0 only with 0 blockers.
 handover   CUT_HANDOVER, in freeze once the old units are proven stopped: the ClickStack final copy, the receivers' state
-           copy, Caddy's realtime.askloyal.com certificate, the loyal-ci-production root key, then the tunnel credential placed on $NEW. Fails closed; cutover.sh bounds it.
+           copy, Caddy's realtime.askloyal.com certificate, the loyal-ci-production root key, the referral harvest's state, then the tunnel credential placed on $NEW. Fails closed; cutover.sh bounds it.
 handback   CUT_HANDBACK, in abort and rollback once $NEW is stopped: removes the placed tunnel credential, the copied certificate and the
-           loyal-ci-production key from root's authorized_keys.
+           loyal-ci-production key from root's authorized_keys, and carries the referral harvest's state back if it ran on $NEW.
 dbcheck    CUT_DBCHECK, before any app starts: each app database credential on $NEW logs in through 127.0.0.1:6432.
 Env: PGMOVE_SRC_ADMIN (runs its one argument as root on loyal-db-primary), PGMOVE_AGENT, S4_UNITS_TSV.
 EOF
@@ -120,8 +120,35 @@ ci_key_remove() {
   [[ $(ci_key_count) == 0 ]] || echo "$NEW: a different loyal-ci-production line is in root's authorized_keys; left as it was"
 }
 
+# The referral harvest (DynamicUser) keeps its outstanding attempt in its state directory; the box that runs it next must
+# start from it (docs/workers/earn-max-referral-harvest.md). The directory belongs to a dynamic uid that has no name while
+# the unit is stopped, so it moves as a tar stream with numeric owners; systemd re-owns it to its own uid on start. The
+# directory it replaces is kept beside it as <dir>.before-<UTC time>.
+HARVEST_STATE=/var/lib/private/loyal-referral-harvest
+HARVEST_MARK=/opt/loyal/ops/referral-harvest-handover
+HARVEST_UNITS="loyal-referral-harvest.timer loyal-referral-harvest.service"
+host() { case $1 in old) echo "$OLD" ;; new) echo "$NEW" ;; esac; }
+# harvest_digest <old|new>: "<files> <digest of every file's path and content>", or "absent".
+harvest_digest() {
+  "$1" "d=$HARVEST_STATE; [ -d \$d ] || { echo absent; exit 0; }; cd \$d && echo \$(find . -type f | wc -l) \$(find . -type f -print0 | sort -z | xargs -0r sha256sum | sha256sum | cut -d' ' -f1)"
+}
+# harvest_state_move <from> <to>: replaces the state directory on <to> with the one on <from>, the units stopped on both.
+harvest_state_move() {
+  local from=$1 to=$2 a b d=$HARVEST_STATE
+  # shellcheck disable=SC2086 # two unit names
+  stopped "$from" $HARVEST_UNITS && stopped "$to" $HARVEST_UNITS || return 1
+  a=$(harvest_digest "$from") || return 1
+  [[ $a != absent ]] || { echo "$(host "$from") has no $d" >&2; return 1; }
+  # shellcheck disable=SC2029 # the commands are built here on purpose
+  (set -o pipefail; ssh "${SSH_OPTS[@]}" "$(host "$from")" "sudo -n tar -C $d --numeric-owner -cf - ." |
+    ssh "${SSH_OPTS[@]}" "$(host "$to")" "sudo -n bash -c 'set -e; install -d -m 0700 /var/lib/private; t=\$(mktemp -d $d.new.XXXXXX); tar -C \$t --numeric-owner -xpf -; [ ! -e $d ] || mv $d $d.before-\$(date -u +%Y%m%dT%H%M%SZ); mv \$t $d; sync /var/lib/private'") || return 1
+  b=$(harvest_digest "$to") || return 1
+  [[ $a == "$b" ]] || { echo "$(host "$to"): $d reads $b, $(host "$from") $a" >&2; return 1; }
+  echo "$(host "$to"): referral harvest state carried from $(host "$from") ($a)"
+}
+
 handover() {
-  local out
+  local out d m
   stopped old loyal-clickstack loyal-clickstack-relay cloudflared caddy wg-quick@loyal-ci || fail "$OLD: ClickStack, cloudflared, Caddy or the loyal-ci tunnel runs; nothing copied"
   stopped src loyal-observer-private-receiver loyal-squads-watch-receiver loyal-squads-watch-tick.timer loyal-squads-watch-tick.service loyal-observer-push-check.timer ||
     fail "loyal-db-primary: a receiver runs; nothing copied"
@@ -135,6 +162,14 @@ handover() {
   echo "$NEW: realtime.askloyal.com certificate placed at $CERT_DIR"
   ci_key_install || fail "the loyal-ci-production key was not installed for root on $NEW"
   echo "$NEW: loyal-ci-production key installed for root"
+  d=$(harvest_digest new) || fail "$NEW did not read the referral harvest state"
+  m=$(new "cat $HARVEST_MARK 2>/dev/null || echo none") || fail "$NEW did not read $HARVEST_MARK"
+  [[ -n $d && -n $m ]] || fail "$NEW answered empty for the referral harvest state or $HARVEST_MARK"
+  [[ $m == none || $d == "$m" ]] || fail "$NEW holds referral harvest state newer than $HARVEST_MARK; rerun the way back (rollback) to carry it to $OLD before another freeze"
+  harvest_state_move old new || fail "the referral harvest state was not carried to $NEW"
+  d=$(harvest_digest new) || fail "$NEW did not read the referral harvest state"
+  new "echo '$d' >$HARVEST_MARK.new && sync $HARVEST_MARK.new && mv -f $HARVEST_MARK.new $HARVEST_MARK && sync /opt/loyal/ops" ||
+    fail "the referral harvest handover mark was not written on $NEW"
   new "test -s $TUNNEL_SEALED && umask 077 && systemd-creds decrypt --name=loyal-workers.json $TUNNEL_SEALED $TUNNEL_PLAIN.new && chmod 0600 $TUNNEL_PLAIN.new && mv -f $TUNNEL_PLAIN.new $TUNNEL_PLAIN && sync /etc/cloudflared" ||
     fail "the tunnel credential was not placed on $NEW"
   echo "$NEW: tunnel credential placed at $TUNNEL_PLAIN"
@@ -148,6 +183,19 @@ handback() {
   echo "$NEW: realtime.askloyal.com certificate removed"
   ci_key_remove || fail "the loyal-ci-production key is still in root's authorized_keys on $NEW"
   echo "$NEW: loyal-ci-production key removed"
+  # The harvest's state goes back only if this freeze's handover wrote its mark and the state on $NEW differs from the mark:
+  # then $NEW ran it and holds the newer state. No mark means no state was moved to $NEW in this freeze (or the move was
+  # killed before the mark, when both sides hold identical contents), so $OLD keeps its own.
+  local d m
+  d=$(harvest_digest new) || fail "$NEW did not read the referral harvest state"
+  m=$(new "cat $HARVEST_MARK 2>/dev/null || echo none") || fail "$NEW did not read $HARVEST_MARK"
+  [[ -n $d && -n $m ]] || fail "$NEW answered empty for the referral harvest state or $HARVEST_MARK"
+  if [[ $m != none && $d != absent && $d != "$m" ]]; then
+    harvest_state_move new old || fail "the referral harvest ran on $NEW and its state was not carried back to $OLD"
+  else
+    echo "$NEW: referral harvest state unchanged since the handover; $OLD keeps its own"
+  fi
+  new "rm -f $HARVEST_MARK && sync /opt/loyal/ops" || fail "$HARVEST_MARK is still on $NEW"
 }
 
 # The app database credentials of every unit on the box (the loyal_yield_prod ones go straight to Postgres on 5432, the
@@ -183,7 +231,7 @@ for u in sys.argv[1].split():
                 err = (c.stderr.strip().splitlines() or ["no error text"])[-1]
                 print("  login ok" if c.returncode == 0 and c.stdout.strip() == user else "  login FAILED: " + err)
 '
-APPS="loyal-web loyal-admin loyal-stats loyal-telegram loyal-observer loyal-realtime loyal-retail loyal-backyard loyal-earn-max loyal-squads-watch-receiver loyal-observer-private-receiver"
+APPS="loyal-web loyal-admin loyal-stats loyal-telegram loyal-observer loyal-realtime loyal-retail loyal-backyard loyal-earn-max loyal-squads-watch-receiver loyal-observer-private-receiver loyal-referral-harvest"
 
 dbcheck() {
   local out n bad via
@@ -191,6 +239,7 @@ dbcheck() {
     fail "$NEW: PgBouncer is not up on 6432, or the credentials did not read"
   echo "$out"
   grep -q '^loyal-realtime/' <<<"$out" || fail "loyal-realtime: no database login was tested; its realtime-envelope holds no postgres URL at 127.0.0.1"
+  grep -q '^loyal-referral-harvest/' <<<"$out" || fail "loyal-referral-harvest: no database login was tested; its unit holds no postgres URL at 127.0.0.1"
   n=$(grep -c '^  login ok$' <<<"$out")
   bad=$(grep -cE 'FAILED' <<<"$out")
   via=$(grep -cE '^[^ ]+ [^ ]+ [^ ]+ 6432$' <<<"$out")
@@ -244,7 +293,7 @@ c_cutover() {
 c_units() {
   local want listed u miss='' states bad
   want=$(awk -F'\t' '$3 == "loyal-main" && $4 == "move" { print $1 }' "$UNITS_TSV" | sed 's/\.service$//') || return 1
-  [[ $(wc -l <<<"$want") -eq 29 ]] || { echo "units.tsv lists $(wc -l <<<"$want") loyal-main rows, not 29"; return 1; }
+  [[ $(wc -l <<<"$want") -eq 32 ]] || { echo "units.tsv lists $(wc -l <<<"$want") loyal-main rows, not 32"; return 1; }
   listed=" $(conf CUT_TIMERS) $(conf CUT_ENGINES) $(conf CUT_SERVICES) $(conf CUT_FIRST) "
   for u in $want; do
     [[ $u == postgresql@18-main || $listed == *" $u "* ]] || miss+=" $u"
@@ -253,7 +302,7 @@ c_units() {
   states=$(new "for u in $listed $(conf CUT_ONESHOTS); do echo \$u \$(systemctl show -p LoadState --value \$u) \$(systemctl show -p ActiveState --value \$u) \$(systemctl show -p UnitFileState --value \$u); done") || { echo "$NEW did not answer"; return 1; }
   bad=$(grep -vE '^[^ ]+ loaded inactive (disabled|static)$' <<<"$states")
   [[ -z $bad ]] || { echo "on $NEW: $bad"; return 1; }
-  echo "28 of 29 rows in loyal.conf (postgresql@18-main moves by pgmove), plus loyal-squads-watch-firewall and wg-quick@loyal-ci; $(wc -l <<<"$states") units loaded, inactive and disabled or static on $NEW"
+  echo "31 of 32 rows in loyal.conf (postgresql@18-main moves by pgmove), plus loyal-squads-watch-firewall and wg-quick@loyal-ci; $(wc -l <<<"$states") units loaded, inactive and disabled or static on $NEW"
 }
 
 # The sides freeze records: abort and rollback restore exactly these.
@@ -450,7 +499,10 @@ c_wg_staged() {
 # Before the switch root login on loyal-main stays closed: the key is absent there (the handover installs it, the handback removes
 # it), and the line it will install is readable on loyal-workers.
 c_deploy_ssh() {
-  local line n
+  local line n m
+  m=$(new "cat $HARVEST_MARK 2>/dev/null || echo none") || { echo "$NEW did not answer for $HARVEST_MARK"; return 1; }
+  [[ -n $m ]] || { echo "$NEW answered empty for $HARVEST_MARK"; return 1; }
+  [[ $m == none ]] || { echo "$HARVEST_MARK exists on $NEW: a freeze is in progress or its mark was left behind"; return 1; }
   line=$(ci_key_line) || { echo "$OLD does not trust exactly one loyal-ci-production key as a restrict line; the handover has nothing to install"; return 1; }
   n=$(ci_key_count) || { echo "$NEW did not answer"; return 1; }
   echo "source: one restrict line on $OLD ($(ssh-keygen -lf - <<<"${line#restrict }" | awk '{print $2}' | cut -c8-15)...); $NEW root authorized_keys holds it $n time(s), want 0 before the switch; sshd: $(new "sshd -T | grep -i '^permitrootlogin '")"
@@ -471,7 +523,7 @@ preflight() {
   check services c_services
   check pgmove-preflight c_pgmove
   check cutover-preflight c_cutover
-  check units-29 c_units
+  check units c_units
   check old-sides c_old_sides
   check pgbouncer-path c_pgbouncer
   check pgbouncer-passwords c_passwords

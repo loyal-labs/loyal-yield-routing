@@ -374,7 +374,7 @@ cmd_verifier() {
 }
 
 # shellcheck disable=SC2016
-SCRAM_RE='^SCRAM-SHA-256\$4096:[A-Za-z0-9+/=]+\$[A-Za-z0-9+/=]+:[A-Za-z0-9+/=]+$'
+SCRAM_RE='^SCRAM-SHA-256\$[0-9]+:[A-Za-z0-9+/=]+\$[A-Za-z0-9+/=]+:[A-Za-z0-9+/=]+$'
 
 # Every root script for the source starts here: psql as the conf's OS user on its socket.
 src_preamble() {

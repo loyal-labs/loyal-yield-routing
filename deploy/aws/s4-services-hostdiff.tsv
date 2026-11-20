@@ -16,3 +16,4 @@
 ^etc /etc/pgbackrest/conf[.]d(/cipher[.]conf)?: only on new$	owned-by-postgres-lane	repo cipher for the S3 stanza, written on the box by deploy/aws/backup.sh
 ^etc /etc/systemd/system/postgresql@18-main[.]service[.]d/pgmove-volume[.]conf: only on new$	owned-by-postgres-lane	mount guard drop-in written by pgmove init, deploy/aws/db
 ^etc /etc/prometheus/prometheus[.]yml[.]s2-prev: only on old$	meant-to-differ	xstock, not Loyal: the S2 switch keeps the previous Prometheus config on loyal-workers for its way back
+^etc /etc/credstore[.]encrypted/loyal-referral-harvest/setup[.]lock: only on old$	clutter	the empty lock file of the referral harvest's hand install, not a credential (loyal-main-config.sh skips it)
