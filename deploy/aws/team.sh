@@ -125,12 +125,15 @@ cmd_deploy() {
   local dir real_ssh real_scp status=0
   admit
   dir=$(mktemp -d "${TMPDIR:-/tmp}/loyal-deploy-ssh.XXXXXX")
+  trap 'ssh -F "$dir/config" -O exit "$BOX" 2>/dev/null || true; rm -rf "$dir"' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
   real_ssh=$(command -v ssh) real_scp=$(command -v scp)
   cat >"$dir/config" <<EOF
 Host $BOX
   HostName $ADDRESS
   User ubuntu
-  IdentityFile ${PUB%.pub}
+  IdentityFile "${PUB%.pub}"
   IdentitiesOnly yes
   UserKnownHostsFile $KNOWN_HOSTS
   StrictHostKeyChecking yes
@@ -148,12 +151,10 @@ EOF
   chmod 755 "$dir/bin/ssh" "$dir/bin/scp"
   if "$dir/bin/ssh" -fN "$BOX"; then
     LOYAL_WORKERS_SSH=$BOX PATH="$dir/bin:$PATH" bash "$HERE/../../scripts/deploy-workers.sh" "$@" || status=$?
-    "$dir/bin/ssh" -O exit "$BOX" 2>/dev/null || true
   else
     echo "team.sh: could not open the ssh connection to $BOX" >&2
     status=1
   fi
-  rm -rf "$dir"
   return "$status"
 }
 
