@@ -28,9 +28,9 @@ usage: $0 preflight|handover|handback|dbcheck
 preflight  Read-only. Runs s4-services-preflight.sh, pgmove preflight loyal, cutover.sh loyal preflight and the S4 checks,
            one line per check as ok, BLOCKER or PARKED, then "<n> ok, <m> blocker, <k> parked". Exit 0 only with 0 blockers.
 handover   CUT_HANDOVER, in freeze once the old units are proven stopped: the ClickStack final copy, the receivers' state
-           copy, Caddy's realtime.askloyal.com certificate, the loyal-ci-production root key, then the tunnel credential placed on $NEW. Fails closed; cutover.sh bounds it.
+           copy, Caddy's realtime.askloyal.com certificate, the loyal-ci-production root key, the referral harvest's state, then the tunnel credential placed on $NEW. Fails closed; cutover.sh bounds it.
 handback   CUT_HANDBACK, in abort and rollback once $NEW is stopped: removes the placed tunnel credential, the copied certificate and the
-           loyal-ci-production key from root's authorized_keys.
+           loyal-ci-production key from root's authorized_keys, and carries the referral harvest's state back if it ran on $NEW.
 dbcheck    CUT_DBCHECK, before any app starts: each app database credential on $NEW logs in through 127.0.0.1:6432.
 Env: PGMOVE_SRC_ADMIN (runs its one argument as root on loyal-db-primary), PGMOVE_AGENT, S4_UNITS_TSV.
 EOF
@@ -120,8 +120,35 @@ ci_key_remove() {
   [[ $(ci_key_count) == 0 ]] || echo "$NEW: a different loyal-ci-production line is in root's authorized_keys; left as it was"
 }
 
+# The referral harvest (DynamicUser) keeps its outstanding attempt in its state directory; the box that runs it next must
+# start from it (docs/workers/earn-max-referral-harvest.md). The directory belongs to a dynamic uid that has no name while
+# the unit is stopped, so it moves as a tar stream with numeric owners; systemd re-owns it to its own uid on start. The
+# directory it replaces is kept beside it as <dir>.before-<UTC time>.
+HARVEST_STATE=/var/lib/private/loyal-referral-harvest
+HARVEST_MARK=/opt/loyal/ops/referral-harvest-handover
+HARVEST_UNITS="loyal-referral-harvest.timer loyal-referral-harvest.service"
+host() { case $1 in old) echo "$OLD" ;; new) echo "$NEW" ;; esac; }
+# harvest_digest <old|new>: "<files> <digest of every file's path and content>", or "absent".
+harvest_digest() {
+  "$1" "d=$HARVEST_STATE; [ -d \$d ] || { echo absent; exit 0; }; cd \$d && echo \$(find . -type f | wc -l) \$(find . -type f -print0 | sort -z | xargs -0r sha256sum | sha256sum | cut -d' ' -f1)"
+}
+# harvest_state_move <from> <to>: replaces the state directory on <to> with the one on <from>, the units stopped on both.
+harvest_state_move() {
+  local from=$1 to=$2 a b d=$HARVEST_STATE
+  # shellcheck disable=SC2086 # two unit names
+  stopped "$from" $HARVEST_UNITS && stopped "$to" $HARVEST_UNITS || return 1
+  a=$(harvest_digest "$from") || return 1
+  [[ $a != absent ]] || { echo "$(host "$from") has no $d" >&2; return 1; }
+  # shellcheck disable=SC2029 # the commands are built here on purpose
+  (set -o pipefail; ssh "${SSH_OPTS[@]}" "$(host "$from")" "sudo -n tar -C $d --numeric-owner -cf - ." |
+    ssh "${SSH_OPTS[@]}" "$(host "$to")" "sudo -n bash -c 'set -e; install -d -m 0700 /var/lib/private; t=\$(mktemp -d $d.new.XXXXXX); tar -C \$t --numeric-owner -xpf -; [ ! -e $d ] || mv $d $d.before-\$(date -u +%Y%m%dT%H%M%SZ); mv \$t $d; sync /var/lib/private'") || return 1
+  b=$(harvest_digest "$to") || return 1
+  [[ $a == "$b" ]] || { echo "$(host "$to"): $d reads $b, $(host "$from") $a" >&2; return 1; }
+  echo "$(host "$to"): referral harvest state carried from $(host "$from") ($a)"
+}
+
 handover() {
-  local out
+  local out d
   stopped old loyal-clickstack loyal-clickstack-relay cloudflared caddy wg-quick@loyal-ci || fail "$OLD: ClickStack, cloudflared, Caddy or the loyal-ci tunnel runs; nothing copied"
   stopped src loyal-observer-private-receiver loyal-squads-watch-receiver loyal-squads-watch-tick.timer loyal-squads-watch-tick.service loyal-observer-push-check.timer ||
     fail "loyal-db-primary: a receiver runs; nothing copied"
@@ -135,6 +162,10 @@ handover() {
   echo "$NEW: realtime.askloyal.com certificate placed at $CERT_DIR"
   ci_key_install || fail "the loyal-ci-production key was not installed for root on $NEW"
   echo "$NEW: loyal-ci-production key installed for root"
+  harvest_state_move old new || fail "the referral harvest state was not carried to $NEW"
+  d=$(harvest_digest new) || fail "$NEW did not read the referral harvest state"
+  new "echo '$d' >$HARVEST_MARK.new && mv -f $HARVEST_MARK.new $HARVEST_MARK && sync /opt/loyal/ops" ||
+    fail "the referral harvest handover mark was not written on $NEW"
   new "test -s $TUNNEL_SEALED && umask 077 && systemd-creds decrypt --name=loyal-workers.json $TUNNEL_SEALED $TUNNEL_PLAIN.new && chmod 0600 $TUNNEL_PLAIN.new && mv -f $TUNNEL_PLAIN.new $TUNNEL_PLAIN && sync /etc/cloudflared" ||
     fail "the tunnel credential was not placed on $NEW"
   echo "$NEW: tunnel credential placed at $TUNNEL_PLAIN"
@@ -148,6 +179,16 @@ handback() {
   echo "$NEW: realtime.askloyal.com certificate removed"
   ci_key_remove || fail "the loyal-ci-production key is still in root's authorized_keys on $NEW"
   echo "$NEW: loyal-ci-production key removed"
+  # The harvest's state goes back only if it changed on $NEW since the handover: then $NEW ran it and holds the newer state.
+  local d m
+  d=$(harvest_digest new) || fail "$NEW did not read the referral harvest state"
+  m=$(new "cat $HARVEST_MARK 2>/dev/null || echo none") || fail "$NEW did not read $HARVEST_MARK"
+  if [[ $d != absent && $d != "$m" ]]; then
+    harvest_state_move new old || fail "the referral harvest ran on $NEW and its state was not carried back to $OLD"
+  else
+    echo "$NEW: referral harvest state unchanged since the handover; $OLD keeps its own"
+  fi
+  new "rm -f $HARVEST_MARK && sync /opt/loyal/ops" || fail "$HARVEST_MARK is still on $NEW"
 }
 
 # The app database credentials of every unit on the box (the loyal_yield_prod ones go straight to Postgres on 5432, the
@@ -183,7 +224,7 @@ for u in sys.argv[1].split():
                 err = (c.stderr.strip().splitlines() or ["no error text"])[-1]
                 print("  login ok" if c.returncode == 0 and c.stdout.strip() == user else "  login FAILED: " + err)
 '
-APPS="loyal-web loyal-admin loyal-stats loyal-telegram loyal-observer loyal-realtime loyal-retail loyal-backyard loyal-earn-max loyal-squads-watch-receiver loyal-observer-private-receiver"
+APPS="loyal-web loyal-admin loyal-stats loyal-telegram loyal-observer loyal-realtime loyal-retail loyal-backyard loyal-earn-max loyal-squads-watch-receiver loyal-observer-private-receiver loyal-referral-harvest"
 
 dbcheck() {
   local out n bad via
