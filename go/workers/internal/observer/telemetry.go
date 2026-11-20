@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"math/big"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -15,15 +16,12 @@ import (
 
 const USDCMint = fleet.USDCMint
 
+// stableMints limits public model and catalog candidates. Existing holdings
+// may need accounting even when their mint is outside the candidate set.
 var stableMints = []string{USDCMint, fleet.USDTMint, fleet.PYUSDMint, fleet.USDSMint}
 
-func supportedMint(mint string) bool {
-	for _, known := range stableMints {
-		if mint == known {
-			return true
-		}
-	}
-	return false
+func supportedHoldingMint(mint string) bool {
+	return mint == fleet.USDGMint || slices.Contains(stableMints, mint)
 }
 
 type FleetPosition struct {
@@ -92,7 +90,7 @@ func metadataString(values map[string]json.RawMessage, keys ...string) (string, 
 	return value, found
 }
 func positionAmounts(p FleetPosition) (liquidity, collateral *big.Int, ok bool) {
-	if p.Reserve == "" || p.Market == "" || !supportedMint(p.Mint) {
+	if p.Reserve == "" || p.Market == "" || !supportedHoldingMint(p.Mint) {
 		return nil, nil, false
 	}
 	var metadata map[string]json.RawMessage
@@ -132,7 +130,7 @@ func snapshotIdle(v FleetVault) (*big.Int, bool) {
 	seen := map[string]bool{}
 	for _, idle := range v.CurrentIdle {
 		amount, ok := rawAmount(idle.AmountRaw)
-		if !ok || !supportedMint(idle.Mint) || seen[idle.Mint] || idle.Slot != v.Snapshot.Slot {
+		if !ok || !supportedHoldingMint(idle.Mint) || seen[idle.Mint] || idle.Slot != v.Snapshot.Slot {
 			return nil, false
 		}
 		seen[idle.Mint] = true
@@ -296,7 +294,7 @@ func modeledBPS(value float64, elapsed time.Duration) (int32, error) {
 	return int32(math.Max(0, math.Floor(rate+0.5))), nil
 }
 func eligibleModelRow(r ModelReserve) bool {
-	return r.Active && !r.Stale && supportedMint(r.Mint) && !math.IsNaN(r.APY) && !math.IsInf(r.APY, 0) && r.APY >= 0 && r.APY < .5 && !math.IsNaN(r.TotalSupplyUSD) && !math.IsInf(r.TotalSupplyUSD, 0) && r.TotalSupplyUSD > 100_000
+	return r.Active && !r.Stale && slices.Contains(stableMints, r.Mint) && !math.IsNaN(r.APY) && !math.IsInf(r.APY, 0) && r.APY >= 0 && r.APY < .5 && !math.IsNaN(r.TotalSupplyUSD) && !math.IsInf(r.TotalSupplyUSD, 0) && r.TotalSupplyUSD > 100_000
 }
 
 func SimulatePublicModel(rows []ModelReserve, start, end time.Time) (PublicModel, error) {

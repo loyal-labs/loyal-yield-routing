@@ -16,6 +16,41 @@ func testVault(id int64, at time.Time, p FleetPosition) FleetVault {
 	zero := "0"
 	return FleetVault{ID: id, Snapshot: &FleetSnapshot{ObservedAt: at, Slot: 100, ContextIdle: &zero, Positions: []FleetPosition{p}}}
 }
+
+func TestAllocationIncludesBothUSDGHoldersAndTheirOtherReserves(t *testing.T) {
+	now := time.Date(2026, 11, 20, 8, 0, 0, 0, time.UTC)
+	firstAt := now.Add(-20 * time.Minute)
+	secondAt := now.Add(-5 * time.Minute)
+	position := func(reserve, mint, collateral, liquidity string) FleetPosition {
+		p := testPosition(collateral, liquidity)
+		p.Reserve, p.Mint = reserve, mint
+		return p
+	}
+	first := testVault(1, firstAt, position("usdg-reserve", fleet.USDGMint, "10000000", "11000000"))
+	second := testVault(2, secondAt, position("usdg-reserve", fleet.USDGMint, "25000000", "27500000"))
+	second.Snapshot.Positions = append(second.Snapshot.Positions, position("usds-reserve", fleet.USDSMint, "1500000", "1800000"))
+	second.Snapshot.ContextIdle = nil
+	second.CurrentIdle = []FleetIdle{{Mint: fleet.USDGMint, Slot: second.Snapshot.Slot, AmountRaw: "7"}}
+	vaults := []FleetVault{first, second}
+
+	sample, err := AggregateAllocation(vaults, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sample.Included != 2 || sample.Invalid != 0 || sample.ExcludedAmountRaw != "0" || sample.IdleAmountRaw != "7" {
+		t.Fatalf("held USDG excluded a vault or idle balance: %+v", sample)
+	}
+	if len(sample.ReserveAmounts) != 2 || sample.ReserveAmounts["usdg-reserve"] != "38500000" || sample.ReserveAmounts["usds-reserve"] != "1800000" {
+		t.Fatalf("redeemable amounts per reserve: %v", sample.ReserveAmounts)
+	}
+	if sample.OldestSourceAt == nil || !sample.OldestSourceAt.Equal(firstAt) || sample.NewestSourceAt == nil || !sample.NewestSourceAt.Equal(secondAt) {
+		t.Fatalf("source times: %v to %v", sample.OldestSourceAt, sample.NewestSourceAt)
+	}
+	if prices := SnapshotSharePrices(vaults, now); len(prices) != 0 {
+		t.Fatalf("undersized positions supplied prices: %+v", prices)
+	}
+}
+
 func TestAllocationPreservesConversionCoverageAndClocks(t *testing.T) {
 	now := time.Date(2026, 9, 30, 12, 30, 0, 0, time.UTC)
 	actual := now.Add(-20 * time.Minute)
@@ -82,6 +117,7 @@ func TestPublicModelChargesCrossMintFeeAndRejectsFutureEvidence(t *testing.T) {
 	start := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
 	end := start.Add(24 * time.Hour)
 	rows := []ModelReserve{{Reserve: "reserve", Mint: stableMints[1], ObservedAt: start, APY: .1, TotalSupplyUSD: 200001, Active: true}, {Reserve: "future", Mint: USDCMint, ObservedAt: end.Add(time.Second), APY: .49, TotalSupplyUSD: 200001, Active: true}}
+	rows = append(rows, ModelReserve{Reserve: "held-usdg", Mint: fleet.USDGMint, ObservedAt: start, APY: .49, TotalSupplyUSD: 200001, Active: true})
 	result, err := SimulatePublicModel(rows, start, end)
 	if err != nil {
 		t.Fatal(err)

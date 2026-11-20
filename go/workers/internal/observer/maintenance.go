@@ -111,7 +111,7 @@ type MaintenanceReport struct {
 	Allocation         *AllocationSample
 	SharePrices        int
 	ModelPublished     bool
-	MissingPrices      []string
+	MissingPrices      []MissingSharePrice
 	StageHealth        *StageHealthReport
 	AllocationComplete bool
 }
@@ -148,7 +148,7 @@ func (m *Maintenance) Run(ctx context.Context) error {
 			lastStages = signature
 		}
 		if len(report.MissingPrices) > 0 {
-			m.logger.WarnContext(ctx, "maintenance price evidence incomplete", "cluster", m.cluster, "missing_reserve_count", len(report.MissingPrices))
+			m.logger.WarnContext(ctx, "maintenance price evidence incomplete", "cluster", m.cluster, "missing_reserve_count", len(report.MissingPrices), "missing_reserves", report.MissingPrices)
 			timer.Reset(m.retryInterval)
 		} else {
 			timer.Reset(m.observation)
@@ -464,38 +464,48 @@ type ReservePriceRPC interface {
 	BlockTime(ctx context.Context, slot uint64) (time.Time, error)
 }
 
-func reservePrice(reserve string, account *chain.Account, contextSlot uint64) (SharePrice, error) {
-	var result SharePrice
+type MissingSharePrice struct {
+	Reserve string `json:"reserve"`
+	Reason  string `json:"reason"`
+}
+
+func reservePrice(reserve string, account *chain.Account, contextSlot uint64) (SharePrice, string) {
+	if account == nil {
+		return SharePrice{}, "account_missing"
+	}
 	decoded, err := kamino.DecodeReserve(account)
 	if err != nil {
-		return result, errors.New("reserve owner/layout invalid")
+		return SharePrice{}, "invalid_reserve_account"
 	}
 	update := decoded.LastUpdateSlot
-	if update == 0 || update > contextSlot || update > math.MaxInt64 || decoded.LastUpdateStale {
-		return result, errors.New("reserve update slot/staleness invalid")
+	if update == 0 || update > contextSlot || update > math.MaxInt64 {
+		return SharePrice{}, "invalid_update_slot"
+	}
+	if decoded.LastUpdateStale {
+		return SharePrice{}, "reserve_marked_stale"
 	}
 	market, mint := decoded.LendingMarket.String(), decoded.LiquidityMint.String()
-	if !supportedMint(mint) {
-		return result, errors.New("unsupported price mint")
+	if !supportedHoldingMint(mint) {
+		return SharePrice{}, "unsupported_mint"
 	}
 	const probe = 1_000_000_000_000
 	redeem, err := decoded.CollateralToLiquidity(probe)
 	if err != nil {
-		return result, errors.New("reserve has no proven exchange supply")
+		return SharePrice{}, "exchange_rate_unavailable"
 	}
 	price, _ := new(big.Rat).SetFrac(new(big.Int).SetUint64(redeem), big.NewInt(probe)).Float64()
 	if price <= 0 || math.IsNaN(price) || math.IsInf(price, 0) {
-		return result, errors.New("reserve exchange price invalid")
+		return SharePrice{}, "invalid_exchange_price"
 	}
-	return SharePrice{Reserve: reserve, Market: market, Mint: mint, Slot: int64(update), Price: price}, nil
+	return SharePrice{Reserve: reserve, Market: market, Mint: mint, Slot: int64(update), Price: price}, ""
 }
 
 type blockClock struct {
-	at    time.Time
-	known bool
+	at         time.Time
+	skipReason string
 }
 
-func ProbeSharePrices(ctx context.Context, source ReservePriceRPC, reserves []string, now time.Time) ([]SharePrice, []string, error) {
+func ProbeSharePrices(ctx context.Context, source ReservePriceRPC, reserves []string, now time.Time) ([]SharePrice, []MissingSharePrice, error) {
 	if source == nil || now.IsZero() || len(reserves) > 10_000 {
 		return nil, nil, errors.New("price probe capability/clock/bound invalid")
 	}
@@ -512,7 +522,7 @@ func ProbeSharePrices(ctx context.Context, source ReservePriceRPC, reserves []st
 	}
 	sort.Strings(keys)
 	prices := []SharePrice{}
-	missing := []string{}
+	missing := []MissingSharePrice{}
 	clocks := map[uint64]blockClock{}
 	for start := 0; start < len(keys); start += 100 {
 		chunk := keys[start:min(start+100, len(keys))]
@@ -528,19 +538,25 @@ func ProbeSharePrices(ctx context.Context, source ReservePriceRPC, reserves []st
 			return nil, nil, errors.New("price account response cardinality mismatch")
 		}
 		for i, key := range chunk {
-			price, err := reservePrice(key, accounts[i], slot)
-			if err != nil {
-				missing = append(missing, key)
+			price, skipReason := reservePrice(key, accounts[i], slot)
+			if skipReason != "" {
+				missing = append(missing, MissingSharePrice{Reserve: key, Reason: skipReason})
 				continue
 			}
 			clock, cached := clocks[uint64(price.Slot)]
 			if !cached {
 				at, err := source.BlockTime(ctx, uint64(price.Slot))
-				clock = blockClock{at: at, known: err == nil && at.Unix() > 0}
+				clock.at = at
+				switch {
+				case err != nil || at.Unix() <= 0:
+					clock.skipReason = "block_time_unavailable"
+				case at.After(now):
+					clock.skipReason = "future_block_time"
+				}
 				clocks[uint64(price.Slot)] = clock
 			}
-			if !clock.known || clock.at.After(now) {
-				missing = append(missing, key)
+			if clock.skipReason != "" {
+				missing = append(missing, MissingSharePrice{Reserve: key, Reason: clock.skipReason})
 				continue
 			}
 			price.ObservedAt = clock.at
@@ -550,7 +566,7 @@ func ProbeSharePrices(ctx context.Context, source ReservePriceRPC, reserves []st
 	}
 	return prices, missing, nil
 }
-func (m *Maintenance) RecordSharePrices(ctx context.Context, now time.Time) (int, []string, error) {
+func (m *Maintenance) RecordSharePrices(ctx context.Context, now time.Time) (int, []MissingSharePrice, error) {
 	ctx, cancel := context.WithTimeout(ctx, m.timeout)
 	defer cancel()
 	reserves := map[string]bool{benchmarkReserve: true}
