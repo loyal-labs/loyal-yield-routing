@@ -22,13 +22,13 @@ Keep shell variable expansion inside the `sh -c` subprocess so `op run` injects 
 
 ## Worker Deploys
 
-The workers run on the Go engine in `go/workers`, deployed to Hetzner from `deploy/hetzner`. The Rust worker crates, their images and the Render Blueprint are retired.
+The workers run on the Go engine in `go/workers`, deployed to `loyal-main` from `deploy/hetzner`. The Rust worker crates, their images and the Render Blueprint are retired.
 
-`loyal-yield-realtime` is the one Rust service left. It runs on the Hetzner workers host, not on Render (all Render services are retired), as the plain systemd unit `deploy/hetzner/systemd/loyal-realtime.service`, not as a container. `Dockerfile.light-workers` builds it and the `realtime-image` workflow publishes immutable `ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-<commit>` tags on main. The host runs a binary copied out of one of those tags, pinned by its sha256 at `/opt/loyal/bin/loyal-yield-realtime`; see the realtime section of `deploy/hetzner/README.md` for how to extract, seal and cut over.
+`loyal-yield-realtime` is the one Rust service left. It runs on `loyal-main`, not on Render (all Render services are retired), as the plain systemd unit `deploy/hetzner/systemd/loyal-realtime.service`, not as a container. `Dockerfile.light-workers` builds it and the `realtime-image` workflow publishes immutable `ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-<commit>` tags on main. The box runs a binary copied out of one of those tags, pinned by its sha256 at `/opt/loyal/bin/loyal-yield-realtime`; see the realtime section of `deploy/hetzner/README.md` for how to extract, seal and cut over.
 
 SQL migrations live in `migrations/yield` and `migrations/timescale`; apply them with `go/workers/cmd/loyal-migrate` and never edit an applied file.
 
-The Hetzner host moves to the AWS box `loyal-main`. `deploy/aws/TEAM.md` says how to sign in, reach that box, and tell which side is live.
+Loyal runs on the AWS box `loyal-main`; the Hetzner boxes `loyal-workers` and `loyal-db-primary` are retired and stay untouched until deleted. `deploy/aws/TEAM.md` says how to sign in and reach the box.
 
 ## Architecture
 

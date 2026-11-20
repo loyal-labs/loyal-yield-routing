@@ -10,7 +10,7 @@ import sys
 import urllib.error
 import urllib.request
 
-HOST = 'https://observability.5.161.121.229.sslip.io/api/mcp'
+HOST = 'https://observability.askloyal.com/api/mcp'
 DEFAULT_MANIFEST = Path(__file__).resolve().parents[1] / 'deploy/hetzner/monitoring/clickstack-vault-alerts.json'
 SEARCH_FIELDS = {'id', 'name', 'select', 'where', 'whereLanguage', 'orderBy', 'sourceId', 'tags', 'filters'}
 ALERT_FIELDS = {'id', 'source', 'savedSearchId', 'dashboardId', 'tileId', 'groupBy', 'threshold', 'thresholdType', 'thresholdMax', 'interval', 'scheduleOffsetMinutes', 'scheduleStartAt', 'channel', 'name', 'message'}
