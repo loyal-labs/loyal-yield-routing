@@ -401,7 +401,8 @@ source_outside_reverse() {
   # The source first: its only writer is the reverse copy, so each of its counts stays at or under
   # a later read of the target. A backend reports its counters up to 10 s after its commit, so the
   # target is read again before a higher source count fails. Limit: a writer outside the reverse is
-  # seen only if it wrote more rows to a table than the target adds there during the rereads; the
+  # seen only if it wrote more rows to a table than the target adds there between the source read
+  # and the last target read (two 6 s waits plus the read times); the
   # fence (no source role with LOGIN) and the stopped units are the guard against one, not this.
   src=$(pg_counted freeze src) || return 1
   for try in 1 2 3; do
