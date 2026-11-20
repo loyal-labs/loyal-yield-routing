@@ -45,9 +45,7 @@ elif name == 'ssh':
         print(0)
     if args[1:5] == ['sh', '-s', '--', '/etc/prometheus/loyal.rules.yml']:
         print('0\nx86_64\nrules ' + 'f' * 40)
-        print(f'ExecStart=/opt/loyal/releases/{family}/{new if mode == "interrupted" else old}/{binary}')
-    if mode == 'interrupted' and args[1:4] == ['sh', '-s', '--'] and args[4].startswith('loyal-'):
-        print('inactive')
+        print(f'ExecStart=/opt/loyal/releases/{family}/{old}/{binary}')
 elif name == 'scp':
     pass
 elif name in ('bun', 'make'):
@@ -124,7 +122,7 @@ class DeploymentTest(unittest.TestCase):
         (artifacts / 'web-assets').mkdir()
         (artifacts / 'web-assets/chunk.js').write_text('verified assets')
         env.update(LOYAL_DEPLOY_ARTIFACT_DIR=str(artifacts), LOYAL_DEPLOY_REQUIRE_HEAD='1',
-                   LOYAL_DEPLOY_EXPECTED_RELEASE='c' * 40 if mode == 'concurrent-release' else NEW if mode == 'interrupted' else OLD)
+                   LOYAL_DEPLOY_EXPECTED_RELEASE='c' * 40 if mode == 'concurrent-release' else OLD)
         result = subprocess.run(['bash', str(scripts / 'deploy-workers.sh'), family, NEW],
                                 env=env, capture_output=True, text=True, timeout=10)
         calls = [json.loads(line) for line in (root / 'calls').read_text().splitlines()]
@@ -180,11 +178,6 @@ class DeploymentTest(unittest.TestCase):
         self.assertEqual(len(gh_calls), 1)
         self.assertIn('.workflow_run.head_branch == "main"', gh_calls[0][-1])
         self.assertIn('.workflow_run.head_sha == "' + NEW + '"', gh_calls[0][-1])
-
-    def test_a_unit_left_inactive_on_the_new_release_is_activated_again(self):
-        result, calls = self.deploy('retail', 'interrupted')
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertTrue(any(call[0] == 'ssh' and 'systemd-run' in call for call in calls), result.stdout)
 
     def realtime(self, mode='ok', expected=OLD):
         root, env = self.prepare('realtime', mode)

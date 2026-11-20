@@ -84,6 +84,8 @@ The workflow finds the box through two settings of the GitHub environment `produ
 
 Deploy by hand only when the workflow cannot, and say so in the team channel first. The manual path takes one service at a time. Its services are `backyard`, `earn-max`, `retail`, `observer`, `telegram`, `web`, `admin` and `stats`. It deploys a commit that is already on `main` and that CI built and verified for that service. When the head of `main` changed no code of the service, `bun run deploy <service>` refuses with "no green Workers v2 verification". Then deploy the newest commit whose production run built that service. Find it with `gh run list --workflow production.yml` and read the build jobs of each run.
 
+If a deploy is cut off while it is switching a service (the box loses power, or the activation is killed), the service can be left stopped. A rerun then refuses with "is inactive before the deploy" or "already runs <sha> (inactive)". That refusal is on purpose: a stopped engine is never started by a deploy, because the deploy cannot tell an interrupted switch from a service someone stopped deliberately. Check the team channel that nobody stopped it, read `sudo journalctl -u loyal-<service> -n 50 --no-pager` and the log in `/var/log/loyal-deploy/`, then start it by hand with `deploy/aws/team.sh run 'systemctl start loyal-<service>'` and rerun the deploy.
+
 With your AWS sign-in, run it through `team.sh`:
 
 	deploy/aws/team.sh deploy <service> [sha] [--migrations-applied] [--stopped]

@@ -230,20 +230,18 @@ else
   fi
 fi
 
-state=
 if [[ $running == "$sha" && $mode == running ]]; then
   state=$(ssh "$host" sh -s -- "$unit" <<'REMOTE' || true
 systemctl is-active "$1"
 REMOTE
 )
-fi
-if [[ $running == "$sha" && $mode == running && $state != active ]]; then
-  echo "$unit names $sha but is $state; activating it again"
-elif [[ $running == "$sha" && $mode == running ]]; then
   if [[ $web_family == yes ]]; then
     echo "$unit already runs $sha ($state); the web app is unchanged"
   else
     echo "$unit already runs $sha ($state); the engine is unchanged"
+  fi
+  if [[ $state != active ]]; then
+    exit 1
   fi
   if [[ $install_rules != yes ]]; then
     exit "$rules_exit"
@@ -287,7 +285,7 @@ if [[ ! -f $tree/deploy/hetzner/activate.sh || ! -f $tree/deploy/hetzner/install
   exit 1
 fi
 
-if [[ $running != "$sha" || $mode == stopped || $state != active ]]; then
+if [[ $running != "$sha" || $mode == stopped ]]; then
   if [[ -n ${LOYAL_DEPLOY_ARTIFACT_DIR:-} ]]; then
     artifacts=$LOYAL_DEPLOY_ARTIFACT_DIR
     [[ $goarch == amd64 ]] || artifacts=$artifacts/$goarch

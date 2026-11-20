@@ -70,7 +70,7 @@ if [ "$prev" = "$sha" ] && [ "$state" = active ]; then
 	say "already running $sha"
 	exit 0
 fi
-if [ "$mode" = running ] && [ "$state" != active ] && [ "$prev" != "$sha" ]; then
+if [ "$mode" = running ] && [ "$state" != active ]; then
 	fail "$unit is $state before the deploy: someone stopped it on purpose. Start it (or find out why it is down) first, or deploy with --stopped."
 fi
 if [ "$mode" = stopped ] && [ "$state" = active ]; then
