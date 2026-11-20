@@ -1,6 +1,7 @@
 #!/bin/sh
 set -eu
+want=$(python3 -I -c 'import json; print(json.load(open("/root/loyal-db/identity.json"))["volume_uuid"])')
 mountpoint -q /srv/postgresql
-[ "$(findmnt -n -o UUID /srv/postgresql)" = "75c24220-499b-4d1b-850a-825dffbcf18c" ]
+[ "$(findmnt -n -o UUID /srv/postgresql)" = "$want" ]
 [ -f /srv/postgresql/18/main/PG_VERSION ]
 [ "$(cat /srv/postgresql/18/main/PG_VERSION)" = 18 ]

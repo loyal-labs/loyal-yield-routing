@@ -53,7 +53,7 @@ def trusted_artifact(path, mode=None):
     return True, trusted
 
 
-def valid_schedule_marker(path, now):
+def valid_schedule_marker(path, now, server_id):
     present, trusted = trusted_artifact(path, 0o600)
     if not present or not trusted:
         return False
@@ -68,7 +68,7 @@ def valid_schedule_marker(path, now):
                 return False
             value = json.loads(stream.read(4097))
         expected = {'schema_version': 1, 'kind': 'loyal-db-backup-schedule-enabled',
-                    'server_id': 168022710, 'required_after_install': True,
+                    'server_id': server_id, 'required_after_install': True,
                     'timers': list(BACKUP_TIMERS.values()), 'failure_destination': 'local systemd journal'}
         if not isinstance(value, dict) or set(value) != set(expected) | {'installed_at'}:
             return False
@@ -134,7 +134,7 @@ def parse_backup_info(raw):
             'latest_any_stop_unix': max((stop for _, stop in complete), default=None)}
 
 
-def gather_backup_schedule(clean_env, now=None):
+def gather_backup_schedule(clean_env, server_id, now=None):
     now = time.time() if now is None else now
     metrics = {'expected': False, 'marker_present': False, 'marker_valid': None,
                'timer_files': {}, 'timer_files_trusted': {}}
@@ -147,7 +147,7 @@ def gather_backup_schedule(clean_env, now=None):
     metrics['expected'] = metrics['marker_present'] or any(metrics['timer_files'].values())
     if not metrics['expected']:
         return metrics, errors
-    metrics['marker_valid'] = valid_schedule_marker(BACKUP_MARKER, now)
+    metrics['marker_valid'] = valid_schedule_marker(BACKUP_MARKER, now, server_id)
     commands = (
         ('backup-timers', ['systemctl', 'show', '--no-pager', '--property=Id,LoadState,ActiveState,UnitFileState',
                           *BACKUP_TIMERS.values()], 2, 'timers', parse_timer_states),
@@ -257,7 +257,7 @@ def evaluate(metrics, now=None, minimum_free_gib=50, minimum_free_percent=20,
     return verdict, checks
 
 
-def gather():
+def gather(server_id):
     metrics, errors = {}, []
     clean_env = {'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LANG': 'C.UTF-8'}
     try:
@@ -297,7 +297,7 @@ def gather():
         metrics['postgres'] = json.loads(result.stdout.strip())
     except Exception as error:
         errors.append({'probe': 'target-control-database', 'exception_type': type(error).__name__})
-    metrics['backup_schedule'], backup_errors = gather_backup_schedule(clean_env)
+    metrics['backup_schedule'], backup_errors = gather_backup_schedule(clean_env, server_id)
     errors.extend(backup_errors)
     return metrics, errors
 
@@ -321,7 +321,7 @@ def main():
     except Exception as error:
         identity = {'server_id': None, 'volume_id': None}
         identity_error = {'probe': 'target-identity', 'exception_type': type(error).__name__}
-    metrics, errors = gather()
+    metrics, errors = gather(identity['server_id'])
     verdict, checks = evaluate(metrics)
     if identity_error is not None:
         errors.append(identity_error)
