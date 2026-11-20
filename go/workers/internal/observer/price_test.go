@@ -6,6 +6,7 @@ import (
 	"errors"
 	"math"
 	"math/big"
+	"slices"
 	"testing"
 	"time"
 
@@ -121,6 +122,28 @@ func TestIndependentPriceRefusesUnknownAndStaleEvidence(t *testing.T) {
 				t.Fatalf("unknown admitted: %v %v %v", rows, missing, err)
 			}
 		})
+	}
+}
+
+func TestIndependentPriceRecordsUSDGAndReportsEachSkippedReserve(t *testing.T) {
+	now := time.Date(2026, 9, 30, 12, 30, 0, 0, time.UTC)
+	clock := now.Add(-time.Hour).Unix()
+	valid := reserveFixture()
+	copy(valid.Data[128:160], solana.MustPublicKeyFromBase58(fleet.USDGMint).Bytes())
+	stale := reserveFixture()
+	stale.Data[24] = 1
+	unsupported := reserveFixture()
+	copy(unsupported.Data[128:160], solana.PublicKey{3}.Bytes())
+	validKey, staleKey, unsupportedKey := solana.PublicKey{1}.String(), solana.PublicKey{2}.String(), solana.PublicKey{3}.String()
+	r := &priceFixtureRPC{slot: 1000, clock: &clock, accounts: map[string]*chain.Account{
+		validKey: valid, staleKey: stale, unsupportedKey: unsupported,
+	}}
+	rows, missing, err := ProbeSharePrices(context.Background(), r, []string{validKey, staleKey, unsupportedKey}, now)
+	if err != nil || len(rows) != 1 || rows[0].Reserve != validKey || rows[0].Mint != fleet.USDGMint || rows[0].Slot != 900 || !rows[0].ObservedAt.Equal(time.Unix(clock, 0)) || math.Abs(rows[0].Price-1.1) > 1e-12 {
+		t.Fatalf("valid USDG price lost: rows=%+v err=%v", rows, err)
+	}
+	if len(missing) != 2 || !slices.Contains(missing, MissingSharePrice{Reserve: staleKey, Reason: "reserve_marked_stale"}) || !slices.Contains(missing, MissingSharePrice{Reserve: unsupportedKey, Reason: "unsupported_mint"}) {
+		t.Fatalf("wrong reserve diagnostics: %+v", missing)
 	}
 }
 
