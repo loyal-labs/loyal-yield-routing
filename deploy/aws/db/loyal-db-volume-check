@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+mountpoint -q /srv/postgresql
+[ "$(findmnt -n -o UUID /srv/postgresql)" = "75c24220-499b-4d1b-850a-825dffbcf18c" ]
+[ -f /srv/postgresql/18/main/PG_VERSION ]
+[ "$(cat /srv/postgresql/18/main/PG_VERSION)" = 18 ]
