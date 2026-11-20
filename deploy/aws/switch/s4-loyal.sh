@@ -148,7 +148,7 @@ harvest_state_move() {
 }
 
 handover() {
-  local out d
+  local out d m
   stopped old loyal-clickstack loyal-clickstack-relay cloudflared caddy wg-quick@loyal-ci || fail "$OLD: ClickStack, cloudflared, Caddy or the loyal-ci tunnel runs; nothing copied"
   stopped src loyal-observer-private-receiver loyal-squads-watch-receiver loyal-squads-watch-tick.timer loyal-squads-watch-tick.service loyal-observer-push-check.timer ||
     fail "loyal-db-primary: a receiver runs; nothing copied"
@@ -162,9 +162,13 @@ handover() {
   echo "$NEW: realtime.askloyal.com certificate placed at $CERT_DIR"
   ci_key_install || fail "the loyal-ci-production key was not installed for root on $NEW"
   echo "$NEW: loyal-ci-production key installed for root"
+  d=$(harvest_digest new) || fail "$NEW did not read the referral harvest state"
+  m=$(new "cat $HARVEST_MARK 2>/dev/null || echo none") || fail "$NEW did not read $HARVEST_MARK"
+  [[ -n $d && -n $m ]] || fail "$NEW answered empty for the referral harvest state or $HARVEST_MARK"
+  [[ $m == none || $d == "$m" ]] || fail "$NEW holds referral harvest state newer than $HARVEST_MARK; rerun the way back (rollback) to carry it to $OLD before another freeze"
   harvest_state_move old new || fail "the referral harvest state was not carried to $NEW"
   d=$(harvest_digest new) || fail "$NEW did not read the referral harvest state"
-  new "echo '$d' >$HARVEST_MARK.new && mv -f $HARVEST_MARK.new $HARVEST_MARK && sync /opt/loyal/ops" ||
+  new "echo '$d' >$HARVEST_MARK.new && sync $HARVEST_MARK.new && mv -f $HARVEST_MARK.new $HARVEST_MARK && sync /opt/loyal/ops" ||
     fail "the referral harvest handover mark was not written on $NEW"
   new "test -s $TUNNEL_SEALED && umask 077 && systemd-creds decrypt --name=loyal-workers.json $TUNNEL_SEALED $TUNNEL_PLAIN.new && chmod 0600 $TUNNEL_PLAIN.new && mv -f $TUNNEL_PLAIN.new $TUNNEL_PLAIN && sync /etc/cloudflared" ||
     fail "the tunnel credential was not placed on $NEW"
@@ -495,7 +499,10 @@ c_wg_staged() {
 # Before the switch root login on loyal-main stays closed: the key is absent there (the handover installs it, the handback removes
 # it), and the line it will install is readable on loyal-workers.
 c_deploy_ssh() {
-  local line n
+  local line n m
+  m=$(new "cat $HARVEST_MARK 2>/dev/null || echo none") || { echo "$NEW did not answer for $HARVEST_MARK"; return 1; }
+  [[ -n $m ]] || { echo "$NEW answered empty for $HARVEST_MARK"; return 1; }
+  [[ $m == none ]] || { echo "$HARVEST_MARK exists on $NEW: a freeze is in progress or its mark was left behind"; return 1; }
   line=$(ci_key_line) || { echo "$OLD does not trust exactly one loyal-ci-production key as a restrict line; the handover has nothing to install"; return 1; }
   n=$(ci_key_count) || { echo "$NEW did not answer"; return 1; }
   echo "source: one restrict line on $OLD ($(ssh-keygen -lf - <<<"${line#restrict }" | awk '{print $2}' | cut -c8-15)...); $NEW root authorized_keys holds it $n time(s), want 0 before the switch; sshd: $(new "sshd -T | grep -i '^permitrootlogin '")"
