@@ -62,8 +62,9 @@ merging and the first production rollout need the owner's authorization.
    since any running release require an explicit reviewed rollout first. The
    automation does not apply migrations or install service units. Host tools
    include Python 3, PostgreSQL's `psql`, systemd, curl, sha256sum and ldd.
-6. From a clean checkout of the current merged main SHA, with the existing
-   `loyal-workers` SSH alias, run the read-only gate:
+6. From a clean checkout of the current merged main SHA, run the read-only
+   gate. CI reaches `loyal-main` over its tunnel; the manual path is in
+   `deploy/aws/TEAM.md`:
 
    ```sh
    python3 scripts/production-rollout.py "$(git rev-parse HEAD)" --preflight-only

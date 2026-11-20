@@ -2,7 +2,7 @@
 # Prepares the arm64 AWS host loyal-main to match loyal-workers-1 (services) and loyal-db-primary (Postgres).
 # Run on the host as root: ssh loyal-main 'sudo bash -s' < deploy/aws/loyal-main-prepare.sh
 # Package installs run with SYSTEMD_OFFLINE=1 and a policy-rc.d that refuses starts, because some postinst scripts call systemctl start themselves.
-# Idempotent. Starts and enables nothing, creates no Postgres cluster, copies no unit, release, secret or data.
+# Idempotent. Starts and enables nothing but prometheus-node-exporter (loopback only, the scrape target of prometheus.yml), creates no Postgres cluster, copies no unit, release, secret or data.
 set -euo pipefail
 
 DB_GB=${DB_GB:-300}
@@ -266,11 +266,23 @@ quiet_step() {
   done
 }
 
+node_exporter_step() {
+  if [[ $(systemctl is-enabled prometheus-node-exporter 2>/dev/null || true) != enabled ]]; then
+    systemctl enable prometheus-node-exporter >/dev/null 2>&1
+    change "enabled prometheus-node-exporter"
+  fi
+  if ! systemctl is-active --quiet prometheus-node-exporter; then
+    systemctl start prometheus-node-exporter
+    change "started prometheus-node-exporter"
+  fi
+}
+
 hostname_step
 disks_step
 tree_step
 packages_step
 postgres_dirs_step
 quiet_step
+node_exporter_step
 
 echo "loyal-main: $changes change(s)"
