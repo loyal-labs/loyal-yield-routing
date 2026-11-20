@@ -169,10 +169,6 @@ def rewrite(dst, data, rules, args):
             n = data.count(b",10.92.1.1")
             data = data.replace(b",10.92.1.1", b"")
             n == 1 or die(f"{dst}: rule listen matched {n} times, want 1")
-        elif rule == "promdb":
-            data, n = re.subn(rb'\n[ \t]*- targets: \["10\.92\.1\.1:9100"\]\n[ \t]*labels: \{host: loyal-db-primary\}',
-                              b"", data)
-            n == 1 or die(f"{dst}: rule promdb matched {n} times, want 1")
         elif rule in ("pubip", "launcher"):
             old, new = args[f"old_{rule}"].encode(), args[f"new_{rule}"].encode()
             n = data.count(old)

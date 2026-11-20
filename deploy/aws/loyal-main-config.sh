@@ -222,12 +222,12 @@ EOF
 )
   params=$(cat <<EOF
 {"args": {"old_pubip": "$old_ip", "new_pubip": "$new_ip",
+          "old_obs": "https://observability.$old_ip.sslip.io", "new_obs": "https://observability.askloyal.com",
           "old_launcher": "/opt/loyal-hetzner/env-launcher-$old_launcher",
           "new_launcher": "/opt/loyal-hetzner/env-launcher-$launcher_sha"$image_args},
  "cred_rules": ["db"],
- "rules": {"/etc/prometheus/prometheus.yml": ["promdb"],
-           "/etc/caddy/Caddyfile": ["pubip"],
-           "/etc/systemd/system/loyal-admin.service.d/60-env.conf": ["pubip"],
+ "rules": {"/etc/caddy/Caddyfile": ["pubip"],
+           "/etc/systemd/system/loyal-admin.service.d/60-env.conf": ["sub:obs", "pubip"],
            "/etc/systemd/system/loyal-clickstack.service": ["pubip", "launcher"$cs_rules],
            "/etc/systemd/system/loyal-clickstack-relay.service": ["launcher"$relay_rules]}}
 EOF

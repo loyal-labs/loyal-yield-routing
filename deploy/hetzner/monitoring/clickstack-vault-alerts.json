@@ -32,7 +32,7 @@
         "source": "saved_search",
         "savedSearchId": "6ab6eeb4df00e17b4af9194e"
       },
-      "message": "rwa vault sent fewer than 2 heartbeats in 5 minutes. Check loyal-earn-max.service on loyal-workers, the vault loop, and telemetry ingestion."
+      "message": "rwa vault sent fewer than 2 heartbeats in 5 minutes. Check loyal-earn-max.service on loyal-main, the vault loop, and telemetry ingestion."
     },
     {
       "id": "6ab6eedadf00e17b4af91998",
@@ -66,7 +66,7 @@
         "thresholdType": "above",
         "interval": "30m"
       },
-      "message": "Repeated RWA vault worker starts in 30 minutes. Check loyal-earn-max.service on loyal-workers and the recorded exit causes."
+      "message": "Repeated RWA vault worker starts in 30 minutes. Check loyal-earn-max.service on loyal-main and the recorded exit causes."
     }
   ],
   "navConfig": {

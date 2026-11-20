@@ -60,7 +60,7 @@
         "webhookId": "6a60b666dcc64beb0ded8d48"
       },
       "name": "Backyard Looping worker silent (no heartbeat)",
-      "message": "Looping vault sent fewer than 2 heartbeats in 5 minutes. Check loyal-backyard.service on loyal-workers, the vault loop, and telemetry ingestion."
+      "message": "Looping vault sent fewer than 2 heartbeats in 5 minutes. Check loyal-backyard.service on loyal-main, the vault loop, and telemetry ingestion."
     },
     {
       "source": "tile",
