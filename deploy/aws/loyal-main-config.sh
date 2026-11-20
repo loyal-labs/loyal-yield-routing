@@ -5,8 +5,10 @@
 # Run from the Mac: deploy/aws/loyal-main-config.sh [stage|proof <dir>]. Idempotent; a rerun prints 0 change(s).
 # Contents cross one boundary: an old host's read or `systemd-creds decrypt` piped straight into loyal-main's
 # writer (deploy/aws/box-copy.py recv), which prints paths and rewrite counts, never contents.
-# The old hosts are only read. Env: RELEASE_SHA, ARTIFACTS (gh run download of its Production rollout run),
-# LAUNCHER (arm64 loyal-env-launcher built from the reviewed source), NEW (default loyal-main).
+# Each release family is staged at the commit it runs on loyal-workers, or at one with identical service source.
+# The old hosts are only read. Env: ARTIFACTS (one directory per release sha, ARTIFACTS/<sha>/<artifact dir>, each
+# artifact dir a gh run download of that sha's Production rollout artifact, referral-harvest of its Earn MAX referral
+# harvest artifact), LAUNCHER (arm64 loyal-env-launcher built from the reviewed source), NEW (default loyal-main).
 set -euo pipefail
 
 DIR=$(cd "$(dirname "$0")" && pwd)
@@ -15,16 +17,16 @@ REPO=$(cd "$DIR/../.." && pwd)
 source "$REPO/deploy/hetzner/db/remote.sh"
 
 NEW=${NEW:-loyal-main}
-RELEASE_SHA=${RELEASE_SHA:-249031cd970f23791e354daf294c66a640871f4f}
-ARTIFACTS=${ARTIFACTS:?ARTIFACTS is the gh run download directory of RELEASE_SHA}
+ARTIFACTS=${ARTIFACTS:?ARTIFACTS holds one directory per release sha, ARTIFACTS/<sha>/<artifact dir>}
 LAUNCHER=${LAUNCHER:?LAUNCHER is the arm64 loyal-env-launcher}
 STAGED=/opt/loyal-db-staged
 # family binary artifact-dir
 FAMILIES=(
   "backyard loyal-engine workers" "earn-max loyal-engine workers" "retail loyal-engine workers"
   "observer loyal-observer workers" "telegram loyal-telegram workers" "web loyal-web web-arm64"
-  "admin loyal-admin admin-arm64" "stats loyal-stats stats-arm64"
+  "admin loyal-admin admin-arm64" "stats loyal-stats stats-arm64" "realtime loyal-yield-realtime realtime-arm64"
 )
+HARVEST=/opt/loyal/releases/referral-harvest
 SERVICE_SOURCE=(go web crates migrations src Cargo.toml Cargo.lock bun.lock package.json Dockerfile.light-workers
   rust-toolchain.toml tools deploy/hetzner/activate.sh deploy/hetzner/activate-realtime.sh
   deploy/hetzner/retain-web-assets.sh deploy/hetzner/systemd deploy/hetzner/monitoring)
@@ -47,18 +49,80 @@ recv() { # recv <params json>: frames on stdin into loyal-main's writer
   grep -q '^changed: /etc/systemd/system/' <<<"$out" && reload=1 || true
 }
 
+have_commit() { git -C "$REPO" cat-file -e "$1^{commit}" 2>/dev/null || git -C "$REPO" fetch -q origin main; }
+
+# pick <running sha> <artifact dir> <binary>: the sha whose artifacts stage a family running <running sha>, itself or
+# one with identical service source.
+pick() {
+  local d s
+  [[ -f $ARTIFACTS/$1/$2/arm64/$3 ]] && { echo "$1"; return 0; }
+  for d in "$ARTIFACTS"/*/"$2"/arm64/"$3"; do
+    s=${d#"$ARTIFACTS"/} && s=${s%%/*}
+    [[ -f $d && $s =~ ^[0-9a-f]{40}$ ]] || continue
+    have_commit "$s"
+    git -C "$REPO" diff --quiet "$1" "$s" -- "${SERVICE_SOURCE[@]}" && { echo "$s"; return 0; }
+  done
+  return 1
+}
+
+# The generated drop-in of a family running <sha>, as deploy/hetzner/activate.sh writes it.
+dropin_text() { # dropin_text <unit dir> <family> <binary> <sha>
+  case $1 in
+    loyal-realtime.service.d) printf '[Service]\nEnvironment=LOYAL_IMAGE_VERSION=sha-%s\n' "$4" ;;
+    loyal-web-cron@.service.d) printf '[Service]\nExecStart=\nExecStart=/opt/loyal/releases/web/%s/loyal-web cron %%i\n' "$4" ;;
+    *) printf '[Service]\nExecStart=\nExecStart=/opt/loyal/releases/%s/%s/%s\n' "$2" "$4" "$3" ;;
+  esac
+}
+
 preflight() {
   [[ $(new uname -m) == aarch64 ]] || die "$NEW is not arm64"
-  running=$(old "sed -n 's|^ExecStart=/opt/loyal/releases/[a-z-]*/\([0-9a-f]\{40\}\)/.*|\1|p' /etc/systemd/system/loyal-*.service.d/40-verified-release.conf" | sort -u)
-  [[ $running =~ ^[0-9a-f]{40}$ ]] || die "loyal-workers families run more than one release: $running"
-  for c in "$running" "$RELEASE_SHA"; do
-    git -C "$REPO" cat-file -e "$c^{commit}" 2>/dev/null || git -C "$REPO" fetch -q origin main
+  local fam bin art r s i drop sums want have units checked=' ' h
+  drop=$(old "cd /etc/systemd/system && grep -H . loyal-*.service.d/40-verified-release.conf") || die "loyal-workers did not list its release drop-ins"
+  sums=$(old "cd /etc/systemd/system && sha256sum loyal-*.service.d/40-verified-release.conf") || die "loyal-workers did not hash its release drop-ins"
+  units=loyal-web-cron@.service.d
+  RUN=() STAGE=()
+  for i in "${!FAMILIES[@]}"; do
+    read -r fam bin art <<<"${FAMILIES[$i]}"
+    units+=" loyal-$fam.service.d"
+    if [[ $fam == realtime ]]; then
+      r=$(sed -n 's|^loyal-realtime[.]service[.]d/40-verified-release[.]conf:Environment=LOYAL_IMAGE_VERSION=sha-\([0-9a-f]\{40\}\)$|\1|p' <<<"$drop")
+    else
+      r=$(sed -n "s|^loyal-${fam}[.]service[.]d/40-verified-release[.]conf:ExecStart=/opt/loyal/releases/$fam/\([0-9a-f]\{40\}\)/$bin\$|\1|p" <<<"$drop")
+    fi
+    [[ $r =~ ^[0-9a-f]{40}$ ]] || die "loyal-$fam: loyal-workers' 40-verified-release.conf names no single release"
+    have_commit "$r"
+    s=$(pick "$r" "$art" "$bin") || die "loyal-$fam runs $r: no ARTIFACTS/<sha>/$art/arm64/$bin at $r or at a commit with identical service source"
+    RUN[i]=$r STAGE[i]=$s
+    [[ $checked == *" $s/$art "* ]] || {
+      (cd "$ARTIFACTS/$s/$art/arm64" && shasum -a 256 -c --quiet ./*-SHA256SUMS) || die "$s/$art artifacts fail their checksums"
+      checked+="$s/$art "
+    }
+    [[ $fam == web ]] && web_sha=$s web_run=$r
   done
-  git -C "$REPO" diff --quiet "$running" "$RELEASE_SHA" -- "${SERVICE_SOURCE[@]}" ||
-    die "service source differs between the running $running and $RELEASE_SHA; stage the running commit instead"
-  for d in workers web-arm64 admin-arm64 stats-arm64 realtime-arm64; do
-    (cd "$ARTIFACTS/$d/arm64" && shasum -a 256 -c --quiet ./*-SHA256SUMS) || die "$d artifacts fail their checksums"
+  # The release drop-ins are generated, not copied: prove the old ones are exactly that format for each running sha,
+  # and that no family runs there that is not staged here.
+  have=$(awk '{ print $2 }' <<<"$sums" | xargs -n1 dirname | sort | paste -sd' ' -)
+  want=$(tr ' ' '\n' <<<"$units" | sort | paste -sd' ' -)
+  [[ -n $have && $have == "$want" ]] || die "loyal-workers' release drop-ins are in $have, not exactly $want"
+  for i in "${!FAMILIES[@]}"; do
+    read -r fam bin _ <<<"${FAMILIES[$i]}"
+    want=$(dropin_text "loyal-$fam.service.d" "$fam" "$bin" "${RUN[i]}" | shasum -a 256 | cut -d' ' -f1)
+    have=$(awk -v f="loyal-$fam.service.d/40-verified-release.conf" '$2 == f { print $1 }' <<<"$sums")
+    [[ $want == "$have" ]] || die "loyal-$fam 40-verified-release.conf is not the activate.sh format"
   done
+  want=$(dropin_text loyal-web-cron@.service.d web loyal-web "$web_run" | shasum -a 256 | cut -d' ' -f1)
+  have=$(awk '$2 == "loyal-web-cron@.service.d/40-verified-release.conf" { print $1 }' <<<"$sums")
+  [[ $want == "$have" ]] || die "loyal-web-cron@ 40-verified-release.conf is not the activate.sh format"
+  # The referral harvest is installed by hand from its sealed artifact: stage the arm64 build of the sha whose amd64
+  # build loyal-workers runs.
+  harvest=$(old "readlink $HARVEST/current") || die "loyal-workers has no $HARVEST/current"
+  [[ $harvest =~ ^[0-9a-f]{40}$ ]] || die "$HARVEST/current on loyal-workers names no release sha"
+  h=$ARTIFACTS/$harvest/referral-harvest
+  [[ $(cat "$h/COMMIT" 2>/dev/null) == "$harvest" ]] || die "$h/COMMIT does not name $harvest"
+  (cd "$h" && shasum -a 256 -c --quiet SHA256SUMS) || die "$h fails its checksums"
+  want=$(awk '$2 == "amd64/loyal-referral-harvest" { print $1 }' "$h/SHA256SUMS")
+  have=$(old "sha256sum <$HARVEST/$harvest/loyal-referral-harvest" | cut -d' ' -f1)
+  [[ $want =~ ^[0-9a-f]{64}$ && $want == "$have" ]] || die "loyal-workers' referral harvest binary is not the amd64 build in $h"
   launcher_sha=$(shasum -a 256 "$LAUNCHER" | cut -d' ' -f1)
   old_launcher=$(old "ls /opt/loyal-hetzner" | sed -n 's/^env-launcher-\([0-9a-f]\{64\}\)$/\1/p')
   [[ $old_launcher =~ ^[0-9a-f]{64}$ ]] || die "loyal-workers has no single /opt/loyal-hetzner/env-launcher-<sha256>"
@@ -67,41 +131,32 @@ preflight() {
   # shellcheck disable=SC2016 # expanded on loyal-main
   new_ip=$(new 't=$(curl -fsS -m 5 -X PUT -H "X-aws-ec2-metadata-token-ttl-seconds: 60" http://169.254.169.254/latest/api/token) && curl -fsS -m 5 -H "X-aws-ec2-metadata-token: $t" http://169.254.169.254/latest/meta-data/public-ipv4')
   [[ $old_ip =~ ^[0-9.]+$ && $new_ip =~ ^[0-9.]+$ ]] || die "public addresses not found (old '$old_ip', new '$new_ip')"
-  # The release drop-ins are generated, not copied: prove the old ones are exactly that format for the running sha.
-  local fam bin _ want have
-  for f in "${FAMILIES[@]}"; do
-    read -r fam bin _ <<<"$f"
-    want=$(printf '[Service]\nExecStart=\nExecStart=/opt/loyal/releases/%s/%s/%s\n' "$fam" "$running" "$bin" | shasum -a 256 | cut -d' ' -f1)
-    have=$(old "sha256sum </etc/systemd/system/loyal-$fam.service.d/40-verified-release.conf" | cut -d' ' -f1)
-    [[ $want == "$have" ]] || die "loyal-$fam 40-verified-release.conf is not the activate.sh format"
-  done
 }
 
 release_spec() {
-  local fam bin art dir e=() first=1
-  # shellcheck disable=SC2059 # the drop-in text carries printf escapes
-  dropin() { printf '{"k":"file","dst":"/etc/systemd/system/%s/40-verified-release.conf","mode":"0644","own":"root:root","data":"%s"}' "$1" "$(printf "$2" | b64)"; }
+  local fam bin art dir src i e=() first=1
+  dropin() { printf '{"k":"file","dst":"/etc/systemd/system/%s/40-verified-release.conf","mode":"0644","own":"root:root","data":"%s"}' "$1" "$(dropin_text "$@" | b64)"; }
   ent() { printf '{"k":"file","src":"%s","dst":"%s","mode":"%s","own":"root:root"}' "$1" "$2" "$3"; }
-  for f in "${FAMILIES[@]}"; do
-    read -r fam bin art <<<"$f"
-    dir=/opt/loyal/releases/$fam/$RELEASE_SHA
-    e+=("{\"k\":\"dir\",\"dst\":\"/opt/loyal/releases/$fam\",\"mode\":\"0755\",\"own\":\"root:root\"}"
-      "{\"k\":\"dir\",\"dst\":\"$dir\",\"mode\":\"0755\",\"own\":\"root:root\"}"
-      "$(ent "$ARTIFACTS/$art/arm64/$bin" "$dir/$bin" 0555)"
-      "{\"k\":\"file\",\"dst\":\"$dir/activate.sh\",\"mode\":\"0555\",\"own\":\"root:root\",\"data\":\"$(git -C "$REPO" show "$RELEASE_SHA:deploy/hetzner/activate.sh" | b64)\"}"
-      "$(dropin "loyal-$fam.service.d" "[Service]\nExecStart=\nExecStart=$dir/$bin\n")")
+  rdir() { printf '{"k":"dir","dst":"%s","mode":"0755","own":"root:root"}' "$1"; }
+  for i in "${!FAMILIES[@]}"; do
+    read -r fam bin art <<<"${FAMILIES[$i]}"
+    dir=/opt/loyal/releases/$fam/${STAGE[i]} src=$ARTIFACTS/${STAGE[i]}/$art/arm64
+    e+=("$(rdir "/opt/loyal/releases/$fam")" "$(rdir "$dir")" "$(ent "$src/$bin" "$dir/$bin" 0555)"
+      "$(dropin "loyal-$fam.service.d" "$fam" "$bin" "${STAGE[i]}")")
+    if [[ $fam == realtime ]]; then
+      e+=("$(ent "$src/$bin" "/opt/loyal/bin/$bin" 0555)")
+      continue
+    fi
+    e+=("{\"k\":\"file\",\"dst\":\"$dir/activate.sh\",\"mode\":\"0555\",\"own\":\"root:root\",\"data\":\"$(git -C "$REPO" show "${STAGE[i]}:deploy/hetzner/activate.sh" | b64)\"}")
     if [[ $fam == web ]]; then
-      e+=("{\"k\":\"tree\",\"src\":\"$ARTIFACTS/web-arm64/arm64/web-assets\",\"dst\":\"$dir/assets\",\"dmode\":\"0755\",\"fmode\":\"0644\",\"own\":\"root:root\"}"
-        "{\"k\":\"file\",\"dst\":\"$dir/retain-web-assets.sh\",\"mode\":\"0644\",\"own\":\"root:root\",\"data\":\"$(git -C "$REPO" show "$RELEASE_SHA:deploy/hetzner/retain-web-assets.sh" | b64)\"}"
-        "$(dropin "loyal-web-cron@.service.d" "[Service]\nExecStart=\nExecStart=$dir/$bin cron %%i\n")")
+      e+=("{\"k\":\"tree\",\"src\":\"$src/web-assets\",\"dst\":\"$dir/assets\",\"dmode\":\"0755\",\"fmode\":\"0644\",\"own\":\"root:root\"}"
+        "{\"k\":\"file\",\"dst\":\"$dir/retain-web-assets.sh\",\"mode\":\"0644\",\"own\":\"root:root\",\"data\":\"$(git -C "$REPO" show "${STAGE[i]}:deploy/hetzner/retain-web-assets.sh" | b64)\"}"
+        "$(dropin loyal-web-cron@.service.d web "$bin" "${STAGE[i]}")")
     fi
   done
-  dir=/opt/loyal/releases/realtime/$RELEASE_SHA
-  e+=("{\"k\":\"dir\",\"dst\":\"/opt/loyal/releases/realtime\",\"mode\":\"0755\",\"own\":\"root:root\"}"
-    "{\"k\":\"dir\",\"dst\":\"$dir\",\"mode\":\"0755\",\"own\":\"root:root\"}"
-    "$(ent "$ARTIFACTS/realtime-arm64/arm64/loyal-yield-realtime" "$dir/loyal-yield-realtime" 0555)"
-    "$(ent "$ARTIFACTS/realtime-arm64/arm64/loyal-yield-realtime" /opt/loyal/bin/loyal-yield-realtime 0555)"
-    "$(dropin loyal-realtime.service.d "[Service]\nEnvironment=LOYAL_IMAGE_VERSION=sha-$RELEASE_SHA\n")"
+  e+=("$(rdir "$HARVEST")" "$(rdir "$HARVEST/$harvest")"
+    "$(ent "$ARTIFACTS/$harvest/referral-harvest/arm64/loyal-referral-harvest" "$HARVEST/$harvest/loyal-referral-harvest" 0555)"
+    "{\"k\":\"link\",\"dst\":\"$HARVEST/current\",\"target\":\"$harvest\",\"own\":\"root:root\"}"
     "$(ent "$LAUNCHER" /opt/loyal/bin/loyal-env-launcher 0555)"
     "$(ent "$LAUNCHER" "/opt/loyal-hetzner/env-launcher-$launcher_sha" 0755)")
   printf '{"have":"%s","entries":[' "$1"
@@ -117,12 +172,13 @@ stage_release() {
   spec=$(release_spec /dev/null)
   python3 -I -c "import json,sys; [print(e['dst']) for e in json.loads(sys.argv[1])['entries'] if e['k'] == 'file']" "$spec" |
     new "sudo $(py) have" >"$have"
-  find "$ARTIFACTS/web-arm64/arm64/web-assets" -type f | sed "s|^$ARTIFACTS/web-arm64/arm64/web-assets|/opt/loyal/releases/web/$RELEASE_SHA/assets|" |
+  find "$ARTIFACTS/$web_sha/web-arm64/arm64/web-assets" -type f | sed "s|^$ARTIFACTS/$web_sha/web-arm64/arm64/web-assets|/opt/loyal/releases/web/$web_sha/assets|" |
     new "sudo $(py) have" >>"$have"
   spec=$(release_spec "$have")
   recv '{}' < <(python3 -I -c "$(cat "$DIR/box-copy.py")" local "$(j64 <<<"$spec")")
 }
 
+# The skip: setup.lock beside the referral harvest's credentials is the empty lock file of its hand install, not a credential.
 stage_workers() {
   local spec params ids cs_new relay_new cs_old relay_old image_args='' cs_rules='' relay_rules=''
   # The two docker images are built natively on loyal-main (deploy/aws/loyal-images.sh), which records their ids; the
@@ -140,7 +196,7 @@ stage_workers() {
     echo "warning: /opt/loyal/ops/arm64-images missing on $NEW; the clickstack units keep the amd64 image ids (run deploy/aws/loyal-images.sh build, then stage again)" >&2
   fi
   spec=$(cat <<EOF
-{"skip": "/40-verified-release\\\\.conf$",
+{"skip": "/40-verified-release\\\\.conf$|^/etc/credstore[.]encrypted/loyal-referral-harvest/setup[.]lock$",
  "entries": [
   {"k": "glob", "src": "/etc/systemd/system/loyal-*"},
   {"src": "/etc/systemd/system/cloudflared.service"},
@@ -200,10 +256,13 @@ EOF
 }
 
 stage() {
-  local states
+  local states i
   reload=0
   preflight
-  echo "release $RELEASE_SHA (loyal-workers runs $running; service source identical)"
+  for i in "${!FAMILIES[@]}"; do
+    echo "${FAMILIES[$i]%% *}: loyal-workers runs ${RUN[i]}, staged ${STAGE[i]}$([[ ${RUN[i]} == "${STAGE[i]}" ]] || echo ' (service source identical)')"
+  done
+  echo "referral-harvest: loyal-workers runs $harvest, staged its arm64 build"
   new "sudo install -d -m 0700 -o root -g root $STAGED"
   stage_workers
   stage_db
@@ -231,7 +290,7 @@ proof() { # proof <dir>: the evidence files, names and exit codes only
     for u in cloudflared otelcol-contrib prometheus prometheus-alertmanager prometheus-node-exporter caddy wg-quick@loyal-ci docker pgbouncer postgresql; do
       echo \"\$u \$(systemctl is-enabled \$u 2>&1) \$(systemctl is-active \$u 2>&1)\"; done
     echo '# listening:'; sudo ss -lntu" >"$p/enabled.txt"
-  new "for b in /opt/loyal/releases/*/$RELEASE_SHA/loyal-* /opt/loyal/bin/loyal-env-launcher /opt/loyal/bin/loyal-yield-realtime /opt/loyal-hetzner/env-launcher-*; do
+  new "for b in \$(sed -n 's|^ExecStart=\(/opt/loyal/releases/[^ ]*\).*|\1|p' /etc/systemd/system/loyal-*.service.d/40-verified-release.conf | sort -u) $HARVEST/current/loyal-referral-harvest /opt/loyal/bin/loyal-env-launcher /opt/loyal/bin/loyal-yield-realtime /opt/loyal-hetzner/env-launcher-*; do
       for a in --version --help; do
         out=\$(sudo unshare -n setpriv --reuid=nobody --regid=nogroup --clear-groups timeout 5 \$b \$a 2>&1); rc=\$?
         echo \"\$b \$a rc=\$rc \$(head -1 <<<\"\$out\" | cut -c1-120)\"; done; done" >"$p/binaries.txt"

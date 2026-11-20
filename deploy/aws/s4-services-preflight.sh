@@ -6,10 +6,10 @@
 #   2 units        no loyal-* unit is enabled, active or activating, and the two ClickStack units are disabled and inactive
 #   3 clickstack   the data pre-copy exists and what a final pass would still send fits the S4 window
 #   4 receivers    both receivers' pins agree with the files, the certificate verifies for 127.0.0.1, no 10.92.1.x is left
-#   5 web assets   every file of the staged release is in /opt/loyal/assets/web
+#   5 web assets   every file of the release loyal-web's staged drop-in names is in /opt/loyal/assets/web
 #   6 neon         the two sealed Neon-URL credentials exist and no unit or drop-in can load them
 #   7 host-diff    loyal-workers and loyal-db-primary against loyal-main, every line classified (s4-services-hostdiff.tsv)
-# Env, all optional: BOX (loyal-main), SHA (release, default: the release dir on the box), WINDOW_BYTES (1073741824, the
+# Env, all optional: BOX (loyal-main), WINDOW_BYTES (1073741824, the
 # most a final pass may send), HOST_DIFF_SSH_OPTS (ssh options that reach loyal-db-primary, for example -F <file>).
 set -uo pipefail
 
@@ -63,10 +63,9 @@ print('pins_files', all(sha(Q + '/' + k) == v for k, v in pins.items()))
 print('hosts', t['bind_ip'], t['allowed_peer'], t['endpoint'].split('/')[2].split(':')[0])
 PY
 echo "old_ip_left $(grep -rIl --exclude='*.pre-repin' -e '10\.92\.1\.[12]' $E $S /opt/loyal-observer-monitor $Q 2>/dev/null | wc -l)"
-rel=$(ls -d /opt/loyal/releases/web/*/ 2>/dev/null | sed -n '1,2p' | wc -l)
-echo "release_dirs $rel"
-sha=${SHA:-$(ls /opt/loyal/releases/web | sed -n 1p)}
-echo "release_sha $sha"
+sha=$(sed -n 's|^ExecStart=/opt/loyal/releases/web/\([0-9a-f]\{40\}\)/loyal-web$|\1|p' /etc/systemd/system/loyal-web.service.d/40-verified-release.conf 2>/dev/null)
+echo "release_sha ${sha:-none}"
+echo "release_assets $([ -n "$sha" ] && [ -d /opt/loyal/releases/web/$sha/assets ] && echo yes || echo no)"
 missing=$(cd /opt/loyal/releases/web/$sha/assets 2>/dev/null && find . -type f | while read -r f; do [ -f /opt/loyal/assets/web/$f ] || echo "$f"; done | wc -l)
 echo "assets_missing $missing"
 echo "assets_files $(find /opt/loyal/assets/web -type f | wc -l)"
@@ -120,10 +119,10 @@ else
 fi
 
 # 5 web assets
-if [[ $(get assets_missing) == 0 && $(get release_dirs) == 1 && $(get assets_files) -gt 0 ]]; then
+if [[ $(get assets_missing) == 0 && $(get release_assets) == yes && $(get assets_files) -gt 0 ]]; then
   report ok "web assets" "release $(get release_sha | cut -c1-9): 0 files missing from /opt/loyal/assets/web ($(get assets_files) files)"
 else
-  report FAIL "web assets" "missing $(get assets_missing), release dirs $(get release_dirs), files $(get assets_files)"
+  report FAIL "web assets" "release $(get release_sha), its assets $(get release_assets), missing $(get assets_missing), files $(get assets_files)"
 fi
 
 # 6 neon credentials
