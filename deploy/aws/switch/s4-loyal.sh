@@ -179,11 +179,14 @@ handback() {
   echo "$NEW: realtime.askloyal.com certificate removed"
   ci_key_remove || fail "the loyal-ci-production key is still in root's authorized_keys on $NEW"
   echo "$NEW: loyal-ci-production key removed"
-  # The harvest's state goes back only if it changed on $NEW since the handover: then $NEW ran it and holds the newer state.
+  # The harvest's state goes back only if this freeze's handover wrote its mark and the state on $NEW differs from the mark:
+  # then $NEW ran it and holds the newer state. No mark means no state was moved to $NEW in this freeze (or the move was
+  # killed before the mark, when both sides hold identical contents), so $OLD keeps its own.
   local d m
   d=$(harvest_digest new) || fail "$NEW did not read the referral harvest state"
   m=$(new "cat $HARVEST_MARK 2>/dev/null || echo none") || fail "$NEW did not read $HARVEST_MARK"
-  if [[ $d != absent && $d != "$m" ]]; then
+  [[ -n $d && -n $m ]] || fail "$NEW answered empty for the referral harvest state or $HARVEST_MARK"
+  if [[ $m != none && $d != absent && $d != "$m" ]]; then
     harvest_state_move new old || fail "the referral harvest ran on $NEW and its state was not carried back to $OLD"
   else
     echo "$NEW: referral harvest state unchanged since the handover; $OLD keeps its own"

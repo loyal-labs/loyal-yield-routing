@@ -76,7 +76,7 @@ dropin_text() { # dropin_text <unit dir> <family> <binary> <sha>
 
 preflight() {
   [[ $(new uname -m) == aarch64 ]] || die "$NEW is not arm64"
-  local fam bin art r s i drop sums want have units checked=' ' h
+  local fam bin art r s i drop sums want have units checked=' ' h arm
   drop=$(old "cd /etc/systemd/system && grep -H . loyal-*.service.d/40-verified-release.conf") || die "loyal-workers did not list its release drop-ins"
   sums=$(old "cd /etc/systemd/system && sha256sum loyal-*.service.d/40-verified-release.conf") || die "loyal-workers did not hash its release drop-ins"
   units=loyal-web-cron@.service.d
@@ -120,6 +120,9 @@ preflight() {
   h=$ARTIFACTS/$harvest/referral-harvest
   [[ $(cat "$h/COMMIT" 2>/dev/null) == "$harvest" ]] || die "$h/COMMIT does not name $harvest"
   (cd "$h" && shasum -a 256 -c --quiet SHA256SUMS) || die "$h fails its checksums"
+  arm=$(awk '$2 == "arm64/loyal-referral-harvest" { print $1 }' "$h/SHA256SUMS")
+  [[ $arm =~ ^[0-9a-f]{64}$ ]] || die "$h/SHA256SUMS has no arm64/loyal-referral-harvest line"
+  [[ $(shasum -a 256 "$h/arm64/loyal-referral-harvest" | cut -d' ' -f1) == "$arm" ]] || die "$h/arm64/loyal-referral-harvest is not the digest in $h/SHA256SUMS"
   want=$(awk '$2 == "amd64/loyal-referral-harvest" { print $1 }' "$h/SHA256SUMS")
   have=$(old "sha256sum <$HARVEST/$harvest/loyal-referral-harvest" | cut -d' ' -f1)
   [[ $want =~ ^[0-9a-f]{64}$ && $want == "$have" ]] || die "loyal-workers' referral harvest binary is not the amd64 build in $h"
