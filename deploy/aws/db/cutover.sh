@@ -397,15 +397,26 @@ pg_counted() {
 }
 
 source_outside_reverse() {
-  local src dst
-  # The target first, then the source once the reverse slot carried everything the target took.
-  dst=$(pg_counted switch dst) || return 1
+  local src dst over try
+  # The source first: its only writer is the reverse copy, so each of its counts stays at or under
+  # a later read of the target. A backend reports its counters up to 10 s after its commit, so the
+  # target is read again before a higher source count fails. Limit: a writer outside the reverse is
+  # seen only if it wrote more rows to a table than the target adds there between the source read
+  # and the last target read (two 6 s waits plus the read times); the
+  # fence (no source role with LOGIN) and the stopped units are the guard against one, not this.
   src=$(pg_counted freeze src) || return 1
-  printf '%s\n%s\n' "$src" "$dst" | sed -n 's/^writes: /  /p'
-  grep -q 'counters reset' <<<"$src$dst" && { echo "verify: FAIL counters reset on one side; writes cannot be compared"; return 1; }
-  awk '$1 == "DIFF" && $2 == "dst" { d[$3 " " $4] = $5 } $1 == "DIFF" && $2 == "src" { s[$3 " " $4] = $5 }
-    END { for (k in s) if (s[k] > d[k] + 0) { print "verify: FAIL source " k " took " s[k] " writes since freeze, the target " d[k] + 0 " since switch"; bad = 1 } exit bad }' \
-    <(printf '%s\n%s\n' "$src" "$dst")
+  for try in 1 2 3; do
+    dst=$(pg_counted switch dst) || return 1
+    printf '%s\n%s\n' "$src" "$dst" | sed -n 's/^writes: /  /p'
+    grep -q 'counters reset' <<<"$src$dst" && { echo "verify: FAIL counters reset on one side; writes cannot be compared"; return 1; }
+    over=$(awk '$1 == "DIFF" && $2 == "dst" { d[$3 " " $4] = $5 } $1 == "DIFF" && $2 == "src" { s[$3 " " $4] = $5 }
+      END { for (k in s) if (s[k] > d[k] + 0) print "source " k " took " s[k] " writes since freeze, the target " d[k] + 0 " since switch" }' \
+      <(printf '%s\n%s\n' "$src" "$dst")) || { echo "verify: FAIL the write counters could not be compared"; return 1; }
+    [[ -n $over ]] || return 0
+    ((try == 3)) || { sed "s/^/verify: reread $try: /" <<<"$over"; sleep 6; }
+  done
+  sed 's/^/verify: FAIL /' <<<"$over"
+  return 1
 }
 
 cmd_preflight() {
