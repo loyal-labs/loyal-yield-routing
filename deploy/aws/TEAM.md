@@ -26,6 +26,8 @@ The first line reads `loyal-main is LIVE`.
 
 The role does not reach the `main` account, which holds robinX and mnemonic, or the management account. The owner holds the Hetzner project (the retired boxes), the Cloudflare DNS zone, and the 1Password Environments. Ask the owner for the `main@askloyal.com` password.
 
+The user `main@askloyal.com` was created without a password. The first time, whoever holds that mailbox opens the sign-in page, chooses "Forgot password", and sets one. Share it through the team's password manager.
+
 Every action you take with the role is recorded in `loyal-audit` under the shared user. Say in the team channel when you change something on the box.
 
 ## Sign in from your terminal
@@ -36,7 +38,7 @@ You need AWS CLI version 2 (`brew install awscli`) and `python3`.
 
 		aws configure set region us-east-1 --profile loyal-team
 
-2. Sign in. A browser opens. Sign in as `main@askloyal.com` and pick the role `loyal-team-admin`.
+2. Sign in. A browser opens. Sign in as `main@askloyal.com` and pick the role `loyal-team-admin`. A session lasts at most 12 hours, so expect to sign in once a day.
 
 		aws login --profile loyal-team
 
@@ -80,7 +82,7 @@ The workflow finds the box through two settings of the GitHub environment `produ
 
 ### Deploy by hand
 
-Deploy by hand only when the workflow cannot, and say so in the team channel first. The manual path takes one service at a time. Its services are `backyard`, `earn-max`, `retail`, `observer`, `telegram`, `web`, `admin` and `stats`. It deploys a commit that is already on `main` and has passed its checks there.
+Deploy by hand only when the workflow cannot, and say so in the team channel first. The manual path takes one service at a time. Its services are `backyard`, `earn-max`, `retail`, `observer`, `telegram`, `web`, `admin` and `stats`. It deploys a commit that is already on `main` and that CI built and verified for that service. When the head of `main` changed no code of the service, `bun run deploy <service>` refuses with "no green Workers v2 verification". Then deploy the newest commit whose production run built that service. Find it with `gh run list --workflow production.yml` and read the build jobs of each run.
 
 With your AWS sign-in, run it through `team.sh`:
 
@@ -101,7 +103,7 @@ The `web`, `admin` and `stats` services take neither `--migrations-applied` nor 
 
 `LOYAL_DEPLOY_DRY_RUN=1` runs every read and check, then stops before the first change. For `web`, `admin` and `stats`, a dry run builds the binary on your machine and makes no change on the box.
 
-`realtime` has no manual command. See the realtime section of [`../hetzner/README.md`](../hetzner/README.md).
+`realtime` has no `bun run deploy` path; CI deploys it. See the realtime section of [`../hetzner/README.md`](../hetzner/README.md).
 
 ## Read service state on the box
 
