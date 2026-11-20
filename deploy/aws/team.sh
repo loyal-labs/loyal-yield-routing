@@ -7,11 +7,12 @@ export AWS_PAGER='' AWS_EC2_METADATA_DISABLED=true
 
 usage() {
   cat >&2 <<EOF
-usage: $0 <check|status|ssh [command...]|run '<command>'>
+usage: $0 <check|status|ssh [command...]|run '<command>'|deploy <family> [sha] [flags]>
   check    proves your AWS session is in the Loyal account and that the box answers. Run it first.
   status   says whether production runs on loyal-main yet, and lists every Loyal unit there.
   ssh      opens a shell as ubuntu (sudo without a password), or runs one command. Your public key is valid on the box for 60 s per call.
   run      runs one command on the box as root through Session Manager. Needs no ssh key and no open port.
+  deploy   runs scripts/deploy-workers.sh (bun run deploy) against loyal-main as ubuntu with sudo, over one ssh connection.
 Environment: LOYAL_AWS_PROFILE (default loyal-team), LOYAL_SSH_PUBKEY (default ~/.ssh/id_ed25519.pub).
 EOF
   exit 2
@@ -97,9 +98,12 @@ fi
   done'
 }
 
-cmd_ssh() {
-  local pub=${LOYAL_SSH_PUBKEY:-$HOME/.ssh/id_ed25519.pub} key
-  [[ -f $pub ]] || die "no public key at $pub. Create one with: ssh-keygen -t ed25519   (or set LOYAL_SSH_PUBKEY)"
+PUB=${LOYAL_SSH_PUBKEY:-$HOME/.ssh/id_ed25519.pub}
+
+# Pins the box's host key and lets $PUB log in as ubuntu for the next 60 s.
+admit() {
+  local key
+  [[ -f $PUB ]] || die "no public key at $PUB. Create one with: ssh-keygen -t ed25519   (or set LOYAL_SSH_PUBKEY)"
   session
   instance
   key=$(on_box 'cat /etc/ssh/ssh_host_ed25519_key.pub')
@@ -107,8 +111,50 @@ cmd_ssh() {
   mkdir -p "$HOME/.ssh"
   printf '%s %s\n' "$ADDRESS" "$(cut -d' ' -f1,2 <<<"$key")" >"$KNOWN_HOSTS"
   aws ec2-instance-connect send-ssh-public-key --instance-id "$INSTANCE" --instance-os-user ubuntu \
-    --ssh-public-key "file://$pub" --query Success --output text >/dev/null || die "the box refused the public key $pub"
-  exec ssh -i "${pub%.pub}" -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$KNOWN_HOSTS" "ubuntu@$ADDRESS" "$@"
+    --ssh-public-key "file://$PUB" --query Success --output text >/dev/null || die "the box refused the public key $PUB"
+}
+
+cmd_ssh() {
+  admit
+  exec ssh -i "${PUB%.pub}" -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$KNOWN_HOSTS" "ubuntu@$ADDRESS" "$@"
+}
+
+# A deploy makes ssh and scp calls for minutes, past the 60 s the key is valid, so they share one connection opened
+# inside that window. Every other host keeps the user's own ssh config.
+cmd_deploy() {
+  local dir real_ssh real_scp status=0
+  admit
+  dir=$(mktemp -d "${TMPDIR:-/tmp}/loyal-deploy-ssh.XXXXXX")
+  real_ssh=$(command -v ssh) real_scp=$(command -v scp)
+  cat >"$dir/config" <<EOF
+Host $BOX
+  HostName $ADDRESS
+  User ubuntu
+  IdentityFile ${PUB%.pub}
+  IdentitiesOnly yes
+  UserKnownHostsFile $KNOWN_HOSTS
+  StrictHostKeyChecking yes
+  ControlMaster auto
+  ControlPath $dir/control
+  ControlPersist yes
+  ServerAliveInterval 15
+  ServerAliveCountMax 3
+Match all
+  Include ~/.ssh/config
+EOF
+  mkdir "$dir/bin"
+  printf '#!/bin/sh\nexec %q -F %q "$@"\n' "$real_ssh" "$dir/config" >"$dir/bin/ssh"
+  printf '#!/bin/sh\nexec %q -F %q "$@"\n' "$real_scp" "$dir/config" >"$dir/bin/scp"
+  chmod 755 "$dir/bin/ssh" "$dir/bin/scp"
+  if "$dir/bin/ssh" -fN "$BOX"; then
+    LOYAL_WORKERS_SSH=$BOX PATH="$dir/bin:$PATH" bash "$HERE/../../scripts/deploy-workers.sh" "$@" || status=$?
+    "$dir/bin/ssh" -O exit "$BOX" 2>/dev/null || true
+  else
+    echo "team.sh: could not open the ssh connection to $BOX" >&2
+    status=1
+  fi
+  rm -rf "$dir"
+  return "$status"
 }
 
 cmd_run() {
@@ -120,6 +166,6 @@ cmd_run() {
 
 case ${1:-} in
   check | status) [[ $# == 1 ]] || usage; "cmd_$1" ;;
-  ssh | run) c=$1; shift; "cmd_$c" "$@" ;;
+  ssh | run | deploy) c=$1; shift; "cmd_$c" "$@" ;;
   *) usage ;;
 esac

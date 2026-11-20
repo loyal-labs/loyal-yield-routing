@@ -108,7 +108,9 @@ Each unit runs its release through
 `/etc/systemd/system/<unit>.d/40-verified-release.conf`.
 
 `scripts/deploy-workers.sh` reaches the host through the ssh alias in
-`LOYAL_WORKERS_SSH` (the ssh alias of the live box, `loyal-main` after the switch). It
+`LOYAL_WORKERS_SSH`, default `BOX_SSH` of `deploy/aws/boxes/loyal-main.conf`
+(`loyal-main`). A login other than root runs every change under `sudo -n`;
+`deploy/aws/team.sh deploy` is the route with only the team's AWS sign-in. It
 refuses a commit that is not on origin/main, and it refuses when
 `migrations/` differs between the running release and the target: apply
 them first, then rerun with `--migrations-applied`. It has two steps, the
