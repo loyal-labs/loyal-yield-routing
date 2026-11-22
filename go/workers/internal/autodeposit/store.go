@@ -302,6 +302,14 @@ RETURNING id`, target.id, event.EventID, event.TxnSignature, amountRaw,
 	if err != nil {
 		return false, fmt.Errorf("insert autodeposit surplus lot for event %d: %w", event.EventID, err)
 	}
+	// A refill from the wallet floor starts a new wait even when older lots keep a slot open.
+	if surplus, ok := InitialSurplusAmount(event.AmountRaw, event.WalletBalanceFloorRaw); ok && amountRaw == surplus {
+		if _, err := tx.Exec(ctx, `
+UPDATE loyal_yield.balance_sweep_scheduled_slots SET idle_blocked_since = NULL
+WHERE target_id = $1 AND status IN ('scheduled', 'requested') AND idle_blocked_since <= $2`, target.id, event.ObservedAt); err != nil {
+			return false, fmt.Errorf("clear prior custody wait for target %d: %w", target.id, err)
+		}
+	}
 	slotID, err := openScheduledSlot(ctx, tx, target, eligibleAfter)
 	if err != nil {
 		return false, err
