@@ -535,31 +535,39 @@ const backyardMoneyActions = `action NOT IN ('HOLD', 'REPORT_NAV', 'HOLD_MANUAL_
 
 func (s backyardSource) moves(ctx context.Context) ([]backyardMove, error) {
 	return backyardQuery(ctx, s, `SELECT action, status, strategy_key, transaction_signature, created_at,
-       -- A borrow's decision amount is 0 (its size comes from the leverage
-       -- target); the amount is what landed in the vault's own accounts.
-       CASE WHEN expected_effects #>> '{expectedEffects,kind}' = 'kamino-borrow'
-         THEN (SELECT sum((a->>'afterRaw')::numeric - (a->>'beforeRaw')::numeric)::text
-               FROM jsonb_array_elements(expected_effects #> '{expectedEffects,accounts}') a
-               WHERE a->>'authority' = $2
-                 AND (a->>'afterRaw')::numeric > (a->>'beforeRaw')::numeric)
-         ELSE expected_effects #>> '{decision,amountRaw}'
-       END,
        COALESCE(recovery_reason, expected_effects #>> '{decision,reason}'),
-       expected_effects #>> '{expectedEffects,accounts,0,mint}'
+       expected_effects -> 'expectedEffects'
      FROM loyal_yield.multiply_operations
      WHERE route_key = $1 AND transaction_signature IS NOT NULL AND `+backyardMoneyActions+`
      ORDER BY created_at DESC LIMIT 30`,
 		func(rows pgx.Rows) (backyardMove, error) {
 			var m backyardMove
 			var created time.Time
-			var mint *string
-			err := rows.Scan(&m.Action, &m.Status, &m.StrategyKey, &m.Signature, &created, &m.AmountRaw, &m.Reason, &mint)
+			var effects []byte
+			err := rows.Scan(&m.Action, &m.Status, &m.StrategyKey, &m.Signature, &created, &m.Reason, &effects)
 			m.At = backyardISO(created)
+			var mint *string
+			m.AmountRaw, mint = backyardMoveInput(effects)
 			if mint != nil {
 				m.Token, m.Decimals = backyardToken(*mint)
 			}
 			return m, err
-		}, backyardRouteKey, backyardSquads)
+		}, backyardRouteKey)
+}
+
+func backyardMoveInput(raw []byte) (*string, *string) {
+	var effects backyard.ExpectedEffects
+	// Atomic steps record net custody bounds, not a single token's input.
+	if json.Unmarshal(raw, &effects) != nil || effects.Kind == "atomic-step" {
+		return nil, nil
+	}
+	for _, account := range effects.Accounts {
+		if account.MinimumAfterRaw == nil && account.BeforeRaw > account.AfterRaw && account.Mint != "" {
+			amount := strconv.FormatUint(account.BeforeRaw-account.AfterRaw, 10)
+			return &amount, &account.Mint
+		}
+	}
+	return nil, nil
 }
 
 // Mint decimals are immutable. Unknown source mints must never assume six.
