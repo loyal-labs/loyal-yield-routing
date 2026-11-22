@@ -313,15 +313,19 @@ SELECT
        ON slot.target_id = target.id AND slot.status IN ('scheduled', 'requested')
      JOIN loyal_yield.balance_sweep_wallet_balances_current AS balance
        ON balance.target_id = target.id AND balance.mint = target.token_mint
+     CROSS JOIN LATERAL (VALUES (target.vault_pubkey, target.vault_token_ata, '', NULL::bigint))
+       AS custody(vault_pubkey, vault_ata, own_claim, since_attempt_id)
      WHERE target.token_mint = $1 AND target.desired_active AND target.chain_status = 'active'
-       AND slot.idle_blocked_since IS NOT NULL
+       -- Legacy slots can retain a dust deferral through an unfunded period.
+       AND slot.idle_blocked_since IS NOT NULL AND slot.last_error = $2
+       AND (`+vaultCustodyHeldElsewhereSQL+`)
        AND EXISTS (SELECT 1 FROM loyal_yield.balance_sweep_surplus_lots AS lot
                    WHERE lot.scheduled_slot_id = slot.id AND lot.status = 'open' AND lot.remaining_amount_raw > 0)
        AND target.wallet_balance_floor_raw IS NOT NULL
        AND balance.amount_raw > target.wallet_balance_floor_raw
        AND NOT EXISTS (SELECT 1 FROM loyal_yield.balance_sweep_lot_claims AS owned
                        WHERE owned.target_id = target.id AND owned.status = 'selected'))
-  ))::float8, 0)`, USDCMint).Scan(&inflight, &oldest)
+  ))::float8, 0)`, USDCMint, ownedCustodyDeferral).Scan(&inflight, &oldest)
 	if err != nil {
 		return w.failed("autodeposit_progress_check_failed", err)
 	}

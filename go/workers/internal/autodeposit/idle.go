@@ -11,25 +11,28 @@ import (
 
 const ownedCustodyDeferral = "another family holds open custody on the vault USDC account"
 
-func (s *Store) VaultCustodyHeldElsewhere(ctx context.Context, vaultPubkey, vaultUsdcAta, ownClaimToken string, sinceAttemptID int64) (bool, error) {
-	var held bool
-	err := s.pool.QueryRow(ctx, `
-SELECT EXISTS (
+const vaultCustodyHeldElsewhereSQL = `EXISTS (
     SELECT 1 FROM loyal_yield.rebalance_decisions AS decision
     JOIN loyal_yield.managed_vaults AS vault ON vault.id = decision.vault_id
-    WHERE vault.vault_pubkey = $1
+    WHERE vault.vault_pubkey = custody.vault_pubkey
       AND decision.movement_route = 'cross_mint_jupiter'
       AND ((decision.status = 'confirming' AND decision.terminal_outcome IS NULL)
-        OR (decision.terminal_outcome IN ('closed_by_user', 'manual_intervention') AND decision.custody_account = $2)
+        OR (decision.terminal_outcome IN ('closed_by_user', 'manual_intervention') AND decision.custody_account = custody.vault_ata)
         OR decision.created_at >= (
             SELECT attempt.created_at FROM loyal_yield.balance_sweep_transaction_attempts AS attempt
-            WHERE attempt.id = $4)))
+            WHERE attempt.id = custody.since_attempt_id)))
 OR EXISTS (
     SELECT 1 FROM loyal_yield.balance_sweep_lot_claims AS claim
     JOIN loyal_yield.balance_sweep_targets AS target ON target.id = claim.target_id
-    WHERE target.vault_pubkey = $1
+    WHERE target.vault_pubkey = custody.vault_pubkey
       AND claim.status = 'selected'
-      AND claim.claim_token <> $3)`, vaultPubkey, vaultUsdcAta, ownClaimToken, sinceAttemptID).Scan(&held)
+      AND claim.claim_token <> custody.own_claim)`
+
+func (s *Store) VaultCustodyHeldElsewhere(ctx context.Context, vaultPubkey, vaultUsdcAta, ownClaimToken string, sinceAttemptID int64) (bool, error) {
+	var held bool
+	err := s.pool.QueryRow(ctx, `SELECT `+vaultCustodyHeldElsewhereSQL+`
+FROM (VALUES ($1::text, $2::text, $3::text, $4::bigint)) AS custody(vault_pubkey, vault_ata, own_claim, since_attempt_id)`,
+		vaultPubkey, vaultUsdcAta, ownClaimToken, sinceAttemptID).Scan(&held)
 	if err != nil {
 		return false, fmt.Errorf("load vault custody owners: %w", err)
 	}
@@ -45,7 +48,8 @@ func (s *Store) DeferScheduledSlot(ctx context.Context, targetID, scheduledSlotI
 UPDATE loyal_yield.balance_sweep_scheduled_slots AS slot
 SET eligible_after = now() + ($4 * interval '1 second'),
     last_error = $5,
-    idle_blocked_since = CASE WHEN $6 THEN COALESCE(slot.idle_blocked_since, now()) ELSE slot.idle_blocked_since END,
+    idle_blocked_since = CASE WHEN $6 AND slot.last_error = $5 THEN COALESCE(slot.idle_blocked_since, now())
+                              WHEN $6 THEN now() END,
     updated_at = now()
 WHERE slot.id = $1
   AND slot.target_id = $2
