@@ -46,6 +46,9 @@ var earnEvmDepositFamily = earnFamily{
 const (
 	evmDepositPath       = "/api/funding/evm-deposit-address"
 	evmDepositSignWindow = 10 * time.Minute
+
+	// Privy rejects Ethereum USDC's contract address when creating an account.
+	privyCreateRouteSet = bridge.Legacy13
 )
 
 type EvmDepositKind string
@@ -153,8 +156,7 @@ var privyLegacy13Sources = []PrivyDepositAsset{
 	{"usdc", "bsc"}, {"usdt", "bsc"},
 }
 
-// privySources names tokens by contract address, since Privy refuses its own
-// aliases for some (chain, asset) pairs, such as usdc on Tempo.
+// The wider historical route sets used token contract addresses.
 func privySources(set bridge.RouteSet) []PrivyDepositAsset {
 	if set == bridge.Legacy13 {
 		return privyLegacy13Sources
@@ -193,7 +195,7 @@ func (h earnRoutes) privyDepositRequest(walletID string, requestExpiryMs int64) 
 		URL:     privyDepositRoutesURL(walletID),
 		Body: PrivyDepositBody{
 			Type:        "inline_route",
-			Source:      PrivyDepositSource{Mode: "include", Values: privySources(bridge.Current)},
+			Source:      PrivyDepositSource{Mode: "include", Values: privySources(privyCreateRouteSet)},
 			Destination: privyDepositDestination,
 		},
 		Headers: PrivyDepositHeaders{AppID: h.Privy.AppID, RequestExpiry: strconv.FormatInt(requestExpiryMs, 10)},
@@ -402,7 +404,7 @@ func (h earnRoutes) evmDepositAddress(ctx context.Context, in *sessionRequest) (
 	}
 	expiry := time.Now().Add(evmDepositSignWindow).UnixMilli()
 	toSign := h.privyDepositRequest(walletID, expiry)
-	out, err := h.evmDepositResponse(ctx, wallet, PrivyAutobridge, nil, bridge.Current)
+	out, err := h.evmDepositResponse(ctx, wallet, PrivyAutobridge, nil, privyCreateRouteSet)
 	if err != nil {
 		return nil, err
 	}
@@ -517,7 +519,7 @@ func (h earnRoutes) createAutobridgeRoute(ctx context.Context, wallet solana.Pub
 	if !ok {
 		return nil, earnError(http.StatusBadGateway, "evm_deposit_unavailable", "Privy returned no EVM deposit address.")
 	}
-	return h.storeEvmDepositRoute(ctx, wallet, userID, evmDepositRoute{Kind: PrivyAutobridge, Address: account.DepositAddress, Set: bridge.Current})
+	return h.storeEvmDepositRoute(ctx, wallet, userID, evmDepositRoute{Kind: PrivyAutobridge, Address: account.DepositAddress, Set: privyCreateRouteSet})
 }
 
 // adoptPrivyDepositAccount records an account Privy already holds for the

@@ -10,10 +10,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -265,6 +267,14 @@ func (f *fakePrivy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		var body PrivyDepositBody
 		json.NewDecoder(r.Body).Decode(&body)
+		for _, source := range body.Source.Values {
+			switch source.Asset {
+			case "usdc", "usdt", "eth":
+			default:
+				http.Error(w, "unsupported source asset: "+source.Asset, http.StatusBadRequest)
+				return
+			}
+		}
 		f.source.Store(body.Source)
 		f.created.Store(true)
 		json.NewEncoder(w).Encode(map[string]any{"deposit_accounts": []map[string]any{{"deposit_address": f.address, "wallet_id": fakePrivyWalletID, "source": body.Source}}})
@@ -319,18 +329,80 @@ func newEvmDepositPoster(t *testing.T, pool *pgxpool.Pool) evmDepositPoster {
 	return evmDepositPoster{router: router, token: token, privy: privy}
 }
 
-func (p evmDepositPoster) post(ctx context.Context, signature string) (int, string) {
-	body := fmt.Sprintf(`{"signature":%q,"requestExpiry":%d}`, signature, time.Now().Add(time.Hour).UnixMilli())
-	req := httptest.NewRequestWithContext(ctx, http.MethodPost, evmDepositPath, strings.NewReader(body))
+func (p evmDepositPoster) request(ctx context.Context, method, body string) *httptest.ResponseRecorder {
+	req := httptest.NewRequestWithContext(ctx, method, evmDepositPath, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+p.token)
 	res := httptest.NewRecorder()
 	p.router.ServeHTTP(res, req)
+	return res
+}
+
+func (p evmDepositPoster) post(ctx context.Context, signature string) (int, string) {
+	body := fmt.Sprintf(`{"signature":%q,"requestExpiry":%d}`, signature, time.Now().Add(time.Hour).UnixMilli())
+	res := p.request(ctx, http.MethodPost, body)
 	var out struct {
 		Address string `json:"address"`
 	}
 	json.Unmarshal(res.Body.Bytes(), &out)
 	return res.Code, out.Address
+}
+
+func TestEvmDepositEmbeddedCreateUsesAliasRoute(t *testing.T) {
+	pool := evmDepositTestDB(t)
+	p := newEvmDepositPoster(t, pool)
+	request := func(method, body string) EvmDepositAddressResponse {
+		t.Helper()
+		res := p.request(t.Context(), method, body)
+		if res.Code != http.StatusOK {
+			t.Fatalf("%s = %d %s", method, res.Code, res.Body.String())
+		}
+		var out EvmDepositAddressResponse
+		if err := json.Unmarshal(res.Body.Bytes(), &out); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	preview := request(http.MethodGet, "")
+	if preview.Address != nil || preview.ToSign == nil || preview.RequestExpiry == nil {
+		t.Fatal("expected a fresh embedded-wallet authorization request")
+	}
+	created := request(http.MethodPost, fmt.Sprintf(`{"signature":"sig","requestExpiry":%d}`, *preview.RequestExpiry))
+	source := preview.ToSign.Body.Source
+	if source.Mode != "include" || !slices.Equal(source.Values, privyLegacy13Sources) {
+		t.Fatalf("Privy authorization offers the wrong sources: %+v", source)
+	}
+	sent := p.privy.source.Load().(PrivyDepositSource)
+	if sent.Mode != source.Mode || !slices.Equal(sent.Values, source.Values) {
+		t.Fatalf("Privy received different sources from the signed preview: %+v", sent)
+	}
+	stored := request(http.MethodGet, "")
+	want := map[PrivyDepositAsset]bool{}
+	for _, asset := range source.Values {
+		if asset.Asset != "eth" {
+			want[asset] = true
+		}
+	}
+	for _, out := range []EvmDepositAddressResponse{preview, created, stored} {
+		offered := map[PrivyDepositAsset]bool{}
+		for _, n := range out.Networks {
+			if n.Route == EVMRoute {
+				for _, token := range n.Tokens {
+					offered[PrivyDepositAsset{Asset: string(token.Asset), Chain: string(n.Chain)}] = true
+				}
+			}
+		}
+		if out.Kind != PrivyAutobridge || !maps.Equal(offered, want) {
+			t.Fatalf("%s picker offers %v; want %v", out.Kind, offered, want)
+		}
+	}
+	if created.Address == nil || stored.Address == nil || !strings.EqualFold(*created.Address, p.privy.address) || *created.Address != *stored.Address {
+		t.Fatal("the created and stored deposit addresses must match the provider's address")
+	}
+	var set string
+	if err := pool.QueryRow(t.Context(), `SELECT route_set FROM loyal_yield.evm_deposit_routes WHERE evm_address = $1`, p.privy.address).Scan(&set); err != nil || set != string(bridge.Legacy13) {
+		t.Fatalf("stored route set = %q, error = %v", set, err)
+	}
 }
 
 func TestEvmDepositConcurrentPostsMakeOnePrivyCreate(t *testing.T) {
@@ -459,5 +531,8 @@ func TestEvmDepositGetServesEvmWhenTronRowReadFails(t *testing.T) {
 	}
 	if res.Code != http.StatusOK || evm == nil || evm.Address == nil || tron == nil || tron.Address != nil {
 		t.Fatalf("GET with an unreadable Tron table = %d %s; want 200 with EVM entries and a Tron entry without an address", res.Code, res.Body.String())
+	}
+	if got.Kind != RelaySigned || !slices.Contains(got.Chains, bridge.Tempo) || !slices.Contains(got.Assets, bridge.USDS) {
+		t.Fatalf("Relay wallet lost its wider route set: %s on %v for %v", got.Kind, got.Chains, got.Assets)
 	}
 }
