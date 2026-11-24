@@ -94,11 +94,8 @@ const WORKSPACE_PAGES: WorkspacePage[] = [
   "wallet",
 ];
 
-function readStoredPage(): WorkspacePage | null {
-  if (typeof window === "undefined") {
-    return null;
-  }
-  const stored = localStorage.getItem(PAGE_STORAGE_KEY);
+function readStoredPage(key: string): WorkspacePage | null {
+  const stored = localStorage.getItem(key);
   if (stored === "crypto" || stored === "stables") return "assets";
   return WORKSPACE_PAGES.find((page) => page === stored) ?? null;
 }
@@ -136,31 +133,30 @@ export function WorkspaceFaceliftShell() {
   const [workspacePage, setActivePage] =
     useState<Exclude<WorkspacePage, "invite">>("earn");
   const { isHydrated, isSignedIn } = useAuthCapability();
-  const { launched, launchChecked } = useAuthSession();
+  const { launched, launchChecked, user } = useAuthSession();
+  const isNarrowViewport = useIsNarrowViewport();
+  const pageStorageKey = `${PAGE_STORAGE_KEY}:${user?.subjectAddress ?? "guest"}`;
+  const [restoredPageKey, setRestoredPageKey] = useState<string | null>(null);
   const activePage = inviteRoute && isSignedIn && launched ? "invite" : workspacePage;
   const { open: openSignIn } = useSignInModal();
-  const [storedPage] = useState(readStoredPage);
-  const hasRestoredPageRef = useRef(false);
   useEffect(() => {
-    if (!isHydrated || hasRestoredPageRef.current) {
-      return;
-    }
-    if (storedPage === "invite" && isSignedIn && !launched) {
-      return;
-    }
-    hasRestoredPageRef.current = true;
-    if (storedPage === null || storedPage === "earn") {
-      return;
-    }
-    if (!isSignedIn && storedPage !== "earnmax") {
-      return;
-    }
+    if (!isHydrated || restoredPageKey === pageStorageKey) return;
+    const storedPage =
+      readStoredPage(pageStorageKey) ?? readStoredPage(PAGE_STORAGE_KEY);
+    let page: Exclude<WorkspacePage, "invite"> =
+      isSignedIn && isNarrowViewport ? "wallet" : "earn";
     if (storedPage === "invite") {
-      if (!inviteRoute) router.replace("/app/invite");
-    } else {
-      setActivePage(storedPage);
+      if (isSignedIn && !launchChecked) return;
+      if (launched && !inviteRoute) router.replace("/app/invite");
+    } else if (storedPage && (isSignedIn || storedPage === "earnmax")) {
+      page = storedPage;
     }
-  }, [inviteRoute, isHydrated, isSignedIn, launched, router, storedPage]);
+    setActivePage(page === "wallet" && !isNarrowViewport ? "earn" : page);
+    setRestoredPageKey(pageStorageKey);
+  }, [
+    inviteRoute, isHydrated, isNarrowViewport, isSignedIn, launchChecked,
+    launched, pageStorageKey, restoredPageKey, router,
+  ]);
   useEffect(() => {
     if (
       inviteRoute && isHydrated &&
@@ -170,19 +166,11 @@ export function WorkspaceFaceliftShell() {
     }
   }, [inviteRoute, isHydrated, isSignedIn, launchChecked, launched, router]);
   useEffect(() => {
-    localStorage.setItem(PAGE_STORAGE_KEY, workspacePage);
-  }, [workspacePage]);
-  useEffect(() => {
-    if (
-      isHydrated &&
-      !isSignedIn &&
-      activePage !== "earn" &&
-      activePage !== "earnmax"
-    ) {
-      setActivePage("earn");
-    }
-  }, [activePage, isHydrated, isSignedIn]);
-  const isNarrowViewport = useIsNarrowViewport();
+    if (restoredPageKey !== pageStorageKey) return;
+    localStorage.setItem(pageStorageKey, workspacePage);
+    // Older versions shared one page preference across guests and wallets.
+    localStorage.removeItem(PAGE_STORAGE_KEY);
+  }, [pageStorageKey, restoredPageKey, workspacePage]);
   useEffect(() => {
     if (!isNarrowViewport && activePage === "wallet") {
       setActivePage("earn");
@@ -388,6 +376,10 @@ export function WorkspaceFaceliftShell() {
     activePage === "earn" ||
     activePage === "activity" ||
     (EARN_MAX_VISIBLE && activePage === "earnmax");
+  const isWorkspaceReady =
+    isHydrated &&
+    restoredPageKey === pageStorageKey &&
+    (!inviteRoute || !isSignedIn || launchChecked);
   const contentColumnRef = useRef<HTMLDivElement>(null);
   const bannerSlotRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -405,9 +397,9 @@ export function WorkspaceFaceliftShell() {
       observer.disconnect();
       column.style.removeProperty("--earn-banner-room");
     };
-  }, [showEarnBanners, isHydrated]);
+  }, [showEarnBanners, isWorkspaceReady]);
 
-  if (!isHydrated || (inviteRoute && isSignedIn && !launchChecked)) {
+  if (!isWorkspaceReady) {
     return <WorkspaceSkeleton />;
   }
 

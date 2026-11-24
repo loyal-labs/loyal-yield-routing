@@ -33,6 +33,7 @@
   --color-border: var(--border);
   --color-destructive: var(--destructive);
   --color-positive: var(--positive);
+  --color-chart-positive: var(--chart-positive);
   --color-tertiary: var(--tertiary);
   --color-segmented: var(--segmented);
   --color-accent-selected: var(--accent-selected);
@@ -76,6 +77,7 @@
   --accent-foreground: oklch(0 0 0);
   --destructive: oklch(0.641 0.229 25.29); /* Text/Negative #F9363C */
   --positive: oklch(0.683 0.173 143.395); /* Text/Positive #4BB34B */
+  --chart-positive: oklch(0.73032 0.19438 147.444); /* Background/Positive #34C759 */
   --tertiary: oklch(0.751 0.009 301.305); /* Text|Icon/Tertiary #AFADB3 */
   --segmented: oklch(1 0 0); /* Other/Segmented Control #FFFFFF */
   --border: oklch(0 0 0 / 12%); /* Separator/Non-opaque */
@@ -115,6 +117,7 @@
   --accent-foreground: oklch(0.915 0.005 258.325);
   --destructive: oklch(0.676 0.212 24.811); /* Text/Negative #FF5050 */
   --positive: oklch(0.756 0.208 146.984); /* Text/Positive #30D158 */
+  --chart-positive: var(--positive);
   --tertiary: oklch(0.494 0.012 305.226); /* Text|Icon/Tertiary #636067 */
   --segmented: oklch(0.41 0.012 298.916); /* Other/Segmented Control #4B4950 */
   --border: oklch(1 0 0 / 12%); /* Separator/Non-opaque */
@@ -1996,6 +1999,23 @@
 /* The bar is just a flex container with padding for the pill
    to sit inside. Tabs sit on z-index: 1, the pill on z-index: 0,
    so labels read above the pill background. */
+@keyframes earn-chart-bar-rise {
+  from { transform: scaleY(0); }
+}
+@keyframes earn-apy-line-reveal {
+  from { clip-path: inset(0 100% 0 0); }
+  to { clip-path: inset(0); }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .earn-chart-bar {
+    transform-origin: bottom;
+    animation: earn-chart-bar-rise 0.55s cubic-bezier(0.2, 0, 0, 1) backwards;
+  }
+  .earn-apy-line {
+    animation: earn-apy-line-reveal 0.7s cubic-bezier(0.2, 0, 0, 1) backwards;
+  }
+}
+
 .t-tabs {
   position: relative;
   display: inline-flex;
