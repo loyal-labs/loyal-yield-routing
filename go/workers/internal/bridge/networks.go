@@ -106,7 +106,7 @@ const (
 // before it.
 var RouteSets = []RouteSet{Legacy13, StablesV1, StablesV2}
 
-// Current is the set offered to Relay-signed wallets.
+// Current is the set new deposit accounts are created with and Relay bridges.
 var Current = RouteSets[len(RouteSets)-1]
 
 func ParseRouteSet(s string) (RouteSet, bool) {
@@ -185,8 +185,8 @@ func (n Network) Token(a Asset) (Token, bool) {
 	return Token{}, false
 }
 
-// Networks holds the stablecoins supported across deposit route sets.
-// USDT0 is listed as usdt except on
+// Networks holds the stablecoins that both Privy auto-bridge and a direct
+// Relay deposit turn into USDC on Solana. USDT0 is listed as usdt except on
 // Optimism, where usdt is the bridged legacy USDT and USDT0 is usdt0, and
 // Tempo's usdce is Stargate's bridged USDC. BNB Chain's USDC and USDT and
 // every DAI, USDe, USDS, FDUSD, RLUSD and USD1 use 18 decimals. A token is
