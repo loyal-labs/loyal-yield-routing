@@ -399,7 +399,7 @@ export function EarnPositionPane({
           earnData={data}
           onAction={onOpenChart}
           onSelectTab={onSelectChartTab}
-          sectionClassName="hidden h-[406px] w-full shrink-0 flex-col overflow-clip rounded-3xl bg-card max-[795px]:flex"
+          sectionClassName="hidden h-[400px] w-full shrink-0 flex-col overflow-clip rounded-3xl bg-card max-[795px]:flex"
           selectedTab={selectedChartTab}
         />
 

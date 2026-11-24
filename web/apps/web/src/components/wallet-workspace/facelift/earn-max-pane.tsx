@@ -775,7 +775,7 @@ function EarnMaxMainPane({
         earnData={earnData}
         onAction={onOpenChart}
         onSelectTab={onSelectChartTab}
-        sectionClassName="hidden h-[406px] w-full shrink-0 flex-col overflow-clip rounded-3xl bg-card max-[795px]:flex"
+        sectionClassName="hidden h-[400px] w-full shrink-0 flex-col overflow-clip rounded-3xl bg-card max-[795px]:flex"
         selectedTab={selectedChartTab}
       />
       <EarnMaxActivityCard
@@ -871,16 +871,13 @@ export function EarnMaxWorkspace({
   });
   const chartCustom: ChartCardCustomContent = {
     defaultTab: isSignedIn && !isVirgin ? "Earned" : "APY",
-    loggedOutTooltip:
-      "Historical APY of the Earn MAX strategy over the last 30 days.",
     renderBody: (activeTab) =>
       activeTab === "Earned" ? (
         <EarnedBarsChart
           bars={buildEarnMaxEarnedBars(view)}
           isLoading={view.isLoading}
           isStale={false}
-          isUnavailable={!view.isLoading && !view.earnings}
-          lifetimeEarnedUsd={view.earnings?.performanceUsd ?? 0}
+          isUnavailable={!isVirgin && !view.isLoading && !view.earnings}
           metric="performance"
           onRetry={() => void actions.refresh()}
         />
@@ -889,8 +886,7 @@ export function EarnMaxWorkspace({
       ) : (
         <HistoricalApyChart
           apyDataRevealed
-          axisTickCount={2}
-          primaryLabel="Earn MAX"
+          currentApyBps={publicApy?.currentApyBps ?? publicApy?.apyBps}
           primarySamples={buildEarnMaxApySamples(publicApy)}
           rangeId="30D"
         />

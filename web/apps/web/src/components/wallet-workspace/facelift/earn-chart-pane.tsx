@@ -10,91 +10,68 @@ import {
 } from "react";
 
 import {
-  deriveMainUsdcReserveForecastApyBps,
   ForecastChart,
   HistoricalApyChart,
 } from "@/components/wallet-sidebar/earn-detail-view";
 import { useBalanceVisibility } from "@/components/wallet-workspace/facelift/balance-visibility";
 import { readCssDurationMs } from "@/components/wallet-workspace/facelift/css-duration";
 import { EarnedChart } from "@/components/wallet-workspace/facelift/earned-chart";
-import { InfoTooltip } from "@/components/wallet-workspace/facelift/info-tooltip";
 import { SlidingTabs } from "@/components/wallet-workspace/facelift/sliding-tabs";
 import { ThemedIcon } from "@/components/wallet-workspace/facelift/themed-icon";
 import { useEarnForecastApy } from "@/hooks/use-earn-forecast-apy";
 import type { EarnPositionData } from "@/components/wallet-workspace/facelift/use-earn-position-data";
-import { useIsNarrowViewport } from "@/components/wallet-workspace/facelift/use-is-narrow-viewport";
-import { useEarnForecastApyHistory } from "@/hooks/use-earn-forecast-apy-history";
-import type { EarnForecastApy } from "@/lib/kamino/earn-forecast.shared";
 
 const ASSET_BASE = "/wallet-workspace/facelift";
-const CHART_TABS = ["Forecast", "APY", "Earned"] as const;
-const FORECAST_PRINCIPAL_USD = 6000;
+const CHART_TABS = ["APY", "Earned", "Forecast"] as const;
 
 export type ChartTab = (typeof CHART_TABS)[number];
 
 export type ChartCardCustomContent = {
   defaultTab: ChartTab;
-  loggedOutTooltip?: string;
   renderBody: (activeTab: ChartTab, isExpanded: boolean) => ReactNode;
   tabs: readonly ChartTab[];
 };
 
 function ChartBody({
   activeTab,
-  apy,
   earnData,
-  isApyLoaded,
-  isExpanded = false,
-  mainUsdcReserveApyBps,
+  isLoggedOut,
 }: {
   activeTab: ChartTab;
-  apy: EarnForecastApy | undefined;
   earnData: EarnPositionData;
-  isApyLoaded: boolean;
-  isExpanded?: boolean;
-  mainUsdcReserveApyBps: number;
+  isLoggedOut: boolean;
 }) {
   const { isBalanceHidden } = useBalanceVisibility();
-  const isNarrowViewport = useIsNarrowViewport();
-  const forecastPrincipal =
-    earnData.hasPosition && earnData.earnBalanceUsd > 0
-      ? earnData.earnBalanceUsd
-      : FORECAST_PRINCIPAL_USD;
+  const { apy, isLoaded } = useEarnForecastApy();
+  if (activeTab === "Earned") return <EarnedChart data={earnData} />;
+  if (activeTab === "APY") return <HistoricalApyChart apyDataRevealed={isLoaded} rangeId="30D" />;
+
+  if (!isLoggedOut && !earnData.hasResolvedPosition && !earnData.hasPosition) {
+    return <div aria-busy="true" className="flex-1" />;
+  }
+  if (!earnData.hasPosition || earnData.earnBalanceUsd <= 0) {
+    return (
+      <p className="m-auto text-center text-muted-foreground">
+        {isLoggedOut
+          ? "Connect your wallet to forecast earnings on your Earn balance."
+          : "Add funds to Earn to see your forecast."}
+      </p>
+    );
+  }
+  if (!apy || apy.availability === "unavailable") {
+    return (
+      <div className="m-auto text-muted-foreground" role="status">
+        {isLoaded ? "APY forecast unavailable" : null}
+      </div>
+    );
+  }
   return (
-    <div className="flex min-h-0 w-full flex-1 flex-col px-6 pt-2 pb-6">
-      {activeTab === "Earned" ? (
-        <EarnedChart data={earnData} />
-      ) : activeTab === "APY" ? (
-        <HistoricalApyChart
-          apyDataRevealed={isApyLoaded}
-          axisTickCount={isExpanded && !isNarrowViewport ? 8 : 2}
-          rangeId="30D"
-        />
-      ) : !apy || apy.availability === "unavailable" ? (
-        <div
-          className="flex min-h-0 flex-1 items-center justify-center text-muted-foreground"
-          role="status"
-        >
-          {isApyLoaded ? "APY forecast unavailable" : null}
-        </div>
-      ) : (
-        <>
-          {apy.availability === "stale" ? (
-            <span className="text-xs text-muted-foreground">
-              APY data is stale
-            </span>
-          ) : null}
-          <ForecastChart
-            apy={apy}
-            apyDataRevealed
-            isBalanceHidden={isBalanceHidden && earnData.hasPosition}
-            key={forecastPrincipal}
-            mainUsdcReserveApyBps={mainUsdcReserveApyBps}
-            principal={forecastPrincipal}
-          />
-        </>
+    <>
+      {apy.availability === "stale" && (
+        <span className="text-xs text-muted-foreground">APY data is stale</span>
       )}
-    </div>
+      <ForecastChart apy={apy} isBalanceHidden={isBalanceHidden} principal={earnData.earnBalanceUsd} />
+    </>
   );
 }
 
@@ -124,55 +101,19 @@ export function EarnChartCard({
   selectedTab: ChartTab | null;
 }) {
   const hasEarnedTab = earnData.hasPosition;
-  const visibleTabs: readonly ChartTab[] = custom
-    ? custom.tabs
-    : hasEarnedTab
-    ? CHART_TABS
-    : CHART_TABS.filter((tab) => tab !== "Earned");
-  const activeTab: ChartTab = isLoggedOut
-    ? "APY"
-    : selectedTab && visibleTabs.includes(selectedTab)
-    ? selectedTab
-    : custom
-    ? custom.defaultTab
-    : hasEarnedTab
-    ? "Earned"
-    : "APY";
-  const { apy, isLoaded: isApyLoaded } = useEarnForecastApy();
-  const apyHistory = useEarnForecastApyHistory();
-  const mainUsdcReserveApyBps = deriveMainUsdcReserveForecastApyBps(apyHistory);
+  const visibleTabs = custom?.tabs ?? CHART_TABS;
+  const defaultTab = custom?.defaultTab ?? (hasEarnedTab ? "Earned" : "APY");
+  const activeTab = selectedTab && visibleTabs.includes(selectedTab) ? selectedTab : defaultTab;
 
   return (
     <section
       className={
-        typeof sectionClassName === "function"
-          ? sectionClassName(activeTab)
-          : sectionClassName
+        typeof sectionClassName === "function" ? sectionClassName(activeTab) : sectionClassName
       }
     >
       <header className="flex w-full items-center p-2">
         <div className="min-w-0 flex-1">
-          {isLoggedOut ? (
-            <div className="flex items-center gap-2 py-2.5 pl-4">
-              <h2 className="truncate font-semibold text-[20px] text-foreground leading-6">
-                APY
-              </h2>
-              <InfoTooltip
-                iconClassName="size-6"
-                placement="bottom"
-                text={
-                  custom?.loggedOutTooltip ??
-                  "Historical APY of the Loyal Earn strategy over the last 30 days."
-                }
-              />
-            </div>
-          ) : (
-            <SlidingTabs
-              activeTab={activeTab}
-              onSelect={onSelectTab}
-              tabs={visibleTabs}
-            />
-          )}
+          <SlidingTabs activeTab={activeTab} onSelect={onSelectTab} tabs={visibleTabs} />
         </div>
         <button
           aria-label={actionAriaLabel}
@@ -180,26 +121,24 @@ export function EarnChartCard({
           onClick={onAction}
           type="button"
         >
-          <ThemedIcon
-            className="size-6 text-muted-foreground"
-            src={actionIconSrc}
-          />
+          <ThemedIcon className="size-6 text-muted-foreground" src={actionIconSrc} />
         </button>
       </header>
-      {custom ? (
-        <div className="flex min-h-0 w-full flex-1 flex-col px-6 pt-2 pb-6">
-          {custom.renderBody(activeTab, isExpanded)}
-        </div>
-      ) : (
-        <ChartBody
-          activeTab={activeTab}
-          apy={apy}
-          earnData={earnData}
-          isApyLoaded={isApyLoaded}
-          isExpanded={isExpanded}
-          mainUsdcReserveApyBps={mainUsdcReserveApyBps}
-        />
-      )}
+      <div className="@container flex min-h-0 w-full flex-1 flex-col px-6 pt-2 pb-6">
+        {isLoggedOut && activeTab === "Earned" ? (
+          <p className="m-auto text-center text-muted-foreground">
+            Connect your wallet to see your earnings.
+          </p>
+        ) : custom ? (
+          custom.renderBody(activeTab, isExpanded)
+        ) : (
+          <ChartBody
+            activeTab={activeTab}
+            earnData={earnData}
+            isLoggedOut={isLoggedOut}
+          />
+        )}
+      </div>
       {footer}
     </section>
   );
@@ -384,7 +323,7 @@ export function EarnChartPane({
             isLoggedOut={isLoggedOut}
             onAction={() => onExpandedChange(true)}
             onSelectTab={onSelectTab}
-            sectionClassName="flex h-[527px] w-full shrink-0 flex-col overflow-clip rounded-3xl bg-card"
+            sectionClassName="flex h-[400px] w-full shrink-0 flex-col overflow-clip rounded-3xl bg-card"
             selectedTab={selectedTab}
           />
           {statsPanel}

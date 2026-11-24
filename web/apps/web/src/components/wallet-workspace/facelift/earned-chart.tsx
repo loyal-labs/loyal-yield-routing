@@ -18,6 +18,7 @@ import {
   useBalanceVisibility,
 } from "@/components/wallet-workspace/facelift/balance-visibility";
 import { getEarnEarningsCacheKey } from "@/components/wallet-workspace/facelift/earn-earnings-prefetch";
+import { chartTimestamp, EarnChartDates, EarnChartHeadline } from "@/components/wallet-workspace/facelift/earn-chart-layout";
 import { SkeletonReveal } from "@/components/wallet-workspace/facelift/skeleton-reveal";
 import type { EarnPositionData } from "@/components/wallet-workspace/facelift/use-earn-position-data";
 import { usePublicEnv } from "@/contexts/public-env-context";
@@ -25,14 +26,6 @@ import { useEarnEarnings } from "@/hooks/use-earn-earnings";
 import { useEarnForecastApy } from "@/hooks/use-earn-forecast-apy";
 import { rawTokenAmountToNumber } from "@loyal-labs/shared";
 import { deriveEarnEarningsDisplayAmounts } from "@/lib/yield-optimization/earnings-display.shared";
-
-const BAR_COLOR = "color-mix(in srgb, var(--positive) 40%, transparent)";
-const BAR_HOVER_COLOR = "color-mix(in srgb, var(--positive) 16%, transparent)";
-const TODAY_BAR_BORDER_COLOR = "var(--positive)";
-const TODAY_BAR_HOVER_FILL =
-  "linear-gradient(180deg, color-mix(in srgb, var(--positive) 60%, transparent) 0%, transparent 100%)";
-const BAR_MAX_FRACTION = 290 / 300;
-const BAR_MIN_HEIGHT_PX = 4;
 
 export type EarnedChartBar = {
   apyBps: number | null;
@@ -116,7 +109,7 @@ export function useEarnEarnedData(data: EarnPositionData) {
   const dailyBars = useMemo(
     () =>
       (realBars ?? []).map((bar) =>
-        bar.isCurrent
+        bar.isCurrent && bar.earnedUsd >= 0
           ? {
               ...bar,
               earnedUsd: Math.max(0, bar.earnedUsd, estimatedTodayEarnedUsd),
@@ -131,7 +124,7 @@ export function useEarnEarnedData(data: EarnPositionData) {
     dailyBars,
     earningsStale,
     earningsUnavailable,
-    lifetimeEarnedUsd: estimatedEarnedAmounts.lifetimeEarnedUsd,
+    rangeEarnedUsd: estimatedEarnedAmounts.rangeEarnedUsd,
     refreshEarnings,
     showEarningsLoader,
   };
@@ -145,7 +138,7 @@ export function EarnedChart({ data }: { data: EarnPositionData }) {
       isLoading={earned.showEarningsLoader}
       isStale={earned.earningsStale}
       isUnavailable={earned.earningsUnavailable}
-      lifetimeEarnedUsd={earned.lifetimeEarnedUsd}
+      rangeEarnedUsd={earned.rangeEarnedUsd}
       onRetry={earned.refreshEarnings}
     />
   );
@@ -156,262 +149,122 @@ export function EarnedBarsChart({
   isLoading,
   isStale,
   isUnavailable,
-  lifetimeEarnedUsd,
+  rangeEarnedUsd,
   metric = "earnings",
-  note,
   onRetry,
 }: {
   bars: EarnedChartBar[];
   isLoading: boolean;
   isStale: boolean;
   isUnavailable: boolean;
-  lifetimeEarnedUsd: number;
+  rangeEarnedUsd?: number;
   metric?: "earnings" | "performance";
-  note?: string;
   onRetry?: () => void;
 }) {
   const { isBalanceHidden } = useBalanceVisibility();
   const [hoveredBar, setHoveredBar] = useState<number | null>(null);
-  const dailyBars = bars;
-  const earningsStale = isStale;
-  const earningsUnavailable = isUnavailable;
-  const showEarningsLoader = isLoading;
-  const refreshEarnings = onRetry ?? (() => undefined);
-  const maxDailyEarnedUsd = useMemo(
-    () => dailyBars.reduce((max, bar) => Math.max(max, bar.earnedUsd), 0),
-    [dailyBars]
-  );
-  const minDailyEarnedUsd = useMemo(
-    () => dailyBars.reduce((min, bar) => Math.min(min, bar.earnedUsd), 0),
-    [dailyBars]
-  );
-  const hasNegativeBars = minDailyEarnedUsd < 0;
-  const valueRange = maxDailyEarnedUsd - minDailyEarnedUsd;
-  const baselineFraction =
-    hasNegativeBars && valueRange > 0
-      ? Math.abs(minDailyEarnedUsd) / valueRange
-      : 0;
-  const hoveredBarEntry =
-    hoveredBar !== null ? dailyBars[hoveredBar] ?? null : null;
-  const headerRawValue = hoveredBarEntry
-    ? hasNegativeBars
-      ? hoveredBarEntry.earnedUsd
-      : Math.max(0, hoveredBarEntry.earnedUsd)
-    : lifetimeEarnedUsd;
-  const headerValue = splitEarningsHeaderValue(Math.abs(headerRawValue));
-  const headerSign = headerRawValue < 0 ? "-" : "";
-  const headerSubtitle = hoveredBarEntry
-    ? `${metric === "performance" ? "Performance on" : "Your reward for"} ${hoveredBarEntry.label}`
-    : earningsStale
+  const active = hoveredBar === null ? undefined : bars[hoveredBar];
+  const value =
+    active?.earnedUsd ?? rangeEarnedUsd ?? bars.reduce((sum, bar) => sum + bar.earnedUsd, 0);
+  const { whole, fraction } = splitEarningsHeaderValue(Math.abs(value));
+  const max = bars.reduce((highest, bar) => Math.max(highest, bar.earnedUsd), 0);
+  const label = active
+    ? chartTimestamp.format(new Date(active.startAt))
+    : isStale
     ? "Updating earnings…"
-    : metric === "performance"
-    ? "Investment performance"
-    : "Total earned";
+    : "Past 30 days";
+  const tickCount = Math.min(bars.length, 7);
+  const dates = Array.from(
+    { length: tickCount },
+    (_, i) => bars[Math.round((i * (bars.length - 1)) / Math.max(1, tickCount - 1))].label
+  );
 
   return (
-    <div className="flex min-h-0 w-full flex-1 flex-col">
-      <style jsx>{`
-        .earned-bar {
-          align-items: flex-end;
-          background: transparent;
-          border: none;
-          cursor: pointer;
-          display: flex;
-          flex: 1 0 0;
-          height: 100%;
-          min-width: 0;
-          padding: 0;
-          position: relative;
-        }
-        .earned-bar-track {
-          background: var(--accent);
-          border-radius: 4px;
-          inset: 0;
-          opacity: 0;
-          pointer-events: none;
-          position: absolute;
-          transition: opacity 0.18s ease;
-        }
-        .earned-bar:hover .earned-bar-track {
-          opacity: 1;
-        }
-        .earned-bar-fill {
-          border-radius: 4px;
-          box-sizing: border-box;
-          display: block;
-          transform-origin: center bottom;
-          animation: earned-bar-rise 0.55s cubic-bezier(0.2, 0, 0, 1) both;
-          animation-delay: calc(var(--bar-index, 0) * 14ms);
-          transition: background 0.18s ease, border-color 0.18s ease;
-          width: 100%;
-        }
-        @keyframes earned-bar-rise {
-          from {
-            transform: scaleY(0);
-            opacity: 0;
-          }
-          to {
-            transform: scaleY(1);
-            opacity: 1;
-          }
-        }
-        @media (prefers-reduced-motion: reduce) {
-          .earned-bar-fill {
-            animation: none;
-          }
-        }
-      `}</style>
-
-      <div className="flex w-full flex-col gap-0.5 pb-2">
-        <p className="truncate text-[16px] leading-5 text-muted-foreground">
-          {headerSubtitle}
-        </p>
-        <p className="font-semibold text-[40px] text-foreground leading-[48px]">
-          {earningsUnavailable ? (
-            "Unavailable"
-          ) : (
-            <SkeletonReveal isRevealed={!showEarningsLoader}>
-              {showEarningsLoader ? (
-                "$0.000000"
-              ) : (
-                <ScrambledPopDigits
-                  isHidden={isBalanceHidden}
-                  popOnChange={false}
-                  segments={[
-                    { text: `${headerSign}$${headerValue.whole}` },
-                    { color: "var(--tertiary)", text: `.${headerValue.fraction}` },
-                  ]}
-                />
-              )}
-            </SkeletonReveal>
-          )}
-        </p>
-        {note ? (
-          <p className="text-[13px] leading-4 text-muted-foreground">{note}</p>
-        ) : null}
-      </div>
-
-      <div
-        className="flex min-h-0 w-full flex-1 items-end gap-1.5 overflow-hidden"
-        onMouseLeave={() => setHoveredBar(null)}
-      >
-        {earningsUnavailable ? (
-          <div className="flex h-full flex-1 flex-col items-center justify-center gap-2 text-[13px] leading-4 text-muted-foreground">
-            <span>Earnings are temporarily unavailable.</span>
+    <>
+      <EarnChartHeadline label={label}>
+        {isUnavailable ? (
+          "Unavailable"
+        ) : (
+          <SkeletonReveal isRevealed={!isLoading}>
+            <ScrambledPopDigits
+              isHidden={isBalanceHidden}
+              popOnChange={false}
+              segments={[
+                { text: `${value < 0 ? "-" : ""}$${whole}` },
+                { color: "var(--tertiary)", text: `.${fraction}` },
+              ]}
+            />
+          </SkeletonReveal>
+        )}
+      </EarnChartHeadline>
+      {isUnavailable ? (
+        <div
+          className="m-auto flex flex-col items-center gap-2 text-[13px] text-muted-foreground"
+          role="status"
+        >
+          Earnings are temporarily unavailable.
+          {onRetry && (
             <button
-              className="t-hover rounded-full bg-accent px-3 py-1.5 text-foreground hover:bg-accent-active"
-              onClick={refreshEarnings}
+              className="t-hover rounded-full bg-accent px-3 py-1.5"
+              onClick={onRetry}
               type="button"
             >
               Try again
             </button>
-          </div>
-        ) : showEarningsLoader ? (
-          <EarningsChartLoader />
-        ) : (
-          dailyBars.map((bar, i) => {
-            const isActive = hoveredBar === i;
-            const clampedValue = hasNegativeBars
-              ? bar.earnedUsd
-              : Math.max(0, bar.earnedUsd);
-            const scale = hasNegativeBars ? valueRange : maxDailyEarnedUsd;
-            const fillPercent =
-              scale > 0
-                ? (Math.abs(clampedValue) / scale) * BAR_MAX_FRACTION * 100
-                : 0;
-            const isLoss = clampedValue < 0;
-            const anchorStyle = hasNegativeBars
-              ? isLoss
-                ? {
-                    position: "absolute" as const,
-                    top: `${(
-                      (1 - baselineFraction * BAR_MAX_FRACTION) * 100
-                    ).toFixed(2)}%`,
-                    transformOrigin: "center top",
-                  }
-                : {
-                    position: "absolute" as const,
-                    bottom: `${(baselineFraction * BAR_MAX_FRACTION * 100).toFixed(2)}%`,
-                  }
-              : {};
-            const fillColor = isLoss
-              ? isActive
-                ? "var(--destructive)"
-                : "color-mix(in srgb, var(--destructive) 80%, transparent)"
-              : isActive
-              ? BAR_HOVER_COLOR
-              : BAR_COLOR;
-            return (
-              <button
-                aria-label={`${bar.label} ${metric === "performance" ? "performance" : "earned"} ${formatSignedEarningsAmount(
-                  clampedValue
-                )}`}
-                className="earned-bar"
-                key={`${bar.startAt}:${bar.endAt}`}
-                onMouseEnter={() => setHoveredBar(i)}
-                onFocus={() => setHoveredBar(i)}
-                onBlur={() => setHoveredBar(null)}
-                style={{
-                  ["--bar-index" as never]: i,
-                }}
-                type="button"
-              >
-                <span aria-hidden="true" className="earned-bar-track" />
-                <span
-                  aria-hidden="true"
-                  className="earned-bar-fill"
-                  style={
-                    bar.isCurrent
-                      ? {
-                          background: isActive
-                            ? isLoss
-                              ? "color-mix(in srgb, var(--destructive) 20%, transparent)"
-                              : TODAY_BAR_HOVER_FILL
-                            : "transparent",
-                          border: `1px dashed ${isLoss ? "var(--destructive)" : TODAY_BAR_BORDER_COLOR}`,
-                          height: `${fillPercent.toFixed(2)}%`,
-                          minHeight:
-                            bar.earnedUsd !== 0 ? `${BAR_MIN_HEIGHT_PX}px` : 0,
-                          ...anchorStyle,
-                        }
-                      : {
-                          background: fillColor,
-                          height: `${fillPercent.toFixed(2)}%`,
-                          minHeight:
-                            clampedValue !== 0 ? `${BAR_MIN_HEIGHT_PX}px` : 0,
-                          ...anchorStyle,
-                        }
-                  }
-                />
-              </button>
-            );
-          })
-        )}
-        {dailyBars.length === 0 &&
-        !showEarningsLoader &&
-        !earningsUnavailable ? (
-          <div className="flex h-full flex-1 items-center justify-center text-[13px] leading-4 text-muted-foreground">
-            {metric === "performance" ? "Daily performance unavailable" : "No earnings yet"}
-          </div>
-        ) : null}
-      </div>
-
-      <div className="flex w-full justify-between pt-2 text-[13px] leading-4 text-tertiary">
-        <span className="whitespace-nowrap">{dailyBars[0]?.label ?? ""}</span>
-        {hasNegativeBars ? (
-          <span className="whitespace-nowrap">
+          )}
+        </div>
+      ) : isLoading ? (
+        <EarningsChartLoader />
+      ) : bars.length === 0 ? (
+        <p className="m-auto text-[13px] text-muted-foreground">
+          {metric === "performance" ? "Daily performance unavailable" : "No earnings yet"}
+        </p>
+      ) : (
+        <>
+          <p className="pb-2 text-right text-[13px] leading-4 text-muted-foreground">
             <ScrambleText
               isHidden={isBalanceHidden}
-              text={`-${formatMaxDailyEarningsLabel(
-                Math.abs(minDailyEarnedUsd)
-              )}`}
+              text={max === 0 ? "$0.00" : formatMaxDailyEarningsLabel(max)}
             />
-          </span>
-        ) : null}
-        <span className="whitespace-nowrap">
-          {dailyBars[dailyBars.length - 1]?.label ?? ""}
-        </span>
-      </div>
-    </div>
+          </p>
+          <div
+            className="flex min-h-0 flex-1 items-end gap-1.5 @min-[640px]:gap-3"
+            onPointerLeave={() => setHoveredBar(null)}
+          >
+            {bars.map((bar, i) => (
+              <button
+                aria-label={
+                  isBalanceHidden
+                    ? bar.label
+                    : `${bar.label} ${
+                        metric === "performance" ? "performance" : "earned"
+                      } ${formatSignedEarningsAmount(bar.earnedUsd)}`
+                }
+                className="flex h-full min-w-0 flex-1 cursor-pointer items-end rounded-sm"
+                key={bar.startAt}
+                onBlur={() => setHoveredBar(null)}
+                onFocus={() => setHoveredBar(i)}
+                onPointerEnter={() => setHoveredBar(i)}
+                onClick={() => setHoveredBar(i)}
+                type="button"
+              >
+                {bar.earnedUsd > 0 && (
+                  <span
+                    aria-hidden="true"
+                    className={`earn-chart-bar w-full rounded-[4px] transition-opacity ${
+                      bar.isCurrent
+                        ? "border border-dashed border-chart-positive"
+                        : "bg-chart-positive"
+                    } ${active && hoveredBar !== i ? "opacity-20" : "opacity-50"}`}
+                    style={{ height: `${(bar.earnedUsd / max) * 100}%`, minHeight: 4 }}
+                  />
+                )}
+              </button>
+            ))}
+          </div>
+          <EarnChartDates labels={dates} />
+        </>
+      )}
+    </>
   );
 }
