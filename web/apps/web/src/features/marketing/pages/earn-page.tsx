@@ -64,6 +64,7 @@ export function EarnPage({
         image={{
           src: "/landing/figma/feature-yield-card.png",
           alt: dict.hero.imageAlt,
+          desktopAspectClassName: "lg:aspect-square",
         }}
       />
 

@@ -72,6 +72,7 @@ export function AgentsPage({
         image={{
           src: "/marketing/agents/hero-permission-ladder.e365a2e4.png",
           alt: dict.hero.imageAlt,
+          desktopAspectClassName: "lg:aspect-[1488/1464]",
         }}
       />
 
