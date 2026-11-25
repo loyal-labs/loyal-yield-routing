@@ -612,6 +612,29 @@ func decideSnapshot(s Snapshot, initializationReady func(Snapshot) bool) Decisio
 	if t.WithdrawRaw > 0 {
 		return d(DeleverRouteStep, rotateWithdrawReason, t.WithdrawRaw)
 	}
+	if f := s.performanceFee; f != nil && s.netKnown(time.Now()) {
+		if s.feeAllowance != nil && s.WithdrawalDemandRaw == 0 && t.Rule != ruleHardLTV && t.Rule != ruleTermMaturity && t.Rule != ruleOperatorExit {
+			buffer := looping.selectorPolicy().idleBufferRaw(s.TotalVaultNAVRaw)
+			booked, err := feeBookedIdle(s.VoltrTotalValueRaw, s.PriorReportedNAVRaw, s.VoltrIdleRaw)
+			if err != nil {
+				return d(Hold, "looping_fee_book_not_reconciled", 0)
+			}
+			available := max(0, booked+s.SquadsIdleRaw-buffer)
+			pay := min(s.feeAllowance.cap(f.paymentRoom(s.ChainUnix)), available)
+			if pay > s.SquadsIdleRaw {
+				amount := min(pay-s.SquadsIdleRaw, booked, int64(executionEntryLimit(looping, s.RouteLane)))
+				if amount > 0 {
+					return d(VoltrAllocateToSquads, "fund_weekly_performance_fee", amount)
+				}
+			}
+			if pay > 0 && pay <= s.SquadsIdleRaw {
+				return d(PayPerformanceFee, "weekly_performance_fee", pay)
+			}
+		}
+		if f.Version == 0 || s.ChainUnix-f.LastAssessment >= int64(time.Hour/time.Second) {
+			return report("hourly_performance_fee_assessment")
+		}
+	}
 	if s.Trustful {
 		if trustfulReportDue(s) {
 			return report("nav_due")
@@ -654,7 +677,7 @@ func outboundStep(s Snapshot, t LaneTarget, d func(Action, string, int64) Decisi
 		return d(SwapDebtToCollateralStep, outboundDebtReason, int64(s.DebtIdleRaw)), true
 	}
 	if s.SquadsIdleRaw > 0 {
-		amount := s.StageAllowance.cap(s.SquadsIdleRaw)
+		amount := s.stageCashRaw()
 		if amount == 0 {
 			return d(Hold, string(holdSpendingLimit), 0), true
 		}

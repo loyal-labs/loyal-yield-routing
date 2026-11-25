@@ -23,6 +23,7 @@ const (
 	StageSquadsToVoltr         Action = "STAGE_SQUADS_TO_VOLTR"
 	VoltrRestoreIdle           Action = "VOLTR_RESTORE_IDLE"
 	ReportNAV                  Action = "REPORT_NAV"
+	PayPerformanceFee          Action = "PAY_PERFORMANCE_FEE"
 	HoldManualRecovery         Action = "HOLD_MANUAL_RECOVERY"
 	InitializeKaminoObligation Action = "INITIALIZE_KAMINO_OBLIGATION"
 )
@@ -77,8 +78,22 @@ func (a *StageAllowance) cap(idle int64) int64 {
 	return min(idle, a.RemainingRaw)
 }
 
+func (s Snapshot) stageCashRaw() int64 {
+	amount := s.StageAllowance.cap(s.SquadsIdleRaw)
+	if s.performanceFee != nil {
+		return min(amount, max(0, s.StrategyNAVRaw))
+	}
+	return amount
+}
+
 type Snapshot struct {
 	net                         *certifiedNAV
+	feeResolution               feeCapitalResolution
+	feeCapitalSlot              int64
+	feeCapitalHold              string
+	performanceCashDelta        int64
+	performanceFee              *performanceFeeState
+	feeAllowance                *StageAllowance
 	NAVUnavailable              string `json:",omitempty"`
 	ValuationSource             string `json:",omitempty"`
 	ValuationSlot               int64  `json:",omitempty"`
@@ -257,6 +272,11 @@ func (d Decision) Validate() error {
 		return fmt.Errorf("incomplete decision")
 	}
 	switch d.Action {
+	case PayPerformanceFee:
+		if !earnHeldLane(d.StrategyKey) || d.AmountRaw <= 0 {
+			return fmt.Errorf("invalid Looping fee payout")
+		}
+		return nil
 	case InitializeKaminoObligation:
 		return validateSelectorInitializerDecision(d)
 	case Hold, HoldManualRecovery, RecoverTransaction, VoltrAllocateToSquads, StageSquadsToVoltr, VoltrRestoreIdle, ReportNAV:
@@ -318,6 +338,7 @@ type Reconciliation struct {
 }
 
 type SimulationResult struct {
+	MessageSHA256 string `json:"messageSHA256,omitempty"`
 	Slot          int64
 	UnitsConsumed uint64
 	Logs          []string

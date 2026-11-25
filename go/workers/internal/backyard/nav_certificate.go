@@ -85,7 +85,7 @@ func (r BridgeBuildRequest) validateNAV(v *Vault, now time.Time) error {
 	if r.Action == bridgeStageSquadsToVoltr && !v.trustful() {
 		return nil
 	}
-	if !r.net.valid(now, int64(r.Report.ObservedSlot)) || r.net.vault != v.squads || r.Report != r.net.report || r.requestDigest == "" || r.requestDigest != addRequestDigest(r) {
+	if !r.net.valid(now, int64(r.Report.ObservedSlot)) || r.net.vault != v.squads || r.Report != r.net.report || r.requestDigest == "" || r.requestDigest != bridgeDigest(r) {
 		return staleHold("certified_nav_unavailable")
 	}
 	return nil
@@ -192,7 +192,7 @@ func bindSnapshotNAV(s *Snapshot) {
 }
 
 func bindBridgeRequest(r BridgeBuildRequest) BridgeBuildRequest {
-	r.requestDigest = addRequestDigest(r)
+	r.requestDigest = bridgeDigest(r)
 	return r
 }
 
@@ -214,4 +214,14 @@ func (e exitCosts) candidates(m RouteManifest, slot int64, now time.Time) exitCo
 }
 func (c ExitCost) pendingFor(m RouteManifest, slot int64, now time.Time, b heldExitBasis) bool {
 	return c.Slot > slot && c.Slot-slot <= min(observationLagSlots(), adaptorMaxReportAgeSlots) && c.scopedTo(m, b.st.route.Lane) && c.fresh(b.heldRaw, b.mark) && c.scope.usdc == b.usdc && c.validAt(now, c.Slot)
+}
+
+func bridgeDigest(r BridgeBuildRequest) string {
+	if r.fee == nil {
+		return addRequestDigest(r)
+	}
+	return addRequestDigest(struct {
+		Request BridgeBuildRequest
+		Fee     *feeReportWire
+	}{r, r.fee})
 }

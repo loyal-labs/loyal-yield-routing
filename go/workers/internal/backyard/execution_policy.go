@@ -91,7 +91,7 @@ func boundedExecutionDecision(v *Vault, o Observation, d Decision) (Decision, er
 	}
 	// Return proceeds already collected before waiting for another sale.
 	if ordinaryWithdrawalCostRequired(s, d) && s.SquadsIdleRaw > 0 && s.Target.Outbound {
-		if amount := s.StageAllowance.cap(s.SquadsIdleRaw); amount > 0 && s.netKnown(time.Now()) {
+		if amount := s.stageCashRaw(); amount > 0 && s.netKnown(time.Now()) {
 			d.Action, d.Reason, d.AmountRaw = StageSquadsToVoltr, outboundStageReason, amount
 			d.MaxSlippageBPS = 0
 			d.IdempotencyKey += fmt.Sprintf(":cash:%d", amount)

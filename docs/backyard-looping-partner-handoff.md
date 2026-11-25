@@ -13,9 +13,12 @@
 
 ## Terms
 
-- Fees: all 0 (manager and admin performance and management fees, issuance, redemption).
+- Before the worker fee is activated, Voltr charges a 15% admin performance fee. After activation, Voltr's rate is zero and the worker assesses 10% of new gains above the previous high per share on hourly NAV reports. It reserves that fee in the reported share price and pays the accumulated USDC weekly. Deposits, withdrawals and recovery up to the previous high do not earn a fee.
+- Issuance, redemption and management fees are zero.
 - Withdrawal waiting period: 600 seconds.
 - Max cap: 1,000,000 USDC.
+
+Operators can verify activation and weekly payouts with the [worker fee runbook](workers/backyard-performance-fee.md).
 
 ## Integrating
 

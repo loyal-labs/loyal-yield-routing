@@ -41,7 +41,16 @@ func selectorFeeReservedGain(s Snapshot, horizon time.Duration, e pilotEconomics
 			return e.Gain, true
 		}
 		wealth := float64(s.TotalVaultNAVRaw)
-		return wealth * performanceFeeForecast(e.Gain/wealth, s.ApprovedAdminPerformanceFeeBPS), true
+		return wealth * performanceFeeForecast(e.Gain/wealth, s.projectedFeeBPS()), true
+	}
+	if f := s.performanceFee; f != nil && f.Version > 0 {
+		if horizon <= 0 || !approvedVoltrFeeTerms(s) || !finite(e.PositiveIncome) || e.PositiveIncome < 0 {
+			return 0, false
+		}
+		// Native USDC assessment has no LP dilution or per-report mint rounding.
+		// Reserve positive income even if the book is currently below its peak.
+		gain := e.PositiveIncome + float64(max(0, s.TotalVaultNAVRaw-s.VoltrTotalValueRaw))
+		return e.Gain - math.Ceil(gain*loopingPerformanceFeeBPS/10_000), true
 	}
 	if horizon <= 0 || !selectorFeeBaselineKnown(s) || !finite(idle) || idle < 0 ||
 		!finite(e.PositiveIncome) || e.PositiveIncome < 0 || e.InitialNAV <= 0 {

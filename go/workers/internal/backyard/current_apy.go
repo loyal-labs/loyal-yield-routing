@@ -83,7 +83,7 @@ func currentPortfolioAPY(observed Observation, markets []LaneEconomics, now time
 		annualIncome += income
 		position := PortfolioAPYPosition{Lane: lane.RouteLane, CollateralValueRaw: collateral, DebtValueRaw: lane.PositionDebtValueRaw, EquityRaw: collateral - lane.PositionDebtValueRaw}
 		if position.EquityRaw > 0 {
-			bps := int64(math.Round(performanceFeeForecast(income/float64(position.EquityRaw), s.ApprovedAdminPerformanceFeeBPS) * 10_000))
+			bps := int64(math.Round(performanceFeeForecast(income/float64(position.EquityRaw), s.projectedFeeBPS()) * 10_000))
 			position.APYBPS = &bps
 		}
 		out.Positions = append(out.Positions, position)
@@ -93,7 +93,7 @@ func currentPortfolioAPY(observed Observation, markets []LaneEconomics, now time
 			return nil
 		}
 	}
-	apy := performanceFeeForecast(annualIncome/float64(s.TotalVaultNAVRaw), s.ApprovedAdminPerformanceFeeBPS)
+	apy := performanceFeeForecast(annualIncome/float64(s.TotalVaultNAVRaw), s.projectedFeeBPS())
 	if !finite(apy) {
 		return nil
 	}
@@ -118,7 +118,7 @@ func currentPositionAPY(s Snapshot, markets []LaneEconomics) (CurrentAPY, bool) 
 	if !finite(market.CurrentBorrowAPY) || market.CurrentBorrowAPY < 0 || s.PositionDebtValueRaw < 0 {
 		return out, false
 	}
-	apy := performanceFeeForecast((collateral*market.NativeAPY+float64(s.PositionCollateralValueRaw)*market.SupplyAPY-float64(s.PositionDebtValueRaw)*market.CurrentBorrowAPY)/float64(equityRaw), s.ApprovedAdminPerformanceFeeBPS)
+	apy := performanceFeeForecast((collateral*market.NativeAPY+float64(s.PositionCollateralValueRaw)*market.SupplyAPY-float64(s.PositionDebtValueRaw)*market.CurrentBorrowAPY)/float64(equityRaw), s.projectedFeeBPS())
 	if !finite(apy) {
 		return out, false
 	}

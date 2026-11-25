@@ -13,16 +13,21 @@ import { toWeb3Instruction } from "../integrations/solana-compat.js";
 import { verifyPendingSignedWire } from "./pending-signed-wire.js";
 import { buildInstructions } from "./voltr-admin-performance-fee.js";
 
-const vaults = [route.vault.address, address("GrHZD15bMiUwrVPsmBwz8GRoQeDZN6wNEQVdW8k8SxV1")];
+const looping = address("GrHZD15bMiUwrVPsmBwz8GRoQeDZN6wNEQVdW8k8SxV1");
+const cases = [
+  { vault: route.vault.address, bps: 1500, feeBytes: [0xdc, 0x05] },
+  { vault: looping, bps: 1500, feeBytes: [0xdc, 0x05] },
+  { vault: looping, bps: 0, feeBytes: [0, 0] },
+];
 
-for (const vault of vaults) {
-  test(`sign and verify the 15% fee update wire for ${vault}`, async () => {
+for (const { vault, bps, feeBytes } of cases) {
+  test(`sign and verify the ${bps} bps fee update wire for ${vault}`, async () => {
     const keypair = Keypair.generate();
     const admin = await createKeyPairSignerFromBytes(keypair.secretKey);
     const [lpMint] = await findVaultLpMintPda({ vault });
     const [ata] = await findAssociatedTokenPda({ owner: admin.address, mint: lpMint, tokenProgram: route.assets.tokenProgram });
     const [protocol] = await findProtocolPda();
-    const instructions = await buildInstructions(admin, vault, lpMint, ata, 1500);
+    const instructions = await buildInstructions(admin, vault, lpMint, ata, bps);
     const transaction = new VersionedTransaction(new TransactionMessage({
       payerKey: keypair.publicKey,
       recentBlockhash: PublicKey.default.toBase58(),
@@ -57,6 +62,6 @@ for (const vault of vaults) {
       [admin.address, protocol, vault, "SysvarRent111111111111111111111111111111111"]);
     assert.ok(setFee!.keys[0]!.isSigner && setFee!.keys[2]!.isWritable);
     // Voltr update_vault_config discriminator, AdminPerformanceFee field, two-byte LE payload.
-    assert.deepEqual([...setFee!.data], [122, 3, 21, 222, 158, 255, 238, 157, 5, 2, 0, 0, 0, 0xdc, 0x05]);
+    assert.deepEqual([...setFee!.data], [122, 3, 21, 222, 158, 255, 238, 157, 5, 2, 0, 0, 0, ...feeBytes]);
   });
 }

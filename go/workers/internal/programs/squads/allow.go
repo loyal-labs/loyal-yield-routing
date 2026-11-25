@@ -189,7 +189,11 @@ type Installed struct {
 }
 
 func Policies(ctx context.Context, c *chain.Client, settings solana.PublicKey, minSlot uint64) ([]Installed, error) {
-	slot, read, err := c.Accounts(ctx, []solana.PublicKey{settings}, rpc.CommitmentConfirmed, minSlot)
+	return PoliciesAt(ctx, c, settings, rpc.CommitmentConfirmed, minSlot)
+}
+
+func PoliciesAt(ctx context.Context, c *chain.Client, settings solana.PublicKey, commitment rpc.CommitmentType, minSlot uint64) ([]Installed, error) {
+	slot, read, err := c.Accounts(ctx, []solana.PublicKey{settings}, commitment, minSlot)
 	if err != nil {
 		return nil, err
 	}
@@ -208,7 +212,7 @@ func Policies(ctx context.Context, c *chain.Client, settings solana.PublicKey, m
 		}
 		addresses = append(addresses, address)
 	}
-	_, accounts, err := c.Accounts(ctx, addresses, rpc.CommitmentConfirmed, slot)
+	_, accounts, err := c.Accounts(ctx, addresses, commitment, slot)
 	if err != nil {
 		return nil, err
 	}

@@ -200,7 +200,7 @@ export function HeroChart({
               {average ? `${pct(average.apy * 100)} APY` : "—"}
             </p>
             <p className="mt-2 text-sm text-muted-foreground">
-              Current position:{" "}
+              Estimated APY after fees ·{" "}
               <span className="font-medium text-foreground">
                 {apy?.current ? pct(apy.current.pct) : "—"}
               </span>
@@ -411,7 +411,7 @@ export function HeroChart({
 
       <p className="text-xs leading-5 text-muted-foreground">
         {tab === "APY"
-          ? "Line: 7-day realized APY from the Voltr share price at the end of each UTC day; the last point is now. Average: share price now against the start of the range, compounded to a year, after all costs. Current position: the worker's forecast for the live position."
+          ? "The line shows 7-day realized APY at each UTC day-end and at the latest Voltr share price. The average annualizes share-price growth over the selected range after all costs. The estimate is the worker's forecast for the current position."
           : tab === "Breakdown"
           ? "From Kamino daily reserve history for the vault's current lane. Supply APY is the collateral's own yield plus Kamino supply interest; borrow APY is the debt reserve's interest rate. Leverage multiplies the spread. Markers are days the worker changed the position on chain."
           : "TVL is the vault's total value on Voltr at the end of each UTC day; the last point is now. Total exposure is the collateral behind it: NAV plus what the vault has borrowed on Kamino."}

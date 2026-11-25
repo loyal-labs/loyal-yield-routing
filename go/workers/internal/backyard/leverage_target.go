@@ -148,7 +148,7 @@ func (out leverageDecision) priceUpStep(s Snapshot, market LaneEconomics, level 
 	years := p.Horizon.Hours() / (365.25 * 24)
 	out.GainRaw = upStepGain(market, upStep{CollateralMicros: float64(s.PositionCollateralValueRaw), DebtMicros: float64(s.PositionDebtValueRaw),
 		AddedLiabilityMicros: float64(liability), ProceedsMicros: float64(proceeds), KeepDebtAPR: math.Log1p(market.CurrentBorrowAPY), StepDebtAPR: apr,
-		CostMicros: float64(stepCost.TotalMicros), Years: years, FeeBPS: s.ApprovedAdminPerformanceFeeBPS})
+		CostMicros: float64(stepCost.TotalMicros), Years: years, FeeBPS: s.projectedFeeBPS()})
 	if !finite(out.GainRaw) {
 		out = out.held(leverageReasonFeeForecastUnavailable)
 		out.GainRaw = 0

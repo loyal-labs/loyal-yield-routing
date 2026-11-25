@@ -160,7 +160,7 @@ func ordinaryWithdrawalCostRequired(s Snapshot, d Decision) bool {
 		return false
 	}
 	switch d.Action {
-	case Hold, HoldManualRecovery, ReportNAV, RecoverTransaction:
+	case Hold, HoldManualRecovery, ReportNAV, PayPerformanceFee, RecoverTransaction:
 		return false
 	}
 	return true
@@ -170,7 +170,7 @@ func ordinaryWithdrawalCostRequired(s Snapshot, d Decision) bool {
 // asset below its mark; Voltr/Squads cash moves and Kamino legs never do.
 func costBearingWithdrawalAction(d Decision) bool {
 	switch d.Action {
-	case VoltrAllocateToSquads, StageSquadsToVoltr, VoltrRestoreIdle, ReportNAV, InitializeKaminoObligation:
+	case VoltrAllocateToSquads, StageSquadsToVoltr, VoltrRestoreIdle, ReportNAV, PayPerformanceFee, InitializeKaminoObligation:
 		return false
 	case OpenRouteStep, DeleverRouteStep:
 		return stepKind(d) != notStep

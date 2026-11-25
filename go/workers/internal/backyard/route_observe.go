@@ -46,6 +46,13 @@ func observeQuotingRouteSnapshot(ctx context.Context, rpc *chain.Client, view *V
 		stageAllowance: func(ctx context.Context, slot, chainNow int64) (*StageAllowance, error) {
 			return observeStageAllowance(ctx, rpc, v, slot, chainNow)
 		},
+		feeAllowance: func(ctx context.Context, slot, at, cap int64) (*StageAllowance, error) {
+			p, err := installedFeePolicy(ctx, rpc, v, slot, cap)
+			if err != nil {
+				return nil, err
+			}
+			return readSpendingAllowance(p.Raw, at)
+		},
 		now:   func() time.Time { return time.Now().UTC() },
 		exits: exits,
 	})
@@ -93,6 +100,7 @@ type routeObservationRuntime struct {
 	read             func(context.Context, []string, int64) (int64, []ConfirmedAccount, []programAccount, error)
 	minSlot          int64
 	stageAllowance   func(context.Context, int64, int64) (*StageAllowance, error)
+	feeAllowance     func(context.Context, int64, int64, int64) (*StageAllowance, error)
 	now              func() time.Time
 	inputs           targetInputs
 	state            *vaultState
@@ -283,9 +291,17 @@ func observeRouteSnapshotOnce(ctx context.Context, manifest RouteManifest, runti
 			_, _ = fmt.Fprintf(os.Stderr, "backyard-rwa-worker: stage allowance unknown: %v\n", err)
 		}
 	}
+	var feeAllowance *StageAllowance
+	if f := runtime.inputs.performanceFee; f != nil && f.paymentRoom(clockUnixTimestamp(accounts)) > 0 && runtime.feeAllowance != nil {
+		feeAllowance, err = runtime.feeAllowance(ctx, slot, clockUnixTimestamp(accounts), f.WeeklyCapRaw)
+		if err != nil {
+			feeAllowance = nil
+		} // Policy unavailability defers payment; withdrawals and reports remain live.
+	}
 	snapshots := make([]Snapshot, len(views))
 	for i := range views {
 		views[i].Snapshot.StageAllowance = allowance
+		views[i].Snapshot.feeAllowance = feeAllowance
 		level := runtime.inputs.Levels[views[i].Snapshot.RouteLane]
 		views[i].Snapshot.LeverageTargetLevel, views[i].Snapshot.LeverageUpApproved = level.Level, level.UpApproved && level.Level > 1
 		views[i].Snapshot.LeverageDown = level.Down
@@ -440,6 +456,23 @@ func observeLaneView(ctx context.Context, manifest RouteManifest, runtime routeO
 	}
 	stateHash := sha256.Sum256([]byte(fmt.Sprintf("%s|voltr-idle:%d|strategy-idle:%d|squads-idle:%d", fingerprint, idle.Raw, strategy.Raw, squads.Raw)))
 	base := Observation{ObservedAt: runtime.now(), Snapshot: Snapshot{ObservationID: fmt.Sprintf("%x", stateHash[:]), Slot: slot, RouteKind: RouteKind, Fresh: true, WithdrawalDemandRaw: demand, VoltrIdleRaw: int64(idle.Raw), VoltrStrategyIdleRaw: int64(strategy.Raw), SquadsIdleRaw: int64(squads.Raw), Trustful: v.trustful(), ApprovedAdminPerformanceFeeBPS: v.approvedAdminFeeBPS(nav.Voltr.AdminPerformanceFeeBPS), ApprovedIssuanceFeeBPS: v.IssuanceFeeBPS}}
+	if f := runtime.inputs.performanceFee; f != nil {
+		if v != looping || nav.Voltr.AdminPerformanceFeeBPS != 0 || slot < f.ActivationSlot {
+			return Observation{}, nil, staleHold("looping_fee_activation_mismatch")
+		}
+		booked, err := feeBookedIdle(int64(nav.Voltr.TotalValueRaw), int64(nav.PriorReportedNAVRaw), int64(idle.Raw))
+		if err != nil {
+			return Observation{}, nil, err
+		}
+		if nav.net != nil {
+			nav.TotalVaultNAVRaw -= idle.Raw - uint64(booked)
+		}
+		base.Snapshot.performanceFee = f
+		base.Snapshot.performanceCashDelta = runtime.inputs.performanceCashDelta
+		if err := reservePerformanceFee(&nav, f.Outstanding); err != nil {
+			return Observation{}, nil, err
+		}
+	}
 	base.Snapshot.CollateralIdleRaw = int64(prime.Raw)
 	if (route.Kamino.DebtMint != fleet.USDCMint || basicLane(route.Lane)) && prime.Raw > 0 && withdrawalShortfallRaw(base.Snapshot) == 0 {
 		minimum, err := kaminoDepositMinimum(accounts, route, slot, math.MaxInt64)
@@ -894,7 +927,11 @@ func observeStageAllowance(ctx context.Context, rpc *chain.Client, v *Vault, slo
 	if _, err := policies.account(key); err != nil {
 		return nil, err
 	}
-	usage, err := squads.DecodeSpendingLimitUsage(policies[key].Raw, solanaKey(fleet.USDCMint))
+	return readSpendingAllowance(policies[key].Raw, chainNow)
+}
+
+func readSpendingAllowance(account *chain.Account, chainNow int64) (*StageAllowance, error) {
+	usage, err := squads.DecodeSpendingLimitUsage(account, solanaKey(fleet.USDCMint))
 	if err != nil {
 		return nil, err
 	}

@@ -131,6 +131,30 @@ func prepareBridgeFromObservedAccounts(ctx context.Context, rpc *chain.Client, m
 	if err != nil {
 		return Observation{}, BridgeExecutionEvidence{}, err
 	}
+	var feeWire *feeReportWire
+	if f := observation.Snapshot.performanceFee; f != nil {
+		feeWire, err = prepareFeeReport(manifest, decision, observation.Snapshot, nav, accounts, postCustodies)
+		if err != nil {
+			return Observation{}, BridgeExecutionEvidence{}, err
+		}
+		if decision.Action == PayPerformanceFee {
+			installed, err := installedFeePolicy(ctx, rpc, v, observation.Snapshot.Slot, f.WeeklyCapRaw)
+			if err != nil {
+				return Observation{}, BridgeExecutionEvidence{}, err
+			}
+			allowance, err := readSpendingAllowance(installed.Raw, observation.Snapshot.ChainUnix)
+			if err != nil || allowance.cap(decision.AmountRaw) != decision.AmountRaw {
+				return Observation{}, BridgeExecutionEvidence{}, staleHold("looping_fee_policy_allowance")
+			}
+			feeWire.PayoutPolicy = installed.Account.String()
+		}
+		effects.PerformanceFee = &feeWire.Entry
+		if err = reservePerformanceFee(&nav, feeWire.Entry.After.Outstanding); err != nil {
+			return Observation{}, BridgeExecutionEvidence{}, err
+		}
+	} else if decision.Action == PayPerformanceFee {
+		return Observation{}, BridgeExecutionEvidence{}, staleHold("looping_fee_not_activated")
+	}
 	if reportRequired && (!nav.net.valid(time.Now(), nav.Slot) || nav.net.manifest != manifest.SHA256) {
 		return Observation{}, BridgeExecutionEvidence{}, staleHold(exitUnpriced)
 	}
@@ -169,7 +193,7 @@ func prepareBridgeFromObservedAccounts(ctx context.Context, rpc *chain.Client, m
 	}
 	return observation, BridgeExecutionEvidence{
 		Request: bindBridgeRequest(BridgeBuildRequest{
-			net: nav.net, Action: action, AmountRaw: wireAmount,
+			fee: feeWire, net: nav.net, Action: action, AmountRaw: wireAmount,
 			Report: nav.Report, Policy: policy,
 			AdaptorConfig: v.Strategy, Settings: backyardSettings,
 			RecentBlockhash: blockhash.Blockhash, LastValidBlockHeight: blockhash.LastValidBlockHeight,
@@ -219,6 +243,11 @@ func bridgeExpectedEffects(v *Vault, decision Decision, idle, strategy, squads u
 			return ExpectedEffects{}, 0, 0, 0, fmt.Errorf("restore effects overflow or underflow")
 		}
 		strategyAfter, idleAfter = strategy-amount, idle+amount
+	case PayPerformanceFee:
+		if v != looping || amount == 0 || squads < amount {
+			return ExpectedEffects{}, 0, 0, 0, fmt.Errorf("invalid Looping payout custody")
+		}
+		squadsAfter -= amount
 	case ReportNAV:
 		if amount != 0 {
 			return ExpectedEffects{}, 0, 0, 0, fmt.Errorf("NAV report cannot move capital")
@@ -229,6 +258,11 @@ func bridgeExpectedEffects(v *Vault, decision Decision, idle, strategy, squads u
 	accounts := []ExpectedAccountEffect{
 		{Address: v.strategyATA, Owner: bridgeTokenProgram, Mint: fleet.USDCMint, Authority: v.strategyAuth, BeforeRaw: strategy, AfterRaw: strategyAfter},
 		{Address: v.cash, Owner: bridgeTokenProgram, Mint: fleet.USDCMint, Authority: v.squads, BeforeRaw: squads, AfterRaw: squadsAfter},
+	}
+	if decision.Action == PayPerformanceFee {
+		// Reconciliation verifies the finalized transaction delta, so another
+		// transfer to the treasury before this transaction cannot invalidate it.
+		accounts = append(accounts, ExpectedAccountEffect{Address: loopingTreasuryUSDC, Owner: bridgeTokenProgram, Mint: fleet.USDCMint, Authority: backyardSettingsSigner, AfterRaw: amount})
 	}
 	invokesAdaptor := decision.Action != StageSquadsToVoltr || v.trustful()
 	if invokesAdaptor {

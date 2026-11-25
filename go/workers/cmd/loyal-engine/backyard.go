@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"log/slog"
@@ -123,7 +124,7 @@ func backyardSelectorMode() (backyard.SelectorMode, error) {
 	return "", errors.New("BACKYARD_RWA_SELECTOR_LIVE must be 0 or 1")
 }
 
-const backyardUsage = `usage: loyal-engine backyard [in-flight [--vault <vault>] | simulate-step --vault <vault> --lane <lane> --dir up|down --amount-raw <n> | selector-evaluate --vault <vault> [--execute] | clear-hold --vault <vault> --reason "<text>" | exit-lane --vault <vault> --lane <lane> (--by <operator> [--equity-zero] | --clear) | release-control show|set ...]`
+const backyardUsage = `usage: loyal-engine backyard [in-flight [--vault <vault>] | activate-performance-fee --vault looping --weekly-fee-cap-raw <micro-USDC> [--apply] | resolve-performance-fee-capital --vault looping --signature <tx> --principal-usdc-raw <amount> --effective-lp-raw <supply> --by <operator> --evidence <reference> [--apply] | simulate-step --vault <vault> --lane <lane> --dir up|down --amount-raw <n> | selector-evaluate --vault <vault> [--execute] | clear-hold --vault <vault> --reason "<text>" | exit-lane --vault <vault> --lane <lane> (--by <operator> [--equity-zero] | --clear) | release-control show|set ...]`
 
 func backyardInFlightRoutes(args []string) ([]string, error) {
 	if len(args) == 0 {
@@ -140,6 +141,56 @@ func backyardInFlightRoutes(args []string) ([]string, error) {
 }
 
 func runBackyardOperator(ctx context.Context, args []string, out io.Writer) error {
+	if len(args) > 0 && args[0] == "resolve-performance-fee-capital" {
+		flags := flag.NewFlagSet(args[0], flag.ContinueOnError)
+		flags.SetOutput(out)
+		vault := flags.String("vault", "", "Looping vault")
+		sig := flags.String("signature", "", "held transaction signature")
+		principal := flags.Int64("principal-usdc-raw", -1, "outside principal in micro-USDC")
+		supply := flags.Int64("effective-lp-raw", 0, "effective LP at the capital event")
+		by := flags.String("by", "", "reviewing operator")
+		evidence := flags.String("evidence", "", "basis calculation or review reference")
+		apply := flags.Bool("apply", false, "record this receipt-specific resolution")
+		if err := flags.Parse(args[1:]); err != nil {
+			return err
+		}
+		if flags.NArg() != 0 || *vault != "looping" || *sig == "" || *principal < 0 || *supply <= 0 || *by == "" || *evidence == "" {
+			return errors.New(backyardUsage)
+		}
+		endpoint, err := engine.Credential("BACKYARD_SOLANA_RPC_URL")
+		if err != nil {
+			return err
+		}
+		dsn, err := engine.Credential("BACKYARD_DATABASE_URL")
+		if err != nil {
+			return err
+		}
+		return backyard.ResolvePerformanceFeeCapital(ctx, out, endpoint, dsn, *sig, *principal, *supply, *by, *evidence, *apply)
+	}
+	if len(args) > 0 && args[0] == "activate-performance-fee" {
+		flags := flag.NewFlagSet(args[0], flag.ContinueOnError)
+		flags.SetOutput(out)
+		vault := flags.String("vault", "", "Looping vault")
+		cap := flags.Int64("weekly-fee-cap-raw", 0, "installed weekly cap in micro-USDC")
+		apply := flags.Bool("apply", false, "initialize the worker checkpoint in the database")
+		if err := flags.Parse(args[1:]); err != nil {
+			return err
+		}
+		if flags.NArg() != 0 || *vault != "looping" || *cap <= 0 {
+			return errors.New("usage: activate-performance-fee --vault looping --weekly-fee-cap-raw <micro-USDC> [--apply]")
+		}
+		endpoint, err := engine.Credential("BACKYARD_SOLANA_RPC_URL")
+		if err != nil {
+			return err
+		}
+		var dsn string
+		if *apply {
+			if dsn, err = engine.Credential("BACKYARD_DATABASE_URL"); err != nil {
+				return err
+			}
+		}
+		return backyard.ActivatePerformanceFee(ctx, out, endpoint, dsn, *cap, *apply)
+	}
 	if len(args) > 0 && args[0] == "in-flight" {
 		routes, err := backyardInFlightRoutes(args[1:])
 		if err != nil {

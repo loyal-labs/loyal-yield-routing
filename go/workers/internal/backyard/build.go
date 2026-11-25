@@ -50,13 +50,14 @@ const (
 
 func bridgeActionOf(action Action) (BridgeAction, error) {
 	switch action {
-	case VoltrAllocateToSquads, StageSquadsToVoltr, VoltrRestoreIdle, ReportNAV:
+	case VoltrAllocateToSquads, StageSquadsToVoltr, VoltrRestoreIdle, ReportNAV, PayPerformanceFee:
 		return BridgeAction(action), nil
 	}
 	return "", fmt.Errorf("action %s is not a bridge action", action)
 }
 
 type BridgeBuildRequest struct {
+	fee                  *feeReportWire
 	requestDigest        string
 	net                  *certifiedNAV
 	Action               BridgeAction
@@ -140,7 +141,16 @@ func compileBridgeMessageForDelegate(v *Vault, request BridgeBuildRequest, deleg
 	if err != nil {
 		return nil, err
 	}
-	message, err := compileV1Message(delegate, blockhash, []compiledInstruction{outer}, executionBudget("", 1))
+	instructions := []compiledInstruction{outer}
+	if request.fee != nil {
+		instructions, err = request.fee.instructions(v, request, delegate, outer)
+		if err != nil {
+			return nil, err
+		}
+	} else if Action(request.Action) == PayPerformanceFee {
+		return nil, fmt.Errorf("fee payment lacks its checkpoint")
+	}
+	message, err := compileV1Message(delegate, blockhash, instructions, executionBudget("", len(instructions)))
 	if err != nil {
 		return nil, err
 	}
@@ -240,6 +250,12 @@ func trustfulBridgeInstructions(v *Vault, request BridgeBuildRequest) ([]compile
 	}
 	accounts := v.strategyAccounts()
 	switch request.Action {
+	case BridgeAction(PayPerformanceFee):
+		if request.fee == nil || request.AmountRaw == 0 {
+			return nil, nil, fmt.Errorf("missing fee payment")
+		}
+		deposit := voltr.TrustfulDeposit(accounts, 0, book, solanaKey(v.cash))
+		return []compiledInstruction{sdkInstruction(deposit)}, []byte{trustfulDepositLeg}, nil
 	case bridgeAllocateToSquads, bridgeReportNAV:
 		if (request.Action == bridgeReportNAV) != (request.AmountRaw == 0) || request.AmountRaw > strategyTwoBridgeLegCapRaw {
 			return nil, nil, fmt.Errorf("invalid Trustful deposit amount")

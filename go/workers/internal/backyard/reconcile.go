@@ -6,6 +6,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"sort"
 
 	"github.com/solana-foundation/solana-go/v2"
@@ -31,6 +34,7 @@ type ExpectedAccountEffect struct {
 }
 
 type ExpectedEffects struct {
+	PerformanceFee    *performanceFeeEntry         `json:"performanceFee,omitempty"`
 	Schema            string                       `json:"schema"`
 	Kind              effectsKind                  `json:"kind,omitempty"`
 	Conserved         bool                         `json:"conserved"`
@@ -105,6 +109,9 @@ func DecodeExpectedEffects(v *Vault, data []byte) (ExpectedEffects, error) {
 	var expected ExpectedEffects
 	if err := json.Unmarshal(data, &expected); err != nil {
 		return ExpectedEffects{}, fmt.Errorf("decode expected effects: %w", err)
+	}
+	if err := validateFeeEffects(v, expected); err != nil {
+		return ExpectedEffects{}, err
 	}
 	if expected.Kind == effectsKaminoInitialize || expected.Initialization != nil {
 		if err := v.manifest.validateInitializationEffects(expected); err != nil {
@@ -195,6 +202,12 @@ func validateRepaymentEffects(expected ExpectedEffects) error {
 }
 
 func ReconcileConfirmedTransaction(v *Vault, expected ExpectedEffects, receipt ConfirmedTransactionEvidence) (Reconciliation, []byte, error) {
+	if expected.PerformanceFee != nil && !receipt.Finalized {
+		return Reconciliation{}, nil, fmt.Errorf("fee publication is not finalized")
+	}
+	if err := validateFeeEffects(v, expected); err != nil {
+		return Reconciliation{}, nil, err
+	}
 	if err := validateForeignSweep(v, expected); err != nil {
 		return Reconciliation{}, nil, err
 	}
@@ -292,6 +305,19 @@ func ReconcileConfirmedTransaction(v *Vault, expected ExpectedEffects, receipt C
 	evidenceBody := map[string]any{
 		"schema": "loyal-backyard-rwa-reconciled-effects/v1", "source": "confirmed-transaction-meta",
 		"signature": receipt.Signature, "slot": receipt.Slot, "accounts": canonical,
+	}
+	if v == looping {
+		pre, preOK := preByAddress[v.cash]
+		post, postOK := postByAddress[v.cash]
+		if preOK != postOK || preOK && (pre.Mint != fleet.USDCMint || post.Mint != pre.Mint || pre.Authority != v.squads || post.Authority != pre.Authority || pre.OwnerProgram != classicTokenProgram || post.OwnerProgram != pre.OwnerProgram || pre.Raw > math.MaxInt64 || post.Raw > math.MaxInt64) {
+			return Reconciliation{}, nil, fmt.Errorf("incomplete Looping USDC movement")
+		}
+		if preOK && pre.Raw != post.Raw {
+			evidenceBody["loopingCashDelta"] = int64(post.Raw) - int64(pre.Raw)
+		}
+	}
+	if expected.PerformanceFee != nil {
+		evidenceBody["performanceFee"] = expected.PerformanceFee
 	}
 	if receipt.foreignSweepExtraRaw != 0 {
 		evidenceBody["foreignSweepExtraRaw"] = receipt.foreignSweepExtraRaw

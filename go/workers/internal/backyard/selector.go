@@ -399,7 +399,7 @@ const completeEntryQuoteUnavailable = "complete_entry_quote_unavailable"
 
 func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult {
 	s, p := in.Snapshot, in.Policy
-	p.AdminPerformanceFeeBPS = s.ApprovedAdminPerformanceFeeBPS
+	p.AdminPerformanceFeeBPS = s.projectedFeeBPS()
 	out := SelectorResult{Action: SelectorKeep, Reason: "no_worthwhile_move", SourceLane: s.RouteLane, SampledAt: in.Now}
 	hold := func(reason string) SelectorResult { out.Reason = reason; out.State = SelectorState{}; return out }
 	if err := p.validate(); err != nil || in.Now.IsZero() {
@@ -690,7 +690,7 @@ func scoreMove(c *CandidateForecast, s Snapshot, p SelectorPolicy, m LaneEconomi
 		return
 	}
 	c.BorrowAPR = economics.APR
-	c.Leverage, c.NetAPY = quoteLeverageAndNetAPY(economics, float64(c.InvestedRaw), m, s.ApprovedAdminPerformanceFeeBPS)
+	c.Leverage, c.NetAPY = quoteLeverageAndNetAPY(economics, float64(c.InvestedRaw), m, s.projectedFeeBPS())
 	c.BorrowBlocked, c.DebtRoomUSDCRaw = quote.Unlevered && !quote.SpreadUnlevered && !p.unleveredEntry(quote.DestinationLane), quote.DebtRoomUSDCRaw
 	var feeKnown bool
 	c.GainRaw, feeKnown = selectorFeeReservedGain(s, p.Horizon, economics, float64(c.IdleRaw))

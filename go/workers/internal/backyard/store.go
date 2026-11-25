@@ -34,7 +34,7 @@ const OperationInsert = `INSERT INTO loyal_yield.multiply_operations (operation_
 var (
 	retiredRouteActions    = []Action{"SWAP_USDC_TO_PRIME_STEP", "SWAP_PRIME_TO_USDC_STEP", "OPEN_PRIME_USDC_STEP", "DELEVER_PRIME_USDC_STEP"}
 	routeMutationActions   = slices.Concat(retiredRouteActions, []Action{SwapStableToCollateralStep, SwapCollateralToStableStep, SwapDebtToCollateralStep, SwapCollateralToDebtStep, SwapUSDCToDebtStep, SwapDebtToUSDCStep, OpenRouteStep, DeleverRouteStep})
-	bridgeMutationActions  = []Action{VoltrAllocateToSquads, StageSquadsToVoltr, VoltrRestoreIdle}
+	bridgeMutationActions  = []Action{VoltrAllocateToSquads, StageSquadsToVoltr, VoltrRestoreIdle, PayPerformanceFee}
 	ticketConsumingActions = []Action{VoltrAllocateToSquads, VoltrRestoreIdle, ReportNAV}
 )
 
@@ -53,7 +53,7 @@ var LatestDecisionEpochSQL = `SELECT COALESCE((SELECT operation_id FROM loyal_yi
 var UnresolvedCapitalRecoverySQL = `SELECT EXISTS (SELECT 1 FROM loyal_yield.multiply_operations WHERE route_key = $1 AND status = 'manual_recovery' AND action IN (` + actionsSQL(bridgeMutationActions, routeMutationActions) + `))`
 
 const PersistSignedUpdate = `UPDATE loyal_yield.multiply_operations SET status = 'signed', message_sha256 = $2, signed_wire = $3, signed_wire_sha256 = $4, transaction_signature = $5, recent_blockhash = $6, last_valid_block_height = $7,
- simulation_slot = $8, simulation_result = $9::jsonb, expected_effects = jsonb_set(expected_effects, '{expectedEffects}', $10::jsonb), updated_at = now() WHERE operation_id = $1 AND status = 'decided'`
+ simulation_slot = $8, simulation_result = $9::jsonb, expected_effects = jsonb_set(expected_effects, '{expectedEffects}', $10::jsonb), updated_at = now() WHERE operation_id = $1 AND status = 'decided' AND (action <> 'PAY_PERFORMANCE_FEE' OR $10::jsonb->'performanceFee' IS NOT NULL)`
 
 const PersistBroadcastIntentUpdate = `UPDATE loyal_yield.multiply_operations SET status = 'broadcast_intent', broadcast_intent_at = now(), updated_at = now() WHERE operation_id = $1 AND status = 'signed' AND signed_wire IS NOT NULL`
 
@@ -793,15 +793,50 @@ func (d *Database) PersistSigned(ctx context.Context, operationID string, signed
 	if err != nil {
 		return err
 	}
-	tag, err := d.pool.Exec(ctx, PersistSignedUpdate, operationID, signed.messageSHA256, signed.signedWire, signed.signedWireSHA256,
-		signed.transactionSignature, signed.recentBlockhash, signed.lastValidBlockHeight, simulation.Slot, result, string(effects))
-	if err != nil {
-		return fmt.Errorf("persist exact signed wire: %w", err)
+	var fee struct {
+		PerformanceFee *performanceFeeEntry `json:"performanceFee"`
 	}
-	if tag.RowsAffected() != 1 {
-		return fmt.Errorf("persist signed wire found no decided operation")
+	if err := json.Unmarshal(effects, &fee); err != nil {
+		return err
 	}
-	return nil
+	query := PersistSignedUpdate
+	if d.vault == looping && fee.PerformanceFee == nil {
+		query += ` AND (action NOT IN ('REPORT_NAV','VOLTR_ALLOCATE_TO_SQUADS','STAGE_SQUADS_TO_VOLTR')
+             OR NOT EXISTS (SELECT 1 FROM loyal_yield.multiply_route_states s WHERE s.route_key=multiply_operations.route_key AND s.state ? 'performanceFee'))`
+	}
+	persist := func(ctx context.Context, exec interface {
+		Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+	}) error {
+		tag, err := exec.Exec(ctx, query, operationID, signed.messageSHA256, signed.signedWire, signed.signedWireSHA256,
+			signed.transactionSignature, signed.recentBlockhash, signed.lastValidBlockHeight, simulation.Slot, result, string(effects))
+		if err != nil {
+			return fmt.Errorf("persist exact signed wire: %w", err)
+		}
+		if tag.RowsAffected() != 1 {
+			return fmt.Errorf("persist signed wire found no matching decided operation")
+		}
+		return nil
+	}
+	if fee.PerformanceFee == nil {
+		return persist(ctx, d.pool)
+	}
+	if err := validateSignedFeeWire(signed, simulation, mustKey(backyardDelegate)); err != nil {
+		return err
+	}
+	return d.inTx(ctx, func(tx pgx.Tx) error {
+		var route string
+		var action Action
+		if err := tx.QueryRow(ctx, `SELECT route_key,action FROM loyal_yield.multiply_operations WHERE operation_id=$1`, operationID).Scan(&route, &action); err != nil {
+			return err
+		}
+		if (action == PayPerformanceFee) != (fee.PerformanceFee.Paid > 0) {
+			return fmt.Errorf("fee wire and operation disagree")
+		}
+		if err := checkFeeCheckpoint(ctx, tx, route, fee.PerformanceFee); err != nil {
+			return err
+		}
+		return persist(ctx, tx)
+	})
 }
 
 func (d *Database) MarkBroadcastIntent(ctx context.Context, operationID string) error {
@@ -834,7 +869,8 @@ func (d *Database) MarkReconciled(ctx context.Context, operationID string, recon
 		return fmt.Errorf("invalid reconciliation evidence")
 	}
 	var body struct {
-		Sale *realizedSale `json:"sale"`
+		Sale           *realizedSale        `json:"sale"`
+		PerformanceFee *performanceFeeEntry `json:"performanceFee"`
 	}
 	if err := json.Unmarshal(effects, &body); err != nil {
 		return fmt.Errorf("invalid reconciliation evidence")
@@ -844,12 +880,23 @@ func (d *Database) MarkReconciled(ctx context.Context, operationID string, recon
 		return err
 	}
 	defer tx.Rollback(ctx)
-	tag, err := tx.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET status='reconciled',confirmation_status='finalized',reconciliation_sha256=$2,reconciled_effects=$3::jsonb,updated_at=clock_timestamp() WHERE operation_id=$1 AND status IN ('confirmed','reconciling')`, operationID, reconciliation.EffectsSHA256, string(effects))
+	tag, err := tx.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET status='reconciled',confirmation_status='finalized',reconciliation_sha256=$2,reconciled_effects=$3::jsonb,updated_at=clock_timestamp() WHERE operation_id=$1 AND status IN ('confirmed','reconciling')
+        AND expected_effects #> '{expectedEffects,performanceFee}' IS NOT DISTINCT FROM ($3::jsonb->'performanceFee')
+        AND (action <> 'PAY_PERFORMANCE_FEE' OR $3::jsonb->'performanceFee' IS NOT NULL)
+        AND (NOT ($3::jsonb ? 'performanceFee') OR (confirmed_slot = ($3::jsonb->>'slot')::bigint AND transaction_signature = $3::jsonb->>'signature'))`, operationID, reconciliation.EffectsSHA256, string(effects))
 	if err != nil {
 		return err
 	}
 	if tag.RowsAffected() != 1 {
 		return fmt.Errorf("reconciliation found no landed operation")
+	}
+	if body.PerformanceFee != nil {
+		if reconciliation.EffectsSHA256 != sha256Bytes(effects) {
+			return fmt.Errorf("Looping fee reconciliation hash mismatch")
+		}
+		if err := saveFeeCheckpoint(ctx, tx, operationID, body.PerformanceFee); err != nil {
+			return err
+		}
 	}
 	if body.Sale != nil {
 		if cost, ok := body.Sale.exitCost(time.Now().UTC()); ok {

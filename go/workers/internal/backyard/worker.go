@@ -235,6 +235,10 @@ func productionTickRuntime(database *Database, rpc *chain.Client, view *View, ju
 			return o, err
 		},
 		prepareBridge: func(ctx context.Context, manifest RouteManifest, decision Decision, observation Observation) (Observation, BridgeExecutionEvidence, error) {
+			s := &observation.Snapshot
+			if f := s.performanceFee; f != nil && f.Version > 0 && (decision.Action == ReportNAV || decision.Action == PayPerformanceFee) && s.ChainUnix-f.LastAssessment >= 3600 {
+				database.observeFeeCapital(ctx, rpc, view, s)
+			}
 			return prepareBridgeFromTickObservation(ctx, rpc, view, manifest, decision, observation)
 		},
 		prepareKamino: func(ctx context.Context, manifest RouteManifest, decision Decision, observation Observation) (Observation, KaminoExecutionEvidence, error) {
@@ -523,7 +527,7 @@ func (w *Worker) prepare(ctx context.Context, decision Decision, observation Obs
 		}
 		prepared, r, err := w.runtime.prepareInitialization(ctx, w.manifest, wireDecision, observation)
 		return r, kaminoInitializationEffects(r), prepared, err
-	case VoltrAllocateToSquads, StageSquadsToVoltr, VoltrRestoreIdle, ReportNAV:
+	case VoltrAllocateToSquads, StageSquadsToVoltr, VoltrRestoreIdle, ReportNAV, PayPerformanceFee:
 		prepared, e, err := w.runtime.prepareBridge(ctx, w.manifest, wireDecision, observation)
 		return e.Request, e.ExpectedEffects, prepared, err
 	case OpenRouteStep, DeleverRouteStep:
