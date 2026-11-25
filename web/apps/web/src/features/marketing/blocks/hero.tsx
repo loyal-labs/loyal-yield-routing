@@ -10,7 +10,7 @@ export type HeroProps = {
   title: string;
   body: string;
   cta: { label: string; href: string };
-  image: { src: string; alt: string };
+  image: { src: string; alt: string; desktopAspectClassName?: string };
 };
 
 const TONE_STYLES: Record<
@@ -100,7 +100,8 @@ function HeroDefault({ tone, title, body, cta, image }: HeroProps) {
         </div>
         <div
           className={cn(
-            "relative aspect-square w-full overflow-hidden rounded-3xl lg:col-span-6 lg:col-start-7 lg:aspect-auto lg:h-[732px]",
+            "relative aspect-square w-full overflow-hidden rounded-3xl lg:col-span-6 lg:col-start-7",
+            image.desktopAspectClassName ?? "lg:aspect-auto lg:h-[732px]",
             styles.imageBg
           )}
         >
