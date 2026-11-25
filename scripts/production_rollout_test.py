@@ -83,7 +83,16 @@ class HealthTest(unittest.TestCase):
                 'ExecStart': f'/opt/loyal/releases/web/{NEW}/loyal-web cron earn-yield-joy'}
         for change, timer_change, expected in (
             ({'Result': 'exit-code', 'ExecMainStatus': '1'}, {}, 'scheduled job failed'),
+            ({'ActiveState': 'failed'}, {}, 'scheduled job failed'),
             ({'ExecMainExitTimestampMonotonic': '0'}, {}, 'no recent scheduled run'),
+            ({'ActiveState': 'activating', 'ExecMainStartTimestampMonotonic': '0',
+              'InactiveExitTimestampMonotonic': '1399999999'}, {}, 'no recent scheduled run'),
+            ({'ActiveState': 'activating', 'ExecMainStartTimestampMonotonic': '0'}, {}, 'no recent scheduled run'),
+            ({'ActiveState': 'active', 'ExecMainStartTimestampMonotonic': '1399999999'}, {}, 'no recent scheduled run'),
+            ({'ActiveState': 'active', 'ExecMainStartTimestampMonotonic': '1400000000'}, {}, None),
+            ({'ExecMainStartTimestampMonotonic': '100000000', 'ExecMainExitTimestampMonotonic': '199999999'}, {}, 'no recent scheduled run'),
+            ({'ExecMainStartTimestampMonotonic': '100000000', 'ExecMainExitTimestampMonotonic': '200000000'}, {}, None),
+            ({'ExecMainExitTimestampMonotonic': '2000000001'}, {}, 'no recent scheduled run'),
             ({'ExecStart': f'/opt/loyal/releases/web/{OLD}/loyal-web cron earn-yield-joy'}, {}, 'recovery override'),
             ({}, {'UnitFileState': 'disabled'}, 'timer'),
             ({}, {}, None),
@@ -93,13 +102,43 @@ class HealthTest(unittest.TestCase):
             with self.subTest(change=change, timer=timer), \
                  patch.object(health, 'cron_jobs', return_value=['earn-yield-joy']), \
                  patch.object(health, 'unit_properties', side_effect=[timer, state]), \
-                 patch.object(Path, 'read_text', return_value='1000 1000'), \
+                 patch.object(health.time, 'monotonic', return_value=2000), \
                  patch.object(health, 'command', return_value='-- cursor: cron-now'):
                 if expected:
                     with self.assertRaisesRegex(RuntimeError, expected):
                         health.cron_snapshot(NEW)
                 else:
-                    self.assertTrue(health.cron_snapshot(NEW)['earn-yield-joy']['completed'])
+                    self.assertEqual(health.cron_snapshot(NEW)['earn-yield-joy']['completed'], state['ActiveState'] == 'inactive')
+
+    def test_cron_startup_waits_for_the_executable_to_finish(self):
+        job = 'earn-max-referral-fees'
+        before = {job: {'cursor': 'preflight'}}
+        for active, started, finished, sampled_at in (
+            ('activating', 0, 0, 1000.464966),
+            ('activating', 1000759141, 0, 1000.760000),
+            ('inactive', 1000759141, 1000763306, 1000.764000),
+        ):
+            state = {'ActiveState': active, 'Result': 'success', 'ExecMainStatus': '0',
+                     'InactiveExitTimestampMonotonic': '1000421724', 'ExecMainStartTimestampMonotonic': str(started),
+                     'ExecMainExitTimestampMonotonic': str(finished), 'ExecStart': f'/opt/loyal/releases/web/{NEW}/loyal-web cron {job}'}
+
+            def properties(unit, fields):
+                if unit.endswith('.timer'):
+                    return {'ActiveState': 'active', 'UnitFileState': 'enabled'}
+                clock.return_value = sampled_at
+                return {key: state[key] for key in fields.split(',')}
+
+            with self.subTest(active=active, started=started), \
+                 patch.object(health, 'cron_jobs', return_value=[job]), \
+                 patch.object(health, 'unit_properties', side_effect=properties), \
+                 patch.object(health.time, 'monotonic', return_value=1000.4) as clock, \
+                 patch.object(health.time, 'time', return_value=10000 + sampled_at), \
+                 patch.object(health, 'journal_failures', return_value=[]) as journal, \
+                 patch.object(health, 'command', return_value='-- cursor: sampled'):
+                result = health.cron_snapshot(NEW, before)[job]
+                self.assertEqual(result['completed'], active == 'inactive')
+                self.assertAlmostEqual(result['started_at'], 10000 + started / 1e6 if started else 0)
+                journal.assert_called_once_with(f'loyal-web-cron@{job}.service', 'preflight')
 
     def test_cron_wallet_failures_and_partial_failure_summaries_stop_watch(self):
         for event in ({'msg': '[earn-yield-joy] wallet failed', 'level': 'WARN'},
