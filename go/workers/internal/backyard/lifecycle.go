@@ -72,6 +72,23 @@ func buildSimulatePersist(ctx context.Context, database *Database, rpc *chain.Cl
 			return checkErr
 		}
 	}
+	var feeSimulation SimulationResult
+	if effects.PerformanceFee != nil {
+		// Simulation goes to an external RPC. Expose a non-broadcastable wire
+		// until the sole writer has persisted the actual signed payment.
+		if err := validateFeeEffects(manifest.vault, effects); err != nil {
+			return err
+		}
+		feeSimulation, err = simulateWire(ctx, rpc, simulationWire(message), false)
+		if err != nil {
+			return simulationRefused(err)
+		}
+		feeSimulation.MessageSHA256 = sha256Bytes(message)
+		r, ok := withdrawalUnderlyingRequest(request).(BridgeBuildRequest)
+		if !ok || r.fee == nil || r.fee.Entry != *effects.PerformanceFee || !r.net.valid(time.Now(), feeSimulation.Slot) {
+			return staleHold("looping_fee_certificate_expired")
+		}
+	}
 	signer, err := credentials.signer()
 	if err != nil {
 		return err
@@ -84,6 +101,9 @@ func buildSimulatePersist(ctx context.Context, database *Database, rpc *chain.Cl
 		if err := database.bindWithdrawalCostWire(ctx, operationID, signed, encoded); err != nil {
 			return err
 		}
+	}
+	if effects.PerformanceFee != nil {
+		return database.PersistSigned(ctx, operationID, signed, feeSimulation, encoded)
 	}
 	start := time.Now()
 	simulation, err := simulateSigned(ctx, rpc, signed.signedWire)

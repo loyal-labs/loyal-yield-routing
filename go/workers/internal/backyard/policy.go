@@ -77,6 +77,36 @@ func backyardPolicies(v *Vault) (map[policyKey]squads.Policy, error) {
 	return out, first
 }
 
+// PerformanceFeePolicy is shared by governance installation and worker readback.
+func PerformanceFeePolicy(vault string, weeklyCapRaw int64) (squads.Policy, error) {
+	if vault != looping.Name || weeklyCapRaw <= 0 || weeklyCapRaw > loopingWeeklyFeeMaxRaw {
+		return squads.Policy{}, fmt.Errorf("invalid Looping fee policy cap or vault")
+	}
+	v := looping
+	pin := squads.Pin
+	transfer := spl.TransferCheckedAllowed(solana.TokenProgramID, spl.TransferAllowed{Source: pin(solanaKey(v.cash)), Mint: pin(solanaKey(fleet.USDCMint)), Destination: pin(solanaKey(loopingTreasuryUSDC)), Authority: pin(solanaKey(v.squads))}, 6,
+		squads.DataU64(spl.TransferCheckedAmountOffset, squads.OpGreaterThan, 0), squads.DataU64(spl.TransferCheckedAmountOffset, squads.OpLessThanOrEqualTo, uint64(weeklyCapRaw)))
+	p := vaultPolicy(v, transfer)
+	p.SpendingLimits = []squads.SpendingLimitView{{Mint: solanaKey(fleet.USDCMint), Period: squads.PeriodWeekly, MaxPerPeriod: uint64(weeklyCapRaw)}}
+	return p, nil
+}
+
+func installedFeePolicy(ctx context.Context, rpc *chain.Client, v *Vault, slot, cap int64) (squads.Installed, error) {
+	literal, err := PerformanceFeePolicy(v.Name, cap)
+	if err != nil {
+		return squads.Installed{}, err
+	}
+	policies, err := squads.Policies(ctx, rpc, solanaKey(backyardSettings), uint64(slot))
+	if err != nil {
+		return squads.Installed{}, unavailable(err)
+	}
+	found, n := squads.FindPolicy(policies, solanaKey(backyardSettings), solanaKey(backyardDelegate), literal)
+	if n != 1 {
+		return squads.Installed{}, staleHold("looping_fee_policy_not_unique")
+	}
+	return found, nil
+}
+
 func PolicyLiteral(vault, name string) (squads.Policy, error) {
 	v, err := findVault(vault)
 	if err != nil {
@@ -483,7 +513,7 @@ const (
 // bridgePolicyKey is the policy v's bridge executes action through: a
 // Trustful NAV report is a deposit of nothing, under the Deposit policy.
 func bridgePolicyKey(v *Vault, action Action) policyKey {
-	if v.trustful() && action == ReportNAV {
+	if v.trustful() && (action == ReportNAV || action == PayPerformanceFee) {
 		action = VoltrAllocateToSquads
 	}
 	return policyKey{action: action}

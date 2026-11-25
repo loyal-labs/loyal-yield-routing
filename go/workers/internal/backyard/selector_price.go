@@ -451,7 +451,7 @@ func (p lanePricer) priceMove(ctx context.Context, o Observation, source *Snapsh
 				keepAPR, errKeep := projectedBorrowAPR(market, debtMintRaw(funded.DebtRaw))
 				apr, errStep := projectedBorrowAPR(market, debtMintRaw(debt))
 				if !feeTerms || errKeep != nil || errStep != nil ||
-					!(upStepGain(market, upStep{CollateralMicros: collateralValue, DebtMicros: debtValue, AddedLiabilityMicros: float64(liability), ProceedsMicros: float64(proceeds), KeepDebtAPR: keepAPR, StepDebtAPR: apr, CostMicros: float64(stepCost.TotalMicros), Years: years, FeeBPS: s.ApprovedAdminPerformanceFeeBPS}) > 0) {
+					!(upStepGain(market, upStep{CollateralMicros: collateralValue, DebtMicros: debtValue, AddedLiabilityMicros: float64(liability), ProceedsMicros: float64(proceeds), KeepDebtAPR: keepAPR, StepDebtAPR: apr, CostMicros: float64(stepCost.TotalMicros), Years: years, FeeBPS: s.projectedFeeBPS()}) > 0) {
 					return false
 				}
 			}
@@ -691,7 +691,7 @@ func (p lanePricer) settleHeld(ctx context.Context, o Observation, s Snapshot, m
 			walkErr = err
 			return false
 		}
-		if !(upStepGain(m, upStep{CollateralMicros: collateral, DebtMicros: debt, AddedLiabilityMicros: float64(liability), ProceedsMicros: float64(proceeds), KeepDebtAPR: keepAPR, StepDebtAPR: apr, CostMicros: float64(step.TotalMicros), Years: years, FeeBPS: s.ApprovedAdminPerformanceFeeBPS}) > 0) {
+		if !(upStepGain(m, upStep{CollateralMicros: collateral, DebtMicros: debt, AddedLiabilityMicros: float64(liability), ProceedsMicros: float64(proceeds), KeepDebtAPR: keepAPR, StepDebtAPR: apr, CostMicros: float64(step.TotalMicros), Years: years, FeeBPS: s.projectedFeeBPS()}) > 0) {
 			return false
 		}
 		if cost, err = cost.plus(step); err != nil {

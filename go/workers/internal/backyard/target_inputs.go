@@ -20,11 +20,13 @@ type laneExit struct {
 }
 
 type targetInputs struct {
-	Levels    map[string]laneLevel
-	Exits     map[string]laneExit
-	Entry     *SelectorResult
-	ExitCosts exitCosts
-	admitted  *admittedWithdrawalDemand
+	performanceCashDelta int64
+	performanceFee       *performanceFeeState
+	Levels               map[string]laneLevel
+	Exits                map[string]laneExit
+	Entry                *SelectorResult
+	ExitCosts            exitCosts
+	admitted             *admittedWithdrawalDemand
 }
 
 // admittedWithdrawalDemand caps the demand a cost-bearing sale may fund to

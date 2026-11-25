@@ -39,13 +39,9 @@ import {
 // minted to the admin's LP ATA on harvest; every other fee field, the admin,
 // the manager and the vault configuration must stay exactly as they are.
 //
-//   bun src/activation/voltr-admin-performance-fee.ts --vault rwa --bps 1500
-//   CONFIRM_MAINNET=1 bun src/activation/voltr-admin-performance-fee.ts --vault rwa --bps 1500 --send
-//
-// Deploy the worker that accepts 0 and 1500 bps and verify both vaults are healthy.
-// Simulate both updates before activation. Change one vault at a time and verify
-// its finalized fee and worker health before changing the next. Enforce 1500 bps
-// alone after both vaults have been verified.
+// Rehearse the Backyard cutover with the worker's fee collection ready:
+//   bun src/activation/voltr-admin-performance-fee.ts --vault looping --bps 0
+// Earn Max uses the separate "rwa" vault and keeps its 1500 bps rate.
 
 const route = RWA_MULTIPLY_ROUTE;
 const ADMIN = route.setupAdmin;
@@ -97,6 +93,7 @@ function vaultState(snapshot: Pick<AccountSnapshot, "owner" | "data"> | null) {
     fees,
     vaultConfiguration: stable(vault.vaultConfiguration),
     highWaterMarkBits: vault.highWaterMark.highestAssetPerLpDecimalBits,
+    accruedAdminLp: vault.feeState.accumulatedLpAdminFees,
   };
 }
 
@@ -112,6 +109,7 @@ function checkResult(before: VaultState, after: VaultState, ata: AccountSnapshot
   invariant(after.fees.adminPerformanceFee === bps, `simulation resulted in ${after.fees.adminPerformanceFee} bps, not ${bps}`);
   invariant(othersUnchanged(before, after), "simulation changed another fee, the admin, the manager or the vault configuration");
   invariant(after.highWaterMarkBits >= before.highWaterMarkBits, "simulation lowered the high-water mark");
+  invariant(after.accruedAdminLp >= before.accruedAdminLp, "simulation reduced previously earned admin LP");
   invariant(ata && ata.owner === route.assets.tokenProgram, "admin LP ATA is absent after simulation");
   const token = getTokenDecoder().decode(ata.data);
   invariant(token.mint === lpMint && token.owner === ADMIN, "admin LP ATA has the wrong mint or owner");
@@ -188,6 +186,8 @@ async function main() {
     console.log(stable({
       verdict: "SIMULATION_PASS",
       after: after.fees,
+      accruedAdminLp: { before: before.accruedAdminLp, after: after.accruedAdminLp },
+      highWaterMarkBits: { before: before.highWaterMarkBits, after: after.highWaterMarkBits },
       adminLpAtaExisted: (await connection.getAccountInfo(new PublicKey(adminLpAta), "confirmed")) !== null,
       packetBytes: transaction.serialize().length,
       feeLamports: fee.value,

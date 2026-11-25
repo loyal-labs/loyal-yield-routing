@@ -131,10 +131,14 @@ func latestBlockhash(ctx context.Context, c *chain.Client) (LatestBlockhash, err
 }
 
 func simulateSigned(ctx context.Context, c *chain.Client, signedWire []byte) (SimulationResult, error) {
+	return simulateWire(ctx, c, signedWire, true)
+}
+
+func simulateWire(ctx context.Context, c *chain.Client, signedWire []byte, verify bool) (SimulationResult, error) {
 	if len(signedWire) == 0 {
 		return SimulationResult{}, fmt.Errorf("signed transaction wire is required")
 	}
-	simulated, err := c.Simulate(ctx, signedWire, rpc.SimulateTransactionOpts{SigVerify: true, Commitment: rpc.CommitmentConfirmed})
+	simulated, err := c.Simulate(ctx, signedWire, rpc.SimulateTransactionOpts{SigVerify: verify, Commitment: rpc.CommitmentConfirmed})
 	var failure *chain.SimulationError
 	if errors.As(err, &failure) {
 		raw, _ := json.Marshal(failure.Err)

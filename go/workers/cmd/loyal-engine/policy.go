@@ -78,6 +78,7 @@ func runPolicy(ctx context.Context, args []string, out io.Writer) error {
 	var mints publicKeys
 	flags.Var(&mints, "mint", "addresses: a mint whose vault ATA to print (repeatable)")
 	vaultIndex := flags.Uint("vault-index", 0, "smart account vault index")
+	weeklyFeeCap := flags.Int64("weekly-fee-cap-raw", 0, "maximum Looping performance fee payout per Squads week, in micro-USDC")
 	amount := flags.Uint64("amount", 1_000_000, "klend deposit or swap input amount, raw units")
 	delegateFlag := flags.String("delegate", "", "apply: the policy's delegated signer")
 	replaceFlag := flags.String("replace", "", "apply: comma-separated policies the new one replaces")
@@ -159,6 +160,12 @@ func runPolicy(ctx context.Context, args []string, out io.Writer) error {
 		}
 	case "backyard":
 		literal, err := backyard.PolicyLiteral(*vaultFlag, *literalFlag)
+		if *literalFlag == string(backyard.PayPerformanceFee) {
+			if settings.String() != "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6" || *delegateFlag != "62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5" {
+				return fmt.Errorf("Looping fee policy must use the approved Settings and delegate")
+			}
+			literal, err = backyard.PerformanceFeePolicy(*vaultFlag, *weeklyFeeCap)
+		}
 		if err != nil {
 			return err
 		}

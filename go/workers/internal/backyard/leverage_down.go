@@ -103,7 +103,7 @@ func (out leverageDecision) priceDownStep(s Snapshot, m LaneEconomics, p Selecto
 	yieldLost := (float64(reduction.CollateralMicros) + float64(reduction.Cost.NetworkMicros)) * math.Expm1((math.Log1p(m.NativeAPY)+math.Log1p(m.SupplyAPY))*years)
 	benefit := interestSaved - yieldLost
 	if benefit > 0 {
-		benefit *= 1 - float64(s.ApprovedAdminPerformanceFeeBPS)/10_000
+		benefit *= 1 - float64(s.projectedFeeBPS())/10_000
 	}
 	out.GainRaw = benefit - cost
 	if !finite(out.GainRaw) {
@@ -113,7 +113,7 @@ func (out leverageDecision) priceDownStep(s Snapshot, m LaneEconomics, p Selecto
 	if out.GainRaw <= float64(p.MinimumBenefitRaw)+debt*float64(p.UncertaintyBPS)/10_000 {
 		return out.held(leverageDownNotWorthCost)
 	}
-	feeKeep := 1 - float64(s.ApprovedAdminPerformanceFeeBPS)/10_000
+	feeKeep := 1 - float64(s.projectedFeeBPS())/10_000
 	budget := (interestSaved-yieldLost)*feeKeep - float64(p.MinimumBenefitRaw) - debt*float64(p.UncertaintyBPS)/10_000
 	// A per-dollar ceiling also bounds the sum of the sequence's expenses.
 	// It includes network fees and is checked against each new minimum quote.
