@@ -141,12 +141,12 @@ def wait_for_crons():
 
 def cron_snapshot(release, before=None):
     results = {}
-    uptime = float(Path('/proc/uptime').read_text().split()[0])
     for job in cron_jobs():
         unit = f'loyal-web-cron@{job}.service'
         timer = unit_properties(f'loyal-web-cron-{job}.timer', 'ActiveState,UnitFileState')
         require(timer.get('ActiveState') == 'active' and timer.get('UnitFileState') == 'enabled', f'{job}: cron timer is not enabled and active')
-        state = unit_properties(unit, 'Result,ExecMainStatus,ActiveState,ExecMainStartTimestampMonotonic,ExecMainExitTimestampMonotonic,ExecStart')
+        state = unit_properties(unit, 'Result,ExecMainStatus,ActiveState,InactiveExitTimestampMonotonic,'
+                                'ExecMainStartTimestampMonotonic,ExecMainExitTimestampMonotonic,ExecStart')
         require(state.get('Result') == 'success' and state.get('ExecMainStatus') == '0'
                 and state.get('ActiveState') in ('inactive', 'activating', 'active'), f'{job}: scheduled job failed')
         require(f'/opt/loyal/releases/web/{release}/loyal-web cron ' in state.get('ExecStart', ''),
@@ -154,15 +154,20 @@ def cron_snapshot(release, before=None):
         started = int(state.get('ExecMainStartTimestampMonotonic', '0')) / 1e6
         finished = int(state.get('ExecMainExitTimestampMonotonic', '0')) / 1e6
         running = state['ActiveState'] in ('activating', 'active')
-        require((running and started > 0 and 0 <= uptime - started <= 600)
-                or (not running and finished > 0 and 0 <= uptime - finished <= 1800), f'{job}: no recent scheduled run')
+        stamp = started if running else finished
+        if state['ActiveState'] == 'activating' and not started:
+            # systemd leaves inactive before it records the main executable's start.
+            stamp = int(state.get('InactiveExitTimestampMonotonic', '0')) / 1e6
+        now = time.monotonic()
+        started_at = time.time() - (now - started) if started else 0
+        require(stamp > 0 and 0 <= now - stamp <= (600 if running else 1800), f'{job}: no recent scheduled run')
         if before is not None:
             require(job in before, f'{job}: scheduled jobs changed during deployment')
             require(not journal_failures(unit, before[job]['cursor']), f'{job}: error since preflight; inspect its journal')
         cursor = re.search(r'^-- cursor: (.+)$', command('journalctl', '-u', unit, '-n', '0', '--show-cursor', '--no-pager'), re.M)
         require(cursor is not None, f'{job}: journal cursor unavailable')
-        results[job] = {'cursor': cursor[1], 'started_at': time.time() - uptime + started,
-                        'completed': finished >= started and state['ActiveState'] == 'inactive'}
+        results[job] = {'cursor': cursor[1], 'started_at': started_at,
+                        'completed': 0 < started <= finished and state['ActiveState'] == 'inactive'}
     return results
 
 
