@@ -1,4 +1,4 @@
-import { DEFAULT_SUPPORTED_CHAINS } from "@privy-io/chains";
+import { DEFAULT_SUPPORTED_CHAINS, mainnet } from "@privy-io/chains";
 import { PrivyProvider } from "@privy-io/expo";
 import type { ComponentProps, ReactNode } from "react";
 
@@ -8,7 +8,7 @@ import { ReceiveAuthorizationProvider } from "@/features/receive/ReceiveAuthoriz
 
 const supportedChains: ComponentProps<typeof PrivyProvider>["supportedChains"] =
   [
-    evmChains.ethereum,
+  mainnet,
     ...DEFAULT_SUPPORTED_CHAINS.filter(
       (chain) => chain.id !== evmChains.ethereum.id
     ),

@@ -146,14 +146,27 @@ export function useIncomingTransfer(identity: Identity) {
       reading = true;
       const at = ++sequence.current;
       try {
-        const [balances, transfers] = await Promise.all([
+        const [balances, transfers] = await Promise.allSettled([
           withBalances ? readIncomingBalances(request, signal) : undefined,
           readIncomingTransfers(request, signal),
         ]);
         if (signal.aborted) return;
-        dispatch({ type: "read", wallet: solana, at, balances, transfers, error: null });
+        dispatch({
+          type: "read",
+          wallet: solana,
+          at,
+          balances: balances.status === "fulfilled" ? balances.value : undefined,
+          transfers: transfers.status === "fulfilled" ? transfers.value : undefined,
+          error:
+            transfers.status === "rejected"
+              ? message(transfers.reason)
+              : balances.status === "rejected"
+              ? message(balances.reason)
+              : null,
+        });
+        if (transfers.status === "rejected") return;
         for (const saved of receipts.read()) {
-          if (recordedReceipt(transfers, saved.requestId)) {
+          if (recordedReceipt(transfers.value, saved.requestId)) {
             receipts.forget(saved.requestId);
             continue;
           }

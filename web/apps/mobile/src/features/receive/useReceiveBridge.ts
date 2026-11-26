@@ -243,7 +243,10 @@ export function useReceiveBridge(walletAddress: string | null, open: boolean) {
         timer = setTimeout(expire, Math.min(2_147_483_647, remaining));
       } else {
         active.tron = "ready";
-        patch(active, { tron: null });
+        patch(active, {
+          tron: null,
+          tronError: "Renew the TRON deposit address before sending funds.",
+        });
       }
     };
     expire();

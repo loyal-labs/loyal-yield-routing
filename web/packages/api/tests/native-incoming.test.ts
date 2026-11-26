@@ -75,6 +75,8 @@ let activeSolana = solana;
 let currentUser = owner;
 let routeAddress = evm;
 let routeFailure: unknown;
+let balanceFailure = false;
+let storageFailure = false;
 let confirmBlocker = false;
 let renewExternal: (() => Promise<void>) | undefined;
 let amount = "5000000";
@@ -181,7 +183,10 @@ stub("lib/solana/rpc/connection.ts", {
 stub("lib/storage.ts", {
   mmkv: {
     getString: (key: string) => storage.get(key),
-    setString: (k: string, v: string) => storage.set(k, v),
+    setString: (k: string, v: string) => {
+      if (storageFailure) throw Error("fixture disk full");
+      storage.set(k, v);
+    },
     delete: (k: string) => storage.delete(k),
   },
 });
@@ -202,6 +207,7 @@ stub("features/receive/funding-api.ts", {
         if (routeFailure) throw routeFailure;
         return { kind: "relay_signed", address: routeAddress, networks: [network] };
       case "balances":
+        if (balanceFailure) throw Error("fixture balances unavailable");
         return { balances: [{ chain: "base", asset: "usdc", amountRaw: amount, decimals: 6 }] };
       case "transfers":
         return { transfers };
@@ -264,6 +270,8 @@ beforeEach(() => {
   routeAddress = evm;
   routeFailure = undefined;
   confirmBlocker = false;
+  balanceFailure = false;
+  storageFailure = false;
   renewExternal = undefined;
   amount = "5000000";
   transfers = [];
@@ -382,7 +390,8 @@ test("an ambiguous deposit remains server-locked across reopening", async () => 
   expect(sponsorCalls).toHaveLength(2);
 });
 
-test("reopening with a known deposit hash records that hash without signing again", async () => {
+test("a reopened deposit hash is recorded even when balance discovery is down, without signing again", async () => {
+  balanceFailure = true;
   transfers = [confirmed];
   amount = "0";
   storage.set(
@@ -484,6 +493,15 @@ test("an approval revert stops the deposit; a refunded balance retries through a
   await click("Retry transfer");
   expect(container.textContent).toContain("Approve and send");
   expect(sponsorCalls).toHaveLength(1);
+});
+
+test("a local receipt storage failure still records the actual deposit hash with the backend", async () => {
+  await paint();
+  await click("Review transfer");
+  storageFailure = true;
+  await click("Approve and send");
+  expect(events.filter((e) => e === "submit")).toHaveLength(1);
+  expect(sponsorCalls).toHaveLength(2);
 });
 
 test("Tempo sponsorship signs a type-118 transaction with its quoted call", async () => {

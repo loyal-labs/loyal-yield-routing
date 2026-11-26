@@ -19,11 +19,32 @@ type Store = {
 export function receiptStore(store: Store, solana: string, sender: string) {
   const key = `loyal:incoming:${solana}:${sender.toLowerCase()}`;
   function read(): PendingReceipt[] {
-    return JSON.parse(store.getString(key) ?? "[]") as PendingReceipt[];
+    try {
+      const rows: unknown = JSON.parse(store.getString(key) ?? "[]");
+      return Array.isArray(rows)
+        ? rows.filter(
+            (r) =>
+              r &&
+              typeof r.requestId === "string" &&
+              /^0x[0-9a-f]{64}$/i.test(r.hash) &&
+              Number.isSafeInteger(r.chainId) &&
+              r.chainId > 0 &&
+              typeof r.chain === "string" &&
+              typeof r.asset === "string" &&
+              typeof r.symbol === "string",
+          )
+        : [];
+    } catch {
+      return [];
+    }
   }
   function write(receipts: PendingReceipt[]) {
-    if (receipts.length) store.setString(key, JSON.stringify(receipts));
-    else store.delete(key);
+    try {
+      if (receipts.length) store.setString(key, JSON.stringify(receipts));
+      else store.delete(key);
+    } catch {
+      // A device storage failure must still let /submit record the hash; Go also reconciles confirmed quotes.
+    }
   }
   return {
     read,
