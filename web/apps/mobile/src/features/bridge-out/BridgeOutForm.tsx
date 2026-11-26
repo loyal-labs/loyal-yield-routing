@@ -15,7 +15,13 @@ import {
 } from "react";
 import { Keyboard } from "react-native";
 import type { TextInput } from "react-native-gesture-handler";
+import Animated, {
+  Easing,
+  FadeIn,
+  useReducedMotion,
+} from "react-native-reanimated";
 
+import { Skeleton } from "@/components/Skeleton";
 import {
   formatAmountInputDisplay,
   formatUsdAmount,
@@ -30,6 +36,7 @@ import Currency from "../../../assets/images/bridge-out/currency.svg";
 import Down from "../../../assets/images/bridge-out/down.svg";
 import PillChevron from "../../../assets/images/bridge-out/pill-chevron.svg";
 import Chevron from "../../../assets/images/receive/chevron.svg";
+import Warning from "../../../assets/images/receive/warning.svg";
 import {
   bridgeAmountLabel,
   BridgeButton,
@@ -40,6 +47,15 @@ import type { useBridgeOut } from "./use-bridge-out";
 import { usdcForDollars } from "./amount";
 
 export type BridgeAmount = { usdc: string; dollars: string | null };
+
+const receiveFade = FadeIn.duration(150).easing(Easing.bezier(0.22, 1, 0.36, 1));
+const amountSkeleton = {
+  width: 92,
+  maxWidth: "100%",
+  height: 18,
+  borderRadius: 9,
+  backgroundColor: "#E5E5EA",
+} as const;
 
 type FormProps = {
   destination: BridgeDestination;
@@ -161,6 +177,8 @@ export function BridgeOutForm({
 }: FormProps) {
   const field = useRef<TextInput>(null);
   const { openKeyboard } = useKeyboardRescueFocus(field);
+  const reducedMotion = useReducedMotion();
+  const PendingAmount = reducedMotion ? View : Skeleton;
   const [focused, setFocused] = useState(false);
   const focusOnMount = useRef(!amount.usdc);
   useEffect(() => {
@@ -179,42 +197,35 @@ export function BridgeOutForm({
   const entered = amount.dollars ?? amount.usdc;
   const usdcAmount = Number(amount.usdc) || 0;
   const balance = balanceRaw === null ? null : bridgeAmountLabel(balanceRaw, 6);
-  const error = rejected
-    ? `Invalid ${network} address`
-    : out.quoteError?.message;
   const quote = hasAmount && recipient && !out.insufficient ? out.quote : null;
   const estimate = out.estimate;
 
-  function receiveDisplay(): { amount: string; detail?: string } {
-    if (!hasAmount) return { amount: "0", detail: "$0" };
+  function receiveProblem() {
+    if (out.insufficient) return "Insufficient USDC balance.";
     if (out.belowMinimum)
-      return {
-        amount: "Below minimum",
-        detail: `Minimum ${token.minUsdc} USDC for ${token.symbol} on ${network}.`,
-      };
-    if (out.insufficient)
-      return { amount: "Unavailable", detail: "Amount exceeds your USDC balance." };
+      return `Minimum ${token.minUsdc} USDC on ${network}`;
+    if (estimate && estimate.kind !== "priced") return estimate.reason;
+    if (rejected) return `Invalid ${network} address`;
+    return out.quoteError?.message;
+  }
+  function receiveDisplay(): { amount: string | null; detail?: string } {
+    if (!hasAmount) return { amount: "0", detail: "$0" };
     const priced = quote ?? (estimate?.kind === "priced" ? estimate : null);
-    if (priced) {
-      const value = bridgeAmountLabel(priced.amountOutRaw, token.decimals);
-      const usd =
-        priced.amountOutUsd && Number.isFinite(Number(priced.amountOutUsd))
-          ? formatUsdAmount(Number(priced.amountOutUsd))
-          : null;
-      const amount = value === "0" ? "<0.000001" : value;
-      if (quote) return { amount, detail: usd ? `≈${usd}` : undefined };
-      return { amount, detail: usd ? `Estimated · ${usd}` : "Estimated" };
-    }
-    if (estimate && estimate.kind !== "priced")
-      return {
-        amount: estimate.kind === "below-minimum" ? "Below minimum" : "Unavailable",
-        detail: estimate.reason,
-      };
-    if (balanceRaw === null) return { amount: "Checking balance…" };
-    if (recipient && out.quoteError) return { amount: "Unavailable" };
-    return { amount: recipient ? "Getting quote…" : "Estimating…" };
+    if (!priced) return { amount: null };
+    const value = bridgeAmountLabel(priced.amountOutRaw, token.decimals);
+    const usd =
+      priced.amountOutUsd && Number.isFinite(Number(priced.amountOutUsd))
+        ? formatUsdAmount(Number(priced.amountOutUsd))
+        : null;
+    const amount = value === "0" ? "<0.000001" : value;
+    if (quote) return { amount, detail: usd ? `≈${usd}` : undefined };
+    return { amount, detail: usd ? `Estimated · ${usd}` : "Estimated" };
   }
   const receive = receiveDisplay();
+  const problem = receiveProblem();
+  const pending = receive.amount === null && !problem;
+  const pendingLabel =
+    balanceRaw === null ? "Checking balance…" : recipient ? "Getting quote…" : "Estimating…";
 
   function changeAmount(input: string) {
     const value = input.replace(",", ".");
@@ -241,21 +252,27 @@ export function BridgeOutForm({
   }
 
   function primaryAction(): ComponentProps<typeof BridgeButton> {
-    if (sending) return { label: "Sending…" };
+    if (sending) return { label: "Sending…", tone: "secondary" };
     if (!hasAmount) return { label: "Enter amount", onPress: openKeyboard };
-    if (balanceRaw === null) return { label: "Loading balance…" };
-    if (out.insufficient)
-      return { label: "Insufficient balance", onPress: openKeyboard };
-    if (out.belowMinimum || estimate?.kind === "below-minimum")
+    if (
+      out.insufficient ||
+      out.belowMinimum ||
+      estimate?.kind === "below-minimum"
+    )
       return { label: "Change amount", onPress: openKeyboard };
+    if (balanceRaw === null)
+      return { label: recipient ? "Get quote" : "Enter recipient", tone: "secondary" };
     if (!recipient || rejected)
-      return { label: "Enter recipient", onPress: () => openPage("recipient") };
+      return {
+        label: rejected ? "Edit recipient" : "Enter recipient",
+        onPress: () => openPage("recipient"),
+      };
     if (out.quoteError?.retryable)
       return { label: "Try again", onPress: out.retry, tone: "primary" };
     if (out.quoteError)
       return { label: "Change amount", onPress: openKeyboard };
     if (!out.ready || !quote)
-      return { label: quote ? "Checking transfer…" : "Getting quote…" };
+      return { label: quote ? "Checking transfer…" : "Get quote", tone: "secondary" };
     return {
       label: "Send now",
       tone: "primary",
@@ -378,15 +395,36 @@ export function BridgeOutForm({
               You receive
             </Text>
             <View className="h-[48px] flex-row items-center gap-[8px]">
-              <Text
+              <View
+                accessible
+                accessibilityRole="text"
                 accessibilityLabel="You receive amount"
-                accessibilityValue={{ text: receive.amount }}
-                numberOfLines={1}
-                adjustsFontSizeToFit
-                className="min-w-0 flex-1 text-[32px] leading-[38px] font-semibold text-black"
+                accessibilityLiveRegion="polite"
+                accessibilityState={{ busy: pending }}
+                accessibilityValue={{
+                  text: receive.amount !== null
+                    ? `${receive.amount} ${token.symbol}`
+                    : pending ? pendingLabel : "Unavailable",
+                }}
+                className="min-w-0 flex-1 justify-center"
               >
-                {receive.amount}
-              </Text>
+                {pending ? (
+                  <PendingAmount style={amountSkeleton} />
+                ) : (
+                  <Animated.View
+                    key={receive.amount}
+                    entering={!reducedMotion && hasAmount ? receiveFade : undefined}
+                  >
+                    <Text
+                      numberOfLines={1}
+                      adjustsFontSizeToFit
+                      className={`text-[32px] leading-[38px] font-semibold ${receive.amount === null ? "text-[#8A8A8E]" : "text-black"}`}
+                    >
+                      {receive.amount ?? "—"}
+                    </Text>
+                  </Animated.View>
+                )}
+              </View>
               <TokenPill
                 symbol={token.symbol}
                 network={network}
@@ -397,12 +435,28 @@ export function BridgeOutForm({
                 onPress={() => openPage("assets")}
               />
             </View>
-            <Text
-              accessibilityLiveRegion="polite"
-              className="min-h-[20px] text-[15px] leading-[20px] text-[#8A8A8E]"
-            >
-              {receive.detail}
-            </Text>
+            {(receive.detail || !problem) && (
+              <Text className="min-h-[20px] text-[15px] leading-[20px] text-[#8A8A8E]">
+                {receive.detail}
+              </Text>
+            )}
+            {!!problem && (
+              <Animated.View
+                key={problem}
+                entering={reducedMotion ? undefined : receiveFade}
+              >
+                <View className="min-h-[20px] flex-row items-center gap-[6px]">
+                  <Warning width={16} height={16} accessible={false} />
+                  <Text
+                    accessibilityRole="alert"
+                    accessibilityLiveRegion="polite"
+                    className="shrink text-[13px] leading-[18px] text-[#CF2129]"
+                  >
+                    {problem}
+                  </Text>
+                </View>
+              </Animated.View>
+            )}
           </View>
         </View>
 
@@ -452,14 +506,12 @@ export function BridgeOutForm({
         {quote && <QuoteDetails quote={quote} token={token} />}
       </BottomSheetScrollView>
       <View className="gap-[8px] px-[20px] pt-[16px] pb-[16px]">
-        {!!(error || out.notice) && (
+        {!!out.notice && !out.quoteError && (
           <Text
             accessibilityLiveRegion="polite"
-            className={`text-center text-[13px] leading-[16px] ${
-              error ? "text-[#CF2129]" : "text-[#8A8A8E]"
-            }`}
+            className="text-center text-[13px] leading-[16px] text-[#8A8A8E]"
           >
-            {error || out.notice}
+            {out.notice}
           </Text>
         )}
         <BridgeButton tone="attention" {...primaryAction()} />
