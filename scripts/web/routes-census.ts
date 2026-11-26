@@ -206,17 +206,17 @@ function goOnly(path: string): boolean {
   return GO_ONLY_PREFIXES.some((prefix) => path === prefix || path.startsWith(`${prefix}/`));
 }
 
-function webClientPaths(): ClientPath[] {
+function literalClientPaths(dir: string, base: string, include: (path: string) => boolean): ClientPath[] {
   const paths: ClientPath[] = [];
-  for (const file of walk(webSrc, (f) => /\.tsx?$/.test(f) && !f.startsWith(join(webSrc, "app/api/")) && !/(__tests__|\.test\.)/.test(f))) {
+  for (const file of walk(dir, (f) => /\.tsx?$/.test(f) && !f.startsWith(join(webSrc, "app/api/")) && !/(__tests__|\/generated\/|\.test\.)/.test(f))) {
     const sf = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true);
     const visit = (node: ts.Node) => {
       let path: string | undefined;
       if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) path = node.text;
       else if (ts.isTemplateExpression(node)) path = node.head.text + node.templateSpans.map((span) => `{}${span.literal.text}`).join("");
       path = path?.split("?")[0];
-      if (path?.startsWith("/api/") && goOnly(path)) {
-        paths.push({ base: "web", method: callMethod(node), path, at: `${relative(root, file)}:${sf.getLineAndCharacterOfPosition(node.getStart()).line + 1}` });
+      if (path?.startsWith("/api/") && include(path)) {
+        paths.push({ base, method: callMethod(node), path, at: `${relative(root, file)}:${sf.getLineAndCharacterOfPosition(node.getStart()).line + 1}` });
       }
       if (!ts.isTemplateExpression(node)) ts.forEachChild(node, visit);
     };
@@ -335,7 +335,14 @@ export function goServedMobileCalls(): GoServedCall[] {
 function main(): void {
   const next: Record<NextApp, Server[]> = { web: nextRoutes("web"), telegram: nextRoutes("telegram") };
   const go = goRoutes(openapiOf("loyal-web"));
-  const paths = clientPaths();
+  // Funding operations can provision an address or confirm a transfer. Check
+  // their routes statically, including calls made by the shared bridge client.
+  const funding = (path: string) => path.startsWith("/api/funding/");
+  const paths = [
+    ...clientPaths(),
+    ...literalClientPaths(join(mobile, "src/features/receive"), "apiBaseUrl", funding),
+    ...literalClientPaths(join(web, "packages/api/src"), "apiBaseUrl", funding),
+  ];
 
   const seen = new Set<string>();
   let matched = 0;
@@ -357,7 +364,7 @@ function main(): void {
   }
   checkTwins(next);
   checkGoMobile(go);
-  checkGoOnly([...paths, ...webClientPaths()], next.web, go);
+  checkGoOnly([...paths, ...literalClientPaths(webSrc, "web", goOnly)], next.web, go);
   checkGeneratedTypes();
 
   if (errors.length > 0) {

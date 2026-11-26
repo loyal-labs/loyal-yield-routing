@@ -2,20 +2,16 @@ import { useEarnEarnings } from "@/hooks/wallet/useEarnEarnings";
 import { useEarnMax } from "@/features/earn-max/EarnMaxProvider";
 import { useUnshield } from "@loyal-labs/wallet-core/hooks";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { ArrowDown, ArrowUp } from "lucide-react-native";
+import { ShieldOff } from "lucide-react-native";
 import {
-  type ComponentRef,
+  type ReactNode,
   useCallback,
   useEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
-import {
-  ActivityIndicator,
-  RefreshControl,
-  View as MeasureView,
-} from "react-native";
+import { ActivityIndicator, RefreshControl } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { LogoHeader } from "@/components/LogoHeader";
@@ -28,11 +24,16 @@ import { nudgeQuestProgressCheck } from "@/components/quests/QuestCompletionWatc
 import { AddEmailNudge } from "@/components/wallet/AddEmailNudge";
 import { BalanceBackgroundPicker } from "@/components/wallet/BalanceBackgroundPicker";
 import { BalanceCard } from "@/components/wallet/BalanceCard";
-import { ReceiveSheet } from "@/components/wallet/ReceiveSheet";
+import {
+  ReceiveSheetModal,
+  type ReceiveTab,
+  useReceiveSheetBridge,
+} from "@/components/wallet/ReceiveSheet";
 import { SendSheet } from "@/components/wallet/SendSheet";
 import { SwapSheet } from "@/components/wallet/SwapSheet";
 import { UnshieldSheet } from "@/components/wallet/UnshieldSheet";
 import { shouldShowWalletTopUp } from "@/components/wallet/wallet-screen-helpers";
+import { IncomingBridge } from "@/features/receive/incoming/IncomingBridge";
 import {
   filterHoldingsByCategory,
   holdingUsdValue,
@@ -43,11 +44,6 @@ import {
   buildEarnHref,
   buildStablecoinsHref,
 } from "@/features/wallet-categories/routes";
-import { ActionBarButton } from "@/features/wallet-categories/ui/ActionBarButton";
-import {
-  type MoreActionsAnchor,
-  MoreActionsSheet,
-} from "@/features/wallet-categories/ui/MoreActionsSheet";
 import { WalletCategoryGrid } from "@/features/wallet-categories/ui/WalletCategoryGrid";
 import { useEarnForecast } from "@/hooks/wallet/useEarnForecast";
 import { useEarnPosition } from "@/hooks/wallet/useEarnPosition";
@@ -79,9 +75,38 @@ import {
 } from "@/lib/solana/wallet-cache";
 import { DEFAULT_BALANCE_BACKGROUND_ID } from "@/lib/wallet/balance-backgrounds";
 import { isWalletUnlocked, useWallet } from "@/lib/wallet/wallet-provider";
-import { ScrollView, Text, View } from "@/tw";
+import { Pressable, ScrollView, Text, View } from "@/tw";
 
-import EllipsisIcon from "../../assets/images/icons/ellipsis.svg";
+import BridgeIcon from "../../assets/images/receive/bridge.svg";
+import ReceiveIcon from "../../assets/images/receive/receive.svg";
+import SendIcon from "../../assets/images/receive/send.svg";
+import SwapIcon from "../../assets/images/receive/swap.svg";
+
+function WalletAction({
+  label,
+  icon,
+  onPress,
+}: {
+  label: string;
+  icon: ReactNode;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      onPress={onPress}
+      className="flex-1 items-center gap-2 active:opacity-60"
+    >
+      <View className="h-[52px] w-[52px] items-center justify-center rounded-full bg-black/[0.04]">
+        {icon}
+      </View>
+      <Text className="text-center text-[13px] leading-4 text-[#8A8A8E]">
+        {label}
+      </Text>
+    </Pressable>
+  );
+}
 
 export default function WalletScreen() {
   const {
@@ -254,12 +279,11 @@ export default function WalletScreen() {
 
   const [isSendOpen, setIsSendOpen] = useState(false);
   const [sendWithScanner, setSendWithScanner] = useState(false);
-  const [isReceiveOpen, setIsReceiveOpen] = useState(false);
+  const [receiveTab, setReceiveTab] = useState<ReceiveTab | null>(null);
+  const receiveBridge = useReceiveSheetBridge(walletAddress, receiveTab);
+  useEffect(() => setReceiveTab(null), [walletAddress]);
   const [isSwapOpen, setIsSwapOpen] = useState(false);
   const [isUnshieldOpen, setIsUnshieldOpen] = useState(false);
-  const [isMoreOpen, setIsMoreOpen] = useState(false);
-  const [moreAnchor, setMoreAnchor] = useState<MoreActionsAnchor | null>(null);
-  const moreButtonRef = useRef<ComponentRef<typeof MeasureView>>(null);
   const [isBgPickerOpen, setIsBgPickerOpen] = useState(false);
   const [isDepositOpen, setIsDepositOpen] = useState(false);
   const [balanceBg, setBalanceBg] = useState<string | null>(() => {
@@ -391,12 +415,58 @@ export default function WalletScreen() {
             walletError={walletError}
             onRetry={retryWalletInit}
             showTopUpAction={showTopUpAction}
-            onTopUpPress={() => setIsReceiveOpen(true)}
+            onTopUpPress={() => setReceiveTab("Solana")}
             balanceBg={balanceBg}
             onOpenBgPicker={() => setIsBgPickerOpen(true)}
           />
 
-          <View style={{ flex: 1, marginTop: 16 }}>
+          <View className="flex-row items-start pt-5 pb-4">
+            <WalletAction
+              label="Send"
+              icon={<SendIcon width={28} height={28} />}
+              onPress={() => {
+                track(PORTFOLIO_EVENTS.openSend);
+                openSend(false);
+              }}
+            />
+            <WalletAction
+              label="Receive"
+              icon={<ReceiveIcon width={28} height={28} />}
+              onPress={() => {
+                track(PORTFOLIO_EVENTS.openReceive);
+                setReceiveTab("Solana");
+              }}
+            />
+            <WalletAction
+              label="Swap"
+              icon={<SwapIcon width={28} height={28} />}
+              onPress={() => {
+                track(PORTFOLIO_EVENTS.openSwap);
+                setIsSwapOpen(true);
+              }}
+            />
+            {receiveBridge.launched && (
+              <WalletAction
+                label="Bridge"
+                icon={<BridgeIcon width={28} height={28} />}
+                onPress={() => setReceiveTab("Other chains")}
+              />
+            )}
+            {shieldedBalances.length > 0 && (
+              <WalletAction
+                label="Unshield"
+                icon={<ShieldOff size={28} color="#000" />}
+                onPress={() => {
+                  void refreshShieldedBalances();
+                  setIsUnshieldOpen(true);
+                }}
+              />
+            )}
+          </View>
+
+          <IncomingBridge walletAddress={walletAddress} />
+
+          <View style={{ flex: 1 }}>
             <WalletCategoryGrid
               earnUsd={earnUsd}
               earnMonthUsd={earnings?.rangeEarnedUsd ?? null}
@@ -416,51 +486,6 @@ export default function WalletScreen() {
               onPressCrypto={(rect) => router.push(buildCryptoHref(rect))}
             />
           </View>
-
-          <View
-            className="flex-row items-center gap-2 px-4"
-            style={{ paddingTop: 16 }}
-          >
-            <ActionBarButton
-              variant="primary"
-              label="Send"
-              icon={<ArrowUp size={28} color="#FFFFFF" strokeWidth={2} />}
-              onPress={() => {
-                track(PORTFOLIO_EVENTS.openSend);
-                openSend(false);
-              }}
-            />
-            <ActionBarButton
-              variant="secondary"
-              label="Receive"
-              icon={
-                <ArrowDown
-                  size={28}
-                  color="#3C3C43"
-                  strokeWidth={2}
-                  opacity={0.6}
-                />
-              }
-              onPress={() => {
-                track(PORTFOLIO_EVENTS.openReceive);
-                setIsReceiveOpen(true);
-              }}
-            />
-            <MeasureView ref={moreButtonRef} collapsable={false}>
-              <ActionBarButton
-                variant="secondary"
-                icon={<EllipsisIcon width={28} height={28} />}
-                onPress={() => {
-                  moreButtonRef.current?.measureInWindow(
-                    (x, y, width, height) => {
-                      setMoreAnchor({ x, y, width, height });
-                      setIsMoreOpen(true);
-                    }
-                  );
-                }}
-              />
-            </MeasureView>
-          </View>
         </View>
       </ScrollView>
 
@@ -475,10 +500,13 @@ export default function WalletScreen() {
         initialShowScanner={sendWithScanner}
       />
 
-      <ReceiveSheet
-        open={isReceiveOpen}
-        onClose={() => setIsReceiveOpen(false)}
+      <ReceiveSheetModal
+        open={receiveTab !== null}
+        tab={receiveTab ?? "Solana"}
+        onTabChange={setReceiveTab}
+        onClose={() => setReceiveTab(null)}
         walletAddress={walletAddress}
+        bridge={receiveBridge}
       />
 
       <SwapSheet
@@ -498,32 +526,6 @@ export default function WalletScreen() {
         tokenHoldings={tokenHoldings}
         tokenDetailsByMint={tokenDetailsByMint}
         onUnshieldComplete={() => void requestRefresh("mutation")}
-      />
-
-      <MoreActionsSheet
-        open={isMoreOpen}
-        onClose={() => setIsMoreOpen(false)}
-        anchor={moreAnchor}
-        onSend={() => {
-          track(PORTFOLIO_EVENTS.openSend);
-          openSend(false);
-        }}
-        onReceive={() => {
-          track(PORTFOLIO_EVENTS.openReceive);
-          setIsReceiveOpen(true);
-        }}
-        onSwap={() => {
-          track(PORTFOLIO_EVENTS.openSwap);
-          setIsSwapOpen(true);
-        }}
-        onUnshield={
-          shieldedBalances.length > 0
-            ? () => {
-                void refreshShieldedBalances();
-                setIsUnshieldOpen(true);
-              }
-            : undefined
-        }
       />
 
       <BalanceBackgroundPicker

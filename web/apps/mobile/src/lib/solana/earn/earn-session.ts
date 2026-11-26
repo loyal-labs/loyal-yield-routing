@@ -244,8 +244,11 @@ export async function silentEarnToken(
 
 type BearerInit = {
   body?: string;
+  credentials?: RequestCredentials;
   flowId?: string;
+  interactive?: boolean;
   method?: "GET" | "POST";
+  signal?: AbortSignal;
   timeoutMs?: number;
 };
 
@@ -256,7 +259,9 @@ function getWithBearer(
 ): Promise<Response> {
   return fetchWithTimeout(url, {
     body: init.body,
+    credentials: init.credentials,
     method: init.method ?? "GET",
+    signal: init.signal,
     timeoutMs: init.timeoutMs,
     headers: token
       ? { ...earnHeaders(init.flowId), Authorization: `Bearer ${token}` }
@@ -281,14 +286,24 @@ export async function earnWalletRead(
   init: BearerInit = {},
 ): Promise<Response> {
   const startedAt = generation;
-  const token = await silentEarnToken(walletAddress);
+  const renew = async () => {
+    if (init.signal?.aborted) return null;
+    const signer = await activeSignerFor(walletAddress);
+    if (!signer || init.signal?.aborted) return null;
+    return init.interactive ? deliberateSession(signer) : silentSession(signer);
+  };
+  const token = init.interactive
+    ? (await getEarnSessionToken(walletAddress)) ?? (await renew())
+    : await silentEarnToken(walletAddress);
+  if (init.interactive && !token) {
+    throw new Error("Authorize this wallet to continue.");
+  }
   const res = await getWithBearer(url, token, init);
   if (!token || !(await isInvalidSession(res))) {
     return res;
   }
   await dropRejectedToken(walletAddress, token);
-  const signer = await activeSignerFor(walletAddress);
-  const fresh = signer ? await silentSession(signer) : null;
+  const fresh = await renew();
   if (!fresh) {
     return res;
   }

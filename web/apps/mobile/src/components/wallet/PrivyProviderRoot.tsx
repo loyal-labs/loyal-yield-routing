@@ -1,7 +1,24 @@
+import { DEFAULT_SUPPORTED_CHAINS } from "@privy-io/chains";
 import { PrivyProvider } from "@privy-io/expo";
-import type { ReactNode } from "react";
+import type { ComponentProps, ReactNode } from "react";
 
 import { env } from "@/config/env";
+import { evmChains } from "@/features/receive/evm-chains";
+import { ReceiveAuthorizationProvider } from "@/features/receive/ReceiveAuthorization";
+
+const supportedChains: ComponentProps<typeof PrivyProvider>["supportedChains"] =
+  [
+    evmChains.ethereum,
+    ...DEFAULT_SUPPORTED_CHAINS.filter(
+      (chain) => chain.id !== evmChains.ethereum.id
+    ),
+    ...Object.values(evmChains).filter(
+      (chain) =>
+        !DEFAULT_SUPPORTED_CHAINS.some(
+          (defaultChain) => defaultChain.id === chain.id
+        )
+    ),
+  ];
 
 export function isPrivyConfigured(): boolean {
   return env.privyAppId.length > 0;
@@ -16,9 +33,10 @@ export function PrivyProviderRoot({ children }: { children: ReactNode }) {
     <PrivyProvider
       appId={env.privyAppId}
       clientId={env.privyClientId || undefined}
+      supportedChains={supportedChains}
       config={{ embedded: { solana: { createOnLogin: "off" } } }}
     >
-      {children}
+      <ReceiveAuthorizationProvider>{children}</ReceiveAuthorizationProvider>
     </PrivyProvider>
   );
 }

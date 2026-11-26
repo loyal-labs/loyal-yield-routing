@@ -4,6 +4,7 @@ module.exports = {
   maxWorkers: 2,
   testEnvironment: "node",
   moduleNameMapper: {
+    "^@loyal-labs/api$": "<rootDir>/../../packages/api/src/index",
     "^@/(.*)$": "<rootDir>/src/$1",
     "^@loyal-labs/shared$": "<rootDir>/../../packages/shared/src/index",
     "^@loyal-labs/wallet-core/lib$":

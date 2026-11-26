@@ -5,6 +5,7 @@ const { withNativewind } = require("nativewind/metro");
 /** @type {import('expo/metro-config').MetroConfig} */
 const config = getDefaultConfig(__dirname);
 
+const apiRoot = path.resolve(__dirname, "../../packages/api/src");
 const sharedRoot = path.resolve(__dirname, "../../packages/shared");
 const solanaRpcRoot = path.resolve(__dirname, "../../packages/solana-rpc/src");
 const walletCoreRoot = path.resolve(__dirname, "../../packages/wallet-core/src");
@@ -27,6 +28,7 @@ const solanaInstructionDecoderRoot = path.resolve(
   "../../packages/solana-instruction-decoder/src",
 );
 config.watchFolders = [
+  apiRoot,
   sharedRoot,
   solanaRpcRoot,
   walletCoreRoot,
@@ -42,6 +44,7 @@ config.resolver.nodeModulesPaths = [
   path.resolve(__dirname, "../../node_modules"),
 ];
 config.resolver.extraNodeModules = {
+  "@loyal-labs/api": apiRoot,
   "@loyal-labs/solana-rpc": solanaRpcRoot,
   "@loyal-labs/wallet-core/hooks": path.resolve(walletCoreRoot, "hooks/index.ts"),
   "@loyal-labs/wallet-core/lib": path.resolve(walletCoreRoot, "lib/index.ts"),
