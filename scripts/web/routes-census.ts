@@ -340,7 +340,7 @@ function main(): void {
   const funding = (path: string) => path.startsWith("/api/funding/");
   const paths = [
     ...clientPaths(),
-    ...literalClientPaths(join(mobile, "src/features/receive"), "apiBaseUrl", funding),
+    ...literalClientPaths(join(mobile, "src/features"), "apiBaseUrl", funding),
     ...literalClientPaths(join(web, "packages/api/src"), "apiBaseUrl", funding),
   ];
 

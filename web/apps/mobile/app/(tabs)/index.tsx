@@ -33,6 +33,7 @@ import { SendSheet } from "@/components/wallet/SendSheet";
 import { SwapSheet } from "@/components/wallet/SwapSheet";
 import { UnshieldSheet } from "@/components/wallet/UnshieldSheet";
 import { shouldShowWalletTopUp } from "@/components/wallet/wallet-screen-helpers";
+import { BridgeOutSheet } from "@/features/bridge-out/BridgeOutSheet";
 import { IncomingBridge } from "@/features/receive/incoming/IncomingBridge";
 import {
   filterHoldingsByCategory,
@@ -281,6 +282,19 @@ export default function WalletScreen() {
   const [sendWithScanner, setSendWithScanner] = useState(false);
   const [receiveTab, setReceiveTab] = useState<ReceiveTab | null>(null);
   const receiveBridge = useReceiveSheetBridge(walletAddress, receiveTab);
+  const [bridgeWallet, setBridgeWallet] = useState<string | null>(null);
+  const activeBridgeWallet =
+    receiveBridge.launched && isWalletUnlocked(state) ? walletAddress : null;
+  const bridgeHolding = tokenHoldings.find(
+    (holding) => holding.mint === SOLANA_USDC_MINT_MAINNET
+  );
+  const bridgePriceUsd =
+    tokenDetailsByMint[SOLANA_USDC_MINT_MAINNET]?.market.priceUsd ??
+    bridgeHolding?.priceUsd ??
+    (bridgeHolding?.valueUsd != null && bridgeHolding.balance > 0
+      ? bridgeHolding.valueUsd / bridgeHolding.balance
+      : null);
+  useEffect(() => setBridgeWallet(null), [activeBridgeWallet]);
   useEffect(() => setReceiveTab(null), [walletAddress]);
   const [isSwapOpen, setIsSwapOpen] = useState(false);
   const [isUnshieldOpen, setIsUnshieldOpen] = useState(false);
@@ -445,11 +459,11 @@ export default function WalletScreen() {
                 setIsSwapOpen(true);
               }}
             />
-            {receiveBridge.launched && (
+            {activeBridgeWallet && (
               <WalletAction
                 label="Bridge"
                 icon={<BridgeIcon width={28} height={28} />}
-                onPress={() => setReceiveTab("Other chains")}
+                onPress={() => setBridgeWallet(activeBridgeWallet)}
               />
             )}
             {shieldedBalances.length > 0 && (
@@ -507,6 +521,16 @@ export default function WalletScreen() {
         onClose={() => setReceiveTab(null)}
         walletAddress={walletAddress}
         bridge={receiveBridge}
+      />
+
+      <BridgeOutSheet
+        open={bridgeWallet !== null && bridgeWallet === activeBridgeWallet}
+        walletAddress={activeBridgeWallet}
+        priceUsd={bridgePriceUsd}
+        onClose={(submitted) => {
+          setBridgeWallet(null);
+          if (submitted) void requestRefresh("mutation");
+        }}
       />
 
       <SwapSheet
