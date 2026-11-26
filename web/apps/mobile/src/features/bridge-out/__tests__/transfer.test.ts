@@ -23,6 +23,7 @@ import {
   quoteOut,
   reconcileReceipt,
   sendReviewedQuote,
+  transferStep,
   type Request,
 } from "../transfer";
 
@@ -314,6 +315,15 @@ test("the reviewed deposit is the simulated and signed v0 wire, saved before its
   expect(reopened.read()).toBeNull();
   expect(f.sign).toHaveBeenCalledTimes(1);
   expect(f.events).toEqual(["simulate", "confirm", "broadcast", "submit"]);
+});
+
+test("a tracked unsigned approval stops showing progress when its reservation expires", () => {
+  const { confirmed } = fixture();
+  expect(transferStep(confirmed).kind).toBe("bridging");
+  expect(transferStep({ ...confirmed, inFlight: false })).toMatchObject({
+    kind: "failed",
+    requestId,
+  });
 });
 
 test("a crash between saving and sending never records a nonexistent transaction or unlocks on a lagging RPC", async () => {

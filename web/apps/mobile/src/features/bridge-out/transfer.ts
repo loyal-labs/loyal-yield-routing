@@ -216,6 +216,12 @@ export function inFlightTransfer(
 }
 
 export function transferStep(row: BridgeTransfer): OutStep {
+  if (row.state === "quoted" && !row.inFlight)
+    return {
+      kind: "failed",
+      requestId: row.requestId,
+      message: "The bridge approval expired. Check your wallet activity before trying again.",
+    };
   if (row.state === "failed" || row.state === "refunded") {
     const message =
       row.state === "refunded"
