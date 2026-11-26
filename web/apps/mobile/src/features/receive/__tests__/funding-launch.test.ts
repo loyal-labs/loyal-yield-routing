@@ -28,7 +28,7 @@ it.each([
   "reads launch for $wallet with public rollout $all without requesting a signer",
   async ({ wallet, all, allowed, bearer }) => {
     const fetch = jest.spyOn(globalThis, "fetch").mockImplementation(
-      async (_url: RequestInfo, init?: RequestInit) => {
+      async (_url: unknown, init?: RequestInit) => {
         const authorization = new Headers(init?.headers).get("Authorization");
         return Response.json({
           launched: all || authorization === "Bearer listed-token",
