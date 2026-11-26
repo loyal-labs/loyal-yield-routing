@@ -4,7 +4,6 @@ import {
   type BridgeDestinationToken,
 } from "@loyal-labs/api";
 import {
-  useCallback,
   useEffect,
   useLayoutEffect,
   useReducer,
@@ -65,7 +64,8 @@ export function useBridgeUsdcBalance(wallet: string | null) {
 function useBridgeRead<T>(
   wallet: string | null,
   path: string | null,
-  valid: (body: unknown) => body is T
+  valid: (body: unknown) => body is T,
+  interactive: boolean
 ) {
   const owner = useMainnetWallet(wallet);
   const key = owner && path ? JSON.stringify([owner, path]) : null;
@@ -75,12 +75,9 @@ function useBridgeRead<T>(
     error?: string;
   } | null>(null);
   const [attempt, again] = useReducer((i: number) => i + 1, 0);
-  const authorize = useRef<string | null>(null);
   useEffect(() => {
     if (!owner || !path || !key) return;
     const controller = new AbortController();
-    const interactive = authorize.current === key;
-    authorize.current = null;
     setRead(null);
     void fundingRequest<unknown>(owner, path, {
       interactive,
@@ -95,11 +92,7 @@ function useBridgeRead<T>(
         if (!controller.signal.aborted) setRead({ key, error: message(e) });
       });
     return () => controller.abort();
-  }, [owner, path, key, valid, attempt]);
-  const retry = useCallback(() => {
-    authorize.current = key;
-    again();
-  }, [key]);
+  }, [owner, path, key, valid, attempt, interactive]);
   const result = read?.key === key ? read : null;
   return {
     value: result?.value,
@@ -107,7 +100,7 @@ function useBridgeRead<T>(
       wallet && !owner
         ? "Switch to Solana mainnet to bridge USDC."
         : result?.error ?? null,
-    retry,
+    retry: again,
   };
 }
 
@@ -115,7 +108,8 @@ export function useBridgeDestinations(walletAddress: string | null) {
   const { value, error, retry } = useBridgeRead(
     walletAddress,
     "/api/funding/bridge/destinations",
-    isBridgeDestinations
+    isBridgeDestinations,
+    true // The catalog is mounted by the wallet's Bridge tap.
   );
   return {
     destinations: value ? value.destinations ?? [] : null,
@@ -133,7 +127,7 @@ export function useBridgeRecipients(
     enabled && chain
       ? `/api/funding/bridge/out/recipients?chain=${encodeURIComponent(chain)}`
       : null;
-  const { value } = useBridgeRead(walletAddress, path, isBridgeRecipients);
+  const { value } = useBridgeRead(walletAddress, path, isBridgeRecipients, false);
   return value ? value.recipients ?? [] : null;
 }
 
@@ -164,6 +158,7 @@ type QuoteRead = { key: string; review?: ReviewedQuote; error?: QuoteError };
 
 export function useBridgeOut({
   walletAddress,
+  catalogPending,
   chain,
   token,
   recipient,
@@ -171,6 +166,7 @@ export function useBridgeOut({
   balanceRaw,
 }: {
   walletAddress: string | null;
+  catalogPending: boolean;
   chain: string;
   token: BridgeDestinationToken | null;
   recipient: string;
@@ -258,6 +254,8 @@ export function useBridgeOut({
             step: { kind: "bridging", requestId: receipt.requestId },
           });
         }
+        // The catalog signs in on Bridge entry. Show a saved receipt while it opens.
+        if (catalogPending) return;
         const transfers = await readTransfers(scope.request, signal);
         if (!current()) return;
         const row = scope.tracking
@@ -316,7 +314,7 @@ export function useBridgeOut({
       foreground.remove();
       active.current = null;
     };
-  }, [owner]);
+  }, [owner, catalogPending]);
 
   const [attempt, refreshQuote] = useReducer((i: number) => i + 1, 0);
   const authorizeQuote = useRef<string | null>(null);

@@ -1,6 +1,5 @@
 import type {
   EvmDepositAddressResponse,
-  LaunchResponse,
   TronDepositAddressResponse,
 } from "@loyal-labs/api";
 import {
@@ -21,7 +20,7 @@ import {
   tronAddress,
   validatedDeposit,
 } from "./deposit-routes";
-import { fundingRequest } from "./funding-api";
+import { fetchFundingLaunch, fundingRequest } from "./funding-api";
 import { useReceiveAuthorization } from "./ReceiveAuthorization";
 
 const evmPath = "/api/funding/evm-deposit-address";
@@ -60,7 +59,14 @@ function errorMessage(error: unknown) {
     : "Could not load the deposit address. Please try again.";
 }
 
-export function useReceiveBridge(walletAddress: string | null, open: boolean) {
+export type ReceiveTab = "Solana" | "Other chains";
+
+export function useReceiveBridge(
+  walletAddress: string | null,
+  tab: ReceiveTab | null
+) {
+  const open = tab === "Other chains";
+  const receiveOpen = tab !== null;
   const mainnet =
     useSyncExternalStore(onSolanaEnvChange, getSolanaEnv, getSolanaEnv) ===
     "mainnet";
@@ -71,30 +77,24 @@ export function useReceiveBridge(walletAddress: string | null, open: boolean) {
   }, [authorization]);
   const sheet = useRef<Sheet | null>(null);
   const [state, setState] = useState<State>(() => empty(null));
-  const [gate, setGate] = useState<{
-    wallet: string;
-    launched: boolean;
-  } | null>(null);
+  const [launchedWallet, setLaunchedWallet] = useState<string | null>(null);
+  const launched =
+    mainnet && !!walletAddress && launchedWallet === walletAddress;
 
   useEffect(() => {
-    if (!walletAddress || !mainnet) {
-      setGate(null);
-      return;
-    }
-    if (gate?.wallet === walletAddress) return;
+    setLaunchedWallet((previous) =>
+      mainnet && previous === walletAddress ? previous : null
+    );
+    if (!walletAddress || !mainnet) return;
     const controller = new AbortController();
-    void fundingRequest<LaunchResponse>(walletAddress, "/api/funding/launch", {
-      signal: controller.signal,
-    })
-      .then((result) => {
+    void fetchFundingLaunch(walletAddress, controller.signal)
+      .catch(() => false)
+      .then((allowed) => {
         if (!controller.signal.aborted)
-          setGate({ wallet: walletAddress, launched: result.launched });
-      })
-      .catch(() => {
-        if (!controller.signal.aborted) setGate(null);
+          setLaunchedWallet(allowed ? walletAddress : null);
       });
     return () => controller.abort();
-  }, [walletAddress, mainnet, open, gate?.wallet]);
+  }, [walletAddress, mainnet, receiveOpen]);
 
   const patch = useCallback((active: Sheet, data: Partial<State>) => {
     if (active.signal.aborted) return;
@@ -107,7 +107,7 @@ export function useReceiveBridge(walletAddress: string | null, open: boolean) {
 
   useLayoutEffect(() => {
     setState(empty(walletAddress));
-    if (!open || !walletAddress || !mainnet) return;
+    if (!open || !walletAddress || !launched) return;
     const controller = new AbortController();
     const active: Sheet = {
       wallet: walletAddress,
@@ -120,7 +120,7 @@ export function useReceiveBridge(walletAddress: string | null, open: boolean) {
       controller.abort();
       sheet.current = null;
     };
-  }, [open, walletAddress, mainnet]);
+  }, [open, walletAddress, launched]);
 
   const loadRoute = useCallback(
     async (route: "evm" | "tron", retry: boolean) => {
@@ -128,8 +128,7 @@ export function useReceiveBridge(walletAddress: string | null, open: boolean) {
       if (
         !active ||
         active.wallet !== walletAddress ||
-        gate?.wallet !== walletAddress ||
-        !gate?.launched ||
+        !launched ||
         !open ||
         getSolanaEnv() !== "mainnet" ||
         active[route] === "loading" ||
@@ -227,7 +226,7 @@ export function useReceiveBridge(walletAddress: string | null, open: boolean) {
         );
       }
     },
-    [open, walletAddress, gate, patch]
+    [open, walletAddress, launched, patch]
   );
 
   useEffect(() => {
@@ -259,7 +258,7 @@ export function useReceiveBridge(walletAddress: string | null, open: boolean) {
     };
   }, [state.wallet, state.tron, patch]);
 
-  const visible = mainnet && open && state.wallet === walletAddress;
+  const visible = launched && open && state.wallet === walletAddress;
   const deposit = visible ? state.deposit : null;
   const tron = visible ? state.tron : null;
   const networks = useMemo(
@@ -268,11 +267,7 @@ export function useReceiveBridge(walletAddress: string | null, open: boolean) {
   );
 
   return {
-    launched:
-      mainnet &&
-      !!walletAddress &&
-      gate?.wallet === walletAddress &&
-      gate.launched,
+    launched,
     networks,
     kind: deposit?.kind ?? null,
     loading: visible && state.loading,

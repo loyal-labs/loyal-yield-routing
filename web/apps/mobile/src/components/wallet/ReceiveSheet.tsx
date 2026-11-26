@@ -22,14 +22,17 @@ import {
   ReceiveButton,
   useCopyAddress,
 } from "@/features/receive/ReceiveAddress";
-import { useReceiveBridge } from "@/features/receive/useReceiveBridge";
+import {
+  type ReceiveTab,
+  useReceiveBridge,
+} from "@/features/receive/useReceiveBridge";
 import { useFixedSheetLayout } from "@/hooks/useFixedSheetLayout";
 import { Pressable, Text, View } from "@/tw";
 
 import Back from "../../../assets/images/receive/back.svg";
 import Close from "../../../assets/images/receive/close.svg";
 
-export type ReceiveTab = "Solana" | "Other chains";
+export type { ReceiveTab };
 type Page = "receive" | "assets" | "chains";
 type ReceiveSheetProps = {
   open: boolean;
@@ -43,7 +46,7 @@ export function useReceiveSheetBridge(
   tab: ReceiveTab | null,
 ) {
   const otherChainsOpen = tab === "Other chains";
-  const bridge = useReceiveBridge(walletAddress, otherChainsOpen);
+  const bridge = useReceiveBridge(walletAddress, tab);
   const { launched, load } = bridge;
   useEffect(() => {
     if (otherChainsOpen && launched) void load();

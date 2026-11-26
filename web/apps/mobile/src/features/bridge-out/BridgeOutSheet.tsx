@@ -112,6 +112,7 @@ function BridgeFlow({ walletAddress, priceUsd, onClose }: Props) {
   );
   const out = useBridgeOut({
     walletAddress,
+    catalogPending: catalog.destinations === null && !catalog.error,
     chain,
     token,
     recipient,

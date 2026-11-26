@@ -1,7 +1,28 @@
-import type { RouteError } from "@loyal-labs/api";
+import type { LaunchResponse, RouteError } from "@loyal-labs/api";
 
 import { env } from "@/config/env";
-import { earnWalletRead } from "@/lib/solana/earn/earn-session";
+import { fetchWithTimeout } from "@/lib/network/fetch-with-timeout";
+import {
+  earnHeaders,
+  earnWalletRead,
+  getEarnSessionToken,
+} from "@/lib/solana/earn/earn-session";
+
+export async function fetchFundingLaunch(
+  walletAddress: string,
+  signal: AbortSignal
+) {
+  const token = await getEarnSessionToken(walletAddress);
+  const headers = earnHeaders();
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const response = await fetchWithTimeout(
+    `${env.apiBaseUrl}/api/funding/launch`,
+    { credentials: "omit", headers, signal }
+  );
+  if (!response.ok) return false;
+  const result: LaunchResponse = await response.json();
+  return result?.launched === true;
+}
 
 export async function fundingRequest<T>(
   walletAddress: string,
