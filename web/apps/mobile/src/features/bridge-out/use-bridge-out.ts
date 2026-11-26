@@ -23,6 +23,10 @@ import {
 import { getWalletSigner } from "@/lib/solana/wallet/wallet-details";
 import { mmkv } from "@/lib/storage";
 import { isWalletRejection } from "@/lib/wallet/rejection";
+import {
+  fetchBridgeEstimate,
+  type BridgeEstimate,
+} from "@/services/bridge-estimate";
 
 import { usdcRaw } from "./amount";
 import { bridgeRecipientState } from "./recipient-address";
@@ -154,7 +158,12 @@ type Session = {
   refresh: () => Promise<void>;
 };
 type QuoteError = { code: string | null; message: string; retryable: boolean };
-type QuoteRead = { key: string; review?: ReviewedQuote; error?: QuoteError };
+type QuoteRead = {
+  key: string;
+  review?: ReviewedQuote;
+  error?: QuoteError;
+  estimate?: BridgeEstimate;
+};
 
 export function useBridgeOut({
   walletAddress,
@@ -186,20 +195,23 @@ export function useBridgeOut({
   const validAddress =
     bridgeRecipientState(chain === "tron" ? "tron" : "evm", address) ===
     "valid";
-  const eligible = Boolean(
+  const canPrice = Boolean(
     owner &&
       chain &&
       asset &&
-      validAddress &&
       amountRaw > BigInt(0) &&
       balanceRaw !== null &&
       !insufficient &&
       !belowMinimum
   );
+  const preview = canPrice && !address;
+  const eligible = canPrice && validAddress;
   const key = JSON.stringify([
     owner,
     chain,
     asset,
+    token?.address,
+    token?.decimals,
     address,
     amountRaw.toString(),
   ]);
@@ -326,21 +338,35 @@ export function useBridgeOut({
   const form = shown.step.kind === "form";
   useEffect(() => {
     const scope = active.current;
-    if (!eligible || !owner || scope?.wallet !== owner || !form) return;
+    if (!eligible && !preview) {
+      setRead(null);
+      return;
+    }
+    if (!owner || !token || scope?.wallet !== owner || !form) return;
     const controller = new AbortController();
     const { signal } = controller;
-    const input = {
-      chain,
-      asset,
-      recipient: address,
-      amountRaw: amountRaw.toString(),
-    };
     setRead({ key });
-    const timer = setTimeout(() => {
+    const timer = setTimeout(async () => {
+      if (preview) {
+        const estimate = await fetchBridgeEstimate(chain, token, amountRaw, signal).catch(
+          (): BridgeEstimate => ({
+            kind: "unavailable",
+            reason: "Could not reach Relay. Enter a recipient for a quote.",
+          })
+        );
+        if (!signal.aborted) setRead({ key, estimate });
+        return;
+      }
       const interactive = authorizeQuote.current === key;
       authorizeQuote.current = null;
       const request: Request = (path, options) =>
         fundingRequest(owner, path, { ...options, interactive });
+      const input = {
+        chain,
+        asset,
+        recipient: address,
+        amountRaw: amountRaw.toString(),
+      };
       void quoteOut(request, owner, input, signal)
         .then((review) => {
           if (!signal.aborted) {
@@ -364,7 +390,7 @@ export function useBridgeOut({
       controller.abort();
       clearTimeout(timer);
     };
-  }, [form, eligible, owner, key, chain, asset, address, amountRaw, attempt]);
+  }, [form, eligible, preview, owner, key, chain, asset, token, address, amountRaw, attempt]);
   const current = eligible && read?.key === key ? read : null;
   const ready = Boolean(form && current?.review && shown.checked);
   const approved = useRef<ReviewedQuote | null>(null);
@@ -445,6 +471,7 @@ export function useBridgeOut({
     amountRaw,
     insufficient,
     belowMinimum,
+    estimate: preview && form && read?.key === key ? read.estimate : undefined,
     quote: current?.review?.response ?? null,
     ready,
     quoting: eligible && form && !current?.review && !current?.error,
