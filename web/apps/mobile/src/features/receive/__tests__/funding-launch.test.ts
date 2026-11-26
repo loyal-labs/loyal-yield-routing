@@ -1,20 +1,24 @@
-import { getWalletSigner } from "@/lib/solana/wallet/wallet-details";
-import { fetchFundingLaunch } from "../funding-api";
-
 jest.mock("@/config/env", () => ({
   env: { apiBaseUrl: "https://bridge.test" },
 }));
 jest.mock("@/lib/solana/wallet/wallet-details", () => ({
   getWalletSigner: jest.fn(),
 }));
-jest.mock("expo-secure-store", () => ({
-  getItemAsync: async (key: string) =>
-    key === "earn.sessions.v2"
-      ? JSON.stringify({
-          listed: { token: "listed-token", expiresAt: "2099-01-01T00:00:00Z" },
-        })
-      : null,
-}));
+jest.mock(
+  "expo-secure-store",
+  () => ({
+    getItemAsync: async (key: string) =>
+      key === "earn.sessions.v2"
+        ? JSON.stringify({
+            listed: { token: "listed-token", expiresAt: "2099-01-01T00:00:00Z" },
+          })
+        : null,
+  }),
+  { virtual: true },
+);
+
+import { getWalletSigner } from "@/lib/solana/wallet/wallet-details";
+import { fetchFundingLaunch } from "../funding-api";
 
 afterEach(() => {
   jest.restoreAllMocks();
