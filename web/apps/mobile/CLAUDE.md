@@ -48,10 +48,10 @@ lockfile so shared packages resolve in the monorepo before the mobile install.
 The mirror generator removes this monorepo-only hook from the standalone mobile
 mirror, where EAS installs the app's dependencies directly. The source hook also
 skips the parent install when no parent workspace lockfile exists.
-Production and the standalone Android `dapp-store-development` profile use the
-app-version runtime, currently `0.6.0` on dev Seeker build 12. Other development
-profiles retain `0.5.0-hardware-wallet-v1`. Verify native module compatibility
-with the target binary before publishing an OTA.
+The new PostHog binaries use runtime `0.6.0-posthog-v1` for production and
+standalone dev Seeker, and `0.6.0-dev-posthog-v1` for the other development
+variants. The bridge-only Seeker build 12 receives updates on `0.6.0`.
+Both PostHog runtimes require a new binary with the replay plugin.
 
 ## Architecture
 
@@ -149,12 +149,8 @@ EXPO_PUBLIC_SOLANA_ENV=mainnet
 
 # recurred: 0
 
-- `EXPO_PUBLIC_MIXPANEL_TOKEN` and `EXPO_PUBLIC_ONESIGNAL_APP_ID` configure
-  optional telemetry and push notification services. The EAS profiles currently
-  set `EXPO_PUBLIC_API_BASE_URL`, `EXPO_PUBLIC_SOLANA_ENV=mainnet`, and
-  `EXPO_PUBLIC_ONESIGNAL_APP_ID` in `eas.json`.
-
-- `.env` files are NOT uploaded to EAS build servers — `eas.json` is the only way to set env vars for EAS builds
+- Set `EXPO_PUBLIC_POSTHOG_KEY` to the publishable mobile project key in the EAS environment. `EXPO_PUBLIC_POSTHOG_HOST` defaults to `https://us.i.posthog.com`. A missing key or the disabled analytics switch skips collection. The existing mobile wallet ID determines the replay cohort across sessions and devices. Enable **Record user sessions** in that PostHog project for recordings on native iOS and Android builds.
+- `EXPO_PUBLIC_ONESIGNAL_APP_ID` configures push notifications. Public environment variables are embedded when the JavaScript bundle is generated.
 - `src/config/env.ts` provides a hardcoded fallback when a variable is unset
 - Non-public env vars (no `EXPO_PUBLIC_` prefix) are build-time only, not embedded in the JS bundle
 - Mobile should call the passkey auth domain via `EXPO_PUBLIC_GRID_AUTH_BASE_URL`; do not import browser/WebAuthn flow code from `passkey`

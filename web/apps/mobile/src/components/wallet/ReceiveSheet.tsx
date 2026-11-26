@@ -8,6 +8,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, BackHandler, Keyboard, Share } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { track } from "@/lib/analytics/analytics";
+import { BRIDGE_EVENTS } from "@/lib/analytics/bridge-events";
 import {
   presentSheetWhenOpen,
   SheetBackdrop,
@@ -210,7 +212,10 @@ function ReceiveContent({
                   accessibilityLabel={label}
                   accessibilityState={{ selected: tab === label, disabled }}
                   disabled={disabled}
-                  onPress={() => onTabChange(label)}
+                  onPress={() => {
+                    if (label === "Other chains" && tab !== label) track(BRIDGE_EVENTS.receiveOpened);
+                    onTabChange(label);
+                  }}
                   className={`flex-1 flex-row items-center justify-center gap-[6px] rounded-full py-2 ${
                     tab === label ? "bg-white" : ""
                   }`}
@@ -268,6 +273,9 @@ function ReceiveContent({
           }}
           onNetwork={(network) => {
             if (!selection) return;
+            track(BRIDGE_EVENTS.receiveRouteSelected, {
+              network_family: network.chain === "tron" ? "tron" : "evm",
+            });
             setSelection({ asset: selection.asset, chain: network.chain });
             setPage("receive");
           }}

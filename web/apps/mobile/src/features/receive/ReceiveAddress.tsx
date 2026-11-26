@@ -1,3 +1,4 @@
+import { PostHogMaskView } from "posthog-react-native";
 import * as Clipboard from "expo-clipboard";
 import * as Haptics from "expo-haptics";
 import { useEffect, useState } from "react";
@@ -29,7 +30,7 @@ export function receiveIconSource(file: string | null) {
     : undefined;
 }
 
-export function useCopyAddress(address: string | null) {
+export function useCopyAddress(address: string | null, onCopied?: () => void) {
   const [copiedAddress, setCopiedAddress] = useState<string | null>(null);
   useEffect(() => {
     if (!copiedAddress) return;
@@ -45,6 +46,7 @@ export function useCopyAddress(address: string | null) {
       return;
     }
     setCopiedAddress(address);
+    onCopied?.();
     void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
   }
 
@@ -90,9 +92,11 @@ export function ReceiveAddressCard({
 }) {
   const backgroundColor = bridge ? "#F5F5F5" : "#F9F9FB";
   return (
-    <View
-      className="items-center pt-8 pb-4"
+    <PostHogMaskView
       style={{
+        alignItems: "center",
+        paddingTop: 32,
+        paddingBottom: 16,
         backgroundColor,
         borderRadius: bridge ? 16 : 24,
         width: bridge ? "100%" : 256,
@@ -146,6 +150,6 @@ export function ReceiveAddressCard({
           </Pressable>
         )}
       </View>
-    </View>
+    </PostHogMaskView>
   );
 }

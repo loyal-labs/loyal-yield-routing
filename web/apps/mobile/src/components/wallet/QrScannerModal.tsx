@@ -1,3 +1,4 @@
+import { PostHogMaskView } from "posthog-react-native";
 import { CameraView, type BarcodeScanningResult } from "expo-camera";
 import { X } from "lucide-react-native";
 import { useCallback } from "react";
@@ -42,7 +43,7 @@ export function QrScannerModal({
       onRequestClose={onClose}
     >
       <StatusBar barStyle="light-content" />
-      <View style={qrScannerStyles.root}>
+      <PostHogMaskView style={qrScannerStyles.root}>
         {permissionGranted ? (
           <CameraView
             style={StyleSheet.absoluteFillObject}
@@ -146,7 +147,7 @@ export function QrScannerModal({
             </Text>
           ) : null}
         </View>
-      </View>
+      </PostHogMaskView>
     </Modal>
   );
 }

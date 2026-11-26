@@ -19,6 +19,8 @@ import type { ConnectedEthereumWallet, usePrivyClient } from "@privy-io/expo";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import { AppState } from "react-native";
 
+import { track } from "@/lib/analytics/analytics";
+import { BRIDGE_EVENTS } from "@/lib/analytics/bridge-events";
 import { fundingRequest } from "@/features/receive/funding-api";
 import { getSolanaEnv, onSolanaEnvChange } from "@/lib/solana/rpc/connection";
 import { getWalletSigner } from "@/lib/solana/wallet/wallet-details";
@@ -99,7 +101,8 @@ export function useIncomingTransfer(identity: Identity) {
     }
   }
 
-  function handleOutcome(outcome: MoveOutcome) {
+  function handleOutcome(outcome: MoveOutcome, stage?: "review" | "submit") {
+    if (stage && outcome.kind !== "aborted") track(BRIDGE_EVENTS.incomingResult, { stage, outcome: outcome.kind });
     switch (outcome.kind) {
       case "submitted":
         setNotice({
@@ -215,6 +218,7 @@ export function useIncomingTransfer(identity: Identity) {
 
   function cancel() {
     if (busy === "sending") return;
+    track(BRIDGE_EVENTS.incomingCanceled);
     active.current?.abort();
     showReview(null);
   }
@@ -224,6 +228,8 @@ export function useIncomingTransfer(identity: Identity) {
     const controller = new AbortController();
     const { signal } = controller;
     active.current = controller;
+    const stage = approved ? "submit" : "review";
+    track(approved ? BRIDGE_EVENTS.incomingSubmit : BRIDGE_EVENTS.incomingReview);
     if (approved) sending.add(sender);
     setBusy(approved ? "sending" : "quoting");
     setNotice(null);
@@ -269,10 +275,11 @@ export function useIncomingTransfer(identity: Identity) {
         });
         if (signal.aborted) return;
         if (result.kind !== "quoted") {
-          handleOutcome(result);
+          handleOutcome(result, stage);
           return;
         }
         validateQuote(item.chain, result.quote);
+        track(BRIDGE_EVENTS.incomingResult, { stage, outcome: "quoted" });
         showReview({ ...result, item });
         return;
       }
@@ -285,7 +292,7 @@ export function useIncomingTransfer(identity: Identity) {
         (t) => t.inFlight && t.chain === item.chain && t.asset === item.asset,
       );
       if (moving) {
-        handleOutcome({ kind: "inFlight", requestId: moving.requestId });
+        handleOutcome({ kind: "inFlight", requestId: moving.requestId }, stage);
         return;
       }
       const balance = balances.find((b) => b.chain === item.chain && b.asset === item.asset);
@@ -353,9 +360,12 @@ export function useIncomingTransfer(identity: Identity) {
         },
       });
       if (result.kind === "submitted" && result.recorded) receipts.forget(quote.requestId);
-      if (!signal.aborted) handleOutcome(result);
+      if (!signal.aborted) handleOutcome(result, stage);
     } catch (error) {
-      if (!signal.aborted) setNotice({ message: message(error) });
+      if (!signal.aborted) {
+        track(BRIDGE_EVENTS.incomingResult, { stage, outcome: "failed" });
+        setNotice({ message: message(error) });
+      }
     } finally {
       if (approved) sending.delete(sender);
       controller.abort();

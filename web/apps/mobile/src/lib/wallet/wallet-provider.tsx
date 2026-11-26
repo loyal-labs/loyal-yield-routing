@@ -211,6 +211,7 @@ function WalletProviderCore({
         setSigner(next);
         setPublicKey(mwa.publicKey);
         setWalletSigner(next);
+        identifyWallet(mwa.publicKey, "mwa");
         setState("vault-unlocked");
         return;
       }
@@ -221,6 +222,7 @@ function WalletProviderCore({
         setSigner(next);
         setPublicKey(deeplink.publicKey);
         setWalletSigner(next);
+        identifyWallet(deeplink.publicKey, "deeplink");
         setState("vault-unlocked");
         return;
       }
@@ -237,6 +239,7 @@ function WalletProviderCore({
           setSigner(next);
           setPublicKey(vault.publicKey);
           setWalletSigner(next);
+          identifyWallet(vault.publicKey, "vault");
           setState("vault-unlocked");
           return;
         }
@@ -266,6 +269,7 @@ function WalletProviderCore({
         setSigner(next);
         setPublicKey(privyEmbedded.address);
         setWalletSigner(next);
+        identifyWallet(privyEmbedded.address, "privy");
         setState("vault-unlocked");
       } else {
         setState("noWallet");

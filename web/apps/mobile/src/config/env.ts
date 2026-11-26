@@ -15,8 +15,6 @@ const VERCEL_PROTECTION_BYPASS =
 
 const TELEGRAM_USER_ID = "2131567542";
 
-const MIXPANEL_TOKEN = process.env.EXPO_PUBLIC_MIXPANEL_TOKEN ?? "";
-
 const ONESIGNAL_APP_ID = process.env.EXPO_PUBLIC_ONESIGNAL_APP_ID ?? "";
 
 const PRIVY_APP_ID = process.env.EXPO_PUBLIC_PRIVY_APP_ID ?? "";
@@ -29,7 +27,8 @@ export const env = {
   solanaEnv: SOLANA_ENV,
   solanaRpcEndpoint: getSolanaEndpoints(SOLANA_ENV).rpcEndpoint,
   telegramUserId: TELEGRAM_USER_ID,
-  mixpanelToken: MIXPANEL_TOKEN,
+  posthogKey: process.env.EXPO_PUBLIC_POSTHOG_KEY?.trim() ?? "",
+  posthogHost: process.env.EXPO_PUBLIC_POSTHOG_HOST?.trim() || "https://us.i.posthog.com",
   oneSignalAppId: ONESIGNAL_APP_ID,
   privyAppId: PRIVY_APP_ID,
   privyClientId: PRIVY_CLIENT_ID,

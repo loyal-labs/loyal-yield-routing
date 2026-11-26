@@ -1,3 +1,4 @@
+import { PostHogMaskView } from "posthog-react-native";
 import * as Haptics from "expo-haptics";
 import { Delete } from "lucide-react-native";
 import { useCallback } from "react";
@@ -107,7 +108,7 @@ export function PinPadInput({
   );
 
   return (
-    <View style={styles.container}>
+    <PostHogMaskView style={styles.container}>
       <View style={styles.dotsRow}>
         {Array.from({ length }).map((_, index) => (
           <PinPlaceholder
@@ -182,7 +183,7 @@ export function PinPadInput({
           </View>
         ))}
       </View>
-    </View>
+    </PostHogMaskView>
   );
 }
 

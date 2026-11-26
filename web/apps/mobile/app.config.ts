@@ -23,6 +23,7 @@ function readOtaNotes(): string | null {
 }
 
 const OTA_NOTES = readOtaNotes();
+const POSTHOG_RUNTIME = "0.6.0-posthog-v1";
 
 const IS_DEV = process.env.APP_VARIANT === "development";
 const IS_DAPP_STORE = process.env.DAPP_STORE_BUILD === "true";
@@ -42,7 +43,7 @@ const config: ExpoConfig = {
   icon: "./assets/images/icon.png",
   userInterfaceStyle: "light",
   newArchEnabled: true,
-  runtimeVersion: IS_DEV ? "0.5.0-hardware-wallet-v1" : { policy: "appVersion" },
+  runtimeVersion: IS_DEV ? "0.6.0-dev-posthog-v1" : POSTHOG_RUNTIME,
   updates: {
     url: "https://u.expo.dev/7ecfef22-fa74-4fc9-b2f1-bf80acb81401",
   },
@@ -133,14 +134,13 @@ const config: ExpoConfig = {
         },
       ],
       // No SDK collects IDFA: Firebase (the only IDFA-capable dependency) is
-      // excluded from Apple autolinking in package.json, Mixpanel uses IDFV
-      // and Datadog its own session id. Keep this false unless that changes,
+      // excluded from Apple autolinking in package.json. Keep this false unless that changes,
       // and do not add NSUserTrackingUsageDescription without calling ATT.
       NSPrivacyTracking: false,
     },
   },
   android: {
-    runtimeVersion: IS_DEV && IS_DAPP_STORE ? { policy: "appVersion" } : undefined,
+    runtimeVersion: IS_DEV && IS_DAPP_STORE ? POSTHOG_RUNTIME : undefined,
     adaptiveIcon: {
       foregroundImage: "./assets/images/android-icon-foreground.png",
       monochromeImage: "./assets/images/android-icon-monochrome.png",

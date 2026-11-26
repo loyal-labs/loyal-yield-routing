@@ -1,3 +1,4 @@
+import { PostHogMaskView } from "posthog-react-native";
 import { useRouter } from "expo-router";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ActivityIndicator } from "react-native";
@@ -227,7 +228,7 @@ export function BrowserSiteScreen({ initialUrl }: BrowserSiteScreenProps) {
   );
 
   return (
-    <View className="flex-1 bg-white" style={{ paddingTop: insets.top }}>
+    <PostHogMaskView style={{ flex: 1, backgroundColor: "white", paddingTop: insets.top }}>
       <WebView
         ref={webViewRef}
         source={{ uri: initialUrl }}
@@ -266,6 +267,6 @@ export function BrowserSiteScreen({ initialUrl }: BrowserSiteScreenProps) {
         onReject={handleRejectApproval}
         onApprove={handleApproveApproval}
       />
-    </View>
+    </PostHogMaskView>
   );
 }

@@ -20,7 +20,8 @@ import {
   UserPlus,
 } from "lucide-react-native";
 import { useCallback, useEffect, useState } from "react";
-import { Alert, StyleSheet, Switch } from "react-native";
+import { PostHogMaskView } from "posthog-react-native";
+import { Alert, Modal, StyleSheet, Switch } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { LogoHeader } from "@/components/LogoHeader";
@@ -30,7 +31,7 @@ import { ReferralClaimSetting } from "@/features/referrals/ReferralClaimSetting"
 import { PrivyAccountCell } from "@/components/wallet/PrivyAccountCell";
 import { PinPadInput } from "@/components/wallet/PinPadInput";
 import { getShowTips, setShowTips } from "@/lib/settings";
-import { mmkv } from "@/lib/storage";
+import { analyticsEnabled, setAnalyticsEnabled } from "@/lib/analytics/analytics";
 import { isBiometricAvailable } from "@/lib/wallet/biometrics";
 import { WALLET_PIN_LENGTH } from "@/lib/wallet/pin";
 import { isWalletUnlocked, useWallet } from "@/lib/wallet/wallet-provider";
@@ -39,7 +40,69 @@ import { TAB_BAR_HEIGHT } from "@/components/TabBar";
 
 const SUPPORT_URL = "https://t.me/spacesymmetry";
 const FEEDBACK_URL = "https://tally.so/r/ZjRpev";
-const ANALYTICS_OPT_IN_KEY = "settings_analytics_opt_in";
+
+function ExportSecretKeyCell({ readKey }: { readKey: () => string | null }) {
+  const [key, setKey] = useState<string | null>(null);
+  const close = () => setKey(null);
+  return (
+    <>
+      <ProfileCell
+        icon={<Key size={28} strokeWidth={1.5} color="rgba(0,0,0,0.6)" />}
+        title="Export Secret Key"
+        showChevron
+        onPress={() => {
+          if (process.env.EXPO_OS !== "web") {
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+          }
+          const hex = readKey();
+          if (hex) setKey(hex);
+          else Alert.alert("Error", "Unable to export secret key");
+        }}
+      />
+      {key && (
+        <Modal transparent animationType="fade" onRequestClose={close}>
+          <View className="flex-1 items-center justify-center bg-black/40 px-8">
+            <PostHogMaskView
+              accessibilityViewIsModal
+              onAccessibilityEscape={close}
+              style={{ width: "100%", maxWidth: 360, maxHeight: "90%" }}
+            >
+              <ScrollView
+                className="rounded-2xl bg-white"
+                contentContainerClassName="gap-4 p-5"
+                bounces={false}
+              >
+                <Text accessibilityRole="header" className="text-lg font-semibold">
+                  Secret Key
+                </Text>
+                <Text className="font-mono text-sm">{key}</Text>
+                <View className="flex-row justify-end gap-4">
+                  <Pressable
+                    accessibilityRole="button"
+                    className="min-h-11 min-w-11 items-center justify-center"
+                    onPress={() => {
+                      void Clipboard.setStringAsync(key);
+                      close();
+                    }}
+                  >
+                    <Text>Copy</Text>
+                  </Pressable>
+                  <Pressable
+                    accessibilityRole="button"
+                    className="min-h-11 min-w-11 items-center justify-center"
+                    onPress={close}
+                  >
+                    <Text>Done</Text>
+                  </Pressable>
+                </View>
+              </ScrollView>
+            </PostHogMaskView>
+          </View>
+        </Modal>
+      )}
+    </>
+  );
+}
 
 function SettingsSection({ children }: { children: React.ReactNode }) {
   return <View style={styles.section}>{children}</View>;
@@ -153,9 +216,7 @@ function getBuildInfo(): BuildInfo {
 export default function ProfileScreen() {
   const insets = useSafeAreaInsets();
   const [pushNotifications, setPushNotifications] = useState(true);
-  const [analyticsOptIn, setAnalyticsOptIn] = useState(
-    () => mmkv.getBoolean(ANALYTICS_OPT_IN_KEY) ?? true,
-  );
+  const [analyticsOptIn, setAnalyticsOptIn] = useState(analyticsEnabled);
   const [showTips, setShowTipsState] = useState(getShowTips);
   const [biometricsAvailable, setBiometricsAvailable] = useState(false);
   const [showBioPinInput, setShowBioPinInput] = useState(false);
@@ -206,7 +267,7 @@ export default function ProfileScreen() {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     }
     setAnalyticsOptIn(value);
-    mmkv.setBoolean(ANALYTICS_OPT_IN_KEY, value);
+    setAnalyticsEnabled(value);
   }, []);
 
   const handleShowTipsToggle = useCallback((value: boolean) => {
@@ -253,24 +314,6 @@ export default function ProfileScreen() {
     setBioPin("");
     setBioPinError(null);
   }, []);
-
-  const handleExportSecretKey = useCallback(() => {
-    if (process.env.EXPO_OS !== "web") {
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    }
-    const hex = wallet.getSecretKeyHex();
-    if (hex) {
-      Alert.alert("Secret Key", hex, [
-        {
-          text: "Copy",
-          onPress: () => Clipboard.setStringAsync(hex),
-        },
-        { text: "Done" },
-      ]);
-    } else {
-      Alert.alert("Error", "Unable to export secret key");
-    }
-  }, [wallet]);
 
   const handleCopyBuildInfo = useCallback(async () => {
     if (process.env.EXPO_OS !== "web") {
@@ -441,12 +484,7 @@ export default function ProfileScreen() {
             )}
 
             {!isVaultBacked && (
-              <ProfileCell
-                icon={<Key size={28} strokeWidth={1.5} color="rgba(0,0,0,0.6)" />}
-                title="Export Secret Key"
-                showChevron
-                onPress={handleExportSecretKey}
-              />
+              <ExportSecretKeyCell key={wallet.publicKey} readKey={wallet.getSecretKeyHex} />
             )}
 
             <ProfileCell

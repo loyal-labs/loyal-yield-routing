@@ -1,3 +1,4 @@
+import { PostHogMaskView } from "posthog-react-native";
 import { ActivityIndicator, StyleSheet } from "react-native";
 import Animated, { FadeIn, FadeOut } from "react-native-reanimated";
 
@@ -17,16 +18,18 @@ export function WalletAuthGate() {
       exiting={FadeOut.duration(250)}
       style={styles.overlay}
     >
-      {onboardingReplayActive && (
-        <OnboardingGate mode="replay" onReplayDone={finishOnboardingReplay} />
-      )}
-      {!onboardingReplayActive && state === "loading" && (
-        <View className="flex-1 items-center justify-center bg-white">
-          <ActivityIndicator size="large" color="#000" />
-        </View>
-      )}
-      {!onboardingReplayActive && state === "noWallet" && <OnboardingGate />}
-      {!onboardingReplayActive && state === "locked" && <LockScreen />}
+      <PostHogMaskView style={{ flex: 1 }}>
+        {onboardingReplayActive && (
+          <OnboardingGate mode="replay" onReplayDone={finishOnboardingReplay} />
+        )}
+        {!onboardingReplayActive && state === "loading" && (
+          <View className="flex-1 items-center justify-center bg-white">
+            <ActivityIndicator size="large" color="#000" />
+          </View>
+        )}
+        {!onboardingReplayActive && state === "noWallet" && <OnboardingGate />}
+        {!onboardingReplayActive && state === "locked" && <LockScreen />}
+      </PostHogMaskView>
     </Animated.View>
   );
 }
