@@ -1,5 +1,4 @@
-// Earn/Autodeposit events. Mixpanel cohorts for push nudges (ASK-1651) key
-// off these — rename in lockstep with the cohort definitions.
+// Push notification cohorts use these exact event names.
 export const EARN_EVENTS = {
   earnDeposit: "Earn Deposit",
   autodepositEnabled: "Autodeposit Enabled",

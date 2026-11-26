@@ -13,6 +13,8 @@ import {
 } from "react";
 import { AppState } from "react-native";
 
+import { track } from "@/lib/analytics/analytics";
+import { BRIDGE_EVENTS } from "@/lib/analytics/bridge-events";
 import { useWalletUsdcRaw } from "@/hooks/wallet/useWalletUsdcRaw";
 import { fundingRequest } from "@/features/receive/funding-api";
 import {
@@ -296,6 +298,9 @@ export function useBridgeOut({
         checked = true;
         if (step?.kind === "failed" && step.requestId)
           scope.ignored.add(step.requestId);
+        if (scope.tracking && (step?.kind === "filled" || step?.kind === "failed")) {
+          track(BRIDGE_EVENTS.outSettled, { outcome: step.kind });
+        }
         scope.tracking = step?.kind === "bridging" ? step.requestId : null;
         if (step) setView({ owner, checked, step, notice: null });
         else
@@ -331,6 +336,7 @@ export function useBridgeOut({
   const [attempt, refreshQuote] = useReducer((i: number) => i + 1, 0);
   const authorizeQuote = useRef<string | null>(null);
   function retry() {
+    track(BRIDGE_EVENTS.outQuoteRetried);
     authorizeQuote.current = key;
     refreshQuote();
   }
@@ -423,6 +429,7 @@ export function useBridgeOut({
         );
     };
     sending.add(owner);
+    track(BRIDGE_EVENTS.outSubmit, { network_family: chain === "tron" ? "tron" : "evm" });
     scope.revision++;
     setView({ owner, checked: false, notice: null, step: { kind: "sending" } });
     try {
@@ -438,13 +445,16 @@ export function useBridgeOut({
         ignored: scope.ignored,
       });
       if (scope.signal.aborted) return;
+      track(BRIDGE_EVENTS.outResult, { outcome: step.kind });
       scope.tracking = step.kind === "bridging" ? step.requestId : null;
       setView({ owner, checked: false, step, notice: null });
     } catch (e) {
       if (scope.signal.aborted) return;
       // signTransaction cannot broadcast. Only a saved receipt can represent a send.
       scope.ignored.add(review.response.requestId);
-      if (e instanceof QuoteExpired || isWalletRejection(e)) {
+      const outcome = e instanceof QuoteExpired ? "expired" : isWalletRejection(e) ? "rejected" : "failed";
+      track(BRIDGE_EVENTS.outResult, { outcome });
+      if (outcome !== "failed") {
         setRead(null);
         refreshQuote();
         setView({

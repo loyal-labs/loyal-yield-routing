@@ -58,6 +58,7 @@ import {
 import { useWalletBalance } from "@/hooks/wallet/useWalletBalance";
 import { useWalletInit } from "@/hooks/wallet/useWalletInit";
 import { track } from "@/lib/analytics/analytics";
+import { BRIDGE_EVENTS } from "@/lib/analytics/bridge-events";
 import { PORTFOLIO_EVENTS } from "@/lib/analytics/portfolio-events";
 import { withTapHaptic } from "@/lib/haptics";
 import {
@@ -464,7 +465,10 @@ export default function WalletScreen() {
               <WalletAction
                 label="Bridge"
                 icon={<BridgeIcon width={28} height={28} />}
-                onPress={() => setBridgeWallet(activeBridgeWallet)}
+                onPress={() => {
+                  track(BRIDGE_EVENTS.outOpened);
+                  setBridgeWallet(activeBridgeWallet);
+                }}
               />
             )}
             {shieldedBalances.length > 0 && (

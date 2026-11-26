@@ -6,6 +6,8 @@ import type { EvmDepositNetwork, EvmDepositToken } from "@loyal-labs/api";
 import { type ReactNode, useEffect, useState } from "react";
 import { ActivityIndicator, Alert, Keyboard } from "react-native";
 
+import { track } from "@/lib/analytics/analytics";
+import { BRIDGE_EVENTS } from "@/lib/analytics/bridge-events";
 import { Pressable, Text, View } from "@/tw";
 import { Image } from "@/tw/image";
 
@@ -215,8 +217,10 @@ export function OtherChains({
   const network = bridge.networks.find((n) => n.chain === selection?.chain);
   const token = network?.tokens?.find((t) => t.asset === selection?.asset);
   const address = token ? network?.address ?? null : null;
-  const { copy, copied } = useCopyAddress(address);
   const tron = network?.route === "relay_deposit_address";
+  const { copy, copied } = useCopyAddress(address, () =>
+    track(BRIDGE_EVENTS.receiveAddressCopied, { network_family: tron ? "tron" : "evm" }),
+  );
   const selectedTron = tron && !!token;
   const { loadTron } = bridge;
   useEffect(() => {

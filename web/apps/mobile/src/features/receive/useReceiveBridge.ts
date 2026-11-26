@@ -13,6 +13,8 @@ import {
 } from "react";
 import { AppState } from "react-native";
 
+import { track } from "@/lib/analytics/analytics";
+import { BRIDGE_EVENTS } from "@/lib/analytics/bridge-events";
 import { getSolanaEnv, onSolanaEnvChange } from "@/lib/solana/rpc/connection";
 import {
   receiveNetworks,
@@ -163,6 +165,7 @@ export function useReceiveBridge(
           return request();
         }
       }
+      let outcome: "ready" | "failed" = "ready";
       try {
         if (route === "tron") {
           const tron = await withOwner(() =>
@@ -212,6 +215,7 @@ export function useReceiveBridge(
           patch(active, { deposit });
         }
       } catch (error) {
+        outcome = "failed";
         patch(
           active,
           route === "evm"
@@ -219,6 +223,7 @@ export function useReceiveBridge(
             : { tron: null, tronError: errorMessage(error) }
         );
       } finally {
+        if (!signal.aborted) track(BRIDGE_EVENTS.receiveAddressResult, { network_family: route, outcome });
         active[route] = "finished";
         patch(
           active,

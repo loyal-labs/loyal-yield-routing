@@ -15,8 +15,8 @@ import bs58 from "bs58";
 import { PrivyEmbeddedSigner } from "@/lib/wallet/privy-signer";
 import { LocalKeypairSigner, type Signer } from "@/lib/wallet/signer";
 
-import relay from "../../../../../../../go/workers/internal/bridge/testdata/relay-quote-solana-base-usdc.json";
-import snapshot from "../../../../../../packages/wallet-core/src/lib/solana/bridge-out-preflight.testdata.json";
+import relay from "./fixtures/relay-quote.json";
+import snapshot from "./fixtures/preflight-snapshot.json";
 import { usdcForDollars, usdcRaw } from "../amount";
 import {
   outgoingReceipt,

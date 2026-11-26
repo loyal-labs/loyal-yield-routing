@@ -15,6 +15,8 @@ import {
   useSafeAreaInsets,
 } from "react-native-safe-area-context";
 
+import { track } from "@/lib/analytics/analytics";
+import { BRIDGE_EVENTS } from "@/lib/analytics/bridge-events";
 import { Text, View } from "@/tw";
 import {
   useBridgeDestinations,
@@ -262,6 +264,7 @@ function BridgeFlow({ walletAddress, priceUsd, onClose }: Props) {
               recents={recents}
               onBack={back}
               onSelect={(address) => {
+                track(BRIDGE_EVENTS.outRecipientSelected);
                 setTo({ chain, address });
                 openPage("form");
               }}
@@ -274,6 +277,7 @@ function BridgeFlow({ walletAddress, priceUsd, onClose }: Props) {
               onSelect={(id) => {
                 if (page.kind === "chains") {
                   if (id !== chain) setTo(null);
+                  track(BRIDGE_EVENTS.outRouteSelected, { network_family: id === "tron" ? "tron" : "evm" });
                   setSelection({ chain: id, asset: page.asset });
                   openPage("form");
                 } else {
