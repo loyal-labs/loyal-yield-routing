@@ -7,6 +7,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { isPrivyConfigured } from "@/components/wallet/PrivyProviderRoot";
 import { fundingRequest } from "@/features/receive/funding-api";
+import { withTapHaptic } from "@/lib/haptics";
 import { getSolanaEnv, onSolanaEnvChange } from "@/lib/solana/rpc/connection";
 import { isWalletUnlocked, useWallet } from "@/lib/wallet/wallet-provider";
 
@@ -112,7 +113,7 @@ function IncomingRoute({
   return error ? (
     <View style={styles.card}>
       <Text style={styles.body}>{error}</Text>
-      <Action label="Retry incoming transfers" onPress={refresh} />
+      <Action label="Retry incoming transfers" onPress={withTapHaptic(refresh)} />
     </View>
   ) : null;
 }
@@ -150,14 +151,14 @@ function Transfers(identity: Parameters<typeof useIncomingTransfer>[0]) {
               {fromRaw(item.amountRaw, item.decimals)} {item.symbol} from {item.shortName}
             </Text>
             {item.transfer?.inFlight ? (
-              <Action label="View receipt" onPress={() => receipt(item.transfer!.requestId)} />
+              <Action label="View receipt" onPress={withTapHaptic(() => receipt(item.transfer!.requestId))} />
             ) : under ? (
               <Text style={styles.body}>Below the ${item.minUsd} minimum</Text>
             ) : (
               <Action
                 label={retry ? "Retry transfer" : "Review transfer"}
                 disabled={Boolean(busy || review)}
-                onPress={() => void act(item)}
+                onPress={withTapHaptic(() => void act(item))}
               />
             )}
           </View>
@@ -168,7 +169,7 @@ function Transfers(identity: Parameters<typeof useIncomingTransfer>[0]) {
           <Text accessibilityLiveRegion="polite" style={styles.body}>
             Getting your quote…
           </Text>
-          <Action label="Cancel" onPress={cancel} />
+          <Action label="Cancel" onPress={withTapHaptic(cancel)} />
         </View>
       )}
       {(busy === "sending" || (pending && !items.some((i) => i.transfer?.inFlight) && !busy)) && (
@@ -188,7 +189,7 @@ function Transfers(identity: Parameters<typeof useIncomingTransfer>[0]) {
                 }`
               : history.chain + " · " + history.asset.toUpperCase()}
           </Text>
-          <Action label="View receipt" onPress={() => receipt(history.requestId)} />
+          <Action label="View receipt" onPress={withTapHaptic(() => receipt(history.requestId))} />
         </View>
       )}
       {(showNotice || error || linkError) && (
@@ -197,9 +198,9 @@ function Transfers(identity: Parameters<typeof useIncomingTransfer>[0]) {
             {linkError ? "Could not open the receipt." : error || notice?.message}
           </Text>
           {showNotice && notice.requestId && (
-            <Action label="View receipt" onPress={() => receipt(notice.requestId!)} />
+            <Action label="View receipt" onPress={withTapHaptic(() => receipt(notice.requestId!))} />
           )}
-          <Action label="Refresh status" disabled={Boolean(busy)} onPress={reload} />
+          <Action label="Refresh status" disabled={Boolean(busy)} onPress={withTapHaptic(reload)} />
         </View>
       )}
       {review && (

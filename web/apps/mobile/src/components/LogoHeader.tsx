@@ -1,21 +1,15 @@
-import * as Haptics from "expo-haptics";
 import { useRouter } from "expo-router";
 import { BookOpen, ScanLine, Settings } from "lucide-react-native";
 import type { ReactNode } from "react";
 import { StyleSheet } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { withTapHaptic } from "@/lib/haptics";
 import { Pressable, View } from "@/tw";
 
 import Wordmark from "../../assets/images/loyal-wordmark.svg";
 
 const ICON_COLOR = "#3C3C43";
-
-function triggerHaptic() {
-  if (process.env.EXPO_OS !== "web") {
-    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-  }
-}
 
 function IconButton({
   onPress,
@@ -28,7 +22,7 @@ function IconButton({
 }) {
   return (
     <Pressable
-      onPress={onPress}
+      onPress={withTapHaptic(onPress)}
       accessibilityRole="button"
       accessibilityLabel={label}
       hitSlop={6}
@@ -58,7 +52,6 @@ export function LogoHeader({
   const router = useRouter();
 
   const handleScan = () => {
-    triggerHaptic();
     if (onScanPress) {
       onScanPress();
       return;
@@ -70,7 +63,6 @@ export function LogoHeader({
   };
 
   const handleSettings = () => {
-    triggerHaptic();
     if (onSettingsPress) {
       onSettingsPress();
       return;
@@ -79,7 +71,6 @@ export function LogoHeader({
   };
 
   const handleLibrary = () => {
-    triggerHaptic();
     if (onLibraryPress) {
       onLibraryPress();
       return;

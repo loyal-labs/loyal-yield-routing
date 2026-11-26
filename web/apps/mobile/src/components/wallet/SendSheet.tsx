@@ -377,7 +377,7 @@ export function SendSheet({
     };
   }, []);
 
-  const handleOpenQrScanner = useCallback(async () => {
+  const openQrScanner = useCallback(async () => {
     Keyboard.dismiss();
     setScanError(null);
     setShowTokenPicker(false);
@@ -389,17 +389,14 @@ export function SendSheet({
       granted = response.granted;
     }
 
-    if (!granted) {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      return;
-    }
+    if (!granted) return false;
 
     scanLockRef.current = false;
     if (scanUnlockTimerRef.current) {
       clearTimeout(scanUnlockTimerRef.current);
       scanUnlockTimerRef.current = null;
     }
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    return true;
   }, [cameraPermission, requestCameraPermission]);
 
   const prevOpenRef = useRef<boolean | null>(null);
@@ -426,10 +423,10 @@ export function SendSheet({
         scanUnlockTimerRef.current = null;
       }
       if (initialShowScanner) {
-        void handleOpenQrScanner();
+        void openQrScanner();
       }
     }
-  }, [open, sendAssets, initialMint, initialShowScanner, handleOpenQrScanner]);
+  }, [open, sendAssets, initialMint, initialShowScanner, openQrScanner]);
 
   const handleSend = useCallback(async () => {
     if (!isFormValid || isSending) return;
@@ -623,7 +620,13 @@ export function SendSheet({
             recipient={recipient}
             onRecipientChange={setRecipient}
             onPasteRecipient={handlePasteRecipient}
-            onScanRecipient={handleOpenQrScanner}
+            onScanRecipient={async () => {
+              if (await openQrScanner()) {
+                void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              } else {
+                void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+              }
+            }}
             onClose={handleClose}
             onPickRecipient={setRecipient}
             onProceed={() => setStep("form")}

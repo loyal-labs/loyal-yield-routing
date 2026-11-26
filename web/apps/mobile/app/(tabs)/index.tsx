@@ -59,6 +59,7 @@ import { useWalletBalance } from "@/hooks/wallet/useWalletBalance";
 import { useWalletInit } from "@/hooks/wallet/useWalletInit";
 import { track } from "@/lib/analytics/analytics";
 import { PORTFOLIO_EVENTS } from "@/lib/analytics/portfolio-events";
+import { withTapHaptic } from "@/lib/haptics";
 import {
   LOYAL_TOKEN_MINT,
   NATIVE_SOL_MINT,
@@ -96,7 +97,7 @@ function WalletAction({
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={label}
-      onPress={onPress}
+      onPress={withTapHaptic(onPress)}
       className="flex-1 items-center gap-2 active:opacity-60"
     >
       <View className="h-[52px] w-[52px] items-center justify-center rounded-full bg-black/[0.04]">

@@ -5,6 +5,7 @@ import { useState } from "react";
 import { Pressable, StyleSheet, TextInput } from "react-native";
 
 import { isPrivyConfigured } from "@/components/wallet/PrivyProviderRoot";
+import { withTapHaptic } from "@/lib/haptics";
 import { mmkv } from "@/lib/storage";
 import { isValidEmail } from "@/lib/wallet/email";
 import { privyErrorMessage } from "@/lib/wallet/privy-errors";
@@ -39,10 +40,10 @@ function Inner() {
         <Text style={styles.title}>Add an email</Text>
         <Pressable
           hitSlop={12}
-          onPress={() => {
+          onPress={withTapHaptic(() => {
             mmkv.setBoolean(DISMISSED_KEY, true);
             setDismissed(true);
-          }}
+          })}
         >
           <X size={18} color="rgba(0,0,0,0.5)" />
         </Pressable>
@@ -119,7 +120,7 @@ export function LinkEmailForm({ onLinked }: { onLinked?: () => void } = {}) {
         disabled={
           busy || (sent ? code.trim().length < 6 : !isValidEmail(email.trim()))
         }
-        onPress={() =>
+        onPress={withTapHaptic(() =>
           void run(async () => {
             if (sent) {
               await linkWithCode({ code: code.trim() });
@@ -129,7 +130,7 @@ export function LinkEmailForm({ onLinked }: { onLinked?: () => void } = {}) {
               setSent(true);
             }
           })
-        }
+        )}
       >
         <Text style={styles.buttonText}>{sent ? "Verify" : "Send code"}</Text>
       </Pressable>
