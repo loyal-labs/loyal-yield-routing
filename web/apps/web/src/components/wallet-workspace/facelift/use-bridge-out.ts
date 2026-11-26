@@ -10,10 +10,17 @@ import type {
   BridgeTransfersResponse,
   RouteError,
 } from "@loyal-labs/api";
+import {
+  isBridgeDestinations as isDestinations,
+  isBridgeOutQuote as isQuote,
+  isBridgeRecipients as isRecipients,
+  isBridgeTransfer as isTransfer,
+  isBridgeTransfers as isTransfers,
+} from "@loyal-labs/api";
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 
-import { runBridgeOutPreflight } from "./bridge-out-preflight";
+import { runBridgeOutPreflight } from "@loyal-labs/wallet-core/lib";
 import { bridgeIconFile } from "./bridge-icons";
 import { settleWithin, toRaw } from "./use-bridge-move";
 
@@ -62,66 +69,6 @@ type Shape<T> = (body: unknown) => body is T;
 
 const isRecord = (b: unknown): b is Record<string, unknown> =>
   typeof b === "object" && b !== null && !Array.isArray(b);
-
-const isText = (v: unknown): v is string => typeof v === "string" && v !== "";
-
-const isListOrNull = (v: unknown) => v === null || Array.isArray(v);
-
-const TRANSFER_STATES = ["quoted", "submitted", "filled", "refunded", "failed"];
-
-const TRANSFER_TEXT = [
-  "requestId",
-  "chain",
-  "asset",
-  "amountInRaw",
-  "amountOutRaw",
-  "quotedAt",
-] as const;
-
-const TRANSFER_TEXT_OR_NULL = [
-  "originTx",
-  "destinationTx",
-  "refundTx",
-  "confirmedAt",
-  "submittedAt",
-  "settledAt",
-] as const;
-
-const isTransfer: Shape<BridgeTransfer> = (b): b is BridgeTransfer =>
-  isRecord(b) &&
-  TRANSFER_TEXT.every((k) => isText(b[k])) &&
-  TRANSFER_TEXT_OR_NULL.every((k) => b[k] === null || isText(b[k])) &&
-  TRANSFER_STATES.includes(b.state as string) &&
-  (b.direction === "in" || b.direction === "out") &&
-  typeof b.inFlight === "boolean";
-
-const isQuote: Shape<BridgeOutQuoteResponse> = (
-  b
-): b is BridgeOutQuoteResponse =>
-  isRecord(b) &&
-  isText(b.requestId) &&
-  Array.isArray(b.instructions) &&
-  isListOrNull(b.lookupTables) &&
-  isText(b.amountOutRaw) &&
-  isText(b.amountOutMinRaw) &&
-  isText(b.loyalFeeRaw) &&
-  typeof b.loyalFeeBps === "number" &&
-  typeof b.slippageBps === "number";
-
-const isTransfers: Shape<BridgeTransfersResponse> = (
-  b
-): b is BridgeTransfersResponse =>
-  isRecord(b) &&
-  isListOrNull(b.transfers) &&
-  (b.transfers as unknown[] | null ?? []).every(isTransfer);
-
-const isDestinations: Shape<BridgeDestinationsResponse> = (
-  b
-): b is BridgeDestinationsResponse => isRecord(b) && isListOrNull(b.destinations);
-
-const isRecipients: Shape<BridgeRecipientsResponse> = (
-  b
-): b is BridgeRecipientsResponse => isRecord(b) && isListOrNull(b.recipients);
 
 async function readJSON<T>(
   res: Response,

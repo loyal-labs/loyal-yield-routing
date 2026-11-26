@@ -48,9 +48,10 @@ lockfile so shared packages resolve in the monorepo before the mobile install.
 The mirror generator removes this monorepo-only hook from the standalone mobile
 mirror, where EAS installs the app's dependencies directly. The source hook also
 skips the parent install when no parent workspace lockfile exists.
-Production uses the app-version runtime, now 0.6.0. Development retains the
-`0.5.0-hardware-wallet-v1` runtime used by dev build 11 and its biometric OTA;
-change it when the development native module set changes.
+Production and the standalone Android `dapp-store-development` profile use the
+app-version runtime, currently `0.6.0` on dev Seeker build 12. Other development
+profiles retain `0.5.0-hardware-wallet-v1`. Verify native module compatibility
+with the target binary before publishing an OTA.
 
 ## Architecture
 

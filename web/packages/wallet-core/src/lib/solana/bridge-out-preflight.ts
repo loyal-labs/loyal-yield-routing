@@ -1,5 +1,6 @@
-import type { BridgeOutQuoteResponse } from "@loyal-labs/api";
-import { TOKEN_MINTS } from "@loyal-labs/wallet-core/constants";
+import { Buffer } from "buffer";
+
+import { TOKEN_MINTS } from "../../constants/token-mints";
 import {
   type AddressLookupTableAccount,
   type Connection,
@@ -24,10 +25,17 @@ export type Verdict =
   | { ok: false; reason: string };
 
 export type PreflightVerdict =
-  | { ok: true; feeLamports: bigint; transaction: VersionedTransaction }
+  | { ok: true; feeLamports: bigint; transaction: VersionedTransaction; lastValidBlockHeight: number }
   | { ok: false; reason: string; retry: boolean };
 
-type Quote = Pick<BridgeOutQuoteResponse, "instructions" | "lookupTables">;
+type Quote = {
+  instructions: {
+    programId: string;
+    keys: { pubkey: string; isSigner: boolean; isWritable: boolean }[] | null;
+    data: string;
+  }[] | null;
+  lookupTables: string[] | null;
+};
 
 /**
  * One signature's base fee, 5000 lamports. The real deposit_token simulation
@@ -69,7 +77,6 @@ function parseToken(a: AccountState): TokenView | null {
       (a.data.length === TOKEN_ACCOUNT_LEN ||
         a.data[TOKEN_2022_ACCOUNT_TYPE_AT] === TOKEN_2022_ACCOUNT_TYPE));
   if (!isToken) return null;
-  const view = new DataView(a.data.buffer, a.data.byteOffset, a.data.length);
   return {
     mint: new PublicKey(
       a.data.subarray(TOKEN_MINT_AT, TOKEN_MINT_AT + 32)
@@ -77,7 +84,7 @@ function parseToken(a: AccountState): TokenView | null {
     owner: new PublicKey(
       a.data.subarray(TOKEN_OWNER_AT, TOKEN_OWNER_AT + 32)
     ).toBase58(),
-    amount: view.getBigUint64(TOKEN_AMOUNT_AT, true),
+    amount: Buffer.from(a.data.subarray(TOKEN_AMOUNT_AT, TOKEN_AMOUNT_END)).readBigUInt64LE(0),
   };
 }
 
@@ -421,7 +428,7 @@ async function simulateAndJudge(
     connection,
     quote.lookupTables ?? []
   );
-  const { blockhash } = await connection.getLatestBlockhash("confirmed");
+  const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("confirmed");
   const tx = compile(quote, owner, blockhash, lookupTables);
   const writable = writableSet(tx, lookupTables);
   const addresses = writable.map((k) => k.toBase58());
@@ -437,6 +444,9 @@ async function simulateAndJudge(
     );
     if (sim.context.slot !== pre.context.slot) continue;
 
+    if (sim.value.err === "InsufficientFundsForFee") {
+      return { ok: false, reason: "insufficient SOL for the network fee", retry: false };
+    }
     const postAccounts = sim.value.accounts;
     if (
       !Array.isArray(postAccounts) ||
@@ -462,7 +472,7 @@ async function simulateAndJudge(
       amountRaw
     );
     return verdict.ok
-      ? { ...verdict, transaction: tx }
+      ? { ...verdict, transaction: tx, lastValidBlockHeight }
       : { ok: false, reason: verdict.reason, retry: false };
   }
   return {
@@ -480,7 +490,7 @@ async function simulateAndJudge(
 export async function runBridgeOutPreflight(input: {
   connection: Connection;
   owner: PublicKey;
-  quote: BridgeOutQuoteResponse;
+  quote: Quote;
   amountRaw: bigint;
 }): Promise<PreflightVerdict> {
   let timer: ReturnType<typeof setTimeout> | undefined;

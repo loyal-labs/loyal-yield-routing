@@ -107,6 +107,28 @@ describe("earn session", () => {
     },
   );
 
+  it("binds an interactive funding request and its retry to the selected mobile wallet", async () => {
+    const signer = { ...privySigner(), kind: "mwa", signMessage: jest.fn(async () => new Uint8Array(64)) };
+    mockGetWalletSigner.mockResolvedValue(signer);
+    const used: string[] = [];
+    global.fetch = jest.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith("/session")) return Response.json(session(`token-${++mints}`));
+      expect(init?.credentials).toBe("omit");
+      expect(init?.body).toBe('{"signature":"preview"}');
+      const bearer = (init?.headers as Record<string, string>).Authorization;
+      used.push(bearer);
+      return bearer === "Bearer token-2"
+        ? Response.json({ ok: true })
+        : Response.json({ error: { code: "invalid_mobile_session" } }, { status: 401 });
+    }) as unknown as typeof fetch;
+    const options = { method: "POST", body: '{"signature":"preview"}', credentials: "omit", interactive: true } as const;
+    const path = "https://example.test/api/funding/evm-deposit-address";
+    await expect(earn.earnWalletRead("another-wallet", path, options)).rejects.toThrow("Authorize this wallet");
+    expect(signer.signMessage).not.toHaveBeenCalled();
+    expect((await earn.earnWalletRead(WALLET, path, options)).ok).toBe(true);
+    expect(used).toEqual(["Bearer token-1", "Bearer token-2"]);
+  });
+
   it("keeps storage empty when a logout lands while a rejected token is dropped", async () => {
     store.set(
       SESSIONS_KEY,

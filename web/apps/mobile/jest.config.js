@@ -4,6 +4,9 @@ module.exports = {
   maxWorkers: 2,
   testEnvironment: "node",
   moduleNameMapper: {
+    // Metro uses one web3.js instance for shared transaction builders and native signers.
+    "^@solana/web3\\.js$": require.resolve("@solana/web3.js"),
+    "^@loyal-labs/api$": "<rootDir>/../../packages/api/src/index",
     "^@/(.*)$": "<rootDir>/src/$1",
     "^@loyal-labs/shared$": "<rootDir>/../../packages/shared/src/index",
     "^@loyal-labs/wallet-core/lib$":

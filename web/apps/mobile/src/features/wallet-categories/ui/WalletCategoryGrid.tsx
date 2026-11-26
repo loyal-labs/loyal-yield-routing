@@ -2,6 +2,7 @@ import { ChevronRight, Plus } from "lucide-react-native";
 import { Pressable, Text, View } from "react-native";
 import { Skeleton } from "@/components/Skeleton";
 import { EarnMaxIcon } from "@/features/earn-max/EarnMaxIcon";
+import { withTapHaptic } from "@/lib/haptics";
 import type { CardSourceRect } from "../routes";
 import { CryptoGlyph, EarnGlyph, StablecoinsGlyph } from "./CategoryGlyphs";
 import { formatApyBps, splitUsd } from "../model/format";
@@ -107,7 +108,7 @@ export function WalletCategoryGrid({
           <Pressable
             key={label}
             accessibilityRole="button"
-            onPress={() => onPress()}
+            onPress={withTapHaptic(onPress)}
             style={{
               flex: 1,
               gap: 4,
@@ -164,7 +165,7 @@ export function WalletCategoryGrid({
           <Pressable
             key={label}
             accessibilityRole="button"
-            onPress={onPress}
+            onPress={withTapHaptic(onPress)}
             style={{
               flex: 1,
               padding: 16,

@@ -140,6 +140,7 @@ const config: ExpoConfig = {
     },
   },
   android: {
+    runtimeVersion: IS_DEV && IS_DAPP_STORE ? { policy: "appVersion" } : undefined,
     adaptiveIcon: {
       foregroundImage: "./assets/images/android-icon-foreground.png",
       monochromeImage: "./assets/images/android-icon-monochrome.png",

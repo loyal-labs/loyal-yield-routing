@@ -1,9 +1,9 @@
-import * as Clipboard from "expo-clipboard";
-import * as Haptics from "expo-haptics";
 import { Brush, Copy, RefreshCcw } from "lucide-react-native";
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { StyleSheet } from "react-native";
 
+import { useCopyAddress } from "@/features/receive/ReceiveAddress";
+import { withTapHaptic } from "@/lib/haptics";
 import {
   type BalanceBackgroundOption,
   findBalanceBackground,
@@ -51,41 +51,13 @@ export function BalanceCard({
     ? "rgba(255, 255, 255, 0.7)"
     : "rgba(60, 60, 67, 0.6)";
 
-  const handleOpenBgPicker = () => {
-    if (!onOpenBgPicker) return;
-    if (process.env.EXPO_OS !== "web") {
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    }
-    onOpenBgPicker();
-  };
-  const [addressCopied, setAddressCopied] = useState(false);
+  const { copied: addressCopied, copy } = useCopyAddress(walletAddress);
   const solanaEnv = getSolanaEnv();
 
   const usdBalance =
     typeof totalPortfolioUsd === "number" && Number.isFinite(totalPortfolioUsd)
       ? totalPortfolioUsd
       : null;
-
-  const handleCopyAddress = async () => {
-    if (!walletAddress) return;
-    if (process.env.EXPO_OS !== "web") {
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    }
-    await Clipboard.setStringAsync(walletAddress);
-    setAddressCopied(true);
-    if (process.env.EXPO_OS !== "web") {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    }
-    setTimeout(() => setAddressCopied(false), 2000);
-  };
-
-  const handleTopUp = () => {
-    if (!onTopUpPress) return;
-    if (process.env.EXPO_OS !== "web") {
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    }
-    onTopUpPress();
-  };
 
   const showSkeleton = isLoading || solBalanceLamports === null;
 
@@ -140,7 +112,7 @@ export function BalanceCard({
             </Text>
             {onRetry && (
               <Pressable
-                onPress={onRetry}
+                onPress={withTapHaptic(onRetry)}
                 className="flex-row items-center gap-1.5 rounded-full bg-white/20 px-4 py-2"
               >
                 <RefreshCcw size={16} strokeWidth={2} color="white" />
@@ -159,7 +131,7 @@ export function BalanceCard({
               ) : (
                 <>
                   <Pressable
-                    onPress={handleCopyAddress}
+                    onPress={copy}
                     className="flex-row items-center gap-1 self-start"
                   >
                     <Copy size={16} strokeWidth={1.5} color={mutedTextColor} />
@@ -198,7 +170,7 @@ export function BalanceCard({
                     </Text>
                     {showTopUpAction && onTopUpPress ? (
                       <Pressable
-                        onPress={handleTopUp}
+                        onPress={withTapHaptic(onTopUpPress)}
                         className="rounded-full px-4 py-2"
                         style={{
                           backgroundColor: hasBg
@@ -225,7 +197,7 @@ export function BalanceCard({
 
         {bgLoaded && onOpenBgPicker ? (
           <Pressable
-            onPress={handleOpenBgPicker}
+            onPress={withTapHaptic(onOpenBgPicker)}
             style={[
               styles.bgPickerBtn,
               {

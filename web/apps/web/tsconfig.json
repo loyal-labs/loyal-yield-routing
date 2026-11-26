@@ -21,6 +21,7 @@
     ],
     "paths": {
       "@/*": ["./src/*"],
+      "@loyal-labs/api": ["../../packages/api/src/index.ts"],
       "@loyal-labs/actions": ["../../packages/loyal-actions/src/index.ts"],
       "@loyal-labs/actions/constants": [
         "../../packages/loyal-actions/src/constants.ts"
