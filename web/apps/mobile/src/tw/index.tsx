@@ -62,7 +62,10 @@ export const Text = (
       ?.fontFamily,
     MONO_FONT_FAMILY,
   );
-  const style = fontFamily ? [{ fontFamily }, props.style] : props.style;
+  const style = React.useMemo(
+    () => (fontFamily ? [{ fontFamily }, props.style] : props.style),
+    [fontFamily, props.style],
+  );
   return useCssElement(
     RNText,
     { ...props, className, style },
@@ -100,7 +103,10 @@ export const TextInput = (
       ?.fontFamily,
     MONO_FONT_FAMILY,
   );
-  const style = fontFamily ? [{ fontFamily }, props.style] : props.style;
+  const style = React.useMemo(
+    () => (fontFamily ? [{ fontFamily }, props.style] : props.style),
+    [fontFamily, props.style],
+  );
   return useCssElement(
     RNTextInput,
     { ...props, className, style },
