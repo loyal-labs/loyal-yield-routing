@@ -468,6 +468,64 @@ func TestExitQuoteConfirmsSpikeAgainstSplitBrainPeersWithoutHidingRealDrop(t *te
 		}
 	})
 
+	t.Run("moderate_split_brain_recovers_peer_at_10bps", func(t *testing.T) {
+		now := time.Now().UTC()
+		sequence := []microBPS{
+			22_000_000, // healthy baseline (Raydium CLMM + Manifest)
+			41_000_000, // +19 bps split-brain node (Hylo fallback)
+			41_000_000, // second Hylo node
+			22_500_000, // healthy peer within < 10 bps -> stop early
+			20_000_000, // must not be called
+		}
+		calls := 0
+		q := exitQuoter{now: func() time.Time { return now }, price: func(_ context.Context, _ heldExitBasis, _ int64, at time.Time) (ExitCost, error) {
+			bps := sequence[calls]
+			calls++
+			return makeCost(bps, at), nil
+		}}
+		costs := q.quote(t.Context(), m, 77, accounts, []string{route.Lane}, nil)
+		now = now.Add(exitQuoteInterval + time.Second)
+		costs = q.quote(t.Context(), m, 77, accounts, []string{route.Lane}, costs)
+		if calls != 4 || costs.applicable(m, 77, now)[route.Lane].Quote.BPS != 22_500_000 {
+			t.Fatalf("19 bps split-brain did not recover healthy peer early: calls=%d cost=%+v", calls, costs[route.Lane].Quote)
+		}
+	})
+
+	t.Run("moderate_genuine_liquidity_drift_publishes_without_persistence", func(t *testing.T) {
+		now := time.Now().UTC()
+		currentBPS := microBPS(22_000_000)
+		calls := 0
+		var recorded []microBPS
+		q := exitQuoter{
+			now: func() time.Time { return now },
+			record: func(_ context.Context, c ExitCost) (bool, error) {
+				recorded = append(recorded, c.BPS)
+				return true, nil
+			},
+			price: func(_ context.Context, _ heldExitBasis, _ int64, at time.Time) (ExitCost, error) {
+				calls++
+				return makeCost(currentBPS, at), nil
+			},
+		}
+		costs := q.quote(t.Context(), m, 77, accounts, []string{route.Lane}, nil)
+		// Genuine +19 bps liquidity drift (< 50 bps): confirms peers (1+3) and
+		// publishes immediately without 75s persistence delay.
+		currentBPS = 41_000_000
+		now = now.Add(exitQuoteInterval + time.Second)
+		costs = q.quote(t.Context(), m, 77, accounts, []string{route.Lane}, costs)
+		app := costs.applicable(m, 77, now)
+		if calls != 1+1+exitQuoteSpikeConfirmExtraCalls || app[route.Lane].Quote == nil || app[route.Lane].Quote.BPS != 41_000_000 || len(recorded) != 2 {
+			t.Fatalf("genuine 19 bps drift did not publish immediately after peer confirmation: calls=%d quote=%+v recorded=%v", calls, app[route.Lane].Quote, recorded)
+		}
+		// Next tick at 41 bps makes 1 call (new baseline is 41 bps).
+		callsBeforeSteady := calls
+		now = now.Add(exitQuoteInterval + time.Second)
+		costs = q.quote(t.Context(), m, 77, accounts, []string{route.Lane}, costs)
+		if calls-callsBeforeSteady != 1 {
+			t.Fatalf("steady tick after moderate drift made extra calls: %d", calls-callsBeforeSteady)
+		}
+	})
+
 	t.Run("gap_beyond_max_gap_resets_persistence_window", func(t *testing.T) {
 		now := time.Now().UTC()
 		currentBPS := microBPS(29_000_000)

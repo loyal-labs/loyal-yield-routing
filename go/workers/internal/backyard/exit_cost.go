@@ -98,10 +98,11 @@ type exitCosts map[string]laneExitCosts
 const exitQuoteOutlierRatio = 3
 
 const (
-	// Confirm sudden >= 50 bps valuation exit-cost jumps with fresh peer quotes
-	// so a split-brain Jupiter node missing a venue cannot swing on-chain NAV,
-	// and require sustained persistence across retries before publishing a
-	// quote-only spike caused by a transient multi-slot venue blink.
+	// Re-query Jupiter peers on >= 10 bps jumps so split-brain routing nodes
+	// missing a venue cannot ping-pong on-chain NAV and 7-day realized APY.
+	exitQuotePeerConfirmBPS microBPS = 10_000_000
+	// Require sustained persistence across retries only for large >= 50 bps
+	// valuation spikes caused by transient multi-slot venue blinks.
 	exitQuoteSpikeConfirmBPS        microBPS = 50_000_000
 	exitQuoteSpikeConfirmMaxAge              = 5 * time.Minute
 	exitQuoteSpikeConfirmExtraCalls          = 3
@@ -115,6 +116,13 @@ type exitQuoteSpike struct {
 	baselineBPS microBPS
 	since       time.Time
 	lastSeen    time.Time
+}
+
+func needsExitQuotePeerConfirm(c ExitCost, hasBaseline bool, baselineBPS microBPS, realized *ExitCost) bool {
+	if hasBaseline {
+		return c.BPS > baselineBPS && c.BPS-baselineBPS >= exitQuotePeerConfirmBPS
+	}
+	return c.BPS >= exitQuoteSpikeConfirmBPS && c.outlier(realized)
 }
 
 func isExitQuoteSpike(c ExitCost, hasBaseline bool, baselineBPS microBPS, realized *ExitCost) bool {
@@ -314,16 +322,20 @@ heldQuotes:
 		var spikeElapsed time.Duration
 		if err == nil {
 			realized := costs[lane].Realized
+			needsPeerConfirm := func(c ExitCost) bool {
+				return needsExitQuotePeerConfirm(c, hasBaseline, baselineBPS, realized)
+			}
 			spiked := func(c ExitCost) bool {
 				return isExitQuoteSpike(c, hasBaseline, baselineBPS, realized)
 			}
-			if spiked(cost) {
+			if needsPeerConfirm(cost) {
 				checkNow := q.now()
 				persisted := hasActiveSpike && !checkNow.Before(activeSpike.since) && checkNow.Sub(activeSpike.since) >= exitQuoteSpikePersistDuration
-				// Confirm immediately on first detection (to recover split-brain
-				// peers without pausing NAV) and again on the confirming tick
-				// right before publishing a sustained liquidity drop.
-				if !hasActiveSpike || persisted {
+				// Confirm immediately on any >= 10 bps jump, except during
+				// intermediate probes of an already-pending >= 50 bps spike
+				// (which re-probe every 5s and re-confirm peers right before
+				// committing at 75s).
+				if !hasActiveSpike || persisted || !spiked(cost) {
 					for range exitQuoteSpikeConfirmExtraCalls {
 						if ctx.Err() != nil {
 							break
@@ -334,7 +346,7 @@ heldQuotes:
 						}
 						if candidate.BPS < cost.BPS {
 							cost = candidate
-							if !spiked(cost) {
+							if !needsPeerConfirm(cost) {
 								break
 							}
 						}
