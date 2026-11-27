@@ -97,6 +97,14 @@ type exitCosts map[string]laneExitCosts
 
 const exitQuoteOutlierRatio = 3
 
+const (
+	// Confirm sudden >= 50 bps valuation exit-cost jumps with fresh peer quotes
+	// so a split-brain Jupiter node missing a venue cannot swing on-chain NAV.
+	exitQuoteSpikeConfirmBPS        microBPS = 50_000_000
+	exitQuoteSpikeConfirmMaxAge              = 5 * time.Minute
+	exitQuoteSpikeConfirmExtraCalls          = 3
+)
+
 func (e exitCosts) at(lane string, heldRaw uint64, mark kamino.ScaledFraction) (ExitCost, bool) {
 	costs := e[lane]
 	if costs.Quote != nil && costs.Quote.fresh(heldRaw, mark) && costs.Quote.scope != nil {
@@ -247,9 +255,44 @@ heldQuotes:
 		q.attempted[key] = now
 		flight := &exitQuoteFlight{done: make(chan struct{})}
 		q.inflight[key] = flight
+		var prev *ExitCost
+		for _, candidate := range []*ExitCost{q.cached[lane].Quote, costs[lane].Quote} {
+			if candidate == nil || candidate.Source != exitCostQuote || candidate.QuotedCollateralRaw != basis.heldRaw ||
+				candidate.At.IsZero() || candidate.At.After(now) || now.Sub(candidate.At) > exitQuoteSpikeConfirmMaxAge {
+				continue
+			}
+			if prev == nil || candidate.At.After(prev.At) {
+				copied := *candidate
+				prev = &copied
+			}
+		}
 		q.mu.Unlock()
 		cost, err := q.price(ctx, basis, slot, now)
 		if err == nil {
+			realized := costs[lane].Realized
+			needsConfirm := func(c ExitCost) bool {
+				if prev != nil && c.BPS > prev.BPS && c.BPS-prev.BPS >= exitQuoteSpikeConfirmBPS {
+					return true
+				}
+				return c.BPS >= exitQuoteSpikeConfirmBPS && c.outlier(realized)
+			}
+			if needsConfirm(cost) {
+				for range exitQuoteSpikeConfirmExtraCalls {
+					if ctx.Err() != nil {
+						break
+					}
+					candidate, retryErr := q.price(ctx, basis, slot, q.now())
+					if retryErr != nil {
+						continue
+					}
+					if candidate.BPS < cost.BPS {
+						cost = candidate
+						if !needsConfirm(cost) {
+							break
+						}
+					}
+				}
+			}
 			cost.scope = &exitQuoteScope{vault: m.vault.squads, manifest: m.SHA256, usdc: basis.usdc, path: basis.st.route.Kamino.CollateralMint + ":" + fleet.USDCMint}
 			if q.record != nil {
 				_, _ = q.record(ctx, cost)

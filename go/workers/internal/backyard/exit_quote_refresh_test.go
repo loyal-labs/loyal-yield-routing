@@ -221,3 +221,94 @@ func TestExitQuoteRetryHistoryExpiresAcrossChangingMarks(t *testing.T) {
 		t.Fatal("changed marks lost independent acquisition attempts", calls)
 	}
 }
+
+func TestExitQuoteConfirmsSpikeAgainstSplitBrainPeersWithoutHidingRealDrop(t *testing.T) {
+	m := readyWorkerManifest(t)
+	route, accounts := onreEntryNAVFixture(t, 0, 2_000_000_000)
+	accounts = append(accounts, clockFixture())
+	basis, held, err := readHeldExitBasis(m, accounts, route, 77)
+	if err != nil || !held {
+		t.Fatal(err, held)
+	}
+	makeCost := func(bps microBPS, at time.Time) ExitCost {
+		return ExitCost{
+			Lane: route.Lane, Source: exitCostQuote, BPS: bps,
+			QuotedCollateralRaw: basis.heldRaw, MarkSF: basis.mark, Slot: 77, At: at,
+			scope: &exitQuoteScope{vault: m.vault.squads, manifest: m.SHA256, usdc: basis.usdc, path: quotePath(m, route.Lane)},
+		}
+	}
+
+	t.Run("normal_tick_makes_no_extra_calls", func(t *testing.T) {
+		now := time.Now().UTC()
+		calls := 0
+		q := exitQuoter{now: func() time.Time { return now }, price: func(_ context.Context, _ heldExitBasis, _ int64, at time.Time) (ExitCost, error) {
+			calls++
+			return makeCost(30_000_000, at), nil // 30 bps
+		}}
+		costs := q.quote(t.Context(), m, 77, accounts, []string{route.Lane}, nil)
+		now = now.Add(exitQuoteInterval + time.Second)
+		costs = q.quote(t.Context(), m, 77, accounts, []string{route.Lane}, costs)
+		if calls != 2 || costs[route.Lane].Quote.BPS != 30_000_000 {
+			t.Fatalf("normal tick made extra calls: calls=%d cost=%+v", calls, costs[route.Lane].Quote)
+		}
+	})
+
+	t.Run("split_brain_spike_recovers_healthy_peer_and_stops_early", func(t *testing.T) {
+		now := time.Now().UTC()
+		sequence := []microBPS{
+			29_000_000,  // initial healthy quote (29 bps)
+			910_000_000, // degraded node (910 bps)
+			173_000_000, // still degraded peer (173 bps, still >= 50 bps above 29 bps)
+			29_500_000,  // healthy peer (29.5 bps) -> stop early before 4th call
+			25_000_000,  // must not be called
+		}
+		calls := 0
+		q := exitQuoter{now: func() time.Time { return now }, price: func(_ context.Context, _ heldExitBasis, _ int64, at time.Time) (ExitCost, error) {
+			bps := sequence[calls]
+			calls++
+			return makeCost(bps, at), nil
+		}}
+		costs := q.quote(t.Context(), m, 77, accounts, []string{route.Lane}, nil)
+		now = now.Add(exitQuoteInterval + time.Second)
+		costs = q.quote(t.Context(), m, 77, accounts, []string{route.Lane}, costs)
+		if calls != 4 || costs[route.Lane].Quote.BPS != 29_500_000 {
+			t.Fatalf("spike did not recover healthy peer early: calls=%d cost=%+v", calls, costs[route.Lane].Quote)
+		}
+	})
+
+	t.Run("cold_start_outlier_against_realized_confirms_peer", func(t *testing.T) {
+		now := time.Now().UTC()
+		realized := makeCost(19_500_000, now.Add(-time.Hour))
+		realized.Source = exitCostRealized
+		sequence := []microBPS{173_000_000, 29_000_000}
+		calls := 0
+		q := exitQuoter{now: func() time.Time { return now }, price: func(_ context.Context, _ heldExitBasis, _ int64, at time.Time) (ExitCost, error) {
+			bps := sequence[calls]
+			calls++
+			return makeCost(bps, at), nil
+		}}
+		costs := q.quote(t.Context(), m, 77, accounts, []string{route.Lane}, exitCosts{route.Lane: {Realized: &realized}})
+		if calls != 2 || costs[route.Lane].Quote.BPS != 29_000_000 {
+			t.Fatalf("cold-start outlier did not confirm peer: calls=%d cost=%+v", calls, costs[route.Lane].Quote)
+		}
+	})
+
+	t.Run("sustained_real_liquidity_drop_publishes_immediately", func(t *testing.T) {
+		now := time.Now().UTC()
+		calls := 0
+		q := exitQuoter{now: func() time.Time { return now }, price: func(_ context.Context, _ heldExitBasis, _ int64, at time.Time) (ExitCost, error) {
+			calls++
+			if calls == 1 {
+				return makeCost(29_000_000, at), nil
+			}
+			// Genuine market crash: every peer quotes 300 bps.
+			return makeCost(300_000_000, at), nil
+		}}
+		costs := q.quote(t.Context(), m, 77, accounts, []string{route.Lane}, nil)
+		now = now.Add(exitQuoteInterval + time.Second)
+		costs = q.quote(t.Context(), m, 77, accounts, []string{route.Lane}, costs)
+		if calls != 1+1+exitQuoteSpikeConfirmExtraCalls || costs[route.Lane].Quote.BPS != 300_000_000 {
+			t.Fatalf("real liquidity drop was hidden or under-confirmed: calls=%d cost=%+v", calls, costs[route.Lane].Quote)
+		}
+	})
+}
