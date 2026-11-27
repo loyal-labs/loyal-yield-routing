@@ -11,8 +11,8 @@
     "build:firefox": "wxt build -b firefox",
     "zip": "wxt zip",
     "zip:firefox": "wxt zip -b firefox",
-    "compile": "tsc --noEmit",
-    "postinstall": "wxt prepare"
+    "compile": "wxt prepare && tsc --noEmit",
+    "prepare:wxt": "wxt prepare"
   },
   "dependencies": {
     "@loyal-labs/solana-rpc": "workspace:*",
