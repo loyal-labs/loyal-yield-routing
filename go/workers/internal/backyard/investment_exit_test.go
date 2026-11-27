@@ -14,6 +14,8 @@ import (
 	"os"
 	"slices"
 	"strconv"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -74,9 +76,12 @@ func TestInvestmentExitProjectsWholeHoldingAndRepaysDebt(t *testing.T) {
 				t.Fatal(err)
 			}
 			added, debtAdded := uint64(1_000_000_000), uint64(500_000_000)
+			var mu sync.Mutex
 			requested := uint64(0)
 			investmentQuoteFixture(t, client, func(r *http.Request, amount uint64) (uint64, uint64, error) {
+				mu.Lock()
 				requested = max(requested, amount)
+				mu.Unlock()
 				return amount, 42, nil
 			})
 			before := hashConfirmedAccounts(accounts)
@@ -301,10 +306,10 @@ func TestInvestmentExitPricesNonUSDCRepayment(t *testing.T) {
 				t.Fatal(err)
 			}
 			_, _, client, _ := selectorDestinationFixture(t)
-			loanQuotes := 0
+			var loanQuotes atomic.Int32
 			investmentQuoteFixture(t, client, func(req *http.Request, amount uint64) (uint64, uint64, error) {
 				if req.URL.Query().Get("outputMint") == route.Kamino.DebtMint {
-					loanQuotes++
+					loanQuotes.Add(1)
 					out, err := valueBetweenTokenRaw(amount, prices.collateralDecimals, prices.debtDecimals, prices.collateral, prices.debt, false)
 					if expensive {
 						out = out * 99 / 100
@@ -320,8 +325,8 @@ func TestInvestmentExitPricesNonUSDCRepayment(t *testing.T) {
 				want = investmentExitExpensive
 			}
 			assertInvestmentHold(t, err, want)
-			if loanQuotes < 1 || !expensive && (r.RepaymentUSDCRaw == 0 || r.MinimumEquityRaw == 0) {
-				t.Fatalf("loan conversion omitted: %+v calls=%d", r, loanQuotes)
+			if loanQuotes.Load() < 1 || !expensive && (r.RepaymentUSDCRaw == 0 || r.MinimumEquityRaw == 0) {
+				t.Fatalf("loan conversion omitted: %+v calls=%d", r, loanQuotes.Load())
 			}
 		})
 	}
@@ -356,9 +361,12 @@ func TestInvestmentExitCountsSharedCollateralCustodyOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, _, client, _ := selectorDestinationFixture(t)
+	var mu sync.Mutex
 	requested := uint64(0)
 	investmentQuoteFixture(t, client, func(req *http.Request, amount uint64) (uint64, uint64, error) {
+		mu.Lock()
 		requested = max(requested, amount)
+		mu.Unlock()
 		out, err := valueBetweenTokenRaw(amount, prices.collateralDecimals, 6, prices.collateral, prices.usdc, false)
 		return out, 77, err
 	})
@@ -426,10 +434,13 @@ func TestInvestmentExitRepaysPYUSDBeforePricingDollarConversion(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, _, client, _ := selectorDestinationFixture(t)
+	var mu sync.Mutex
 	var fullDebtOut, largestCashInput uint64
 	investmentQuoteFixture(t, client, func(req *http.Request, amount uint64) (uint64, uint64, error) {
 		if req.URL.Query().Get("inputMint") == route.Kamino.DebtMint {
+			mu.Lock()
 			largestCashInput = max(largestCashInput, amount)
+			mu.Unlock()
 			out, err := valueBetweenTokenRaw(amount, prices.debtDecimals, 6, prices.debt, prices.usdc, false)
 			return out, 42, err
 		}
@@ -438,7 +449,9 @@ func TestInvestmentExitRepaysPYUSDBeforePricingDollarConversion(t *testing.T) {
 		}
 		out, err := valueBetweenTokenRaw(amount, prices.collateralDecimals, prices.debtDecimals, prices.collateral, prices.debt, false)
 		out = out * 999 / 1000
+		mu.Lock()
 		fullDebtOut = max(fullDebtOut, out)
+		mu.Unlock()
 		return out, 42, err
 	})
 	r, err := (lanePricer{client: client, manifest: m}).priceInvestmentExit(context.Background(), flatEntryObservation(42, 1_000_000_000), route, accounts, 42, 100_000_000_000, 50_000_000)
@@ -518,17 +531,20 @@ func TestInvestmentExitRetriesOneChangedSlotWithoutWeakeningPrices(t *testing.T)
 	for _, expensive := range []bool{false, true} {
 		m, _, client, accounts := selectorDestinationFixture(t)
 		route, _ := m.route(MapleSyrupUSDCLaneID)
-		calls := 0
+		var calls atomic.Int32
 		investmentQuoteFixture(t, client, func(_ *http.Request, amount uint64) (uint64, uint64, error) {
-			calls++
-			slot := uint64(43)
-			if calls == 1 {
-				slot = 42
+			call := calls.Add(1)
+			if call <= 2 {
+				slot := uint64(43)
+				if amount == 100_000_000_000 {
+					slot = 42
+				}
+				return amount, slot, nil
 			}
-			if expensive && calls == 3 {
-				return amount * 997 / 1000, slot, nil
+			if expensive && amount == 100_000_000_000 {
+				return amount * 997 / 1000, 43, nil
 			}
-			return amount, slot, nil
+			return amount, 43, nil
 		})
 		_, err := (lanePricer{client: client, manifest: m}).priceInvestmentExit(context.Background(), flatEntryObservation(42, 1_000_000_000), route, accounts, 42, 100_000_000_000, 0)
 		want := ""
@@ -536,10 +552,92 @@ func TestInvestmentExitRetriesOneChangedSlotWithoutWeakeningPrices(t *testing.T)
 			want = investmentExitExpensive
 		}
 		assertInvestmentHold(t, err, want)
-		if calls != 4 {
-			t.Fatalf("slot retry unbounded or missing: %d", calls)
+		if calls.Load() != 4 {
+			t.Fatalf("slot retry unbounded or missing: %d", calls.Load())
 		}
 	}
+}
+
+func TestInvestmentExitQuotesPairedSizesConcurrently(t *testing.T) {
+	t.Run("usdc_debt_pair", func(t *testing.T) {
+		m, _, client, accounts := selectorDestinationFixture(t)
+		route, _ := m.route(MapleSyrupUSDCLaneID)
+		arrived := make(chan struct{}, 2)
+		release := make(chan struct{})
+		var mu sync.Mutex
+		var seen int
+		investmentQuoteFixture(t, client, func(_ *http.Request, amount uint64) (uint64, uint64, error) {
+			mu.Lock()
+			seen++
+			both := seen == 2
+			mu.Unlock()
+			arrived <- struct{}{}
+			if both {
+				close(release)
+			}
+			select {
+			case <-release:
+			case <-time.After(time.Second):
+				return 0, 0, errors.New("paired exit quotes did not execute concurrently")
+			}
+			return amount, 42, nil
+		})
+		_, err := (lanePricer{client: client, manifest: m}).priceInvestmentExit(context.Background(), flatEntryObservation(42, 1_000_000_000), route, accounts, 42, 100_000_000_000, 0)
+		if err != nil {
+			t.Fatalf("concurrent paired exit quotes failed: %v", err)
+		}
+		if len(arrived) != 2 {
+			t.Fatalf("expected 2 concurrent quotes, got %d", len(arrived))
+		}
+	})
+
+	t.Run("token_debt_two_pairs", func(t *testing.T) {
+		m, route, accounts := autoPayoffBatch(t, 42, nil)
+		accounts = append(accounts, autoPayoffMints(t, route)...)
+		prices, err := batchLanePrices(accounts, route)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _, client, _ := selectorDestinationFixture(t)
+		var mu sync.Mutex
+		inFlightByPair := map[string]int{}
+		releaseByPair := map[string]chan struct{}{
+			"collateral": make(chan struct{}),
+			"debt":       make(chan struct{}),
+		}
+		investmentQuoteFixture(t, client, func(req *http.Request, amount uint64) (uint64, uint64, error) {
+			pair := "collateral"
+			if req.URL.Query().Get("inputMint") == route.Kamino.DebtMint {
+				pair = "debt"
+			}
+			mu.Lock()
+			inFlightByPair[pair]++
+			both := inFlightByPair[pair] == 2
+			ch := releaseByPair[pair]
+			mu.Unlock()
+			if both {
+				close(ch)
+			}
+			select {
+			case <-ch:
+			case <-time.After(time.Second):
+				return 0, 0, fmt.Errorf("%s exit quote pair did not run concurrently", pair)
+			}
+			if pair == "debt" {
+				out, err := valueBetweenTokenRaw(amount, prices.debtDecimals, 6, prices.debt, prices.usdc, false)
+				return out, 42, err
+			}
+			out, err := valueBetweenTokenRaw(amount, prices.collateralDecimals, prices.debtDecimals, prices.collateral, prices.debt, false)
+			return out, 42, err
+		})
+		_, err = (lanePricer{client: client, manifest: m}).priceInvestmentExit(context.Background(), flatEntryObservation(42, 1_000_000_000), route, accounts, 42, 100_000_000_000, 50_000_000)
+		if err != nil {
+			t.Fatalf("concurrent two-leg token-debt exit quotes failed: %v", err)
+		}
+		if inFlightByPair["collateral"] != 2 || inFlightByPair["debt"] != 2 {
+			t.Fatalf("unexpected quote pair counts: %+v", inFlightByPair)
+		}
+	})
 }
 
 func TestInvestmentExitPreparedWireRechecksAndBindsApproval(t *testing.T) {

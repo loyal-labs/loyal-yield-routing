@@ -1,13 +1,18 @@
 package backyard
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"slices"
 	"strconv"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -263,5 +268,123 @@ func TestCanaryQuotedBelowGainCeiling(t *testing.T) {
 	_, quotes, err := collectSelectorQuotes(context.Background(), rpc, fixtureView(t, rpc), client, m, o, []LaneEconomics{market}, policy, &pilotCanaryEntryRequest{Lane: MapleSyrupUSDCLaneID, EquityRaw: 10_000_000})
 	if err != nil || len(quotes) != 1 || quotes[0].EquityRaw != 10_000_000 {
 		t.Fatal("canary size not quoted below the gain ceiling", err, quotes)
+	}
+}
+
+func TestLiveSelectorBoundsConcurrencyAndPrioritizesCashByYield(t *testing.T) {
+	t.Parallel()
+	lanes := []struct {
+		id  string
+		apy float64
+	}{
+		{MapleSyrupUSDCLaneID, 0.05},
+		{primePRIMEUSDCTemplate.Lane, 0.07},
+		{onreONycUSDC, 0.11},
+	}
+	var merged []ConfirmedAccount
+	var m RouteManifest
+	byOutputMint := map[string]string{}
+	byMintTransport := map[string]http.RoundTripper{}
+	for _, lane := range lanes {
+		lm, _, lc, accounts := selectorDestinationFixtureForLane(t, lane.id, nil)
+		m = lm
+		for _, a := range accounts {
+			upsertConfirmedAccount(&merged, a)
+		}
+		route, err := runtimeRoute(lane.id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		byOutputMint[route.Kamino.CollateralMint] = lane.id
+		byMintTransport[route.Kamino.CollateralMint] = fixtureHTTP(lc).Transport
+	}
+	rpc := budgetBuildRPCWithAccounts(t, 5000, 42, merged)
+	var inFlight, maxInFlight atomic.Int32
+	var mu sync.Mutex
+	var firstStarted []string
+	seen := map[string]bool{}
+	client, err := fixtureJupiter(roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		cur := inFlight.Add(1)
+		for {
+			prev := maxInFlight.Load()
+			if cur <= prev || maxInFlight.CompareAndSwap(prev, cur) {
+				break
+			}
+		}
+		defer inFlight.Add(-1)
+		if req.URL.Path == "/quote" {
+			q := req.URL.Query()
+			mint := q.Get("outputMint")
+			if _, ok := byMintTransport[mint]; !ok {
+				mint = q.Get("inputMint")
+			}
+			if lane, ok := byOutputMint[q.Get("outputMint")]; ok {
+				mu.Lock()
+				if !seen[lane] {
+					seen[lane] = true
+					firstStarted = append(firstStarted, lane)
+				}
+				mu.Unlock()
+			}
+			time.Sleep(25 * time.Millisecond)
+			return byMintTransport[mint].RoundTrip(req)
+		}
+		rawBody, err := io.ReadAll(req.Body)
+		if err != nil {
+			return nil, err
+		}
+		req.Body = io.NopCloser(bytes.NewReader(rawBody))
+		var body struct{ QuoteResponse jupiter.Quote }
+		if err := json.Unmarshal(rawBody, &body); err != nil {
+			return nil, err
+		}
+		mint := body.QuoteResponse.OutputMint
+		if _, ok := byMintTransport[mint]; !ok {
+			mint = body.QuoteResponse.InputMint
+		}
+		return byMintTransport[mint].RoundTrip(req)
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	in := selectorFixture()
+	advanceSelectorFixture(&in, time.Now().UTC().Sub(in.Now))
+	in.Snapshot.Slot = 42
+	in.Snapshot.TotalVaultNAVRaw, in.Snapshot.VoltrIdleRaw = 100_000_000, 100_000_000
+	o := tickObservation(in.Snapshot)
+	o.ObservedAt = time.Now().UTC()
+	var markets []LaneEconomics
+	for _, lane := range lanes {
+		mk := in.Markets[0]
+		mk.Lane = lane.id
+		mk.NativeAPY = lane.apy
+		mk.EntryCapacity = Capacity{}
+		markets = append(markets, mk)
+	}
+	policy := DefaultSelectorPolicy()
+	policy.MinimumBenefitRaw = 0
+	policy.UncertaintyBPS = 0
+	_, quotes, err := collectSelectorQuotes(context.Background(), rpc, fixtureView(t, rpc), client, m, o, markets, policy, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(quotes) != len(lanes) {
+		t.Fatalf("expected %d quotes, got %d", len(lanes), len(quotes))
+	}
+	if got := maxInFlight.Load(); got > selectorQuoteConcurrency {
+		t.Fatalf("selector exceeded bounded concurrency %d: saw %d", selectorQuoteConcurrency, got)
+	}
+	// The two highest-yield lanes (OnRe 11%, Prime 7%) must occupy the first
+	// two worker slots ahead of Maple (5%), even though Maple appeared first.
+	if len(firstStarted) != len(lanes) {
+		t.Fatalf("missing started lanes: %v", firstStarted)
+	}
+	firstTwo := append([]string(nil), firstStarted[:2]...)
+	slices.Sort(firstTwo)
+	wantFirstTwo := []string{onreONycUSDC, primePRIMEUSDCTemplate.Lane}
+	slices.Sort(wantFirstTwo)
+	if !slices.Equal(firstTwo, wantFirstTwo) || firstStarted[2] != MapleSyrupUSDCLaneID {
+		t.Fatalf("highest-yield cash lanes were not prioritized first: started=%v", firstStarted)
 	}
 }

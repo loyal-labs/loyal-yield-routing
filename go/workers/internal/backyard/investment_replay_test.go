@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -140,6 +141,7 @@ func TestOfflineLeveragedReplayStep(t *testing.T) {
 			return
 		}
 		rpc := budgetBuildRPCWithAccounts(t, 5000, input.Slot, input.Accounts)
+		var reportMu sync.Mutex
 		client, e := fixtureJupiter(roundTripFunc(func(r *http.Request) (*http.Response, error) {
 			switch r.URL.Path {
 			case "/quote":
@@ -165,7 +167,9 @@ func TestOfflineLeveragedReplayStep(t *testing.T) {
 					var ok bool
 					out, ok = input.QuoteOutputs[key]
 					if !ok {
+						reportMu.Lock()
 						report["quoteRequest"] = map[string]any{"key": key, "amount": a, "toDebt": q.Get("outputMint") != fleet.USDCMint, "fromDebt": q.Get("inputMint") == route.Kamino.DebtMint && route.Kamino.DebtMint != fleet.USDCMint}
+						reportMu.Unlock()
 						return nil, fmt.Errorf("missing simulated quote")
 					}
 				}

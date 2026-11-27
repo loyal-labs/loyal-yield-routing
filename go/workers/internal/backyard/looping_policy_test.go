@@ -251,3 +251,68 @@ func TestBackyardChoosesNetBenefitWithoutForcedAllocations(t *testing.T) {
 		t.Fatal("Backyard policy changed Loyal Earn MAX")
 	}
 }
+
+func TestBackyardExecutionCappedTrancheUnblocksLargeIdleDeposit(t *testing.T) {
+	if !productionLoopingPolicy.ProtectExecution || productionLoopingPolicy.DiversifyNewCash {
+		t.Fatalf("unexpected Backyard production policy: %+v", productionLoopingPolicy)
+	}
+	in := selectorFixture()
+	in.Policy = productionLoopingPolicy
+	// Reproduce the live Backyard shape after a $10k deposit onto ~$2k TVL:
+	// $12,204 NAV, $10,257 idle, 10% fee, and $400 / $333 execution-capped tranches.
+	in.Snapshot.AdminPerformanceFeeBPS, in.Snapshot.ApprovedAdminPerformanceFeeBPS = 1000, 1000
+	in.Snapshot.TotalVaultNAVRaw = 12_204_060_000
+	in.Snapshot.VoltrIdleRaw = 10_256_760_000
+	in.Snapshot.StrategyNAVRaw = 1_947_300_000
+	in.Snapshot.PriorReportedNAVRaw = in.Snapshot.StrategyNAVRaw
+	in.Snapshot.net = fixtureSnapshotCertificate(in.Snapshot)
+
+	onreMarket := in.Markets[0]
+	onreMarket.Lane, onreMarket.NativeAPY, onreMarket.SupplyAPY = onreONycUSDC, .1102, 0
+	onreMarket.EntryCapacity = Capacity{Known: true, Raw: 400_000_000}
+	autoMarket := in.Markets[0]
+	autoMarket.Lane, autoMarket.NativeAPY, autoMarket.SupplyAPY = autoAUTOPYUSD.Lane, .1139, 0
+	autoMarket.EntryCapacity = Capacity{Known: true, Raw: 333_333_333}
+	in.Markets = []LaneEconomics{autoMarket, onreMarket}
+
+	onreQuote := in.Quotes[0]
+	onreQuote.DestinationLane, onreQuote.EquityRaw, onreQuote.CostRaw = onreONycUSDC, 400_000_000, 3_600_000
+	onreQuote.MinimumIdleRaw, onreQuote.Unlevered = uint64(in.Snapshot.VoltrIdleRaw), true
+	onreQuote.BorrowReceiveRaw, onreQuote.BorrowFeeRaw, onreQuote.BorrowValueRaw, onreQuote.ProceedsValueRaw = 0, 0, 0, 0
+
+	autoQuote := onreQuote
+	autoQuote.DestinationLane, autoQuote.EquityRaw, autoQuote.CostRaw = autoAUTOPYUSD.Lane, 333_333_333, 3_300_000
+	in.Quotes = []MoveQuote{autoQuote, onreQuote}
+
+	// Without ProtectExecution (uncapped entry), uncertainty stays on whole investable equity.
+	uncapped := in
+	uncapped.Policy.ProtectExecution = false
+	if got := SelectOpportunity(uncapped, SelectorState{}); got.Action != SelectorKeep || got.Candidates[0].BenefitRaw >= 0 || got.Candidates[1].BenefitRaw >= 0 {
+		t.Fatalf("uncapped policy unexpectedly waived whole-equity uncertainty: %+v", got)
+	}
+
+	// With ProtectExecution enabled, each bounded tranche bears its own 10 bps
+	// uncertainty allowance, clears minimum benefit, and enters after persistence.
+	result := SelectOpportunity(in, SelectorState{})
+	if result.Action != SelectorKeep || result.Reason != "advantage_not_yet_persistent" {
+		t.Fatalf("bounded tranche stayed deadlocked on large idle deposit: %+v", result)
+	}
+	for _, c := range result.Candidates {
+		if !c.CostsKnown || c.BenefitRaw <= float64(in.Policy.MinimumBenefitRaw) {
+			t.Fatalf("bounded tranche did not clear costs and tranche uncertainty: %+v", c)
+		}
+	}
+	for elapsed := time.Duration(0); elapsed < in.Policy.Persistence; elapsed += 5 * time.Minute {
+		advanceSelectorFixture(&in, 5*time.Minute)
+		result = SelectOpportunity(in, result.State)
+	}
+	if result.Action != SelectorEnter || result.SelectedQuote == nil || result.DestinationLane != onreONycUSDC || result.SelectedQuote.EquityRaw != 400_000_000 {
+		t.Fatalf("bounded tranche did not enter after persistence: %+v", result)
+	}
+
+	// Unprofitable tranches (cost eating the 90-day gain) are still rejected.
+	in.Quotes[0].CostRaw, in.Quotes[1].CostRaw = 12_000_000, 12_000_000
+	if got := SelectOpportunity(in, result.State); got.Action != SelectorKeep {
+		t.Fatalf("unprofitable tranche bypassed cost check: %+v", got)
+	}
+}

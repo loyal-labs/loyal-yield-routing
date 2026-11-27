@@ -150,8 +150,9 @@ and withdrawal protections remain enforced. This temporary policy has no
 automatic expiry; restoring allocation restrictions requires an explicit Backyard
 policy update.
 The selector uses 30-minute
-persistence, $0.25 minimum benefit and 10 bps uncertainty (on the vault's
-investable equity for cash, on the tranche for a rotation): cash entering a
+persistence, $0.25 minimum benefit and 10 bps uncertainty (on the tranche when
+execution-capped, diversified, or rotating, otherwise on the vault's investable
+equity): cash entering a
 lane earns its fee-reserved gain against nothing;
 a held lane's tranche rotating earns the destination's fee-reserved gain on
 what the move leaves, against the tranche's gross gain where it is. Both
