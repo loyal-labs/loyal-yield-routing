@@ -3,9 +3,11 @@ package jupiter
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -76,6 +78,34 @@ func (b *Budget) Transport(base http.RoundTripper) http.RoundTripper {
 	return &budgetTransport{budget: b, base: base}
 }
 
+const (
+	globalRequestSpacing = 125 * time.Millisecond
+	maxBudgetBatch       = 4
+)
+
+type budgetAllowanceKey struct{}
+
+type budgetAllowance struct {
+	budget    *Budget
+	class     string
+	remaining atomic.Int32
+}
+
+func (a *budgetAllowance) consume(budget *Budget, class string) bool {
+	if a == nil || a.budget != budget || a.class != class {
+		return false
+	}
+	for {
+		n := a.remaining.Load()
+		if n <= 0 {
+			return false
+		}
+		if a.remaining.CompareAndSwap(n, n-1) {
+			return true
+		}
+	}
+}
+
 // Each class is paced independently across processes: 2 execution + 2 valuation
 // + 4 background requests/second. No accumulated burst; 20% of the paid 10 RPS
 // allowance remains unused for clock/network variation and other consumers.
@@ -87,6 +117,13 @@ func classInterval(class string) time.Duration {
 }
 
 func (b *Budget) take(ctx context.Context, class string) (time.Duration, bool, error) {
+	return b.takeCount(ctx, class, 1)
+}
+
+func (b *Budget) takeCount(ctx context.Context, class string, count int) (time.Duration, bool, error) {
+	if count < 1 || count > maxBudgetBatch {
+		return 0, false, fmt.Errorf("Jupiter budget batch %d out of range [1,%d]", count, maxBudgetBatch)
+	}
 	tx, err := b.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return 0, false, err
@@ -96,12 +133,19 @@ func (b *Budget) take(ctx context.Context, class string) (time.Duration, bool, e
 		defer cancel()
 		_ = tx.Rollback(cleanup)
 	}()
-	var cooldown, next, now time.Time
-	err = tx.QueryRow(ctx, `SELECT cooldown_until,
-GREATEST(request_at, CASE $1 WHEN 'background' THEN background_at WHEN 'valuation' THEN valuation_at ELSE execution_at END),
-clock_timestamp() FROM loyal_yield.jupiter_request_budget WHERE scope='loyal' FOR UPDATE`, class).Scan(&cooldown, &next, &now)
+	var cooldown, requestAt, classAt, now time.Time
+	err = tx.QueryRow(ctx, `SELECT cooldown_until, request_at,
+CASE $1 WHEN 'background' THEN background_at WHEN 'valuation' THEN valuation_at ELSE execution_at END,
+clock_timestamp() FROM loyal_yield.jupiter_request_budget WHERE scope='loyal' FOR UPDATE`, class).Scan(&cooldown, &requestAt, &classAt, &now)
 	if err != nil {
 		return 0, false, err
+	}
+	// Require (count-1) extra global spacing ahead of a multi-request batch and
+	// advance both global and class timestamps by count intervals, preserving
+	// the <= 8 requests per sliding 1-second window bound and exact class rates.
+	next := requestAt.Add(time.Duration(count-1) * globalRequestSpacing)
+	if classAt.After(next) {
+		next = classAt
 	}
 	// No HTTP call or sleep holds this row lock. Canceled waiters reserve nothing.
 	if cooldown.After(now) || next.After(now) {
@@ -112,7 +156,8 @@ clock_timestamp() FROM loyal_yield.jupiter_request_budget WHERE scope='loyal' FO
 request_at=$3,
 execution_at=CASE WHEN $1='execution' THEN $2 ELSE execution_at END,
 valuation_at=CASE WHEN $1='valuation' THEN $2 ELSE valuation_at END,
-background_at=CASE WHEN $1='background' THEN $2 ELSE background_at END WHERE scope='loyal'`, class, now.Add(classInterval(class)), now.Add(125*time.Millisecond))
+background_at=CASE WHEN $1='background' THEN $2 ELSE background_at END WHERE scope='loyal'`,
+		class, now.Add(time.Duration(count)*classInterval(class)), now.Add(time.Duration(count)*globalRequestSpacing))
 	if err != nil {
 		return 0, false, err
 	}
@@ -120,8 +165,16 @@ background_at=CASE WHEN $1='background' THEN $2 ELSE background_at END WHERE sco
 }
 
 func (b *Budget) admit(ctx context.Context, class string) error {
+	return b.admitCount(ctx, class, 1)
+}
+
+func (b *Budget) admitCount(ctx context.Context, class string, count int) error {
 	limit := 1500 * time.Millisecond
-	if class == "valuation" {
+	if class == "execution" {
+		// Execution exit-price checks can reserve up to 4 same-slot quotes
+		// and retry once on a slot boundary (2s class spacing).
+		limit = 3 * time.Second
+	} else if class == "valuation" {
 		// Held-position quotes share the observer's deadline across both vaults.
 		limit = 8 * time.Second
 	}
@@ -134,7 +187,7 @@ func (b *Budget) admit(ctx context.Context, class string) error {
 			}
 			return &DeferredError{Reason: "budget"}
 		}
-		wait, cooldown, err := b.take(bounded, class)
+		wait, cooldown, err := b.takeCount(bounded, class, count)
 		if err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
@@ -159,6 +212,28 @@ func (b *Budget) admit(ctx context.Context, class string) error {
 	}
 }
 
+func (b *Budget) reserve(ctx context.Context, count int) (context.Context, error) {
+	if count <= 1 {
+		return ctx, nil
+	}
+	class := requestClass(ctx)
+	if count > maxBudgetBatch {
+		return ctx, fmt.Errorf("Jupiter budget reservation %d exceeds limit %d", count, maxBudgetBatch)
+	}
+	if err := b.admitCount(ctx, class, count); err != nil {
+		reason := "canceled"
+		var deferred *DeferredError
+		if errors.As(err, &deferred) {
+			reason = deferred.Reason
+		}
+		b.metrics.JupiterDeferred(class, reason)
+		return ctx, err
+	}
+	allowance := &budgetAllowance{budget: b, class: class}
+	allowance.remaining.Store(int32(count))
+	return context.WithValue(ctx, budgetAllowanceKey{}, allowance), nil
+}
+
 func endpoint(path string) string {
 	switch path {
 	case "/swap/v1/quote":
@@ -175,14 +250,21 @@ func endpoint(path string) string {
 func (t *budgetTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	class := requestClass(request.Context())
 	started := time.Now()
-	if err := t.budget.admit(request.Context(), class); err != nil {
-		reason := "canceled"
-		var deferred *DeferredError
-		if errors.As(err, &deferred) {
-			reason = deferred.Reason
-		}
-		t.budget.metrics.JupiterDeferred(class, reason)
+	if err := request.Context().Err(); err != nil {
+		t.budget.metrics.JupiterDeferred(class, "canceled")
 		return nil, err
+	}
+	allowance, _ := request.Context().Value(budgetAllowanceKey{}).(*budgetAllowance)
+	if !allowance.consume(t.budget, class) {
+		if err := t.budget.admit(request.Context(), class); err != nil {
+			reason := "canceled"
+			var deferred *DeferredError
+			if errors.As(err, &deferred) {
+				reason = deferred.Reason
+			}
+			t.budget.metrics.JupiterDeferred(class, reason)
+			return nil, err
+		}
 	}
 	response, err := t.base.RoundTrip(request)
 	outcome := "transport_error"

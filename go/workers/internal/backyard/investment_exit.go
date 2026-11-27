@@ -8,6 +8,7 @@ import (
 	"math/big"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
@@ -213,13 +214,32 @@ func (p lanePricer) quoteInvestmentExit(ctx context.Context, o Observation, rout
 	if tokenDebt > 0 {
 		action, lane = SwapCollateralToDebtStep, debtRoute.Lane
 	}
-	whole, err := p.investmentExitQuoteEvidence(ctx, lane, action, liquidCollateral, slot)
-	if err != nil {
-		return r, err
+	// Pre-admit the dependent same-slot Jupiter quotes together so the shared
+	// pacer never forces them across different Solana slots.
+	quoteCtx := ctx
+	quoteCount := 0
+	if !conversionVenueHastra(Decision{Action: action, StrategyKey: lane}) {
+		quoteCount = 1
+		if portion < liquidCollateral {
+			quoteCount = 2
+		}
 	}
-	prefix := investmentQuote{}
+	if tokenDebt > 0 && !conversionVenueHastra(Decision{Action: SwapDebtToUSDCStep, StrategyKey: lane}) {
+		if portion < liquidCollateral {
+			quoteCount += 2
+		} else {
+			quoteCount++
+		}
+	}
+	if quoteCount > 1 {
+		quoteCtx, err = p.client.Reserve(ctx, quoteCount)
+		if err != nil {
+			return r, staleHoldFrom(err, investmentExitUnavailable)
+		}
+	}
+	var whole, prefix investmentQuote
 	if portion < liquidCollateral {
-		prefix, err = p.investmentExitQuoteEvidence(ctx, lane, action, liquidCollateral-portion, slot)
+		whole, prefix, err = p.investmentExitQuotePair(quoteCtx, lane, action, liquidCollateral, liquidCollateral-portion, slot)
 		if err != nil {
 			return r, err
 		}
@@ -228,6 +248,11 @@ func (p lanePricer) quoteInvestmentExit(ctx context.Context, o Observation, rout
 		}
 		if !slices.Equal(whole.path, prefix.path) || prefix.output >= whole.output {
 			return r, staleHold(investmentExitRouteChanged)
+		}
+	} else {
+		whole, err = p.investmentExitQuoteEvidence(quoteCtx, lane, action, liquidCollateral, slot)
+		if err != nil {
+			return r, err
 		}
 	}
 	cash, tail := whole.output, whole.output-prefix.output
@@ -241,7 +266,12 @@ func (p lanePricer) quoteInvestmentExit(ctx context.Context, o Observation, rout
 		if whole.output <= tokenDebt || whole.output < investmentExitFloor(reference) || tail < investmentExitFloor(tailReference) {
 			return r, staleHold(investmentExitExpensive)
 		}
-		remainder, e := p.investmentExitQuoteEvidence(ctx, lane, SwapDebtToUSDCStep, whole.output-tokenDebt, slot)
+		var remainder, beforeLast investmentQuote
+		if prefix.output > tokenDebt {
+			remainder, beforeLast, e = p.investmentExitQuotePair(quoteCtx, lane, SwapDebtToUSDCStep, whole.output-tokenDebt, prefix.output-tokenDebt, slot)
+		} else {
+			remainder, e = p.investmentExitQuoteEvidence(quoteCtx, lane, SwapDebtToUSDCStep, whole.output-tokenDebt, slot)
+		}
 		if e != nil {
 			return r, e
 		}
@@ -255,10 +285,6 @@ func (p lanePricer) quoteInvestmentExit(ctx context.Context, o Observation, rout
 		}
 		cash = remainder.output
 		if prefix.output > tokenDebt {
-			beforeLast, e := p.investmentExitQuoteEvidence(ctx, lane, SwapDebtToUSDCStep, prefix.output-tokenDebt, slot)
-			if e != nil {
-				return r, e
-			}
 			if remainder.slot != beforeLast.slot {
 				return r, staleHold(investmentExitSlotsChanged)
 			}
@@ -428,6 +454,29 @@ func investmentPathsDisjoint(a, b []investmentHop) bool {
 		}
 	}
 	return true
+}
+
+func (p lanePricer) investmentExitQuotePair(ctx context.Context, lane string, action Action, firstAmount, secondAmount uint64, slot int64) (investmentQuote, investmentQuote, error) {
+	var first, second investmentQuote
+	var firstErr, secondErr error
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		first, firstErr = p.investmentExitQuoteEvidence(ctx, lane, action, firstAmount, slot)
+	}()
+	go func() {
+		defer wg.Done()
+		second, secondErr = p.investmentExitQuoteEvidence(ctx, lane, action, secondAmount, slot)
+	}()
+	wg.Wait()
+	if firstErr != nil {
+		return first, second, firstErr
+	}
+	if secondErr != nil {
+		return first, second, secondErr
+	}
+	return first, second, nil
 }
 
 func (p lanePricer) investmentExitQuote(ctx context.Context, lane string, action Action, amount uint64, slot int64) (uint64, error) {

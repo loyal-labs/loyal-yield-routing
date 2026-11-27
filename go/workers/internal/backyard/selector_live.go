@@ -7,6 +7,8 @@ import (
 	"math"
 	"net/http"
 	"os"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -14,7 +16,10 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 )
 
-const selectorLadderBudget = 3 * time.Second
+const (
+	selectorLadderBudget     = 3 * time.Second
+	selectorQuoteConcurrency = 2
+)
 
 func collectSelectorQuotes(ctx context.Context, rpc *chain.Client, view *View, client *jupiter.Client, manifest RouteManifest, o Observation, markets []LaneEconomics, policy SelectorPolicy, request *pilotCanaryEntryRequest) ([]LaneEconomics, []MoveQuote, error) {
 	ctx, cancel := context.WithDeadline(ctx, o.ObservedAt.Add(8*time.Second))
@@ -123,15 +128,62 @@ func collectSelectorQuotes(ctx context.Context, rpc *chain.Client, view *View, c
 			jobs = append(jobs, job{i: i, source: &source, maximum: canary(min(strategyTwoBridgeLegCapRaw, uint64(laneReleaseLimitRaw(source))))})
 		}
 	}
+	// Prioritize cash entries over rotations, then unlevered policy priorities
+	// and higher yield, and bound worker fan-out so selector scans stay inside
+	// the shared 4 RPS background Jupiter budget.
+	slices.SortStableFunc(jobs, func(a, b job) int {
+		if (a.source == nil) != (b.source == nil) {
+			if a.source == nil {
+				return -1
+			}
+			return 1
+		}
+		ma, mb := out[a.i], out[b.i]
+		if a.source == nil {
+			pa, pb := policy.unleveredEntry(ma.Lane), policy.unleveredEntry(mb.Lane)
+			if pa != pb {
+				if pa {
+					return -1
+				}
+				return 1
+			}
+		}
+		ya, yb := ma.NativeAPY+ma.SupplyAPY, mb.NativeAPY+mb.SupplyAPY
+		if ya != yb {
+			if ya > yb {
+				return -1
+			}
+			return 1
+		}
+		if c := strings.Compare(ma.Lane, mb.Lane); c != 0 {
+			return c
+		}
+		if a.source != nil && b.source != nil {
+			return strings.Compare(a.source.RouteLane, b.source.RouteLane)
+		}
+		return 0
+	})
 	laddered := make([][]MoveQuote, len(jobs))
 	refusals := make([]string, len(jobs))
-	var wg sync.WaitGroup
+	workers := min(selectorQuoteConcurrency, len(jobs))
+	queue := make(chan int, len(jobs))
 	for j := range jobs {
+		queue <- j
+	}
+	close(queue)
+	var wg sync.WaitGroup
+	for range workers {
 		wg.Add(1)
-		go func(j int) {
+		go func() {
 			defer wg.Done()
-			laddered[j], refusals[j] = pricer.ladder(ctx, o, markets, policy, out[jobs[j].i], jobs[j].source, jobs[j].maximum, request != nil)
-		}(j)
+			for j := range queue {
+				if ctx.Err() != nil {
+					refusals[j] = completeEntryQuoteUnavailable
+					continue
+				}
+				laddered[j], refusals[j] = pricer.ladder(ctx, o, markets, policy, out[jobs[j].i], jobs[j].source, jobs[j].maximum, request != nil)
+			}
+		}()
 	}
 	wg.Wait()
 	result := make([]MoveQuote, 0, len(jobs))

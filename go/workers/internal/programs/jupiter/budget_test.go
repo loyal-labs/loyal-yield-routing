@@ -331,3 +331,206 @@ func TestBudgetSuccessfulExhaustionAndRedirects(t *testing.T) {
 		t.Fatal("successful exhaustion did not stop peer")
 	}
 }
+
+func TestBudgetReserveAllowsSimultaneousPairAndKeepsGlobalRateCap(t *testing.T) {
+	first, second := budgetPools(t)
+	b1 := newTestBudget(t, first, prometheus.NewRegistry())
+	b2 := newTestBudget(t, second, prometheus.NewRegistry())
+
+	var mu sync.Mutex
+	var arrivals []time.Time
+	pairArrived := make(chan struct{}, 2)
+	pairRelease := make(chan struct{})
+	var pairInFlight atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		arrivals = append(arrivals, time.Now())
+		mu.Unlock()
+		if r.URL.Query().Get("pair") == "1" {
+			pairArrived <- struct{}{}
+			if pairInFlight.Add(1) == 2 {
+				close(pairRelease)
+			}
+			select {
+			case <-pairRelease:
+			case <-time.After(time.Second):
+				w.WriteHeader(http.StatusGatewayTimeout)
+				return
+			}
+		}
+		if r.URL.Path == "/swap/v1/redirect" {
+			http.Redirect(w, r, "/swap/v1/final", http.StatusTemporaryRedirect)
+			return
+		}
+		_, _ = w.Write([]byte(`{"outAmount":"1"}`))
+	}))
+	defer server.Close()
+
+	c1, err := NewClient(server.URL+"/swap/v1", "key-1", server.Client())
+	if err != nil || c1.SetBudget(b1) != nil {
+		t.Fatal(err)
+	}
+	c2, err := NewClient(server.URL+"/swap/v1", "key-2", server.Client())
+	if err != nil || c2.SetBudget(b2) != nil {
+		t.Fatal(err)
+	}
+
+	// Out-of-range reservations fail closed.
+	if _, err := c1.Reserve(t.Context(), maxBudgetBatch+1); err == nil {
+		t.Fatal("oversized reservation was accepted")
+	}
+
+	// Reserve(2) lets an execution pair run simultaneously on the same slot,
+	// while any extra call beyond the reservation (e.g. a redirect) still waits.
+	reservedCtx, err := c1.Reserve(t.Context(), 2)
+	if err != nil {
+		t.Fatalf("reserve pair failed: %v", err)
+	}
+	started := time.Now()
+	var pairWG sync.WaitGroup
+	pairErrs := make([]error, 2)
+	for i := range 2 {
+		pairWG.Add(1)
+		go func() {
+			defer pairWG.Done()
+			req, _ := http.NewRequestWithContext(reservedCtx, http.MethodGet, server.URL+"/swap/v1/quote?pair=1", nil)
+			res, err := c1.http.Do(req)
+			if err != nil {
+				pairErrs[i] = err
+				return
+			}
+			res.Body.Close()
+			if res.StatusCode != http.StatusOK {
+				pairErrs[i] = fmt.Errorf("status %d", res.StatusCode)
+			}
+		}()
+	}
+	pairWG.Wait()
+	if pairErrs[0] != nil || pairErrs[1] != nil || time.Since(started) > 350*time.Millisecond {
+		t.Fatalf("reserved pair did not execute simultaneously: errs=%v elapsed=%v", pairErrs, time.Since(started))
+	}
+	// A 3rd request on the exhausted allowance must wait for execution pacing (~1s).
+	extraStart := time.Now()
+	req, _ := http.NewRequestWithContext(reservedCtx, http.MethodGet, server.URL+"/swap/v1/quote", nil)
+	res, err := c1.http.Do(req)
+	if err != nil {
+		t.Fatalf("post-allowance request failed: %v", err)
+	}
+	res.Body.Close()
+	if time.Since(extraStart) < 700*time.Millisecond {
+		t.Fatalf("exhausted reservation bypassed pacing: %v", time.Since(extraStart))
+	}
+
+	// Two consecutive execution Reserve(4) batches (representing a 1x slot retry)
+	// must both succeed within the execution admission deadline.
+	if _, err := first.Exec(t.Context(), `UPDATE loyal_yield.jupiter_request_budget SET request_at='epoch', execution_at='epoch', valuation_at='epoch', background_at='epoch'`); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	arrivals = nil
+	mu.Unlock()
+	for attempt := range 2 {
+		batchCtx, err := c1.Reserve(t.Context(), 4)
+		if err != nil {
+			t.Fatalf("execution Reserve(4) attempt %d failed: %v", attempt+1, err)
+		}
+		var wg sync.WaitGroup
+		for range 4 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				req, _ := http.NewRequestWithContext(batchCtx, http.MethodGet, server.URL+"/swap/v1/quote", nil)
+				r, err := c1.http.Do(req)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				r.Body.Close()
+			}()
+		}
+		wg.Wait()
+	}
+
+	// Mixed concurrent Reserve(4), Reserve(2), and single requests across both pools
+	// and all classes must never exceed 10 requests in any 1-second window.
+	if _, err := first.Exec(t.Context(), `UPDATE loyal_yield.jupiter_request_budget SET request_at='epoch', execution_at='epoch', valuation_at='epoch', background_at='epoch'`); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	arrivals = nil
+	mu.Unlock()
+	start := make(chan struct{})
+	var mixWG sync.WaitGroup
+	jobs := []struct {
+		client *Client
+		ctx    context.Context
+		count  int
+	}{
+		{c1, Background(t.Context()), 4},
+		{c2, Background(t.Context()), 2},
+		{c1, Background(t.Context()), 2},
+		{c2, t.Context(), 2},
+		{c1, Valuation(t.Context()), 1},
+		{c2, Valuation(t.Context()), 1},
+		{c1, Background(t.Context()), 1},
+		{c2, Background(t.Context()), 1},
+	}
+	for _, job := range jobs {
+		mixWG.Add(1)
+		go func() {
+			defer mixWG.Done()
+			<-start
+			useCtx := job.ctx
+			if job.count > 1 {
+				var err error
+				useCtx, err = job.client.Reserve(job.ctx, job.count)
+				if err != nil {
+					var deferred *DeferredError
+					if requestClass(job.ctx) != "background" || !errors.As(err, &deferred) || deferred.Reason != "budget" {
+						t.Errorf("unexpected reserve error for %s/%d: %v", requestClass(job.ctx), job.count, err)
+					}
+					return
+				}
+			}
+			var inner sync.WaitGroup
+			for range job.count {
+				inner.Add(1)
+				go func() {
+					defer inner.Done()
+					req, _ := http.NewRequestWithContext(useCtx, http.MethodGet, server.URL+"/swap/v1/quote", nil)
+					r, err := job.client.http.Do(req)
+					if err != nil {
+						var deferred *DeferredError
+						if requestClass(job.ctx) != "background" || !errors.As(err, &deferred) || deferred.Reason != "budget" {
+							t.Errorf("unexpected request error for %s/%d: %v", requestClass(job.ctx), job.count, err)
+						}
+						return
+					}
+					r.Body.Close()
+				}()
+			}
+			inner.Wait()
+		}()
+	}
+	close(start)
+	mixWG.Wait()
+
+	mu.Lock()
+	snapshot := append([]time.Time(nil), arrivals...)
+	mu.Unlock()
+	sort.Slice(snapshot, func(i, j int) bool { return snapshot[i].Before(snapshot[j]) })
+	if len(snapshot) < 8 {
+		t.Fatalf("too few mixed requests admitted: %d", len(snapshot))
+	}
+	for i, a := range snapshot {
+		inWindow := 0
+		for _, b := range snapshot[i:] {
+			if b.Sub(a) < time.Second {
+				inWindow++
+			}
+		}
+		if inWindow > 10 {
+			t.Fatalf("mixed Reserve burst exceeded 10 RPS: %d in 1s window", inWindow)
+		}
+	}
+}

@@ -134,6 +134,7 @@ type SelectorPolicy struct {
 	IdleBufferCapRaw       int64         `json:"idleBufferCapRaw,omitempty"`
 	DiversifyNewCash       bool          `json:"diversifyNewCash,omitempty"`
 	UnleveredNewCash       bool          `json:"unleveredNewCash,omitempty"`
+	ProtectExecution       bool          `json:"protectExecution,omitempty"`
 	TargetPortfolioAPYBPS  int64         `json:"targetPortfolioApyBps,omitempty"`
 }
 
@@ -546,8 +547,8 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 			continue
 		}
 		uncertain := equity
-		if p.DiversifyNewCash {
-			// A small new allocation bears its own uncertainty allowance.
+		if p.DiversifyNewCash || p.ProtectExecution {
+			// A bounded entry tranche bears its own uncertainty allowance.
 			uncertain = quote.EquityRaw
 		}
 		scoreMove(&c, s, p, m, *quote, uncertain, out.KeepGainRaw, years)

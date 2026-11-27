@@ -55,6 +55,16 @@ func (c *Client) SetBudget(budget *Budget) error {
 	return nil
 }
 
+// Reserve pre-admits a bounded burst of count requests against the shared
+// Jupiter budget so dependent same-slot quotes can run concurrently without
+// losing aggregate or per-class rate pacing.
+func (c *Client) Reserve(ctx context.Context, count int) (context.Context, error) {
+	if c == nil || c.budget == nil || count <= 1 {
+		return ctx, nil
+	}
+	return c.budget.reserve(ctx, count)
+}
+
 type QuoteRequest struct {
 	InputMint, OutputMint string
 	Amount                uint64

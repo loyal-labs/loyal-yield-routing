@@ -68,6 +68,7 @@ func (v *Vault) selectorPolicy() SelectorPolicy {
 	p.IdleBufferBPS, p.IdleBufferCapRaw = v.IdleBufferBPS, v.IdleBufferCapRaw
 	p.DiversifyNewCash = v.DiversifyNewCash
 	p.UnleveredNewCash = v.UnleveredNewCash
+	p.ProtectExecution = v.ProtectExecution
 	p.TargetPortfolioAPYBPS = v.TargetPortfolioAPYBPS
 	if v.EconomicHorizon > 0 {
 		p.Horizon = v.EconomicHorizon
