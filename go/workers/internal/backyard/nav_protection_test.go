@@ -3,8 +3,10 @@ package backyard
 import (
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/voltr"
 	"net/http"
@@ -312,10 +314,11 @@ func TestNAVQuotePricesLargeAUTOHoldingOnAnExecutableRoute(t *testing.T) {
 	var mark kamino.ScaledFraction
 	mark[8] = 1
 	basis := heldExitBasis{st: stepState{route: route}, heldRaw: 49_593_308_342, markValue: 51_152_508_103, mark: mark, usdc: mark}
+	var gotMaxAccounts int
 	client, err := fixtureJupiter(roundTripFunc(func(r *http.Request) (*http.Response, error) {
-		maxAccounts, _ := strconv.Atoi(r.URL.Query().Get("maxAccounts"))
+		gotMaxAccounts, _ = strconv.Atoi(r.URL.Query().Get("maxAccounts"))
 		// Measured 2026-11-06 on this holding: 5 legs at 64 accounts, 4 at 50.
-		legs := strings.TrimSuffix(strings.Repeat("{},", min(maxAccounts/12, 5)), ",")
+		legs := strings.TrimSuffix(strings.Repeat("{},", min(gotMaxAccounts/12, 5)), ",")
 		out := basis.markValue - basis.markValue/1000
 		return response(fmt.Sprintf(`{"inputMint":%q,"outputMint":%q,"inAmount":%q,"outAmount":"%d","otherAmountThreshold":"%d","swapMode":"ExactIn","slippageBps":50,"contextSlot":77,"routePlan":[%s],"platformFee":null}`, route.Kamino.CollateralMint, fleet.USDCMint, r.URL.Query().Get("amount"), out, jupiterOutputFloor(out, 50), legs)), nil
 	}))
@@ -323,8 +326,22 @@ func TestNAVQuotePricesLargeAUTOHoldingOnAnExecutableRoute(t *testing.T) {
 		t.Fatal(err)
 	}
 	cost, err := (lanePricer{client: client, manifest: m}).priceHeldExit(context.Background(), basis, 77, time.Now())
-	if err != nil || cost.QuotedCollateralRaw != basis.heldRaw {
-		t.Fatalf("full AUTO holding left unpriced: %+v %v", cost, err)
+	if err != nil || gotMaxAccounts != heldExitValuationMaxAccounts || cost.QuotedCollateralRaw != basis.heldRaw {
+		t.Fatalf("full AUTO holding valuation failed: maxAccounts=%d cost=%+v err=%v", gotMaxAccounts, cost, err)
+	}
+	// Execution quote validation still enforces the 4-leg single-tx limit.
+	fiveLegs := make([]json.RawMessage, 5)
+	for i := range fiveLegs {
+		fiveLegs[i] = json.RawMessage(`{}`)
+	}
+	execQuote := jupiter.Quote{
+		InputMint: route.Kamino.CollateralMint, OutputMint: fleet.USDCMint,
+		InAmount: strconv.FormatUint(basis.heldRaw, 10), OutAmount: strconv.FormatUint(basis.markValue, 10),
+		OtherAmountThreshold: strconv.FormatUint(jupiterOutputFloor(basis.markValue, 50), 10),
+		SwapMode:             "ExactIn", SlippageBPS: 50, RoutePlan: fiveLegs,
+	}
+	if _, _, err := validateJupiterQuoteForRoute(m.vault, execQuote, SwapCollateralToStableStep, basis.heldRaw, route.Lane, 50); err == nil {
+		t.Fatal("executable quote validator dropped its 4-leg transaction guard")
 	}
 }
 

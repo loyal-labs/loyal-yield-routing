@@ -711,6 +711,11 @@ func (p lanePricer) settleHeld(ctx context.Context, o Observation, s Snapshot, m
 	return out, nil
 }
 
+// heldExitValuationMaxAccounts asks Jupiter for full multi-venue market depth
+// when valuing an entire holding for NAV. Valuation quotes are never compiled
+// into a single swap transaction (actual sales slice under ProtectExecution).
+const heldExitValuationMaxAccounts = 64
+
 func (p lanePricer) priceHeldExit(ctx context.Context, b heldExitBasis, slot int64, at time.Time) (ExitCost, error) {
 	at = time.Now().UTC()
 	if p.client == nil || b.heldRaw == 0 {
@@ -721,11 +726,7 @@ func (p lanePricer) priceHeldExit(ctx context.Context, b heldExitBasis, slot int
 	if err != nil || destination != fleet.USDCMint {
 		return ExitCost{}, staleHoldFrom(err, "exit_quote_unavailable")
 	}
-	maxAccounts, err := jupiterSwapMaxAccounts(p.manifest.vault, route.Lane, SwapCollateralToStableStep)
-	if err != nil {
-		return ExitCost{}, staleHoldFrom(err, "exit_quote_unavailable")
-	}
-	request := jupiter.QuoteRequest{InputMint: source, OutputMint: destination, Amount: b.heldRaw, SlippageBPS: jupiterMaxSlippageBPS, MaxAccounts: maxAccounts, InstructionVersion: "V2"}
+	request := jupiter.QuoteRequest{InputMint: source, OutputMint: destination, Amount: b.heldRaw, SlippageBPS: jupiterMaxSlippageBPS, MaxAccounts: heldExitValuationMaxAccounts, InstructionVersion: "V2"}
 	if l, ok := findEarnLane(route.Lane); ok {
 		request.Dexes = l.jupiterDexes
 	}
@@ -733,7 +734,7 @@ func (p lanePricer) priceHeldExit(ctx context.Context, b heldExitBasis, slot int
 	if err != nil {
 		return ExitCost{}, err
 	}
-	out, _, err := validateJupiterQuoteForRoute(p.manifest.vault, quote, SwapCollateralToStableStep, b.heldRaw, route.Lane, jupiterMaxSlippageBPS)
+	out, _, err := validateJupiterValuationQuote(p.manifest.vault, quote, SwapCollateralToStableStep, b.heldRaw, route.Lane, jupiterMaxSlippageBPS)
 	if err != nil {
 		return ExitCost{}, err
 	}

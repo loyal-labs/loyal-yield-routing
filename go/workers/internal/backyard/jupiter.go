@@ -164,6 +164,17 @@ func freshSwapForRoute(ctx context.Context, v *Vault, client *jupiter.Client, la
 }
 
 func validateJupiterQuoteForRoute(v *Vault, quote jupiter.Quote, action Action, amount uint64, lane string, maxSlippageBPS uint16) (uint64, uint64, error) {
+	return validateJupiterQuoteCore(v, quote, action, amount, lane, maxSlippageBPS, jupiterMaxRoutePlanLeg)
+}
+
+// validateJupiterValuationQuote validates a valuation-only quote (never
+// compiled into a single transaction), so multi-venue splits over the 4-leg
+// single-tx execution limit remain admissible for full-holding NAV pricing.
+func validateJupiterValuationQuote(v *Vault, quote jupiter.Quote, action Action, amount uint64, lane string, maxSlippageBPS uint16) (uint64, uint64, error) {
+	return validateJupiterQuoteCore(v, quote, action, amount, lane, maxSlippageBPS, 0)
+}
+
+func validateJupiterQuoteCore(v *Vault, quote jupiter.Quote, action Action, amount uint64, lane string, maxSlippageBPS uint16, maxLegs int) (uint64, uint64, error) {
 	source, destination, _, _, err := jupiterEdgeForRoute(v, action, lane)
 	if err != nil {
 		return 0, 0, err
@@ -187,7 +198,7 @@ func validateJupiterQuoteForRoute(v *Vault, quote jupiter.Quote, action Action, 
 		quote.SwapMode != "ExactIn" || len(quote.RoutePlan) == 0 || !jupiter.Null(quote.PlatformFee) {
 		return 0, 0, jupiterQuoteRejected("identity_drift")
 	}
-	if len(quote.RoutePlan) > jupiterMaxRoutePlanLeg {
+	if maxLegs > 0 && len(quote.RoutePlan) > maxLegs {
 		return 0, 0, jupiterQuoteRejected("route_plan_legs")
 	}
 	return out, minimum, nil
