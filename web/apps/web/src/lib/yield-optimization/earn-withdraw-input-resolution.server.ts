@@ -89,6 +89,20 @@ export function normalizeEarnWithdrawPreparationError(
     );
   }
 
+  if (
+    /\bNetValueRemainingTooSmall\b/i.test(errorText) ||
+    /Net value remaining too small/i.test(errorText) ||
+    /KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD failed: custom program error:\s*0x17cc\b/i.test(
+      errorText
+    )
+  ) {
+    return new EarnWithdrawResolveError(
+      409,
+      "earn_withdraw_remaining_too_small",
+      "This withdrawal would leave less than Kamino's minimum position balance. Choose Max to withdraw the full position, or leave at least $0.01."
+    );
+  }
+
   return null;
 }
 

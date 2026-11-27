@@ -28,6 +28,7 @@ import {
   DualIcon,
   resolveEarnCoinIconSrc,
 } from "@/components/wallet-workspace/facelift/earn-activity-card";
+import { isEarnWithdrawTypedSourceMax } from "@/components/wallet-workspace/facelift/earn-actions-support";
 import { sortByFundedNearestTrigger } from "@/components/wallet-workspace/facelift/upward-selector-sort";
 import {
   FlowDiagram,
@@ -209,14 +210,23 @@ export function WithdrawPane({
     options[0] ??
     null;
   const fromBalance = splitUsdBalance(selectedOption?.usd ?? 0);
-  const isSourceMax =
+  const isMaxButtonSelected =
     selectedOption !== null && maxSourceKey === selectedOption.key;
-  const amountInputValue = isSourceMax
+  const amountInputValue = isMaxButtonSelected
     ? formatEarnWithdrawMaxAmountLabel(selectedOption.usd)
     : amount;
   const typedAmountUsd =
     Number.parseFloat(amountInputValue.replace(/,/g, "")) || 0;
-  const amountUsd = isSourceMax ? selectedOption.usd : typedAmountUsd;
+  const isSourceMax =
+    isMaxButtonSelected ||
+    (selectedOption?.source != null &&
+      isEarnWithdrawTypedSourceMax({
+        amountLabel: amountInputValue,
+        source: selectedOption.source,
+        tokenDecimals: 6,
+      }));
+  const amountUsd =
+    isSourceMax && selectedOption ? selectedOption.usd : typedAmountUsd;
   const amountLabel = amountUsd.toLocaleString("en-US", {
     maximumFractionDigits: 2,
   });
