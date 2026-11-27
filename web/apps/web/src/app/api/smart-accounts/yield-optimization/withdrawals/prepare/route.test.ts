@@ -1,6 +1,7 @@
 import { PublicKey } from "@solana/web3.js";
 import { beforeEach, describe, expect, mock, test } from "bun:test";
 import { TOKEN_PROGRAM_ID } from "@solana/spl-token";
+import * as smartAccountVaults from "@loyal-labs/smart-account-vaults";
 
 mock.module("server-only", () => ({}));
 
@@ -200,16 +201,23 @@ mock.module("@/lib/yield-optimization/yield-deposit-repository.server", () => ({
   },
 }));
 
+let prepareError: Error | null = null;
+
 mock.module("@loyal-labs/smart-account-vaults", () => ({
+  ...smartAccountVaults,
   createSmartAccountVaultsClient: () => ({
     prepareEarnUsdcWithdraw: async (input: Record<string, unknown>) => {
       prepareCalls.push(input);
+      if (prepareError) {
+        throw prepareError;
+      }
       return { prepared: true, input };
     },
   }),
   // The input-resolution module imports this too; an incomplete module mock
   // fails the whole suite at import time.
   isEarnWithdrawRequiredAccountMissingError: () => false,
+  serializePreparedEarnUsdcWithdraw: () => ({ ok: true }),
 }));
 
 function createRequest(body: Record<string, unknown>): Request {
@@ -237,6 +245,7 @@ describe("Earn withdrawal prepare route", () => {
       idleHolding("10000"),
     ]);
     prepareCalls = [];
+    prepareError = null;
     policyLookupCount = 0;
     policyMissesRemaining = 0;
     inactivePolicy = false;
@@ -512,5 +521,41 @@ describe("Earn withdrawal prepare route", () => {
     expect(prepareCalls[0]?.target).toMatchObject({
       reserve: new PublicKey(activePosition.currentReserve),
     });
+  });
+
+  test("returns 409 earn_withdraw_remaining_too_small on Kamino NetValueRemainingTooSmall", async () => {
+    const { POST } = await import("./route");
+    prepareError = new Error(
+      'Earn full withdraw prefix simulation failed: {"InstructionError":[2,{"Custom":6092}]}\nProgram log: AnchorError thrown in programs/klend/src/lending_market/lending_operations.rs:4226. Error Code: NetValueRemainingTooSmall. Error Number: 6092. Error Message: Net value remaining too small.'
+    );
+
+    const response = await POST(
+      createRequest({
+        amountRaw: "599000",
+        sourceId: `reserve:${activePosition.currentReserve}`,
+      })
+    );
+    const payload = await response.json();
+
+    expect(response.status).toBe(409);
+    expect(payload.error.code).toBe("earn_withdraw_remaining_too_small");
+  });
+
+  test("does not classify Squads 0x17cc as Kamino NetValueRemainingTooSmall", async () => {
+    const { POST } = await import("./route");
+    prepareError = new Error(
+      'Simulation failed: {"InstructionError":[2,{"Custom":6092}]}\nProgram SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG failed: custom program error: 0x17cc'
+    );
+
+    const response = await POST(
+      createRequest({
+        amountRaw: "599000",
+        sourceId: `reserve:${activePosition.currentReserve}`,
+      })
+    );
+    const payload = await response.json();
+
+    expect(response.status).toBe(500);
+    expect(payload.error.code).toBe("prepare_failed");
   });
 });

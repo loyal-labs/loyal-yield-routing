@@ -120,12 +120,13 @@ type wprepRetryError struct{ routeError }
 func (e *wprepRetryError) GetHeaders() http.Header { return http.Header{"Retry-After": {"1"}} }
 
 const (
-	wprepSourceChanged    = "The selected Earn source changed. Refresh and choose it again."
-	wprepSourceRequired   = "Select an Earn source before withdrawing."
-	wprepExceedsSource    = "Withdrawal exceeds the selected Earn source amount."
-	wprepAccountMissing   = "A required Earn withdrawal transaction account is unavailable. Refresh Earn and prepare the withdrawal again."
-	wprepUnportedMessage  = "This Earn withdrawal is not served by Go yet."
-	wprepUnderfilledError = "Kamino withdrawal simulation produced less liquidity than requested."
+	wprepSourceChanged            = "The selected Earn source changed. Refresh and choose it again."
+	wprepSourceRequired           = "Select an Earn source before withdrawing."
+	wprepExceedsSource            = "Withdrawal exceeds the selected Earn source amount."
+	wprepAccountMissing           = "A required Earn withdrawal transaction account is unavailable. Refresh Earn and prepare the withdrawal again."
+	wprepRemainingTooSmallMessage = "This withdrawal would leave less than Kamino's minimum position balance. Choose Max to withdraw the full position, or leave at least $0.01."
+	wprepUnportedMessage          = "This Earn withdrawal is not served by Go yet."
+	wprepUnderfilledError         = "Kamino withdrawal simulation produced less liquidity than requested."
 )
 
 func wprepPrepare(ctx context.Context, policies wprepPolicies, deps wprepDeps, account EarnAccount, policySigner solana.PublicKey, raw []byte) (*EarnWithdrawPrepareResponse, error) {
@@ -160,6 +161,8 @@ var wprepSourceChangedPatterns = []*regexp.Regexp{
 
 var wprepAccountNotFound = regexp.MustCompile(`(?i)\bAccountNotFound\b`)
 
+var wprepRemainingTooSmall = regexp.MustCompile(`(?i)\bNetValueRemainingTooSmall\b|Net value remaining too small|KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD failed: custom program error:\s*0x17cc\b`)
+
 func wprepNormalize(account EarnAccount, err error) error {
 	var refused *routeError
 	var retry *wprepRetryError
@@ -179,6 +182,9 @@ func wprepNormalize(account EarnAccount, err error) error {
 	}
 	if wprepAccountNotFound.MatchString(text) {
 		return earnError(http.StatusConflict, "earn_withdraw_required_account_missing", wprepAccountMissing)
+	}
+	if wprepRemainingTooSmall.MatchString(text) {
+		return earnError(http.StatusConflict, "earn_withdraw_remaining_too_small", wprepRemainingTooSmallMessage)
 	}
 	return wprepFailed(account, err)
 }

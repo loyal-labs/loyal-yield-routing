@@ -154,6 +154,36 @@ export function isWalletCancellation(error: unknown): boolean {
   );
 }
 
+const EARN_WITHDRAW_CENT_RAW = BigInt(10_000);
+
+export function isEarnWithdrawTypedSourceMax(args: {
+  amountLabel: string;
+  source: Pick<EarnWithdrawSourceOption, "amountRaw">;
+  tokenDecimals: number;
+}): boolean {
+  const normalized = args.amountLabel.replace(/,/g, "").trim();
+  if (!/^\d+(\.\d+)?$/.test(normalized)) {
+    return false;
+  }
+  const sourceRaw = parseOptionalUnsignedBigInt(args.source.amountRaw);
+  if (sourceRaw === undefined || sourceRaw <= BigInt(0)) {
+    return false;
+  }
+  const typedRaw = parseTokenAmountLabelToRaw(normalized, args.tokenDecimals);
+  if (typedRaw <= BigInt(0) || typedRaw > sourceRaw) {
+    return false;
+  }
+  if (typedRaw === sourceRaw) {
+    return true;
+  }
+  if (args.tokenDecimals !== 6) {
+    return false;
+  }
+  const flooredCentsRaw =
+    (sourceRaw / EARN_WITHDRAW_CENT_RAW) * EARN_WITHDRAW_CENT_RAW;
+  return flooredCentsRaw > BigInt(0) && typedRaw >= flooredCentsRaw;
+}
+
 export function getEarnWithdrawDraftAmountRaw(
   draft: Pick<
     EarnWithdrawDraft,
@@ -163,6 +193,17 @@ export function getEarnWithdrawDraftAmountRaw(
   return draft.isSourceMax || draft.mode === "full"
     ? BigInt(draft.source.amountRaw)
     : parseTokenAmountLabelToRaw(draft.amountLabel, draft.tokenDecimals);
+}
+
+export function resolveEarnWithdrawPrepareAmountRaw(
+  draft: Pick<
+    EarnWithdrawDraft,
+    "amountLabel" | "isSourceMax" | "mode" | "source" | "tokenDecimals"
+  >
+): bigint | "max" {
+  return draft.isSourceMax || draft.mode === "full"
+    ? "max"
+    : getEarnWithdrawDraftAmountRaw(draft);
 }
 
 function parseEarnWithdrawPublicKey(
@@ -484,7 +525,7 @@ export function applySubmittedEarnWithdrawToPosition(args: {
   }
 
   let remainingWithdrawalRaw =
-    draft.mode === "full"
+    draft.isSourceMax || draft.mode === "full"
       ? parseEarnWithdrawAmountRaw(draft.source.amountRaw, "amount")
       : amountRaw;
   const nextHoldings = currentHoldings.flatMap((holding) => {

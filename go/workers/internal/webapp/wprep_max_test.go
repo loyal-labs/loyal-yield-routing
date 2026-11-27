@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -192,6 +193,50 @@ func TestWprepMaxRedeemsAllCollateralWithoutChangingPartialWithdrawals(t *testin
 			}
 			if parsed.WithdrawnAmountRaw.String() != want || len(parsed.ReserveWithdrawals) != 1 || parsed.ReserveWithdrawals[0].KaminoWithdrawAmountRaw != strconv.FormatUint(tc.expectedCollateral, 10) {
 				t.Fatal("confirmation parser changed the transferred liquidity or collateral amount")
+			}
+		})
+	}
+}
+
+func TestWprepNormalizeRemainingTooSmall(t *testing.T) {
+	account := EarnAccount{
+		Principal: Principal{Wallet: solana.PublicKey{1}, Settings: solana.PublicKey{2}},
+		Vault:     solana.PublicKey{3},
+		Cluster:   LoyalMainnetBeta,
+	}
+	for _, tc := range []struct {
+		name       string
+		err        error
+		wantStatus int
+		wantCode   string
+	}{
+		{
+			name:       "kamino anchor NetValueRemainingTooSmall log",
+			err:        errors.New(`Earn full withdraw prefix simulation failed: {"InstructionError":[2,{"Custom":6092}]}` + "\nProgram log: AnchorError thrown in programs/klend/src/lending_market/lending_operations.rs:4226. Error Code: NetValueRemainingTooSmall. Error Number: 6092. Error Message: Net value remaining too small."),
+			wantStatus: http.StatusConflict,
+			wantCode:   "earn_withdraw_remaining_too_small",
+		},
+		{
+			name:       "klend program custom 0x17cc",
+			err:        errors.New(`Earn full withdraw prefix simulation failed: {"InstructionError":[2,{"Custom":6092}]}` + "\nProgram KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD failed: custom program error: 0x17cc"),
+			wantStatus: http.StatusConflict,
+			wantCode:   "earn_withdraw_remaining_too_small",
+		},
+		{
+			name:       "squads 0x17cc does not false-positive as kamino dust",
+			err:        errors.New(`Earn full withdraw prefix simulation failed: {"InstructionError":[2,{"Custom":6092}]}` + "\nProgram SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG failed: custom program error: 0x17cc"),
+			wantStatus: http.StatusInternalServerError,
+			wantCode:   "prepare_failed",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := wprepNormalize(account, tc.err)
+			var routeErr *routeError
+			if !errors.As(got, &routeErr) {
+				t.Fatalf("expected *routeError, got %T (%v)", got, got)
+			}
+			if routeErr.status != tc.wantStatus || routeErr.Detail.Code != tc.wantCode {
+				t.Fatalf("status=%d code=%q; want status=%d code=%q", routeErr.status, routeErr.Detail.Code, tc.wantStatus, tc.wantCode)
 			}
 		})
 	}

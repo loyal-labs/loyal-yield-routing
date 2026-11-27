@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 
-import { getEarnWithdrawDraftAmountRaw } from "@/components/wallet-workspace/facelift/earn-actions-support";
+import {
+  getEarnWithdrawDraftAmountRaw,
+  isEarnWithdrawTypedSourceMax,
+  resolveEarnWithdrawPrepareAmountRaw,
+} from "@/components/wallet-workspace/facelift/earn-actions-support";
 
 import {
   deriveEarnWithdrawMode,
@@ -109,6 +113,107 @@ describe("Earn withdraw MAX amounts", () => {
         tokenDecimals: 6,
       })
     ).toBe(BigInt(999_999));
+  });
+
+  test("preserves max wire intent when maxing one source alongside idle dust or another reserve", () => {
+    const source = reserveSource("onre", 51.021_236);
+
+    expect(
+      resolveEarnWithdrawPrepareAmountRaw({
+        amountLabel: "51.02",
+        isSourceMax: true,
+        mode: "partial",
+        source,
+        tokenDecimals: 6,
+      })
+    ).toBe("max");
+    expect(
+      resolveEarnWithdrawPrepareAmountRaw({
+        amountLabel: "51.02",
+        isSourceMax: false,
+        mode: "full",
+        source,
+        tokenDecimals: 6,
+      })
+    ).toBe("max");
+    expect(
+      resolveEarnWithdrawPrepareAmountRaw({
+        amountLabel: "51.01",
+        isSourceMax: false,
+        mode: "partial",
+        source,
+        tokenDecimals: 6,
+      })
+    ).toBe(BigInt(51_010_000));
+  });
+
+  test("treats typing the visible floored balance or exact source balance as source max", () => {
+    const source = reserveSource("onre", 51.021_236);
+    const subCent = reserveSource("dust", 0.001_585);
+
+    expect(
+      isEarnWithdrawTypedSourceMax({
+        amountLabel: "51.02",
+        source,
+        tokenDecimals: 6,
+      })
+    ).toBe(true);
+    expect(
+      isEarnWithdrawTypedSourceMax({
+        amountLabel: "51.021236",
+        source,
+        tokenDecimals: 6,
+      })
+    ).toBe(true);
+    expect(
+      isEarnWithdrawTypedSourceMax({
+        amountLabel: "0.001585",
+        source: subCent,
+        tokenDecimals: 6,
+      })
+    ).toBe(true);
+    expect(
+      isEarnWithdrawTypedSourceMax({
+        amountLabel: "51.015",
+        source,
+        tokenDecimals: 6,
+      })
+    ).toBe(false);
+    expect(
+      isEarnWithdrawTypedSourceMax({
+        amountLabel: "51.01",
+        source,
+        tokenDecimals: 6,
+      })
+    ).toBe(false);
+    expect(
+      isEarnWithdrawTypedSourceMax({
+        amountLabel: "51.03",
+        source,
+        tokenDecimals: 6,
+      })
+    ).toBe(false);
+    expect(
+      isEarnWithdrawTypedSourceMax({
+        amountLabel: "0.001",
+        source: subCent,
+        tokenDecimals: 6,
+      })
+    ).toBe(false);
+    expect(
+      isEarnWithdrawTypedSourceMax({
+        amountLabel: "51.",
+        source,
+        tokenDecimals: 6,
+      })
+    ).toBe(false);
+    expect(
+      isEarnWithdrawTypedSourceMax({
+        amountLabel: "51.02",
+        source: { amountRaw: "invalid" },
+        tokenDecimals: 6,
+      })
+    ).toBe(false);
   });
 });
 

@@ -53,6 +53,7 @@ import {
   parseTokenAmountLabelToRaw,
   resolveEarnMutationSmartAccountPlan,
   resolveEarnRealtimeResources,
+  resolveEarnWithdrawPrepareAmountRaw,
 } from "@/components/wallet-workspace/facelift/earn-actions-support";
 import {
   CONFIRM_IN_WALLET_MESSAGE,
@@ -858,9 +859,8 @@ export function useEarnActions(deps: {
       draft: EarnWithdrawDraft,
       observabilityFlowId?: string
     ): Promise<SmartAccountPreparedEarnUsdcWithdraw> => {
-      const requestedAmountRaw = getEarnWithdrawDraftAmountRaw(draft);
       return prepareEarnWithdrawOnServer({
-        amountRaw: draft.mode === "full" ? "max" : requestedAmountRaw,
+        amountRaw: resolveEarnWithdrawPrepareAmountRaw(draft),
         observabilityFlowId,
         sourceId: draft.source.sourceId,
       });
