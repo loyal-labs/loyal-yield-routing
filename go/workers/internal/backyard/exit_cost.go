@@ -99,11 +99,30 @@ const exitQuoteOutlierRatio = 3
 
 const (
 	// Confirm sudden >= 50 bps valuation exit-cost jumps with fresh peer quotes
-	// so a split-brain Jupiter node missing a venue cannot swing on-chain NAV.
+	// so a split-brain Jupiter node missing a venue cannot swing on-chain NAV,
+	// and require sustained persistence across retries before publishing a
+	// quote-only spike caused by a transient multi-slot venue blink.
 	exitQuoteSpikeConfirmBPS        microBPS = 50_000_000
 	exitQuoteSpikeConfirmMaxAge              = 5 * time.Minute
 	exitQuoteSpikeConfirmExtraCalls          = 3
+	exitQuoteSpikePersistDuration            = 75 * time.Second
+	exitQuoteSpikeMaxGap                     = 30 * time.Second
 )
+
+type exitQuoteSpike struct {
+	heldRaw     uint64
+	hasBaseline bool
+	baselineBPS microBPS
+	since       time.Time
+	lastSeen    time.Time
+}
+
+func isExitQuoteSpike(c ExitCost, hasBaseline bool, baselineBPS microBPS, realized *ExitCost) bool {
+	if hasBaseline {
+		return c.BPS > baselineBPS && c.BPS-baselineBPS >= exitQuoteSpikeConfirmBPS
+	}
+	return c.BPS >= exitQuoteSpikeConfirmBPS && c.outlier(realized)
+}
 
 func (e exitCosts) at(lane string, heldRaw uint64, mark kamino.ScaledFraction) (ExitCost, bool) {
 	costs := e[lane]
@@ -160,6 +179,7 @@ type exitQuoter struct {
 	events        *events
 	attempted     map[string]time.Time
 	inflight      map[string]*exitQuoteFlight
+	spikes        map[string]exitQuoteSpike
 }
 
 type exitQuoteFlight struct {
@@ -176,10 +196,18 @@ func (q *exitQuoter) quote(ctx context.Context, m RouteManifest, slot int64, acc
 	if q.inflight == nil {
 		q.inflight = map[string]*exitQuoteFlight{}
 	}
+	if q.spikes == nil {
+		q.spikes = map[string]exitQuoteSpike{}
+	}
 	pruneAt := q.now()
 	for key, at := range q.attempted {
 		if at.IsZero() || at.After(pruneAt) || pruneAt.Sub(at) >= exitQuoteRetryInterval {
 			delete(q.attempted, key)
+		}
+	}
+	for lane, spike := range q.spikes {
+		if spike.lastSeen.IsZero() || spike.lastSeen.After(pruneAt) || pruneAt.Sub(spike.lastSeen) > exitQuoteSpikeMaxGap {
+			delete(q.spikes, lane)
 		}
 	}
 	for _, c := range q.cached.candidates(m, slot, q.now()) {
@@ -255,55 +283,102 @@ heldQuotes:
 		q.attempted[key] = now
 		flight := &exitQuoteFlight{done: make(chan struct{})}
 		q.inflight[key] = flight
-		var prev *ExitCost
-		for _, candidate := range []*ExitCost{q.cached[lane].Quote, costs[lane].Quote} {
-			if candidate == nil || candidate.Source != exitCostQuote || candidate.QuotedCollateralRaw != basis.heldRaw ||
-				candidate.At.IsZero() || candidate.At.After(now) || now.Sub(candidate.At) > exitQuoteSpikeConfirmMaxAge {
-				continue
+		activeSpike, hasActiveSpike := q.spikes[lane]
+		if hasActiveSpike && (activeSpike.heldRaw != basis.heldRaw || activeSpike.lastSeen.IsZero() || activeSpike.lastSeen.After(now) || now.Sub(activeSpike.lastSeen) > exitQuoteSpikeMaxGap) {
+			delete(q.spikes, lane)
+			hasActiveSpike = false
+		}
+		var hasBaseline bool
+		var baselineBPS microBPS
+		if hasActiveSpike {
+			hasBaseline, baselineBPS = activeSpike.hasBaseline, activeSpike.baselineBPS
+		} else {
+			var prev *ExitCost
+			for _, candidate := range []*ExitCost{q.cached[lane].Quote, costs[lane].Quote} {
+				if candidate == nil || candidate.Source != exitCostQuote || candidate.QuotedCollateralRaw != basis.heldRaw ||
+					candidate.At.IsZero() || candidate.At.After(now) || now.Sub(candidate.At) > exitQuoteSpikeConfirmMaxAge {
+					continue
+				}
+				if prev == nil || candidate.At.After(prev.At) {
+					copied := *candidate
+					prev = &copied
+				}
 			}
-			if prev == nil || candidate.At.After(prev.At) {
-				copied := *candidate
-				prev = &copied
+			if prev != nil {
+				hasBaseline, baselineBPS = true, prev.BPS
 			}
 		}
 		q.mu.Unlock()
 		cost, err := q.price(ctx, basis, slot, now)
+		var spikePending, spikeConfirmed bool
+		var spikeElapsed time.Duration
 		if err == nil {
 			realized := costs[lane].Realized
-			needsConfirm := func(c ExitCost) bool {
-				if prev != nil && c.BPS > prev.BPS && c.BPS-prev.BPS >= exitQuoteSpikeConfirmBPS {
-					return true
-				}
-				return c.BPS >= exitQuoteSpikeConfirmBPS && c.outlier(realized)
+			spiked := func(c ExitCost) bool {
+				return isExitQuoteSpike(c, hasBaseline, baselineBPS, realized)
 			}
-			if needsConfirm(cost) {
-				for range exitQuoteSpikeConfirmExtraCalls {
-					if ctx.Err() != nil {
-						break
-					}
-					candidate, retryErr := q.price(ctx, basis, slot, q.now())
-					if retryErr != nil {
-						continue
-					}
-					if candidate.BPS < cost.BPS {
-						cost = candidate
-						if !needsConfirm(cost) {
+			if spiked(cost) {
+				checkNow := q.now()
+				persisted := hasActiveSpike && !checkNow.Before(activeSpike.since) && checkNow.Sub(activeSpike.since) >= exitQuoteSpikePersistDuration
+				// Confirm immediately on first detection (to recover split-brain
+				// peers without pausing NAV) and again on the confirming tick
+				// right before publishing a sustained liquidity drop.
+				if !hasActiveSpike || persisted {
+					for range exitQuoteSpikeConfirmExtraCalls {
+						if ctx.Err() != nil {
 							break
+						}
+						candidate, retryErr := q.price(ctx, basis, slot, q.now())
+						if retryErr != nil {
+							continue
+						}
+						if candidate.BPS < cost.BPS {
+							cost = candidate
+							if !spiked(cost) {
+								break
+							}
+						}
+					}
+				}
+				if spiked(cost) {
+					if persisted {
+						spikeConfirmed = true
+						spikeElapsed = checkNow.Sub(activeSpike.since)
+					} else {
+						spikePending = true
+						if hasActiveSpike && !checkNow.Before(activeSpike.since) {
+							spikeElapsed = checkNow.Sub(activeSpike.since)
 						}
 					}
 				}
 			}
-			cost.scope = &exitQuoteScope{vault: m.vault.squads, manifest: m.SHA256, usdc: basis.usdc, path: basis.st.route.Kamino.CollateralMint + ":" + fleet.USDCMint}
-			if q.record != nil {
-				_, _ = q.record(ctx, cost)
+			if !spikePending {
+				cost.scope = &exitQuoteScope{vault: m.vault.squads, manifest: m.SHA256, usdc: basis.usdc, path: basis.st.route.Kamino.CollateralMint + ":" + fleet.USDCMint}
+				if q.record != nil {
+					_, _ = q.record(ctx, cost)
+				}
 			}
 		}
 		q.mu.Lock()
-		if err == nil {
+		if err == nil && !spikePending {
+			delete(q.spikes, lane)
 			cachedCost, scope := cost, *cost.scope
 			cachedCost.scope = &scope
 			q.cached = q.cached.withQuote(cachedCost)
 			flight.cost = &cost
+		} else if err == nil && spikePending {
+			seenAt := q.now()
+			since := seenAt
+			if existing, ok := q.spikes[lane]; ok && existing.heldRaw == basis.heldRaw && !seenAt.Before(existing.lastSeen) && seenAt.Sub(existing.lastSeen) <= exitQuoteSpikeMaxGap {
+				since = existing.since
+			}
+			q.spikes[lane] = exitQuoteSpike{
+				heldRaw:     basis.heldRaw,
+				hasBaseline: hasBaseline,
+				baselineBPS: baselineBPS,
+				since:       since,
+				lastSeen:    seenAt,
+			}
 		} else {
 			var deferred *jupiter.DeferredError
 			if errors.As(err, &deferred) && deferred.Reason == "budget" {
@@ -318,6 +393,13 @@ heldQuotes:
 		if err != nil {
 			q.events.exitQuoteFailed(lane, err)
 			continue
+		}
+		if spikePending {
+			q.events.exitQuoteSpikePending(lane, cost, hasBaseline, baselineBPS, spikeElapsed)
+			continue
+		}
+		if spikeConfirmed {
+			q.events.exitQuoteSpikeConfirmed(lane, cost, hasBaseline, baselineBPS, spikeElapsed)
 		}
 		if realized := costs[lane].Realized; q.events != nil && realized != nil {
 			comparisons = append(comparisons, exitQuoteComparison{basis, cost, *realized})
@@ -340,6 +422,26 @@ func (e *events) exitQuoteFailed(lane string, err error) {
 		return
 	}
 	e.log.Warn("backyard_exit_quote_unavailable", "lane", lane, "code", exitQuoteFailureCode(err))
+}
+
+func (e *events) exitQuoteSpikePending(lane string, cost ExitCost, hasBaseline bool, baselineBPS microBPS, elapsed time.Duration) {
+	if e == nil {
+		return
+	}
+	e.log.Warn("backyard_exit_quote_spike_pending", "lane", lane, "quote_micro_bps", uint64(cost.BPS),
+		"has_baseline", hasBaseline, "baseline_micro_bps", uint64(baselineBPS),
+		"quoted_raw", cost.QuotedCollateralRaw, "slot", cost.Slot,
+		"elapsed_seconds", int64(elapsed/time.Second), "persist_seconds", int64(exitQuoteSpikePersistDuration/time.Second))
+}
+
+func (e *events) exitQuoteSpikeConfirmed(lane string, cost ExitCost, hasBaseline bool, baselineBPS microBPS, elapsed time.Duration) {
+	if e == nil {
+		return
+	}
+	e.log.Warn("backyard_exit_quote_spike_confirmed", "lane", lane, "quote_micro_bps", uint64(cost.BPS),
+		"has_baseline", hasBaseline, "baseline_micro_bps", uint64(baselineBPS),
+		"quoted_raw", cost.QuotedCollateralRaw, "slot", cost.Slot,
+		"elapsed_seconds", int64(elapsed/time.Second), "persist_seconds", int64(exitQuoteSpikePersistDuration/time.Second))
 }
 
 func exitQuoteFailureCode(err error) string {
